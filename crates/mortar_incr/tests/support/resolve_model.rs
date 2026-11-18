@@ -453,6 +453,7 @@ impl Link {
                 version,
                 at_file,
                 at_index,
+                option: false,
             });
         }
         m.resolved = vec![ResolvedRow::default(); keys.len()];

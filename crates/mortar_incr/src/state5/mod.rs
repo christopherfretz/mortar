@@ -523,6 +523,12 @@ impl Rec for FileRow {
             eh_offset: r.u32(),
             eh_capacity: r.u32(),
             eh_records: r.u32(),
+            // Seam 6's columns are not in batch 13's format 5 (U-2's format
+            // side): 0 and empty (WP-245 compile junction; never read by
+            // an update: `eh_range_of` refuses a range).
+            eh_fdes: 0,
+            stack: 0,
+            properties: Str::default(),
         }
     }
     fn ok(&self) -> bool {
@@ -757,6 +763,8 @@ impl Rec for FragRow {
             class: r.u32(),
             hash: r.h(),
             offset: r.u64(),
+            // Not in batch 13's format 5 (WP-245 compile junction).
+            size: 0,
             refs: r.u32(),
             tomb: tomb(r),
         }

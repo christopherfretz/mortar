@@ -17,15 +17,17 @@
 //! from its piece by U-6 (IN-72: "a fragment whose count rises from 0 is
 //! rewritten from the piece", review-in72 M-8): U-6 tells the two apart
 //! with `frags_of`. A row at 0 is a dead range: a constant takes the fill
-//! (a `HoleKind::Fill` hole of its `entsize` bytes in `LayoutDelta::holes`);
-//! a revived fragment's stored hole is gone from `holes_of` of its chunk.
+//! (a `HoleKind::Fill` hole of its `entsize` bytes in `LayoutDelta::holes`),
+//! a string keeps its bytes (a `HoleKind::DeadFragment` hole of its stored
+//! `size`, seam 6: WP-242 C); a revived fragment's stored hole is gone from
+//! `holes_of` of its chunk.
 
 use std::collections::{BTreeMap, BTreeSet};
 
 use mortar_core::column::Column;
 use mortar_core::id::{ChunkId, FileId, OutSecId, SectionId};
 use mortar_core::incr::{IncrReason, LayoutInput, SectionChange, StoredFrag, Unimplemented};
-use mortar_core::layout::{Chunk, ChunkKind, DefValue, Hole, HoleKind};
+use mortar_core::layout::{Chunk, ChunkKind, Hole, HoleKind};
 
 use super::{Base, admit, corrupt, not_implemented, round_up, text};
 
@@ -79,9 +81,10 @@ const fn class_parts(word: u32) -> (bool, u64, u8) {
 /// fragment, or the output section has no merged chunk); `new-output-section`
 /// (a piece of an output section the state does not have);
 /// `update-not-implemented (debug)` (a piece of a `.debug_*` section, R-1:
-/// never counted); `update-not-implemented (layout)` (a string fragment
-/// falling to 0, WP-242 finding C; a piece the changes do not explain);
-/// `state-corrupt` (a count below 0, a `FRAG_USE` row with no `FRAGS` row).
+/// never counted); `update-not-implemented (layout)` (a dead string whose
+/// stored `size` is 0: a format that does not store it; a piece the changes
+/// do not explain); `state-corrupt` (a count below 0, a `FRAG_USE` row with
+/// no `FRAGS` row, a piece whose size is not its fragment's).
 pub(super) fn item_6(
     base: &Base,
     chunks: &mut Column<ChunkId, Chunk>,
@@ -122,27 +125,34 @@ pub(super) fn item_6(
                 let (strings, entsize, _) = class_parts(key.1);
                 if r.refs > 0 && after == 0 {
                     // A dead range (IN-3a): a constant takes the fill; a
-                    // string keeps its bytes, but its length is not stored
-                    // (finding C), so its `DeadFragment` hole cannot be
-                    // given.
-                    if strings {
-                        return Err(dead_string_refused());
-                    }
-                    if entsize == 0 {
-                        return Err(corrupt("a constant fragment's class has entsize 0"));
-                    }
-                    out.made.push(Hole {
-                        chunk,
-                        offset: r.offset,
-                        size: entsize,
-                        kind: HoleKind::Fill,
-                    });
+                    // string keeps its bytes, a `DeadFragment` hole of its
+                    // stored size (seam 6, WP-242 C).
+                    let hole = if strings {
+                        if r.size == 0 {
+                            return Err(dead_string_refused());
+                        }
+                        Hole {
+                            chunk,
+                            offset: r.offset,
+                            size: u64::from(r.size),
+                            kind: HoleKind::DeadFragment,
+                        }
+                    } else {
+                        if entsize == 0 {
+                            return Err(corrupt("a constant fragment's class has entsize 0"));
+                        }
+                        Hole { chunk, offset: r.offset, size: entsize, kind: HoleKind::Fill }
+                    };
+                    out.made.push(hole);
                     out.died.insert(key.0);
                 } else if r.refs == 0 && after > 0 {
                     // Revived: its stored hole goes, U-6 rewrites it.
                     let p = piece_of
                         .get(&key)
                         .ok_or_else(|| corrupt("a fragment rises from 0 with no piece"))?;
+                    if r.size != 0 && u64::from(r.size) != p.size {
+                        return Err(corrupt("a piece's size is not its fragment's"));
+                    }
                     out.gone.push(revived_hole(stored, chunk, r, strings, entsize, p.size)?);
                     out.rose.insert(key.0);
                 }
@@ -177,16 +187,9 @@ pub(super) fn item_6(
         admit(chunks, chunk, a, base.rules.max_page, name.as_bytes())?;
         chunks[chunk].size = end;
         let refs = u32::try_from(net[&key]).map_err(|_| corrupt("FRAGS.refs past u32"))?;
-        out.rows.push(StoredFrag { out: key.0, class: key.1, hash: key.2, offset, refs });
+        let size = u32::try_from(p.size).map_err(|_| not_implemented())?;
+        out.rows.push(StoredFrag { out: key.0, class: key.1, hash: key.2, offset, size, refs });
         out.rose.insert(key.0);
-        if base
-            .rest
-            .defined
-            .iter()
-            .any(|d| d.value == DefValue::At { chunk, offset: base.chunks[chunk].size })
-        {
-            return Err(end_symbol_refused());
-        }
     }
     out.rows.sort_by_key(|r| (r.out, r.class, r.hash));
     Ok(out)
@@ -241,15 +244,10 @@ fn net_change(
     Ok((net, first))
 }
 
-/// A linker-defined symbol at the end of a merged chunk an append grows
-/// (`DEFINED` is passed through whole and unchanged: an end symbol would
-/// keep the old end; WP-242's answer on `placement.defined`).
-fn end_symbol_refused() -> IncrReason {
-    not_implemented()
-}
-
-/// A string fragment whose count falls to 0 (WP-242 finding C): its
-/// `DeadFragment` hole needs its length, which `FRAGS` does not store.
+/// A string fragment whose count falls to 0 and whose stored `size` is 0:
+/// no fragment is empty (a string holds its NUL), so the format did not
+/// store the size (batch 13's format 5 before U-2's seam-6 columns; WP-245
+/// compile junction); its `DeadFragment` hole cannot be given.
 fn dead_string_refused() -> IncrReason {
     not_implemented()
 }

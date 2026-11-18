@@ -14,7 +14,9 @@
 //! and its `FILES` row's `.eh_frame` columns, the `FRAGS` row of each
 //! fragment key whose count changes (item 6, `frags`), and `HOLES` of the
 //! chunks a touched region, a new region or a dead or revived fragment is
-//! in, or of an output section that lost a member (item 10). Nothing else.
+//! in, or of an output section that lost a member (item 10), or of
+//! `.eh_frame` when a file of `changes` or `input.eh` has records or a
+//! range (item 5, `eh`). Nothing else.
 //!
 //! What it gives (`spec/landed/incr/WP-216.md` §2): `placement` has the
 //! stored whole tables, updated (chunks grown or moved by the growth steps,
@@ -29,12 +31,12 @@
 //! `LayoutRows` gives).
 //!
 //! Every refusal is a reason of `spec/incr.md` §7 by name; what this
-//! package cannot do (IN-72 item 4's rewrite; item 5 wholesale; item 6's
-//! dead string, WP-242 finding C; item 7's recounted, revived or retired
-//! PLT/IPLT slot, findings B and F) is `update-not-implemented (layout)`,
-//! never a guess; item 7's new slot is `reserve-exhausted` (finding D).
-//! Commons are not placed by an update in v1 (WP-216 R-2: the join's
-//! `update-not-implemented (common)`).
+//! package cannot do (IN-72 item 4's rewrite; item 5's whole rewrite,
+//! `delta/eh.rs`; item 6's dead string, WP-242 finding C; item 7's
+//! recounted, revived or retired PLT/IPLT slot, findings B and F) is
+//! `update-not-implemented (layout)`, never a guess; item 7's new slot is
+//! `reserve-exhausted` (finding D). Commons are not placed by an update in
+//! v1 (WP-216 R-2: the join's `update-not-implemented (common)`).
 
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -45,8 +47,8 @@ use mortar_core::incr::{
     StoredSection, Unimplemented,
 };
 use mortar_core::layout::{
-    Chunk, ChunkKind, Hole, HoleKind, LoadClass, Place, Placement, PlacementKind, Segment,
-    SegmentRules, derive_segments,
+    Chunk, ChunkKind, DefValue, Defined, Hole, HoleKind, LoadClass, Place, Placement,
+    PlacementKind, Segment, SegmentRules, derive_segments,
 };
 use mortar_elf::Machine;
 use mortar_elf::consts::{
@@ -61,6 +63,7 @@ use crate::order::text_category;
 use crate::slack::{self, Slack};
 use crate::target::Target;
 
+mod eh;
 mod frags;
 mod slots;
 
@@ -96,8 +99,11 @@ pub fn layout(
         files.entry(c.file).or_default().push(i);
     }
     let ids: Vec<FileId> = files.keys().copied().collect();
-    item_5_refused(stored, input, &ids)?;
     let base = Base::read(stored, target)?;
+    // Item 5 (WP-243): its whole rewrite reads every `FILES` row with a
+    // range (`eh_ranges`, seam 6), only when it runs.
+    let all = || stored.eh_ranges();
+    let eh = eh::item_5(stored, input.eh, &ids, &base.chunks, Some(&all))?;
     let mut u = Update::new(&base, changes);
     for (&file, members) in &files {
         u.file(stored, file, members)?;
@@ -108,40 +114,36 @@ pub fn layout(
         .iter()
         .map(|&file| slots::FileOf { file, changed: u.changed.contains(&file) })
         .collect();
-    let (slots_dead, slots_appended) = slots::item_7(stored, &file_of, input.demands)?;
+    u.slots =
+        slots::item_7(stored, &file_of, input.demands, &base.chunks, target.class, target.machine)?;
     u.overflow()?;
     u.growth()?;
     u.holes(stored)?;
     u.left_empty(stored)?;
-    let mut delta = u.finish()?;
-    delta.files = files.into_keys().collect();
-    delta.slots_dead = slots_dead;
-    delta.slots_appended = slots_appended;
-    Ok(delta)
-}
-
-// Item 5 is refused wholesale until it is built (the supervisor's word on
-// WP-216's seam 4): a file of the update with kept `.eh_frame` records, in
-// its new version (`input`) or its old one (its stored range), is
-// `update-not-implemented (layout)`; so is a non-empty list in `input` for
-// any file. An accessor the stored rows do not give is the same reason (its
-// provided body). Item 6 is `frags`, item 7 `slots` (WP-242).
-
-/// Item 5 (`.eh_frame`, IN-34a): refused wholesale (WP-243's).
-fn item_5_refused(
-    stored: &StoredLayout<'_>,
-    input: &LayoutInput<'_>,
-    files: &[FileId],
-) -> Result<(), IncrReason> {
-    if input.eh.iter().any(|f| !f.records.is_empty()) {
-        return Err(not_implemented());
-    }
-    for &file in files {
-        if stored.eh_range_of(file)?.is_some() {
-            return Err(not_implemented());
+    if let Some(o) = &eh {
+        u.chunks[o.layout.chunk].size = o.size;
+        if let Some((h, size)) = o.hdr {
+            u.chunks[h].size = size;
         }
     }
-    Ok(())
+    let mut delta = u.finish()?;
+    delta.files = files.into_keys().collect();
+    if let Some(o) = eh {
+        let c = o.layout.chunk;
+        let Err(at) = delta.hole_chunks.binary_search(&c) else {
+            debug_assert!(false, "the .eh_frame chunk is item 5's alone");
+            return Err(not_implemented());
+        };
+        delta.hole_chunks.insert(at, c);
+        let mut holes = std::mem::take(&mut delta.placement.holes).into_vec();
+        holes.extend(o.holes);
+        holes.sort_by_key(|h| (h.chunk, h.offset));
+        delta.placement.holes = holes.into_boxed_slice();
+        delta.holes.extend(o.made);
+        delta.holes.sort_by_key(|h| (h.chunk, h.offset));
+        delta.eh = Some(o.layout);
+    }
+    Ok(delta)
 }
 
 // ---- small helpers ----------------------------------------------------------
@@ -230,7 +232,7 @@ struct Base {
 /// The whole tables `layout` passes through.
 struct Rest {
     sym_place: Vec<mortar_core::layout::SymPlace>,
-    defined: Vec<mortar_core::layout::Defined>,
+    defined: Vec<Defined>,
     patches: Vec<mortar_core::layout::Patch>,
     redirects: Vec<mortar_core::layout::Redirect>,
     tls: Option<mortar_core::layout::Tls>,
@@ -359,11 +361,12 @@ impl Base {
         {
             return Fate::Ignore;
         }
-        // Item 5: `.eh_frame` (IN-34a), refused wholesale (§Q).
+        // Item 5: `.eh_frame` (IN-34a) is placed nowhere, as in the full
+        // link: its records are the synthetic chunk's (`delta/eh.rs`).
         if name == b".eh_frame"
             || (self.machine == Machine::X86_64 && s.sh_type == SHT_X86_64_UNWIND)
         {
-            return Fate::Refuse(Refusal::EhFrame);
+            return Fate::Ignore;
         }
         // Debug first: a merged `.debug_*` section has no fragments (R-1).
         if !alloc && (name.starts_with(b".debug_") || name.starts_with(b".zdebug")) {
@@ -425,6 +428,44 @@ impl Base {
             slack::Class::Packed | slack::Class::None => Fate::Fixed { out, why: Why::Packed },
         }
     }
+}
+
+/// `DEFINED` after the update (WP-245 step 4): a row's chunk-relative
+/// value follows its chunk; a row at the END of a chunk whose size the
+/// update changes (an overflow region or a merged append at its tail, a
+/// whole `.eh_frame` or a resized `.eh_frame_hdr`) moves to the new end,
+/// as every full link puts an end row (layout.md §13.1: `_end`,
+/// `_edata`, `etext`, `__stop_*`, `*_array_end` are `At { chunk, offset:
+/// size }`). A row the update cannot place by that rule is refused,
+/// never kept: at or past the smaller of the two sizes and not the old
+/// end (a `--defsym` offset past an end symbol), or at 0 of a chunk that
+/// was empty (a start and an end are the same row).
+fn end_rows(
+    stored: &[Defined],
+    old: &Column<ChunkId, Chunk>,
+    new: &Column<ChunkId, Chunk>,
+) -> Result<Vec<Defined>, IncrReason> {
+    let mut out = stored.to_vec();
+    for d in &mut out {
+        let DefValue::At { chunk, offset } = d.value else { continue };
+        let (Some(o), Some(n)) = (old.get(chunk), new.get(chunk)) else {
+            return Err(corrupt("a DEFINED row of no chunk"));
+        };
+        if o.size == n.size || offset < o.size.min(n.size) {
+            continue;
+        }
+        if offset != o.size || o.size == 0 {
+            return Err(end_row_refused());
+        }
+        d.value = DefValue::At { chunk, offset: n.size };
+    }
+    Ok(out)
+}
+
+/// A `DEFINED` row in a resized chunk that is neither inside both sizes
+/// nor at the old end (`end_rows`).
+fn end_row_refused() -> IncrReason {
+    not_implemented()
 }
 
 /// L-36's large output section by flags and type, or `None` where the full
@@ -507,7 +548,6 @@ enum Why {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Refusal {
-    EhFrame,
     Debug,
     NoOutput,
     Property,
@@ -530,8 +570,6 @@ enum Fate {
 impl Refusal {
     fn reason(self, name: &[u8]) -> IncrReason {
         match self {
-            // Item 5: refused wholesale (`spec/landed/incr/WP-216.md` §Q).
-            Self::EhFrame => not_implemented(),
             Self::Debug => IncrReason::UpdateNotImplemented(Some(Unimplemented::Debug)),
             Self::NoOutput => IncrReason::NewOutputSection(text(name)),
             Self::Property => IncrReason::PropertyChanged(format!("{}: flags or type", text(name))),
@@ -648,6 +686,8 @@ struct Update<'b, 'c> {
     pieces: BTreeSet<SectionId>,
     /// Item 6's result.
     merged: frags::Merged,
+    /// Item 7's lists and `DeadSlot` holes (`slots`).
+    slots: slots::Out,
 }
 
 impl<'b, 'c> Update<'b, 'c> {
@@ -672,6 +712,7 @@ impl<'b, 'c> Update<'b, 'c> {
             hole_chunks: Vec::new(),
             pieces: BTreeSet::new(),
             merged: frags::Merged::default(),
+            slots: slots::Out::default(),
         }
     }
 
@@ -917,9 +958,9 @@ impl<'b, 'c> Update<'b, 'c> {
             };
             match base.fate(&shape, true) {
                 Fate::Fixed { why, .. } => killed_fixed.push((p.clone(), why)),
-                // A dead `.eh_frame` or merged section of a changed file
-                // is refused with its new version; a killed debug
-                // section is G-1's.
+                // A dead `.eh_frame` section is item 5's (`eh`), a dead
+                // merged section's pieces item 6's (`frags`); a killed
+                // debug section is G-1's.
                 Fate::Refuse(Refusal::Debug) => return Err(Refusal::Debug.reason(&p.name)),
                 _ => {}
             }
@@ -1183,13 +1224,21 @@ impl<'b, 'c> Update<'b, 'c> {
         for h in &self.merged.made {
             by_chunk.entry(h.chunk).or_default().1.push(*h);
         }
+        // Item 7: retired slots' `DeadSlot` holes; revived slots' go.
+        for c in self.slots.chunks() {
+            by_chunk.entry(c).or_default();
+        }
+        for h in &self.slots.made {
+            by_chunk.entry(h.chunk).or_default().1.push(*h);
+        }
         let mut all = Vec::new();
         let mut made = Vec::new();
         self.hole_chunks = by_chunk.keys().copied().collect();
         for (chunk, (ranges, new)) in by_chunk {
             let old = stored.holes_in(chunk)?;
             let mut kept = Vec::new();
-            for h in old.iter().filter(|h| !self.merged.gone.contains(h)) {
+            let gone = |h: &Hole| self.merged.gone.contains(h) || self.slots.gone.contains(h);
+            for h in old.iter().filter(|h| !gone(h)) {
                 // The parts of a stored hole outside every touched region.
                 let mut pieces = vec![(h.offset, h.offset + h.size)];
                 for &(s, e) in &ranges {
@@ -1434,6 +1483,7 @@ impl<'b, 'c> Update<'b, 'c> {
         holes.sort_by_key(|h| (h.chunk, h.offset));
         let mut made = self.made;
         made.sort_by_key(|h| (h.chunk, h.offset));
+        let defined = end_rows(&base.rest.defined, &base.chunks, &self.chunks)?;
         Ok(LayoutDelta {
             placement: Placement {
                 kind: PlacementKind::Loadable,
@@ -1442,7 +1492,7 @@ impl<'b, 'c> Update<'b, 'c> {
                 segments: Column::from_vec(segments).map_err(|_| not_implemented())?,
                 place,
                 sym_place: base.rest.sym_place.clone().into_boxed_slice(),
-                defined: base.rest.defined.clone().into_boxed_slice(),
+                defined: defined.into_boxed_slice(),
                 patches: base.rest.patches.clone().into_boxed_slice(),
                 redirects: base.rest.redirects.clone().into_boxed_slice(),
                 sized: Box::default(),
@@ -1461,7 +1511,9 @@ impl<'b, 'c> Update<'b, 'c> {
             eh: None,
             frags: self.merged.rows,
             slots_appended: Vec::new(),
-            slots_dead: Vec::new(),
+            slots_dead: self.slots.dead,
+            slots_revived: self.slots.revived,
+            slots_recounted: self.slots.recounted,
         })
     }
 }

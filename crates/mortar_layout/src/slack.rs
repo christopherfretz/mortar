@@ -33,6 +33,11 @@ pub const CLASS_MIN: u64 = 32;
 /// (readelf: "section not zero terminated", and the units' abbreviation
 /// 1 is not found).
 pub const ABBREV_TABLE: u64 = 9;
+/// A file's `.eh_frame` range: the smallest pad past its records (IN-34a:
+/// a padding CIE is 16 bytes at least).
+pub const EH_PAD_MIN: u64 = 16;
+/// A file's `.eh_frame` range: the pad divisor (`ceil4(size/8)`).
+pub const EH_PAD_DIV: u64 = 8;
 
 /// Whether a link lays out slack, and how much. [`Slack::NONE`] in a
 /// plain link.
@@ -71,6 +76,20 @@ impl Slack {
     #[must_use]
     pub fn packed(self, size: u64) -> u64 {
         if self.on { size / PACKED_DIV } else { 0 }
+    }
+
+    /// A file's `.eh_frame` range past its records' `size` bytes (IN-34a):
+    /// `max(16, ceil4(size/8))`, so capacity = `size + eh_pad(size)`; 0
+    /// without slack. The ONE rule of the delta layout's whole rewrite
+    /// (WP-243) and of the incremental-mode full link's per-file pads.
+    /// `size` is a multiple of 4 (records are), so the capacity is too.
+    #[must_use]
+    pub fn eh_pad(self, size: u64) -> u64 {
+        if !self.on {
+            return 0;
+        }
+        let p = size.div_ceil(EH_PAD_DIV);
+        EH_PAD_MIN.max(p.checked_next_multiple_of(4).unwrap_or(p))
     }
 
     /// A debug section's tail (`size/32`).
@@ -195,6 +214,28 @@ pub fn class(name: &[u8], flags: u64) -> Class {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn eh_pad_is_max_16_ceil4_eighth() {
+        let s = Slack::INCREMENTAL;
+        assert_eq!(Slack::NONE.eh_pad(1000), 0);
+        assert_eq!(s.eh_pad(0), 16);
+        assert_eq!(s.eh_pad(24), 16);
+        assert_eq!(s.eh_pad(128), 16);
+        assert_eq!(s.eh_pad(132), 20);
+        assert_eq!(s.eh_pad(136), 20);
+        assert_eq!(s.eh_pad(160), 20);
+        assert_eq!(s.eh_pad(164), 24);
+        for size in (0..4096).step_by(4) {
+            let p = s.eh_pad(size);
+            assert!(
+                p >= 16
+                    && p.is_multiple_of(4)
+                    && p >= size.div_ceil(8)
+                    && p < size.div_ceil(8) + 4 + 16
+            );
+        }
+    }
+
     use super::*;
 
     // spec: incr.md §5.6 IN-33 (region: size + max(64, size/8), rounded up)

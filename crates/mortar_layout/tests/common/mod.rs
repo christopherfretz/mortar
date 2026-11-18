@@ -11,7 +11,7 @@ use mortar_core::demands::Demands;
 use mortar_core::id::OptId;
 use mortar_core::id::{FileId, IdRange, SectionId, SymEntry, SymbolId};
 use mortar_core::inputs::SymbolKey;
-use mortar_core::layout::{EntryDef, Folds, Layout, MergeMap, Slots};
+use mortar_core::layout::{EntryDef, Folds, Layout, MergeMap, SlotKind, Slots};
 use mortar_core::liveness::Liveness;
 use mortar_core::par::Pool;
 use mortar_core::resolution::{Def, FileLive, Resolution, SectionKind, SectionRow, SectionState};
@@ -75,6 +75,9 @@ pub struct World {
 fn kind_of(s: &Sec) -> SectionKind {
     if s.name == b".note.GNU-stack" {
         SectionKind::Stack
+    } else if s.name == b".eh_frame" {
+        // Placed by its records, in the `.eh_frame` chunk (WP-243).
+        SectionKind::EhFrame
     } else if s.ty == SHT_NOBITS {
         SectionKind::Nobits
     } else if s.ty == SHT_NOTE {
@@ -247,6 +250,20 @@ impl World {
         assignment: &Assignment<'static>,
         placed: &Placed,
     ) -> Result<(), Violation> {
+        let demands = Demands::empty(self.symbols.len());
+        self.check_slots(assignment, placed, Slots::default(), &demands, &[])
+    }
+
+    /// `Layout::check` of a result with `slots` (its `symtab_locals`
+    /// given here), `demands` and `CheckContext::retired`.
+    pub fn check_slots(
+        &self,
+        assignment: &Assignment<'static>,
+        placed: &Placed,
+        slots: Slots,
+        demands: &Demands,
+        retired: &[(SlotKind, u32)],
+    ) -> Result<(), Violation> {
         let layout = Layout {
             folds: self.folds.clone(),
             merge: self.merge.clone(),
@@ -255,11 +272,10 @@ impl World {
                     self.resolution.file_live.len(),
                     mortar_core::id::Span::default(),
                 ),
-                ..Slots::default()
+                ..slots
             },
             placement: placed.placement.clone(),
         };
-        let demands = Demands::empty(self.symbols.len());
         let shapes = HeaderShapes(&self.headers);
         let cx = CheckContext {
             class: self.target.class,
@@ -270,10 +286,11 @@ impl World {
             assignment,
             split: &self.split,
             liveness: &self.liveness,
-            demands: &demands,
+            demands,
             shapes: &shapes,
             shared: false,
             placeless: &[],
+            retired,
         };
         layout.validate(&cx)
     }

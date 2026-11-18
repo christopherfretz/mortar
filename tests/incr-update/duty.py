@@ -23,7 +23,10 @@ winner stored) and the new COPIES (55, per (key, file, symbol index)) are
 a changed file's rows and a gone file's key-keyed rows; a re-elected group
 has no row of its own (its drawn-in files are `changed`); an ODR-affected
 key's DIAGS rows are the key's; ODR_REFS and ODR_CLASSES are PROVISIONAL
-(not written until WP-236) and no cause names them.
+(not written until WP-236) and no cause names them. Seam 6 (WP-214):
+a changed file whose symbol table is replaced and a gone file mark their
+locals' old `SYMBOLS` run `GONE` (a SYMBOLS row's mark, FLAGS), so both
+rows change SYMBOLS.
 """
 
 import os
@@ -42,7 +45,8 @@ KINDS = {
     'SYMTAB_KEYS': 50, 'REGIONS': 51, 'NAMES': 52, 'COPIES': 55, 'FRAG_USE': 56,
 }
 NAMES = {k: n for n, k in KINDS.items()}
-FLAGS = {'POSITIONAL': 'FILES', 'LAZY': 'FILES'}      # FILES flags the cells name
+FLAGS = {'POSITIONAL': 'FILES', 'LAZY': 'FILES',     # FILES flags the cells name
+         'GONE': 'SYMBOLS'}                           # a SYMBOLS row's mark (seam 6)
 FILE_KEYED = ('SECTIONS', 'MENTIONS', 'INDEX', 'EDGES', 'FRAG_USE', 'SYMTAB', 'REGIONS')
 # the key-keyed tables with a file in their key or row (a gone file's rows;
 # ODR_REFS is PROVISIONAL, not written until WP-236)
@@ -62,12 +66,12 @@ WORDS = {
 DUTY = (
     ('changed', 'a changed, appeared, drawn-in or newly extracted file',
      ('FILES', 'POSITIONAL', 'STAT', 'SECTIONS', 'MENTIONS', 'INDEX', 'EDGES', 'FRAG_USE', 'SYMTAB',
-      'FILE_INDEX', 'KEY_REFS', 'GROUPS', 'COMMONS', 'COPIES', 'DIAGS'),
+      'FILE_INDEX', 'KEY_REFS', 'GROUPS', 'COMMONS', 'COPIES', 'DIAGS', 'SYMBOLS', 'GONE'),
      ('FILES', 'STAT', 'SECTIONS', 'MENTIONS', 'INDEX', 'EDGES', 'FRAG_USE', 'SYMTAB', 'FILE_INDEX',
-      'KEY_REFS', 'GROUPS', 'COMMONS', 'COPIES', 'DIAGS')),
+      'KEY_REFS', 'GROUPS', 'COMMONS', 'COPIES', 'DIAGS', 'SYMBOLS')),
     ('gone', 'a gone or no longer extracted file',
-     ('LAZY',),
-     ('FILES', 'FILE_INDEX') + FILE_KEYED + FILE_KEY_ROWS),
+     ('LAZY', 'SYMBOLS', 'GONE'),
+     ('FILES', 'FILE_INDEX', 'SYMBOLS') + FILE_KEYED + FILE_KEY_ROWS),
     ('touched', 'an input `stat`ed again but hashed equal (touched)',
      ('STAT',),
      ('STAT',)),

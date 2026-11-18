@@ -1071,6 +1071,10 @@ impl LayoutRows for LayoutOf<'_, '_> {
             class,
             hash,
             offset: f.offset,
+            // Batch 13's format 5 has no `FRAGS.size` column (seam 6's
+            // format side is U-2's): 0, which the layout refuses for a
+            // dead fragment (WP-245 compile junction).
+            size: f.size,
             refs: f.refs,
         }))
     }
@@ -1084,11 +1088,15 @@ impl LayoutRows for LayoutOf<'_, '_> {
     }
     fn eh_range_of(&self, file: FileId) -> Result<Option<StoredEhRange>, IncrReason> {
         let f = self.view.file(file)?;
-        Ok((f.eh_records != 0).then_some(StoredEhRange {
-            offset: f.eh_offset,
-            capacity: f.eh_capacity,
-            records: f.eh_records,
-        }))
+        if f.eh_records != 0 {
+            // Batch 13's format 5 has no `FILES.eh_fdes` column (seam 6's
+            // format side is U-2's): a range is not given, as item 5 was
+            // refused before the join (WP-245 compile junction).
+            return Err(IncrReason::UpdateNotImplemented(Some(
+                mortar_core::incr::Unimplemented::Layout,
+            )));
+        }
+        Ok(None)
     }
     fn key_refs_of(&self, file: FileId) -> Result<Vec<StoredKeyRef>, IncrReason> {
         let mut keys: Vec<u32> = self.view.mentions_of(file)?.iter().map(|m| m.symbol).collect();

@@ -198,6 +198,7 @@ fn check(w: &World, a: &Assignment<'static>, placed: &Placed) -> Result<(), Viol
         shapes: &shapes,
         shared: false,
         placeless: &[],
+        retired: &[],
     };
     layout.validate(&cx)
 }

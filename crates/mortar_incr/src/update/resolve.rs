@@ -46,14 +46,19 @@ pub struct ResolveDelta {
     /// drawn-in, extracted or no longer extracted file mentions, old or new
     /// version, and the linker-defined keys of IN-71c), sorted.
     pub affected: Vec<SymbolId>,
-    /// New keys, in the order their rows are appended.
+    /// New keys, in the order their rows are appended. A file's new
+    /// local keys are ONE contiguous run, by symbol-table index (the
+    /// file's `FILE_INDEX.locals`: `FileRanges::locals`; seam 6). No row
+    /// has the `option` bit.
     pub new_keys: Vec<NewKey>,
     /// Per changed file (`ChangedFiles::files` order), its
     /// `ChangedFile::keys` mapped to `SymbolId`s (position for position).
     pub key_ids: Vec<(FileId, Vec<SymbolId>)>,
     /// Each affected key's new `RESOLVED` row (sorted by key).
     pub resolved: Vec<(SymbolId, ResolvedRow)>,
-    /// Keys no file mentions any more (`SYMBOLS.kind` `GONE`).
+    /// Keys no file mentions any more (`SYMBOLS.kind` `GONE`): globals
+    /// only, never one with the `option` bit (a replaced or gone file's
+    /// old locals are marked by U-2 through `FileRanges::locals`; seam 6).
     pub gone: Vec<SymbolId>,
     /// `at_file`, `at_index` of keys whose first mention changed (IN-71).
     pub at: Vec<(SymbolId, u32, u32)>,
@@ -1112,6 +1117,8 @@ impl<'c, 'a, 's> Res<'c, 'a, 's> {
                     version: Str::default(),
                     at_file: n.file,
                     at_index: n.index,
+                    // A new key never has the option bit (seam 6).
+                    option: false,
                 }
             } else {
                 let (at_file, at_index) = at.get(&id).copied().unwrap_or((NONE, 0));
@@ -1123,6 +1130,7 @@ impl<'c, 'a, 's> Res<'c, 'a, 's> {
                     version: Str::default(),
                     at_file,
                     at_index,
+                    option: false,
                 }
             };
             self.out.new_keys.push(NewKey {

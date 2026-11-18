@@ -1092,6 +1092,7 @@ pub fn front<'s>(
         shapes: &shapes,
         shared: plan.kind == plan::OutputKind::Shared,
         placeless: &placeless,
+        retired: &[],
     };
     steps.step("checks", 0, "");
     // IN-61: the replay's decision tables in place of the computed ones.

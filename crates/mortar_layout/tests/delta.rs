@@ -195,6 +195,7 @@ fn capture(
         frags: Vec::new(),
         frag_uses: Vec::new(),
         eh_ranges: Vec::new(),
+        ranks: Vec::new(),
         key_refs: Vec::new(),
         slots: Vec::new(),
         patches: p.patches.to_vec(),
@@ -930,15 +931,28 @@ fn link_order_target_dies() {
 }
 
 // spec: incr.md IN-72 item 5 (WP-211: an unchanged file's FDE whose
-// function dies; `.eh_frame` ranges are not in the seam: the fall-back)
+// function dies; WP-243: the file is drawn in, its `EhFile` has no record
+// left (its CIE goes with its last FDE), its range becomes a hole merged
+// with the pad before it; without its `EhFile`, refused)
 #[test]
 fn cross_file_eh_frame_fde_target_dies() {
     let eh = sec(b".eh_frame", SHT_PROGBITS, SHF_ALLOC, 56, 3);
     let mut files = two_text_files();
     files[1].push(eh);
-    let s0 = first(Machine::X86_64, &files);
-    let e = hop(&s0, &Edit::new(files).drawn(&[2]).dead(&[(2, 1)])).err().unwrap();
-    assert_eq!(e, not_implemented());
+    let (s0, c) = first_with_eh(&files);
+    let edit = Edit::new(files).drawn(&[2]).dead(&[(2, 1)]);
+    let (changes, _) = changes_of(&s0, &edit);
+    let stored = StoredLayout::new(&s0.mem);
+    let t = &s0.world.target;
+    assert_eq!(layout(&stored, &input(&changes), t).err(), Some(not_implemented()));
+    let gone = [eh_file(2, &[])];
+    let d = layout(&stored, &LayoutInput { eh: &gone, ..input(&changes) }, t).unwrap();
+    assert!(d.eh.as_ref().is_some_and(|e| !e.whole && e.ranges.is_empty()));
+    let pad = Hole { chunk: c, offset: 64, size: 72, kind: HoleKind::EhPad };
+    assert_eq!(d.holes_of(&stored, c).unwrap(), vec![pad]);
+    // The `.eh_frame` input section is placed nowhere, as in the full link.
+    let sid = s0.world.sid(2, 3);
+    assert_eq!(d.place_of(&stored, sid).unwrap(), PlaceNow::NotPlaced);
 }
 
 // spec: incr.md IN-72 item 10 (a section with no output section in the
@@ -951,6 +965,34 @@ fn section_without_output_is_new_output_section() {
     let (changes, _) = changes_of(&s0, &Edit::new(files).changed(&[1]));
     let e = layout(&StoredLayout::new(&s0.mem), &input(&changes), &s0.world.target).err().unwrap();
     assert_eq!(e.name(), "new-output-section", "{e:?}");
+}
+
+// spec: incr.md IN-72 item 10 and §7's `update-not-implemented (debug)`
+// (WP-245, the capture package's question: an output section the stored
+// link has no `OUTSECS` row for, brought by a changed file, is refused
+// by `layout` before any byte is written, so no later row is renumbered:
+// a non-allocated section `new-output-section`, a `.debug_*` one, as a
+// GCC stub's `.debug_aranges` among kiln/hod objects, `(debug)`)
+#[test]
+fn appearing_non_alloc_output_section_is_refused() {
+    for m in [Machine::X86_64, Machine::AArch64] {
+        let s0 = first(m, &two_text_files());
+        for (name, want) in [
+            (&b".my_info"[..], "new-output-section"),
+            (&b".debug_aranges"[..], "update-not-implemented"),
+        ] {
+            let mut files = s0.files();
+            files[0].push(sec(name, SHT_PROGBITS, 0, 48, 0));
+            let (changes, _) = changes_of(&s0, &Edit::new(files).changed(&[1]));
+            let e = layout(&StoredLayout::new(&s0.mem), &input(&changes), &s0.world.target)
+                .err()
+                .unwrap();
+            assert_eq!(e.name(), want, "{m:?} {e:?}");
+            if want == "update-not-implemented" {
+                assert_eq!(e, IncrReason::UpdateNotImplemented(Some(Unimplemented::Debug)));
+            }
+        }
+    }
 }
 
 // spec: incr.md IN-72 item 9 (the island keeps its first-link capacity;
@@ -1374,26 +1416,125 @@ fn key_ref(id: u32, file: u32, demand: DemandFlags) -> StoredKeyRef {
     StoredKeyRef { key: mortar_core::id::SymbolId(id), file: FileId(file), demand }
 }
 
-/// The first link of `two_text_files` with `slots` and `key_refs` stored,
-/// and file 1 changed (its `.text.a` grown) with its new slot demand.
+/// A slot's words (S-63, both 64-bit targets: TLS GD and TLSDESC two).
+fn slot_words(kind: SlotKind) -> u64 {
+    match kind {
+        SlotKind::TlsGd | SlotKind::TlsDesc => 2,
+        _ => 1,
+    }
+}
+
+/// The byte offset in `.got` of slot `(kind, index)` given every stored
+/// row (S-63's region order: AArch64's header word, GOT, TLS IE, TLS GD,
+/// TLSDESC; no module slot here), and the `.got` chunk's size.
+fn got_at(machine: Machine, slots: &[StoredSlot], kind: SlotKind, index: u32) -> (u64, u64) {
+    let order = [SlotKind::Got, SlotKind::TlsIe, SlotKind::TlsGd, SlotKind::TlsDesc];
+    let mut at = u64::from(machine == Machine::AArch64);
+    let mut found = 0;
+    for k in order {
+        let n = slots.iter().filter(|s| s.kind == k).count() as u64;
+        if k == kind {
+            found = at + u64::from(index) * slot_words(k);
+        }
+        at += n * slot_words(k);
+    }
+    (found * 8, at * 8)
+}
+
+/// The first link of `two_text_files` with a `.got` chunk sized for
+/// `slots` (and a `.dynamic` chunk when `dynamic`), `slots`, `key_refs`
+/// and `holes` (of the `.got` chunk) stored, and file 1 changed (its
+/// `.text.a` grown) with its new slot demand. Returns the delta and the
+/// `.got` chunk's holes after it.
+fn slots_run(
+    machine: Machine,
+    slots: &[StoredSlot],
+    key_refs: &[StoredKeyRef],
+    dead: &[(SlotKind, u32)],
+    dynamic: bool,
+    demand: &[(mortar_core::id::SymKey, DemandFlags)],
+) -> Result<(LayoutDelta, Vec<Hole>), IncrReason> {
+    let (s0, got) = slots_state(machine, slots, key_refs, dead, dynamic);
+    slots_update(&s0, got, demand)
+}
+
+/// The stored state of `slots_run`, and its `.got` chunk.
+fn slots_state(
+    machine: Machine,
+    slots: &[StoredSlot],
+    key_refs: &[StoredKeyRef],
+    dead: &[(SlotKind, u32)],
+    dynamic: bool,
+) -> (State, ChunkId) {
+    use mortar_core::layout::Synth;
+    let files = two_text_files();
+    // Keys 0..8 (the slots' keys; weak undefined, value 0).
+    let undef = mortar_core::resolution::Def::Undefined { weak: true };
+    let names: [&'static [u8]; 8] = [b"k0", b"k1", b"k2", b"k3", b"k4", b"k5", b"k6", b"k7"];
+    let keys = names.map(|n| (n, undef));
+    let mut w = World::new(machine, &files, &keys);
+    w.options.slack = Slack::INCREMENTAL;
+    let sc = |name: &'static [u8], size| mortar_layout::chunk::SynthChunk {
+        synth: Synth { name, address_dependent: false },
+        sh_type: SHT_PROGBITS,
+        flags: SHF_ALLOC | SHF_WRITE,
+        align: 3,
+        size,
+    };
+    let size = got_at(machine, slots, SlotKind::Got, 0).1;
+    w.synthetic = vec![sc(b".got", size.max(8))];
+    if dynamic {
+        w.synthetic.push(sc(b".dynamic", 16));
+    }
+    let mut s0 = first_with(w, no_anchors(&files));
+    let got = s0
+        .mem
+        .chunks
+        .iter()
+        .position(|c| matches!(c.kind, ChunkKind::Synthetic(s) if s.name == b".got"))
+        .map(|i| ChunkId(i as u32))
+        .unwrap();
+    s0.mem.slots = slots.to_vec();
+    s0.mem.key_refs = key_refs.to_vec();
+    for &(kind, index) in dead {
+        let offset = got_at(machine, slots, kind, index).0;
+        let size = 8 * slot_words(kind);
+        s0.mem.holes.push(Hole { chunk: got, offset, size, kind: HoleKind::DeadSlot });
+    }
+    s0.mem.holes.sort_by_key(|h| (h.chunk, h.offset));
+    (s0, got)
+}
+
+/// File 1 changed (its `.text.a` grown) with its new slot demand, over
+/// `s0`: the delta and the `.got` chunk's holes after it.
+fn slots_update(
+    s0: &State,
+    got: ChunkId,
+    demand: &[(mortar_core::id::SymKey, DemandFlags)],
+) -> Result<(LayoutDelta, Vec<Hole>), IncrReason> {
+    let mut files = s0.files();
+    files[0][0].size = 60;
+    let (changes, _) = changes_of(s0, &Edit::new(files).changed(&[1]));
+    let demands = [FileDemands {
+        file: FileId(1),
+        demands: demand.iter().map(|&(key, flags)| SlotDemand { key, flags }).collect(),
+    }];
+    let inp = LayoutInput { demands: &demands, ..input(&changes) };
+    let stored = StoredLayout::new(&s0.mem);
+    let d = layout(&stored, &inp, &s0.world.target)?;
+    let holes = d.holes_of(&stored, got).unwrap();
+    Ok((d, holes))
+}
+
 fn slots_hop(
     machine: Machine,
     slots: &[StoredSlot],
     key_refs: &[StoredKeyRef],
     demand: &[(mortar_core::id::SymKey, DemandFlags)],
 ) -> Result<LayoutDelta, IncrReason> {
-    let mut s0 = first(machine, &two_text_files());
-    s0.mem.slots = slots.to_vec();
-    s0.mem.key_refs = key_refs.to_vec();
-    let mut files = s0.files();
-    files[0][0].size = 60;
-    let (changes, _) = changes_of(&s0, &Edit::new(files).changed(&[1]));
-    let demands = [FileDemands {
-        file: FileId(1),
-        demands: demand.iter().map(|&(key, flags)| SlotDemand { key, flags }).collect(),
-    }];
-    let inp = LayoutInput { demands: &demands, ..input(&changes) };
-    layout(&StoredLayout::new(&s0.mem), &inp, &s0.world.target)
+    let dead: Vec<(SlotKind, u32)> =
+        slots.iter().filter(|s| s.refs == 0).map(|s| (s.kind, s.index)).collect();
+    slots_run(machine, slots, key_refs, &dead, false, demand).map(|(d, _)| d)
 }
 
 // spec: incr.md IN-72 item 7 (two IRELATIVE slots added by one update: in
@@ -1422,43 +1563,171 @@ fn two_ifuncs_added_irelative_order() {
 }
 
 // spec: incr.md IN-72 item 7 (a slot whose `refs` falls to 0 is retired:
-// `slots_dead`, written 0, S-113; `refs` counts FILES, WP-239 S4-4)
+// `slots_dead`, written 0, S-113, its words a `DeadSlot` hole; `refs`
+// counts FILES, WP-239 S4-4; a count that stays above 0 is
+// `slots_recounted`, a dead slot demanded again `slots_revived` and its
+// hole gone: seam 6, WP-242 B and E, built by WP-245)
 #[test]
 fn item7_got_retired_and_counted() {
     const GOT: DemandFlags = DemandFlags::GOT;
     const IE: DemandFlags = DemandFlags::GOT_TPREL;
     for m in [Machine::X86_64, Machine::AArch64] {
-        // File 1 alone needed GOT[0] (key 3): retired.
+        let hole = |slots: &[StoredSlot], kind, index| Hole {
+            chunk: ChunkId(0),
+            offset: got_at(m, slots, kind, index).0,
+            size: 8 * slot_words(kind),
+            kind: HoleKind::DeadSlot,
+        };
+        let dead_holes = |h: &[Hole]| {
+            h.iter()
+                .filter(|h| h.kind == HoleKind::DeadSlot)
+                .map(|h| Hole { chunk: ChunkId(0), ..*h })
+                .collect::<Vec<_>>()
+        };
+        // File 1 alone needed GOT[0] (key 3): retired, its word a hole.
         let stored = [slot(SlotKind::Got, gkey(3), 0, 1), slot(SlotKind::Got, gkey(4), 1, 1)];
         let refs = [key_ref(3, 1, GOT), key_ref(4, 2, GOT)];
-        let d = slots_hop(m, &stored, &refs, &[]).unwrap();
+        let (d, h) = slots_run(m, &stored, &refs, &[], false, &[]).unwrap();
         assert_eq!(d.slots_dead, vec![slot(SlotKind::Got, gkey(3), 0, 0)]);
-        assert!(d.slots_appended.is_empty());
+        assert!(d.slots_appended.is_empty() && d.slots_recounted.is_empty());
+        assert_eq!(dead_holes(&h), vec![hole(&stored, SlotKind::Got, 0)]);
         // Unchanged demand: nothing.
         let d = slots_hop(m, &stored, &refs, &[(gkey(3), GOT)]).unwrap();
         assert!(d.slots_dead.is_empty() && d.slots_appended.is_empty(), "{d:?}");
-        // GOT|GOT_TPREL in one row, once per file per kind: both retired.
+        assert!(d.slots_recounted.is_empty() && d.slots_revived.is_empty(), "{d:?}");
+        // GOT|GOT_TPREL in one row, once per file per kind: both retired,
+        // each region's word.
         let stored = [slot(SlotKind::Got, gkey(3), 0, 1), slot(SlotKind::TlsIe, gkey(3), 0, 1)];
-        let d = slots_hop(m, &stored, &[key_ref(3, 1, GOT.union(IE))], &[]).unwrap();
+        let (d, h) =
+            slots_run(m, &stored, &[key_ref(3, 1, GOT.union(IE))], &[], false, &[]).unwrap();
         assert_eq!(
             d.slots_dead,
             vec![slot(SlotKind::Got, gkey(3), 0, 0), slot(SlotKind::TlsIe, gkey(3), 0, 0)]
         );
-        // Shared by both files (refs 2): file 1 drops it, refs 1. No
-        // field of `LayoutDelta` carries a live slot's count (finding B).
+        let want = vec![hole(&stored, SlotKind::Got, 0), hole(&stored, SlotKind::TlsIe, 0)];
+        assert_eq!(dead_holes(&h), want);
+        // A TLS GD pair: two words.
+        let gd = [slot(SlotKind::Got, gkey(4), 0, 1), slot(SlotKind::TlsGd, gkey(3), 0, 1)];
+        let gdr = [key_ref(3, 1, DemandFlags::TLS_GD), key_ref(4, 2, GOT)];
+        let (d, h) = slots_run(m, &gd, &gdr, &[], false, &[]).unwrap();
+        assert_eq!(d.slots_dead, vec![slot(SlotKind::TlsGd, gkey(3), 0, 0)]);
+        assert_eq!(dead_holes(&h), vec![hole(&gd, SlotKind::TlsGd, 0)]);
+        assert_eq!(h.iter().find(|h| h.kind == HoleKind::DeadSlot).unwrap().size, 16);
+        // Shared by both files (refs 2): file 1 drops it, refs 1, no bytes.
         let shared = [slot(SlotKind::Got, gkey(3), 0, 2)];
         let both = [key_ref(3, 1, GOT), key_ref(3, 2, GOT)];
-        assert_eq!(slots_hop(m, &shared, &both, &[]).unwrap_err(), not_implemented());
-        // Drawn in on a live slot: refs 2, the same.
+        let (d, h) = slots_run(m, &shared, &both, &[], false, &[]).unwrap();
+        assert_eq!(d.slots_recounted, vec![slot(SlotKind::Got, gkey(3), 0, 1)]);
+        assert!(d.slots_dead.is_empty() && d.slots_revived.is_empty(), "{d:?}");
+        assert!(dead_holes(&h).is_empty());
+        // Drawn in on a live slot: refs 2.
         let one = [slot(SlotKind::Got, gkey(3), 0, 1)];
-        let e = slots_hop(m, &one, &[key_ref(3, 2, GOT)], &[(gkey(3), GOT)]).unwrap_err();
+        let d = slots_hop(m, &one, &[key_ref(3, 2, GOT)], &[(gkey(3), GOT)]).unwrap();
+        assert_eq!(d.slots_recounted, vec![slot(SlotKind::Got, gkey(3), 0, 2)]);
+        // A dead slot revived in place: its hole gone.
+        let dead = [slot(SlotKind::Got, gkey(4), 0, 1), slot(SlotKind::Got, gkey(3), 1, 0)];
+        let dr = [key_ref(4, 2, GOT)];
+        let (d, h) =
+            slots_run(m, &dead, &dr, &[(SlotKind::Got, 1)], false, &[(gkey(3), GOT)]).unwrap();
+        assert_eq!(d.slots_revived, vec![slot(SlotKind::Got, gkey(3), 1, 1)]);
+        assert!(dead_holes(&h).is_empty(), "{h:?}");
+        // The inverse of the retire (the same slot, from the retired
+        // state): the hole the retire made is the one the revival removes.
+        let (_, h0) = slots_run(m, &dead, &dr, &[(SlotKind::Got, 1)], false, &[]).unwrap();
+        assert_eq!(dead_holes(&h0), vec![hole(&dead, SlotKind::Got, 1)]);
+        // A dead slot with no hole stored: corrupt.
+        let e = slots_run(m, &dead, &dr, &[], false, &[(gkey(3), GOT)]).unwrap_err();
+        assert_eq!(e.name(), "state-corrupt", "{e:?}");
+        // In an output with `.dynamic` (a PIE or a shared object) the
+        // retired slot may own a dynamic relocation (RELATIVE, GLOB_DAT,
+        // TPOFF, DTPMOD): refused by name before any byte (v1).
+        let stored = [slot(SlotKind::Got, gkey(3), 0, 1), slot(SlotKind::Got, gkey(4), 1, 1)];
+        let refs = [key_ref(3, 1, GOT), key_ref(4, 2, GOT)];
+        let e = slots_run(m, &stored, &refs, &[], true, &[]).unwrap_err();
         assert_eq!(e, not_implemented());
-        // A dead slot revived in place: the same.
-        let dead = [slot(SlotKind::Got, gkey(3), 0, 0)];
-        assert_eq!(slots_hop(m, &dead, &[], &[(gkey(3), GOT)]).unwrap_err(), not_implemented());
+        // A recount there needs no byte: accepted.
+        let d = slots_run(m, &shared, &both, &[], true, &[]).unwrap().0;
+        assert_eq!(d.slots_recounted, vec![slot(SlotKind::Got, gkey(3), 0, 1)]);
         // A stored demand with no slot: corrupt.
         let e = slots_hop(m, &[], &[key_ref(3, 1, GOT)], &[]).unwrap_err();
         assert_eq!(e.name(), "state-corrupt", "{e:?}");
+    }
+}
+
+// spec: incr.md IN-72 item 7, model.md §4.3 (Seam 7a, WP-245: a retired
+// slot keeps its row and its key in the positional list; the update's
+// layout passes `Layout::validate` with `CheckContext::retired` holding
+// every `SLOTS` row at refs 0, and fails without it; a LATER hop that
+// does not touch the slot keeps its `DeadSlot` hole (the stored `HOLES`
+// row, not that hop's `slots_dead`) and still validates; a revival
+// removes both)
+#[test]
+fn item7_retired_slot_validates_over_hops() {
+    use mortar_core::demands::Demands;
+    use mortar_core::layout::Slots;
+    const GOT: DemandFlags = DemandFlags::GOT;
+    for m in [Machine::X86_64, Machine::AArch64] {
+        let stored = [slot(SlotKind::Got, gkey(3), 0, 1), slot(SlotKind::Got, gkey(4), 1, 1)];
+        let refs = [key_ref(3, 1, GOT), key_ref(4, 2, GOT)];
+        let (mut st, got) = slots_state(m, &stored, &refs, &[], false);
+        // The layout's slot lists from `SLOTS` (positional), its demands
+        // from `KEY_REFS`, `retired` from the rows at 0.
+        let validate = |st: &State, retired_given: bool| {
+            let mut rows = st.mem.slots.clone();
+            rows.sort_by_key(|r| (r.kind, r.index));
+            let list: Box<[mortar_core::id::SymKey]> =
+                rows.iter().filter(|r| r.kind == SlotKind::Got).map(|r| r.key).collect();
+            let mut demands = Demands::empty(8);
+            for r in &st.mem.key_refs {
+                demands.global[r.key] |= r.demand;
+            }
+            let retired: Vec<(SlotKind, u32)> = if retired_given {
+                rows.iter().filter(|r| r.refs == 0).map(|r| (r.kind, r.index)).collect()
+            } else {
+                Vec::new()
+            };
+            let slots = Slots { got: list, ..Slots::default() };
+            st.world.check_slots(&st.assignment, &st.placed, slots, &demands, &retired)
+        };
+        validate(&st, true).unwrap();
+        // Applied as U-2 would: the rows of the four lists, file 1's
+        // `KEY_REFS` from its new demand, the `.got` chunk's holes.
+        let apply = |st: &mut State, d: &LayoutDelta, h: Vec<Hole>, demand: &[u32]| {
+            let mem = &mut st.mem;
+            for r in d.slots_dead.iter().chain(&d.slots_revived).chain(&d.slots_recounted) {
+                let row = mem.slots.iter_mut().find(|x| (x.kind, x.index) == (r.kind, r.index));
+                *row.unwrap() = *r;
+            }
+            mem.key_refs.retain(|r| r.file != FileId(1));
+            mem.key_refs.extend(demand.iter().map(|&k| key_ref(k, 1, GOT)));
+            mem.key_refs.sort();
+            mem.holes.retain(|x| x.chunk != got);
+            mem.holes.extend(h);
+            mem.holes.sort_by_key(|x| (x.chunk, x.offset));
+        };
+        let dead_of = |h: &[Hole]| h.iter().filter(|x| x.kind == HoleKind::DeadSlot).count();
+        // Hop 1: file 1 drops key 3: retired.
+        let (d1, h1) = slots_update(&st, got, &[]).unwrap();
+        assert_eq!(d1.slots_dead, vec![slot(SlotKind::Got, gkey(3), 0, 0)]);
+        assert_eq!(dead_of(&h1), 1);
+        apply(&mut st, &d1, h1.clone(), &[]);
+        validate(&st, true).unwrap();
+        let v = validate(&st, false).unwrap_err();
+        assert!(v.what.contains("got slot without a demand"), "{v:?}");
+        // Hop 2: file 1 edited again, no slot change: no list names the
+        // retired row, its hole is the stored one, and it validates.
+        let (d2, h2) = slots_update(&st, got, &[]).unwrap();
+        assert!(d2.slots_dead.is_empty() && d2.slots_revived.is_empty(), "{d2:?}");
+        assert_eq!(h2, h1, "the earlier hop's DeadSlot hole kept");
+        apply(&mut st, &d2, h2, &[]);
+        validate(&st, true).unwrap();
+        // Hop 3: key 3 demanded again: revived at index 0, no hole.
+        let (d3, h3) = slots_update(&st, got, &[(gkey(3), GOT)]).unwrap();
+        assert_eq!(d3.slots_revived, vec![slot(SlotKind::Got, gkey(3), 0, 1)]);
+        assert_eq!(dead_of(&h3), 0);
+        apply(&mut st, &d3, h3, &[3]);
+        validate(&st, true).unwrap();
+        validate(&st, false).unwrap();
     }
 }
 
@@ -1477,8 +1746,11 @@ fn item7_local_slots_belong_to_their_file() {
         let stored =
             [slot(SlotKind::Got, local(1, 7), 0, 1), slot(SlotKind::Got, local(2, 7), 1, 1)];
         // File 1 changed, no local demand now: its slot dies, file 2's stays.
-        let d = slots_hop(m, &stored, &[], &[]).unwrap();
+        let (d, h) = slots_run(m, &stored, &[], &[], false, &[]).unwrap();
         assert_eq!(d.slots_dead, vec![slot(SlotKind::Got, local(1, 7), 0, 0)]);
+        let dead: Vec<_> = h.iter().filter(|h| h.kind == HoleKind::DeadSlot).collect();
+        assert_eq!(dead.len(), 1);
+        assert_eq!(dead[0].offset, got_at(m, &stored, SlotKind::Got, 0).0);
         // The same local index demanded again is a new slot (no identity
         // across versions): appended, past capacity.
         let e = slots_hop(m, &stored, &[], &[(local(1, 7), GOT)]).unwrap_err();
@@ -1489,11 +1761,10 @@ fn item7_local_slots_belong_to_their_file() {
     }
 }
 
-// ---- item 5: refused wholesale; items 6, 7 built (WP-242) -------------------
+// ---- items 5, 6, 7 at their edges (WP-242, WP-243, joined by WP-245) -------
 
-// spec: incr.md IN-72 items 5, 6, 7 (v1 as the supervisor ruled on WP-216's
-// seam 4: any `.eh_frame` record of a file of the update, new or old, is
-// `update-not-implemented (layout)`; items 6 and 7 are WP-242's)
+// spec: incr.md IN-72 items 5, 6, 7 (item 5 is WP-243's, items 6 and 7
+// WP-242's; what each still refuses at the edge of its input)
 #[test]
 fn items_5_6_7_refused_wholesale() {
     let s0 = first(Machine::X86_64, &two_text_files());
@@ -1530,7 +1801,10 @@ fn items_5_6_7_refused_wholesale() {
         }],
     }];
     let with = |i: LayoutInput<'_>| run(&s0.mem, &i).err();
-    assert_eq!(with(LayoutInput { eh: &eh, ..input(&changes) }), Some(not_implemented()));
+    // Item 5 (WP-243): records with no `.eh_frame` chunk in the stored
+    // link.
+    let no_eh = IncrReason::NewOutputSection(".eh_frame".into());
+    assert_eq!(with(LayoutInput { eh: &eh, ..input(&changes) }), Some(no_eh));
     assert_eq!(with(LayoutInput { pieces: &pieces, ..input(&changes) }), Some(not_implemented()));
     // Item 7 is built (WP-242): a new slot is past its region's capacity.
     let e = with(LayoutInput { demands: &demands, ..input(&changes) }).unwrap();
@@ -1544,7 +1818,8 @@ fn items_5_6_7_refused_wholesale() {
         f(&mut m);
         run(&m, &input(&changes)).err()
     };
-    let r = StoredEhRange { offset: 0, capacity: 40, records: 1 };
+    // A range and no `EhFile` for it (WP-243).
+    let r = StoredEhRange { offset: 0, capacity: 40, records: 1, fdes: 0 };
     assert_eq!(old(&|m| m.eh_ranges.push((f1, r))), Some(not_implemented()));
     let fu = StoredFragUse { file: f1, out: OutSecId(0), class: 0, hash: [1; 16] };
     // Item 6 is built (WP-242): a use with no `FRAGS` row is corrupt.
@@ -1849,6 +2124,7 @@ fn mfirst_on(machine: Machine, model: &[MFile], absent: &[u32]) -> MState {
             class: key.1,
             hash: key.2,
             offset: off_of[k],
+            size: p.size as u32,
             refs: refs[&key],
         });
     }
@@ -2244,15 +2520,33 @@ fn item6_strings() {
     // Appended.
     let mut a1 = a.clone();
     a1.strs.push((2, 3));
-    let (s1, d) = mhop(&s0, &[a1, b.clone()], &[1]).unwrap();
+    let (s1, d) = mhop(&s0, &[a1.clone(), b.clone()], &[1]).unwrap();
     assert_eq!(d.frags.len(), 1);
     assert_eq!(d.frags[0].refs, 1);
-    // Falls to 0: refused.
+    // Falls to 0: its `DeadFragment` hole of the stored size (seam 6's
+    // `StoredFrag.size`, WP-245), and back again: the same offset.
     let mut a2 = a.clone();
     a2.strs.clear();
     let mut b2 = b.clone();
     b2.strs.clear();
-    assert_eq!(mhop(&s1, &[a2, b2], &[1, 2]).err(), Some(not_implemented()));
+    let (s2, d2) = mhop(&s1, &[a2, b2], &[1, 2]).unwrap();
+    let dead = |s: &MState| {
+        s.mem.holes.iter().filter(|h| h.kind == HoleKind::DeadFragment).copied().collect::<Vec<_>>()
+    };
+    let h = dead(&s2);
+    assert_eq!(h.len(), 2, "both strings dead: {h:?}");
+    assert!(d2.frags.iter().all(|f| f.refs == 0));
+    for f in &d2.frags {
+        assert!(h.iter().any(|h| h.offset == f.offset && h.size == u64::from(f.size)), "{f:?}");
+    }
+    let (s3, d3) = mhop(&s2, &[a1, b.clone()], &[1, 2]).unwrap();
+    assert!(dead(&s3).is_empty(), "revived: {:?}", dead(&s3));
+    let at = |d: &LayoutDelta| {
+        let mut v: Vec<_> = d.frags.iter().map(|f| (f.hash, f.offset)).collect();
+        v.sort_unstable();
+        v
+    };
+    assert_eq!(at(&d3), at(&d2));
     // A dead string (as a state with its hole would hold it) revives.
     let mut s = mfirst(&[a.clone(), b.clone()], &[]);
     let hash = Pc { strings: true, id: 1, size: 5 }.hash();
@@ -2285,9 +2579,13 @@ fn item6_refusals() {
     assert_eq!(d.growth_steps.len(), 1, "{:?}", d.growth_steps);
     assert_eq!(d.growth_steps[0].out, s0.rodata);
     let mut huge = mfile(&[1]);
+    huge.strs = vec![(1, 1 << 31)];
+    let e = mhop(&s0, &[huge.clone(), mfile(&[2])], &[1]).err().unwrap();
+    assert_eq!(e.name(), "reserve-exhausted", "{e:?}");
+    // A string past `FRAGS.size`'s u32 (seam 6): no row can hold it.
     huge.strs = vec![(1, 1 << 40)];
     let e = mhop(&s0, &[huge, mfile(&[2])], &[1]).err().unwrap();
-    assert_eq!(e.name(), "reserve-exhausted", "{e:?}");
+    assert_eq!(e, not_implemented());
     // A piece of a section the update does not name.
     let e = mhop_with(&s0, &[mfile(&[1]), mfile(&[2])], &[1], &|p| {
         p[0].pieces[0].section = SectionId(10_000);
@@ -2325,4 +2623,332 @@ fn item6_debug_piece_is_debug() {
     let e = layout(&StoredLayout::new(&rows), &inp, &s0.world.target).err();
     assert_eq!(e, Some(IncrReason::UpdateNotImplemented(Some(Unimplemented::Debug))));
     assert_eq!(rows.frags.load(Ordering::Relaxed), 0, "never counted");
+}
+
+// ---- item 5: `.eh_frame` (WP-243) --------------------------------------------
+
+/// A first link of two text files with an `.eh_frame` chunk whose ranges
+/// are file 1's (24 + 40 bytes, capacity 80) and file 2's (40, capacity
+/// 56), as the capture stores them.
+fn first_with_eh(files: &[Vec<Sec>]) -> (State, ChunkId) {
+    first_with_eh_of(files, 140)
+}
+
+/// `first_with_eh` with an `.eh_frame` chunk of `size` bytes, the ranges
+/// unchanged (the rest of the chunk is capacity for a whole rewrite).
+fn first_with_eh_of(files: &[Vec<Sec>], size: u64) -> (State, ChunkId) {
+    use mortar_core::layout::Synth;
+    let mut w = world(Machine::X86_64, files);
+    w.synthetic = vec![mortar_layout::chunk::SynthChunk {
+        synth: Synth { name: b".eh_frame", address_dependent: false },
+        sh_type: SHT_PROGBITS,
+        flags: SHF_ALLOC,
+        align: 3,
+        size,
+    }];
+    let mut s0 = first_with(w, no_anchors(files));
+    let eh = s0
+        .mem
+        .chunks
+        .iter()
+        .position(|c| matches!(c.kind, ChunkKind::Synthetic(s) if s.name == b".eh_frame"))
+        .map(|i| ChunkId(i as u32))
+        .expect("the .eh_frame chunk");
+    s0.mem.eh_ranges = vec![
+        (FileId(1), StoredEhRange { offset: 0, capacity: 80, records: 2, fdes: 1 }),
+        (FileId(2), StoredEhRange { offset: 80, capacity: 56, records: 1, fdes: 0 }),
+    ];
+    let pad = |offset, size| Hole { chunk: eh, offset, size, kind: HoleKind::EhPad };
+    s0.mem.holes.extend([pad(64, 16), pad(120, 16)]);
+    s0.mem.holes.sort_by_key(|h| (h.chunk, h.offset));
+    (s0, eh)
+}
+
+fn eh_file(file: u32, sizes: &[u64]) -> EhFile {
+    EhFile {
+        file: FileId(file),
+        rank: u64::from(file) << 20,
+        records: sizes
+            .iter()
+            .enumerate()
+            .map(|(i, &size)| EhRecordIn {
+                section: SectionId(1),
+                piece: i as u32,
+                size,
+                cie: i == 0,
+            })
+            .collect(),
+    }
+}
+
+// spec: incr.md IN-34a, IN-72 item 5 (WP-243: a changed file's records
+// fit its range: rewritten in place, the rest a pad, through `layout`;
+// IN-18c: one `FILES` eh read per file of the update, one `HOLES` read of
+// the `.eh_frame` chunk)
+#[test]
+fn eh_frame_range_rewritten_in_place() {
+    let (s0, eh) = first_with_eh(&two_text_files());
+    let mut files = s0.files();
+    files[0][0].size = 60;
+    let (changes, _) = changes_of(&s0, &Edit::new(files).changed(&[1]));
+    let t = &s0.world.target;
+    let plain = Counting::new(&s0.mem);
+    let base = layout(&StoredLayout::new(&plain), &input(&changes), t);
+    // A file with a range and no `EhFile`: its records are not known.
+    assert_eq!(base.err(), Some(not_implemented()));
+    let ehf = [eh_file(1, &[24, 40, 8])];
+    let rows = Counting::new(&s0.mem);
+    let inp = LayoutInput { eh: &ehf, ..input(&changes) };
+    let d = layout(&StoredLayout::new(&rows), &inp, t).unwrap();
+    assert_eq!(rows.ranges.load(Ordering::Relaxed), 3, "one FILES eh read for the one file");
+    let without = {
+        let mut m = s0.mem.clone();
+        m.eh_ranges.clear();
+        m.holes.retain(|h| h.chunk != eh);
+        let r = Counting::new(&m);
+        layout(&StoredLayout::new(&r), &input(&changes), t).unwrap();
+        r.holes.load(Ordering::Relaxed)
+    };
+    assert_eq!(rows.holes.load(Ordering::Relaxed), without + 1, "one HOLES read of .eh_frame");
+    let got = d.eh.clone().expect("item 5's layout");
+    assert_eq!(got.chunk, eh);
+    assert!(!got.whole);
+    assert_eq!(got.ranges.len(), 1);
+    assert_eq!(got.ranges[0].file, FileId(1));
+    assert_eq!((got.ranges[0].offset, got.ranges[0].capacity), (0, 80));
+    assert_eq!(got.ranges[0].records, vec![0, 24, 64]);
+    let stored = StoredLayout::new(&s0.mem);
+    let pad = |offset, size| Hole { chunk: eh, offset, size, kind: HoleKind::EhPad };
+    assert_eq!(d.holes_of(&stored, eh).unwrap(), vec![pad(72, 8), pad(120, 16)]);
+    assert!(d.hole_chunks.binary_search(&eh).is_ok());
+    assert!(d.holes.contains(&pad(72, 8)) && !d.holes.contains(&pad(120, 16)));
+    assert_eq!(d.placement.chunks[eh], s0.placed.placement.chunks[eh], "the chunk is unchanged");
+    // The same with the file gone: its range is a hole, merged with the
+    // pad before it.
+    let none = [eh_file(2, &[])];
+    let mut files = s0.files();
+    files[1][0].size = 50;
+    let (changes2, _) = changes_of(&s0, &Edit::new(files).changed(&[2]));
+    let d2 = layout(&stored, &LayoutInput { eh: &none, ..input(&changes2) }, t).unwrap();
+    assert!(d2.eh.as_ref().unwrap().ranges.is_empty());
+    assert_eq!(d2.holes_of(&stored, eh).unwrap(), vec![pad(64, 72)]);
+    // Records past the range: the whole rewrite (`eh_ranges`, seam 6),
+    // here past the chunk's capacity (WP-243 R-3: no growth step).
+    let grown = [eh_file(1, &[24, 40, 40])];
+    let e = layout(&stored, &LayoutInput { eh: &grown, ..inp }, t).unwrap_err();
+    assert_eq!(e.name(), "reserve-exhausted", "{e:?}");
+}
+
+// spec: incr.md IN-34a, IN-72 item 5 (WP-245: the WHOLE rewrite of
+// `.eh_frame` through `layout`, from `LayoutRows::eh_ranges` in rank
+// order, equals a fresh layout of the new records: every range laid from
+// 0 with `size + eh_pad(size)`, the moved one with no record list; and
+// `.eh_frame_hdr` sized `12 + 8 × FDEs` from the stored chunk and the
+// files' `fdes`)
+#[test]
+fn eh_frame_whole_rewrite_through_layout() {
+    let (s0, eh) = first_with_eh_of(&two_text_files(), 400);
+    let mut files = s0.files();
+    files[0][0].size = 60;
+    let (changes, _) = changes_of(&s0, &Edit::new(files).changed(&[1]));
+    let t = &s0.world.target;
+    let stored = StoredLayout::new(&s0.mem);
+    let grown = [eh_file(1, &[24, 40, 40])];
+    let d = layout(&stored, &LayoutInput { eh: &grown, ..input(&changes) }, t).unwrap();
+    let got = d.eh.clone().expect("item 5's layout");
+    assert!(got.whole);
+    // Fresh: file 1 (104 bytes) then file 2 (40), capacities 120 and 56.
+    let cap = |n: u64| n + Slack::INCREMENTAL.eh_pad(n);
+    assert_eq!((cap(104), cap(40)), (120, 56));
+    let r: Vec<(FileId, u64, u64, usize)> =
+        got.ranges.iter().map(|r| (r.file, r.offset, r.capacity, r.records.len())).collect();
+    assert_eq!(r, [(FileId(1), 0, 120, 3), (FileId(2), 120, 56, 0)]);
+    assert_eq!(got.ranges[0].records, vec![0, 24, 64]);
+    let pad = |offset, size| Hole { chunk: eh, offset, size, kind: HoleKind::EhPad };
+    assert_eq!(d.holes_of(&stored, eh).unwrap(), vec![pad(104, 16), pad(160, 16)]);
+    assert_eq!(d.placement.chunks[eh].size, 120 + 56 + 4);
+    // By CURRENT rank, not by `FILES` row: file 2 ranked before file 1.
+    let mut m = s0.mem.clone();
+    m.ranks = vec![(FileId(2), 1 << 19)];
+    let d =
+        layout(&StoredLayout::new(&m), &LayoutInput { eh: &grown, ..input(&changes) }, t).unwrap();
+    let r: Vec<(FileId, u64)> = d.eh.unwrap().ranges.iter().map(|r| (r.file, r.offset)).collect();
+    assert_eq!(r, [(FileId(2), 0), (FileId(1), 56)]);
+}
+
+// spec: synth.md S-57, incr.md IN-34a (WP-245: `.eh_frame_hdr` is `12 +
+// 8 × FDEs`: the stored chunk's count, minus the changed file's stored
+// `fdes`, plus its new FDEs; past the chunk's capacity
+// `reserve-exhausted`, no FDE left `new-output-section`)
+#[test]
+fn eh_frame_hdr_sized_from_fdes() {
+    use mortar_core::layout::Synth;
+    let files = two_text_files();
+    let mut w = world(Machine::X86_64, &files);
+    let sc = |name: &'static [u8], size| mortar_layout::chunk::SynthChunk {
+        synth: Synth { name, address_dependent: false },
+        sh_type: SHT_PROGBITS,
+        flags: SHF_ALLOC,
+        align: 3,
+        size,
+    };
+    // Files 1 and 2 hold 2 and 0 FDEs: 12 + 8 × 2.
+    w.synthetic = vec![sc(b".eh_frame", 140), sc(b".eh_frame_hdr", 28)];
+    let mut s0 = first_with(w, no_anchors(&files));
+    let find = |m: &MemoryLayout, n: &[u8]| {
+        m.chunks
+            .iter()
+            .position(|c| matches!(c.kind, ChunkKind::Synthetic(s) if s.name == n))
+            .map(|i| ChunkId(i as u32))
+            .unwrap()
+    };
+    let (eh, hdr) = (find(&s0.mem, b".eh_frame"), find(&s0.mem, b".eh_frame_hdr"));
+    // Its capacity (the full link's tail) holds no third FDE.
+    let cap = s0.mem.chunks[hdr.0 as usize].capacity;
+    assert!((28..36).contains(&cap), "{cap}");
+    s0.mem.eh_ranges = vec![
+        (FileId(1), StoredEhRange { offset: 0, capacity: 80, records: 3, fdes: 2 }),
+        (FileId(2), StoredEhRange { offset: 80, capacity: 56, records: 1, fdes: 0 }),
+    ];
+    let pad = |offset, size| Hole { chunk: eh, offset, size, kind: HoleKind::EhPad };
+    s0.mem.holes.extend([pad(72, 8), pad(120, 16)]);
+    s0.mem.holes.sort_by_key(|h| (h.chunk, h.offset));
+    let mut ed = s0.files();
+    ed[0][0].size = 60;
+    let (changes, _) = changes_of(&s0, &Edit::new(ed).changed(&[1]));
+    let t = &s0.world.target;
+    let run = |m: &MemoryLayout, sizes: &[u64]| {
+        let f = [eh_file(1, sizes)];
+        layout(&StoredLayout::new(m), &LayoutInput { eh: &f, ..input(&changes) }, t)
+    };
+    // The same FDE count: the size is kept.
+    let d = run(&s0.mem, &[24, 20, 28]).unwrap();
+    assert_eq!(d.placement.chunks[hdr].size, 28);
+    // One FDE fewer: 12 + 8.
+    let d = run(&s0.mem, &[24, 40]).unwrap();
+    assert_eq!(d.placement.chunks[hdr].size, 20);
+    // The inverse, from that update's rows (its chunks, segments and
+    // file 1's range): back to 28, inside the capacity.
+    let mut m1 = s0.mem.clone();
+    m1.chunks = d.placement.chunks.as_slice().to_vec();
+    m1.segments = d.placement.segments.as_slice().to_vec();
+    m1.defined = d.placement.defined.to_vec();
+    m1.eh_ranges[0].1 = StoredEhRange { offset: 0, capacity: 80, records: 2, fdes: 1 };
+    m1.holes.retain(|h| d.hole_chunks.binary_search(&h.chunk).is_err());
+    let stored = StoredLayout::new(&s0.mem);
+    for &c in &d.hole_chunks {
+        m1.holes.extend(d.holes_of(&stored, c).unwrap());
+    }
+    m1.holes.sort_by_key(|h| (h.chunk, h.offset));
+    let d1 = run(&m1, &[24, 20, 28]).unwrap();
+    assert_eq!(d1.placement.chunks[hdr].size, 28);
+    // Past the stored capacity: one more FDE than the full link had.
+    let e = run(&s0.mem, &[24, 20, 16, 8]).unwrap_err();
+    assert_eq!(e.name(), "reserve-exhausted", "{e:?}");
+    assert!(e.report().contains(".eh_frame_hdr"), "{e:?}");
+    // No FDE left anywhere: no `.eh_frame_hdr` in a full link.
+    let e = run(&s0.mem, &[24]).unwrap_err();
+    assert_eq!(e, IncrReason::NewOutputSection(".eh_frame_hdr left with no FDE".into()));
+}
+
+// spec: incr.md IN-72 item 5 (WP-243: no `.eh_frame` in the update and
+// none stored: nothing read past the `FILES` row, `eh` is `None`)
+#[test]
+fn eh_frame_untouched_is_none() {
+    let (s0, eh) = first_with_eh(&two_text_files());
+    let mut files = s0.files();
+    files[0][0].size = 60;
+    let (changes, _) = changes_of(&s0, &Edit::new(files).changed(&[1]));
+    let mut m = s0.mem.clone();
+    m.eh_ranges.retain(|e| e.0 != FileId(1));
+    let d = layout(&StoredLayout::new(&m), &input(&changes), &s0.world.target).unwrap();
+    assert_eq!(d.eh, None);
+    assert!(d.hole_chunks.binary_search(&eh).is_err());
+}
+
+// ---- chunk-END `DEFINED` rows (WP-245 step 4) --------------------------------
+
+// spec: layout.md §13.1 (`_end`, `_edata`, `etext`: the end of a chunk,
+// `At { chunk, offset: size }`), incr.md IN-71c, IN-70 U7 (WP-242 G,
+// WP-245 step 4: an update that grows a chunk past its stored size, by
+// an overflow region at its tail, moves every `DEFINED` row at that
+// chunk's old end to its new end, as a full link of the new inputs puts
+// it; U-3's `recompute` compares rows and chunk addresses only, so a row
+// the layout left at the old end would be reported unchanged)
+#[test]
+fn end_rows_follow_a_grown_chunk() {
+    const PROVIDE: mortar_core::resolution::Def =
+        mortar_core::resolution::Def::Internal(mortar_core::resolution::InternalDef::Provide {
+            conditional: false,
+        });
+    let names: [&'static [u8]; 4] = [b"_end", b"_edata", b"etext", b"__bss_start"];
+    let syms = names.map(|n| (n, PROVIDE));
+    for m in [Machine::X86_64, Machine::AArch64] {
+        let v = |bss1: u64, data1: u64| {
+            vec![
+                vec![text(b".text.a", 100), data(b".data", data1), bss(b".bss", bss1)],
+                vec![text(b".text.c", 200), data(b".data", 16), bss(b".bss", 64)],
+            ]
+        };
+        let row = |defined: &[Defined], k: usize| {
+            *defined.iter().find(|d| d.symbol == mortar_core::id::SymbolId(k as u32)).unwrap()
+        };
+        let at = |d: Defined| match d.value {
+            mortar_core::layout::DefValue::At { chunk, offset } => (chunk, offset),
+            mortar_core::layout::DefValue::Absolute(_) => panic!("{d:?}"),
+        };
+        let mut w0 = World::new(m, &v(64, 16), &syms);
+        w0.options.slack = Slack::INCREMENTAL;
+        let s0 = first_with(w0, no_anchors(&v(64, 16)));
+        // The rule in every full link: an END row is its chunk's size.
+        for (k, name) in names.iter().enumerate().take(3) {
+            let (c, o) = at(row(&s0.mem.defined, k));
+            assert_eq!(o, s0.mem.chunks[c.0 as usize].size, "{m:?} {}", text_of(name));
+        }
+        // File 1's `.bss` (64 -> 64 KiB) or `.data` (16 -> 1 KiB) grows
+        // past its region: an overflow region at the tail of the last
+        // `.bss` (`_end`) or `.data` (`_edata`) chunk. (`.text`'s tail is
+        // a patch island here: `reserve-exhausted`, WP-216 F-3.)
+        for (bss1, data1, moved) in [(1 << 16, 16, 0), (64, 1024, 1)] {
+            let edit = Edit::new(v(bss1, data1)).changed(&[1]);
+            let (changes, _) = changes_of(&s0, &edit);
+            let stored = StoredLayout::new(&s0.mem);
+            let d = layout(&stored, &input(&changes), &s0.world.target).unwrap();
+            let (c, o) = at(row(&d.placement.defined, moved));
+            let old = s0.mem.chunks[c.0 as usize].size;
+            let new = d.placement.chunks[c].size;
+            assert!(new > old, "{m:?}: the chunk grew ({old} -> {new})");
+            assert_eq!(o, new, "{m:?} {}: at the grown chunk's end", text_of(names[moved]));
+            // The full link of the new inputs: the same rule.
+            let mut w1 = World::new(m, &v(bss1, data1), &syms);
+            w1.options.slack = Slack::INCREMENTAL;
+            let s1 = first_with(w1, no_anchors(&v(bss1, data1)));
+            let (c1, o1) = at(row(&s1.mem.defined, moved));
+            assert_eq!(o1, s1.mem.chunks[c1.0 as usize].size);
+            // Every other row: unchanged or following its chunk.
+            for (k, name) in names.iter().enumerate() {
+                let (c, o) = at(row(&d.placement.defined, k));
+                let (c0, o0) = at(row(&s0.mem.defined, k));
+                assert_eq!(c, c0);
+                let end0 = s0.mem.chunks[c0.0 as usize].size;
+                if o0 == end0 && end0 != d.placement.chunks[c].size {
+                    assert_eq!(o, d.placement.chunks[c].size, "{}", text_of(name));
+                } else {
+                    assert_eq!(o, o0, "{}", text_of(name));
+                }
+            }
+            // A row past the old end (a `--defsym x=_end+8`): no rule
+            // places it, refused by name.
+            let mut m1 = s0.mem.clone();
+            let (c, o) = at(row(&m1.defined, moved));
+            let past = mortar_core::layout::DefValue::At { chunk: c, offset: o + 8 };
+            m1.defined.iter_mut().find(|d| d.symbol.0 == 3).unwrap().value = past;
+            let e = layout(&StoredLayout::new(&m1), &input(&changes), &s0.world.target);
+            assert_eq!(e.err(), Some(not_implemented()), "{m:?}");
+        }
+    }
+}
+
+fn text_of(b: &[u8]) -> String {
+    String::from_utf8_lossy(b).into_owned()
 }
