@@ -410,7 +410,7 @@ pub(crate) fn run_engine(
         if only.is_none()
             && let Some(o) = opts::of(map, caller.as_deref())
         {
-            engine.findings.extend(fate::check(objs, map, &o, engine.exports.as_ref()));
+            engine.findings.extend(fate::check(image, objs, map, &o, engine.exports.as_ref()));
         }
         // M6, M7 (§3.3): the allocation records, in every mortar map.
         engine.findings.extend(maprec::check(image, objs, map, &engine.made_local.keys));

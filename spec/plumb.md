@@ -593,6 +593,60 @@ input section:
     non-alloc debug section (GNU ld's debug names, `spec/resolve.md` §6.3)
     under `-S`/`-s`; `.debug_gnu_pubnames`/`.debug_gnu_pubtypes` under
     `--gdb-index` without `-S`/`-s` (`spec/synth.md` S-G6);
+  - **the GNU name index in incremental mode (WP-251; `spec/incr.md`
+    IN-55 option (A), built by WP-229).** In an *incremental-mode output*
+    (below), a non-allocated input section named `.debug_gnu_pubnames` or
+    `.debug_gnu_pubtypes`, not a member of a COMDAT copy that is not
+    kept, has a `discard ... unspecified` record (I-78's line, as under
+    `-S`) and is not in the output: that is its reason. Without the
+    record (no record at all) it is M10 as any section. Both directions
+    are judged: in an incremental-mode output, such a set *placed*
+    (`nplace`, `merged` or `place`) is M10 at the record, unless `-S`/`-s`
+    is on the line (the linker forgot the rule: an update would find a
+    dead unit by name, IN-55); and a non-allocated output section of one
+    of the two names with bytes, when no record places a set, is M10 once
+    per output section (a `discard` record beside the bytes). In a
+    plain output (no `--incremental`, or one IN-12 makes plain) a set
+    left out has no row but `-S`/`-s` and `--gdb-index`'s, as before. An
+    allocated section of either name is not debug information
+    (`spec/resolve.md` §6.3): placed is right, left out is M10. Any other
+    name (`.debug_pubnames`, `.debug_pubtypes`, `.debug_names`, which
+    IN-55 keeps) left out is M10.
+    *Incremental mode* is judged from the map AND the line, both: the map
+    says `incremental` (§3.2), and the line (§3.2a: the caller's, else the
+    `arg` records) asks for it: the last of `--incremental[=MODE]` and
+    `--no-incremental` is `--incremental` (IN-10, IN-11), and none of the
+    options of IN-12 (and IN-12a) that make an `--incremental` link plain
+    and that its words alone show is on it: `-r`, `--emit-relocs`, a
+    `--compress-debug-sections` other than `none`, `--gdb-index`,
+    `--debug-names`, an `--icf` other than `none`, `--sort-common`,
+    `--sort-section`, `--start-lib`, `-shared` (each the last of it and
+    its negation). The output itself cannot show the mode: IN-17 keeps the
+    state in a file beside the output precisely so that an
+    incremental-mode output has the sections a plain one has (measured on
+    WP-229's `inc5`, AArch64, against mortar's plain link of the same
+    inputs: the same section names, types and segments but for the two
+    sets; only sizes and addresses differ, by IN-72's slack, which no rule
+    can tell from a plain layout). The map's word is therefore not taken
+    alone: when the map and the line disagree, either way, the output is
+    judged as a plain one, where a left-out set is M10. The disagreement
+    is not itself a finding: mortar's own replay tests
+    (`crates/mortar/tests/incremental.rs`) write maps that say
+    `incremental` from a line without `--incremental` (WP-251 §0), and a
+    line that asks for the mode beside a map that does not say it is
+    right when a `SECTIONS` script, the output kind (IN-12, IN-12a) or a
+    full link that writes no state (IN-77b) made the link plain, none of
+    which the words show.
+    Tests: `tests/gnuindex.rs` (mortar's `--incremental=full`, plain,
+    `--incremental --sort-common`, COMDAT-group and allocated links, AArch64
+    and x86-64: clean; mutations: a set placed in an incremental-mode
+    output, the sets' bytes beside `discard` records, the sets left out of
+    a plain output, the map's word against the line (no `--incremental`,
+    `--no-incremental`, `--sort-common`, `--gdb-index`,
+    `--compress-debug-sections=zlib`, `-r`: judged plain)
+    and the negations that keep the mode, `.debug_pubnames` left out, the allocated section left out, a
+    set with no record, the group's set given `comdat`) and the link test
+    `split/incr-gnu-index.test`;
   - a member of a COMDAT group that is not its signature's keeper
     (`spec/resolve.md` §6.1: the group of the least `FileId` among the
     live files, the first by section index there; the map lists the files
