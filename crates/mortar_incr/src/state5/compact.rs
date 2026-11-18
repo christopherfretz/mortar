@@ -35,9 +35,11 @@ type Rows<T> = Result<T, IncrReason>;
 /// fit its capacity, else at the table's extent; `FRAGS`: a new row at its
 /// sorted place in the append area). `frags_aux`: `FRAGS`' sorted body.
 ///
+/// Public for the tests (patch-then-read equals rewrite).
+///
 /// # Errors
 /// `state-corrupt`: a row the patch names that `m` does not hold.
-pub(crate) fn apply(m: &mut MemoryState, p: &StatePatch, frags_aux: usize) -> Rows<()> {
+pub fn apply(m: &mut MemoryState, p: &StatePatch, frags_aux: usize) -> Rows<()> {
     macro_rules! whole {
         ($($f:ident),*) => {$(
             if let Some(v) = &p.$f {
@@ -358,9 +360,21 @@ pub fn normalize(m: &MemoryState) -> Result<MemoryState, StateError> {
     // In kind order (the pool's order).
     n.meta = m.meta.clone();
     n.meta.version = intern(m.meta.version)?;
-    // STAT: kept (matched by path); the output's row last.
+    // STAT: matched by path; a gone file's row dropped unless a live
+    // file has its path; the output's row last.
     let out = m.stat.iter().rposition(|r| r.tag == stat_tag::OUTPUT);
+    let mut live_paths = std::collections::HashSet::new();
+    let mut gone_paths = std::collections::HashSet::new();
+    for (f, r) in m.files.iter().enumerate() {
+        if gone(f) { &mut gone_paths } else { &mut live_paths }.insert(s(r.path)?);
+    }
     for (i, r) in m.stat.iter().enumerate() {
+        if r.tag == stat_tag::INPUT {
+            let p = s(r.path)?;
+            if gone_paths.contains(&p) && !live_paths.contains(&p) {
+                continue;
+            }
+        }
         if Some(i) != out {
             n.stat.push(StatRow { path: intern(r.path)?, fstype: intern(r.fstype)?, ..r.clone() });
         }

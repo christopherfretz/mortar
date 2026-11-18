@@ -771,6 +771,32 @@ fn plan_in_place(core: &Arc<Core>, p: &StatePatch) -> Plan<InPlace> {
         let fresh = vec![FileIndexRow::default(); p.files_append.len()];
         ed.put_rows(kind::FILE_INDEX, old_files, &fresh)?;
     }
+    // A new rank (an appended file, a moved one) that ties a live file's:
+    // U-10 found no midpoint between two ranks (IN-18e), the compaction
+    // renumbers them. FILES is read whole only then.
+    let mut ranks: Vec<(u64, u64)> = Vec::new();
+    for (f, row) in &p.files_set {
+        let old: crate::update::rows::FileRow = core.row(kind::FILES, u64::from(f.0))?;
+        if old.rank != row.rank {
+            ranks.push((row.rank, u64::from(f.0)));
+        }
+    }
+    for (i, row) in p.files_append.iter().enumerate() {
+        ranks.push((row.rank, old_files + i as u64));
+    }
+    if !ranks.is_empty() {
+        let mut all: Vec<crate::update::rows::FileRow> = core.all(kind::FILES)?;
+        for (f, row) in &p.files_set {
+            all[f.0 as usize] = row.clone();
+        }
+        all.extend(p.files_append.iter().cloned());
+        let mut live: Vec<u64> =
+            all.iter().filter(|r| r.flags & file_flags::GONE == 0).map(|r| r.rank).collect();
+        live.sort_unstable();
+        if live.windows(2).any(|w| w[0] == w[1]) {
+            return overflow("FILES: no rank midpoint left");
+        }
+    }
     // STAT: rows set, rows appended; the output's row kept (or appended).
     let t = Ed::t(kind::STAT);
     let old_stat = ed.dir[t].rows;

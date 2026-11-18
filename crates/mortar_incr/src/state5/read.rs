@@ -601,6 +601,21 @@ pub fn decode(bytes: &[u8]) -> Result<MemoryState, StateError> {
     decode_core(&core).map_err(to_state_error)
 }
 
+/// The `incr_state` tool's guard (U-2 brief): a state whose "updating"
+/// flag (bit 0 of the flags word, IN-18c) is set is mid-update, refused.
+///
+/// # Errors
+/// `StateError::Corrupt` naming the flag; the header's own errors.
+pub fn refuse_updating(bytes: &[u8]) -> Result<(), StateError> {
+    let h = Header::parse(bytes.get(..HEADER).unwrap_or(bytes))?;
+    if h.flags & 1 != 0 {
+        return Err(StateError::Corrupt(
+            "the state's updating flag is set (an update was interrupted): refused".to_owned(),
+        ));
+    }
+    Ok(())
+}
+
 pub(crate) fn to_state_error(r: IncrReason) -> StateError {
     match r {
         IncrReason::StateVersion(d) => StateError::Version(d),
@@ -611,6 +626,14 @@ pub(crate) fn to_state_error(r: IncrReason) -> StateError {
 /// [`decode`] over an open state.
 #[allow(clippy::too_many_lines)] // one line per table, in kind order
 pub(crate) fn decode_core(c: &Core) -> Rows<MemoryState> {
+    // IN-18f step 1: every block, also those past every table's rows
+    // (the rows' own blocks are verified as they are read below).
+    for (t, e) in c.dir.iter().enumerate() {
+        let used = (e.rows * u64::from(e.width)).div_ceil(BLOCK as u64);
+        for k in used..e.blocks() {
+            c.block(t, k, false)?;
+        }
+    }
     let mut m = MemoryState {
         plan_hash: c.header.plan_hash,
         meta: c.all::<MetaRow>(kind::META)?.pop().ok_or_else(|| corrupt("META"))?,
