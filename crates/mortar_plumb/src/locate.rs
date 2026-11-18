@@ -382,13 +382,16 @@ pub(crate) fn locate<'a>(
         })
         .collect();
     let gnu = map.format == Format::Gnu;
+    // §3.3: a row that its file's same-named, same-sized sections leave
+    // undecided goes to the one copy §5.7a's keeper does not drop.
+    let dropped = crate::fate::comdat_dropped(&out.objs);
     // mold's map gives every non-alloc row the address 0: the offsets are
     // the rows' sizes laid out in order at their alignments (§3.6).
     let mut cursor: Option<HashMap<String, u64>> =
         (map.format == Format::Mold).then(HashMap::default);
     for p in &map.placed {
         let Some(oi) = obj_of.get(p.file as usize).copied().flatten() else { continue };
-        place_one(&mut out, &names[oi], oi, p, image, gnu, cursor.as_mut());
+        place_one(&mut out, &names[oi], oi, p, image, gnu, cursor.as_mut(), &dropped[oi]);
     }
     // mortar's non-alloc records (§3.2): a place in a named output
     // section, or merged into it.
@@ -523,7 +526,7 @@ fn size_may_change(s: &Sec<'_>, machine: Machine) -> bool {
     s.merge() || s.is_eh_frame(machine) || s.name == ".note.gnu.property"
 }
 
-#[allow(clippy::too_many_lines)]
+#[allow(clippy::too_many_lines, clippy::too_many_arguments)]
 fn place_one(
     out: &mut Located<'_>,
     names: &HashMap<String, Vec<usize>>,
@@ -532,6 +535,7 @@ fn place_one(
     image: &Image<'_>,
     gnu: bool,
     cursor: Option<&mut HashMap<String, u64>>,
+    dropped: &[bool],
 ) {
     let obj = &out.objs[oi];
     let machine = obj.elf.machine();
@@ -617,7 +621,30 @@ fn place_one(
         }
         1 => fits[0],
         _ => {
-            if let Some(i) = disambiguate(obj, &fits, p, image) {
+            // A non-alloc row's bytes are in the output section of its
+            // name, at the offset the row gives (mold: the offset the
+            // cursor reaches, §3.6), not at an address of the image.
+            let s0 = &obj.secs[fits[0]];
+            let outb = if s0.alloc() {
+                image.bytes(p.addr, p.size)
+            } else {
+                image.nonalloc_section(&s0.name).and_then(|o| {
+                    let off = match cursor.as_deref() {
+                        Some(c) => c
+                            .get(&s0.name)
+                            .copied()
+                            .unwrap_or(0)
+                            .checked_next_multiple_of(s0.shdr.sh_addralign.max(1))?,
+                        None => p.addr.checked_sub(image.sections[o].shdr.sh_addr)?,
+                    };
+                    image.nonalloc_bytes(
+                        o,
+                        image.sections[o].shdr.sh_addr.wrapping_add(off),
+                        p.size,
+                    )
+                })
+            };
+            if let Some(i) = disambiguate(obj, &fits, outb, dropped) {
                 i
             } else {
                 for &si in &fits {
@@ -652,23 +679,33 @@ fn place_one(
 }
 
 /// Chooses among same-named, same-sized sections of one file (§3.3): the
-/// one whose bytes outside its relocated ranges are the output's at the
-/// record's address; failing that, the first in index order when all of
-/// them are indistinguishable (equal bytes and equal relocation records);
-/// otherwise none.
-fn disambiguate(obj: &Obj<'_>, fits: &[usize], p: &Placed, image: &Image<'_>) -> Option<usize> {
+/// one whose bytes outside its relocated ranges are `outb`, the output's
+/// at the record's place (`None`: not readable); failing that, the one of
+/// those (of all, when the bytes are not readable) that is not in a COMDAT
+/// copy §5.7a's keeper drops (`dropped`, by section index; WP-250: GCC's
+/// `-g3` `.debug_macro` groups differ only in relocated words); failing
+/// that, the first in index order when all of them are indistinguishable
+/// (equal bytes and equal relocation records); otherwise none.
+fn disambiguate(
+    obj: &Obj<'_>,
+    fits: &[usize],
+    outb: Option<&[u8]>,
+    dropped: &[bool],
+) -> Option<usize> {
     let first = &obj.secs[fits[0]];
+    let mut matching: Vec<usize> = fits.to_vec();
     if first.shdr.sh_type != SHT_NOBITS
-        && let Some(outb) = image.bytes(p.addr, p.size)
+        && let Some(outb) = outb
     {
-        let matching: Vec<usize> = fits
-            .iter()
-            .copied()
-            .filter(|&i| equal_outside(&obj.data(i), &covered(obj, i), outb))
-            .collect();
+        matching.retain(|&i| equal_outside(&obj.data(i), &covered(obj, i), outb));
         if let [one] = matching.as_slice() {
             return Some(*one);
         }
+    }
+    let kept: Vec<usize> =
+        matching.iter().copied().filter(|&i| !dropped.get(i).copied().unwrap_or(false)).collect();
+    if let [one] = kept.as_slice() {
+        return Some(*one);
     }
     let recs = |i: usize| obj.secs[i].relocs.and_then(|r| obj.records(r)).unwrap_or_default();
     let r0 = recs(fits[0]);

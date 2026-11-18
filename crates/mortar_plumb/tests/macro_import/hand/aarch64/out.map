@@ -1,0 +1,39 @@
+mortar-map 2
+file 0 k.o
+file 1 d.o
+place 0 18 4000e8 10
+place 0 7 4100f8 c
+nplace 0 11 .debug_macro 0 10
+nplace 0 12 .debug_types 0 10
+nplace 0 13 .debug_macro 10 18
+nplace 0 14 .debug_types 10 10
+nplace 0 15 .debug_macro 28 18
+nplace 0 16 .debug_macro 40 10
+nplace 0 17 .debug_macro 50 10
+nplace 1 17 .debug_macro 60 30
+nplace 1 19 .debug_info 0 c
+nplace 1 21 .debug_line 0 1d
+discard 0 19 gc
+discard 0 20 gc
+discard 1 10 comdat
+discard 1 11 comdat
+discard 1 12 comdat
+discard 1 13 comdat
+discard 1 14 comdat
+discard 1 15 comdat
+discard 1 16 comdat
+chunk synthetic .symtab - 60
+chunk synthetic .strtab - 2e
+chunk synthetic .shstrtab - 64
+chunk synthetic .comment - d
+arg -m
+arg aarch64linux
+arg -static
+arg --gc-sections
+arg --build-id=none
+arg k.o
+arg d.o
+arg -o
+arg out
+arg --mortar-map=out.map
+end

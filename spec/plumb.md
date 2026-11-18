@@ -535,8 +535,17 @@ Each placed record names a section of its file:
   2. has the record's size, except for mergeable sections and
      `.eh_frame`, whose size the linker may change;
   3. otherwise, whose bytes outside its relocated ranges (§6.3) equal the
-     output at the record's address;
-  4. otherwise, the first one, if all the candidates are identical (bytes,
+     output at the record's place (an allocated section's at its address;
+     a non-alloc one's in the file bytes of the output section of its
+     name, at the offset §5.8 gives the row: WP-250, before which the
+     address was read in the image and GCC's `-g3` `.debug_macro`
+     sections of one file fell to M3 and to `section-not-locatable`);
+  4. otherwise, of those (of all of step 2's, when the output's bytes are
+     not readable), the one not in a COMDAT copy §5.7a's keeper drops,
+     in `FileId` order (WP-250: GCC's `-g3` `.debug_macro` groups of one
+     file can be equal outside their relocated words, and only one of
+     them is kept);
+  5. otherwise, the first one, if all the candidates are identical (bytes,
      type and relocation records).
 
   If none of these settles it, the candidates are *ambiguous*: their
@@ -2330,22 +2339,69 @@ the name (a stripped `-S` output) makes the records
 `PREL32`, …) of a non-alloc section whose symbol's section is discarded
 or absent holds the linker's *tombstone*, compared in the field's width:
 
-| referring section | GNU ld | lld, mold | mortar (`spec/image.md` I-47) |
-|---|---|---|---|
-| `.debug_ranges` | 1, or the redirect | 1 | 1 |
-| `.debug_loc` | 0, or the redirect | 1 | 1 |
-| `.debug_rnglists`, `.debug_loclists`, `.debug_addr` | 0, or the redirect | 0 | 0 |
-| `.debug_aranges` | 0, or the redirect | 0 | all ones, and the tuple's length 0 (I-112) |
-| `.debug_frame` | 0, or the redirect | 0 | all ones |
-| other debug names | 0, or the redirect | 0 | all ones (ELFCLASS64), 0 (ELFCLASS32) |
-| `.gcc_except_table` | 0, or the redirect | 0 | 0 |
-| any other name | 0, or the redirect | 0 | R5: mortar refuses the link (I-46) |
+| referring section | GNU ld | lld | mold | mortar (`spec/image.md` I-47, I-47a) |
+|---|---|---|---|---|
+| `.debug_ranges` | 1, or the redirect | 1 | 1 | 1, or the kept copy |
+| `.debug_loc` | 0, or the redirect | 1 | 1 | 1, or the kept copy |
+| `.debug_rnglists`, `.debug_loclists`, `.debug_addr` | 0, or the redirect | 0 | 0, or A | 0, or the kept copy |
+| `.debug_aranges` | 0, or the redirect | 0 | 0, or A | all ones, and the tuple's length 0 (I-112), or the kept copy |
+| `.debug_frame` | 0, or the redirect | 0 | 0, or A | all ones, or the kept copy |
+| other debug names | 0, or the redirect | 0 | 0, or A | all ones (ELFCLASS64), 0 (ELFCLASS32), or the kept copy |
+| `.gcc_except_table` | 0, or the redirect | 0 | 0, or A | 0 |
+| any other name | 0, or the redirect | 0 | 0, or A | R5: mortar refuses the link (I-46) |
 
-- **GNU ld's redirect**: for a dead section of a group (`SHF_GROUP`, a
-  dropped COMDAT copy), the place of a placed group section of the same
-  name and size, plus the symbol's `st_value` and the addend: GNU ld's
-  "kept copy when the sizes are equal". A collected section (no group)
-  has no redirect.
+- **mortar's kept copy** (`spec/image.md` I-47a, WP-250). The record's
+  section has a debug name (I-45), its symbol is a section symbol or an
+  `STB_LOCAL` symbol, and the symbol's section D has no `SHF_ALLOC` and
+  is dead only because it is in a COMDAT copy the verifier's keeper
+  drops: the keeper is §5.7a's (`spec/resolve.md` §6.1, the first copy
+  in the line's order, `FileId` order without a line; the same keeper
+  M10 holds the map to), derived from the inputs, never read from the
+  map. In the keeper's copy of the group (its `SHT_GROUP` section's
+  members) the verifier takes the members with D's name, then of those
+  the ones with D's `sh_size`, and requires exactly one, K, with no
+  `SHF_ALLOC`, in the output; and K and D are placed whole, neither
+  `SHF_MERGE` nor `.eh_frame` (the supervisor's amendment to I-47a,
+  WP-250). K's place is its offset in the output section of its name
+  (§3.3). Then X is K's place + the symbol's `st_value` +
+  A for an absolute operation, that − P for a PC-relative one, decided
+  by §5.2 in the field's width (overflow is R1 as for any target). A
+  field that differs is R1 "a reference into a dropped COMDAT copy of a
+  non-alloc group member does not hold the kept copy's place + st_value
+  + A (spec/image.md I-47a)", with "; it holds a tombstone" when it
+  holds all ones, 0 or 1. Each branch of the condition that fails (no
+  member of D's name; one of another size; more than one of D's name and
+  size; it is `SHF_ALLOC`; K or D is `SHF_MERGE` or `.eh_frame`; it is
+  not in the output, absent or discarded by the map) leaves the column's
+  tombstone, and a field that differs from it is R1 with ";
+  spec/image.md I-47a keeps the tombstone here: <the branch>". K placed
+  in pieces or ambiguous (§3.3) is not judged: `section-not-locatable`.
+  The referring section is binding: only a record of a live non-alloc
+  section with a debug name is redirected. A record of an `SHF_ALLOC`
+  section (`.gcc_except_table`: 0, §5.7b) or of a non-alloc section
+  without a debug name (R5, I-46) into D keeps its column, whatever the
+  field holds. The verifier does not parse DWARF and
+  does not compare D's bytes with K's (I-47a does not either). A
+  verified field counts under `kept-copy` (§7.2).
+- **GNU ld's redirect** (`_bfd_elf_check_kept_section`, measured on
+  WP-249's probe and on GCC 14 `-g3` links, WP-250): for a record whose
+  symbol is a section symbol or `STB_LOCAL` and whose dead target D is
+  in a dropped COMDAT copy (`SHF_GROUP`), the keeper's copy (as above)
+  is searched in group order for its first member whose defined symbols
+  match D's: the same list of (name, `st_info`, `st_other`), sorted by
+  name, not empty (section symbols and the mapping symbols `$d`/`$x`
+  count; the name of the member is not compared). When that member is
+  placed whole with D's `sh_size`, X is its place + `st_value` + A;
+  otherwise the column's 0 or 1. So GNU ld writes a `.debug_types`
+  offset into a `.debug_macro` field when the keeper's copy has no
+  `.debug_macro` (WP-249 §2.1, its case C4): that is GNU's rule and is
+  accepted from GNU's map only. A collected section (no group) has no
+  redirect.
+- **mold's A** (measured, WP-250): mold writes 0 + A for a dead target
+  without `SHF_ALLOC` and 0 for an `SHF_ALLOC` one (1 in `.debug_ranges`
+  and `.debug_loc` either way). It keeps a second copy of GCC's `wm4.*`
+  groups, so its `-g3` imports have live targets and are judged as any
+  record.
 - **Per-linker rules, not anomalies.** Each column is its linker's
   documented convention and is accepted from that linker only (by map
   format); none is a miscompile by the standards' text, since DWARF ≤ 5
@@ -2368,7 +2424,8 @@ or absent holds the linker's *tombstone*, compared in the field's width:
   target from a non-tombstone name in a mortar link, is R5. A value
   other than the column's is R1.
 
-Verified tombstones count under `tombstone` (§7.2).
+Verified tombstones count under `tombstone`, verified kept copies (mortar's
+and GNU ld's redirect) under `kept-copy` (§7.2).
 
 **A target only a shared library defines** (stage 3, WP-104; the
 ruling of the RB-1 defect, `spec/landed/harness/WP-100.md` §5). Nothing
@@ -2460,8 +2517,21 @@ COMDAT `big`'s `.debug_info`, `.debug_aranges`, `.debug_rnglists` and
 mold write 0, and 1 in `.debug_ranges`/`.debug_loc`. No linker changes
 the aranges length.
 
+Measured (WP-250, GCC 14 `-g3`, C and C++, DWARF 4 and 5, AArch64 and
+x86-64, `spec/landed/plumb/WP-250.md`): every `DW_MACRO_import` of a
+dropped `wm4.*` copy meets I-47a's condition; GNU ld's and lld's links
+verify with no finding (GNU on AArch64: A10 only), mold's with its known
+anomalies only, and one word moved by 1 in each is R1.
+
 Tests: `tests/tls.rs s5_8_debug_references_verify_clean`,
-`tests/mutation.rs s9_2j_debug_mutations_are_found`.
+`tests/mutation.rs s9_2j_debug_mutations_are_found`,
+`tests/macro_import.rs` (I-47a: mortar's output patched to the kept
+copy, the tombstone, 0 and off by 4; each branch of the condition by a
+hand-written pair of objects, `SHF_MERGE` members and a `.debug_info`
+member referred to from `.debug_gnu_pubnames` included; referrers
+without a debug name or with `SHF_ALLOC`; the three reference linkers'
+columns on GCC `-g3` links and on WP-249's probe, each with a word
+moved).
 
 ### 5.9 x86-64 rewritings (WP-028c)
 
@@ -4232,7 +4302,9 @@ once:
 
 - **verified**, by how S was found: `direct`, `got-slot`, `piece`,
   `eh-frame` (a pointer field of a matched CIE or FDE, §6.4), `iplt`
-  (an IFUNC reference, §4.8), `tombstone` (§5.8), and for a `-r` output
+  (an IFUNC reference, §4.8), `tombstone` (§5.8), `kept-copy` (a
+  reference into a dropped COMDAT copy that holds the kept copy's
+  place: mortar's I-47a and GNU ld's redirect, §5.8), and for a `-r` output
   `place` and `string` (§14.6);
 - **accepted**, by rewriting (W1 to W13; on x86-64 §5.9's `got-to-lea`,
   `got-to-direct`, `got-to-imm`, `got-to-mov-imm` and the TLS ones), and
@@ -5846,17 +5918,23 @@ Observed (AArch64; GCC 14 and Clang; the corpus's `debug-comdat`,
 `debug-comdat-clang`, `debug-gc` and `debug-zlib`; §5.8):
 
 - **GNU ld** (2.44): a reference from a dropped COMDAT copy is
-  redirected to the kept copy when the two sections have the same name
-  and size (`.debug_info`, `.debug_aranges`, `.debug_line`,
-  `.debug_rnglists`). A reference to a section collected by
+  redirected to the kept copy (`.debug_info`, `.debug_aranges`,
+  `.debug_line`, `.debug_rnglists`; GCC `-g3`'s `DW_MACRO_import`). Its
+  condition, measured on WP-249's probe (WP-250), is not "the same name
+  and size": it is the keeper's first group member whose defined
+  symbols match the dead section's (names, `st_info`, `st_other`), then
+  an equal size; the name is not compared (§5.8). A reference to a section collected by
   `--gc-sections` holds 1 in `.debug_ranges` and 0 in `.debug_loc` and
   elsewhere. `spec/image.md` §15 says GNU ld writes "the redirect or 0"
   in `.debug_ranges`/`.debug_loc`; the experiment (`-gdwarf-4 -O2
   -ffunction-sections`, `--gc-sections`) shows 1 in `.debug_ranges`, so
   the table of §5.8 follows the observation.
 - **lld** and **mold**: 1 in `.debug_ranges` and `.debug_loc`, 0
-  elsewhere. Neither redirects. Neither changes the `.debug_aranges`
-  tuple's length.
+  elsewhere, except that mold writes 0 + A when the dead target has no
+  `SHF_ALLOC` (measured on WP-249's probe, WP-250: `.debug_macro`'s
+  `.Ld + 4` holds 4). Neither redirects; mold keeps both copies of
+  GCC's `wm4.*` groups. Neither changes the `.debug_aranges` tuple's
+  length.
 - **Compressed output** (`--compress-debug-sections=zlib`): all three
   compress the output's debug sections (`SHF_COMPRESSED`, `ELFCOMPRESS_ZLIB`).
   GNU ld's and lld's maps keep the input rows; mold's lists only the

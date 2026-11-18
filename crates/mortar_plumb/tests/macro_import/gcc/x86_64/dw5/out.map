@@ -1,0 +1,118 @@
+mortar-map 2
+file 0 a.o
+file 1 b.o
+file 2 c.o
+place 0 18 401120 43
+place 0 20 402184 0
+place 0 21 402188 0
+place 1 18 401163 f
+place 1 19 402184 4
+place 1 20 402188 0
+place 2 28 401172 f
+place 2 29 402188 0
+place 2 30 402188 0
+nplace 0 22 .debug_info 0 100
+nplace 0 24 .debug_abbrev 0 af
+nplace 0 25 .debug_aranges 0 30
+nplace 0 27 .debug_macro 0 13c
+nplace 0 29 .debug_macro 13c 940
+nplace 0 31 .debug_macro a7c 28
+nplace 0 33 .debug_macro aa4 190
+nplace 0 35 .debug_macro c34 10
+nplace 0 37 .debug_macro c44 199
+nplace 0 39 .debug_macro ddd 16
+nplace 0 41 .debug_macro df3 51
+nplace 0 43 .debug_macro e44 1ca
+nplace 0 45 .debug_macro 100e 82
+nplace 0 47 .debug_macro 1090 34
+nplace 0 49 .debug_macro 10c4 58
+nplace 0 51 .debug_macro 111c 67
+nplace 0 53 .debug_macro 1183 100
+nplace 0 55 .debug_macro 1283 10
+nplace 0 57 .debug_macro 1293 16
+nplace 0 59 .debug_macro 12a9 1b1
+nplace 0 61 .debug_macro 145a 10
+nplace 0 63 .debug_line 0 f2
+merged 0 65 .debug_str
+merged 0 66 .debug_line_str
+merged 0 67 .comment
+nplace 0 69 .debug_frame 0 40
+nplace 1 21 .debug_info 100 ca
+nplace 1 23 .debug_abbrev af 7a
+nplace 1 24 .debug_aranges 30 30
+nplace 1 26 .debug_macro 146a 136
+nplace 1 62 .debug_line f2 cc
+merged 1 64 .debug_str
+merged 1 65 .debug_line_str
+merged 1 66 .comment
+nplace 1 68 .debug_frame 40 40
+nplace 2 31 .debug_info 1ca ac
+nplace 2 33 .debug_abbrev 129 58
+nplace 2 34 .debug_aranges 60 30
+nplace 2 36 .debug_macro 15a0 1c6
+nplace 2 42 .debug_macro 1766 10
+nplace 2 58 .debug_macro 1776 1f
+nplace 2 60 .debug_macro 1795 bd
+nplace 2 62 .debug_macro 1852 1c
+nplace 2 64 .debug_macro 186e 58
+nplace 2 66 .debug_macro 18c6 5e
+nplace 2 68 .debug_macro 1924 28
+nplace 2 70 .debug_macro 194c 76
+nplace 2 72 .debug_macro 19c2 ee
+nplace 2 78 .debug_macro 1ab0 5e
+nplace 2 92 .debug_line 1be fd
+merged 2 94 .debug_str
+merged 2 95 .debug_line_str
+merged 2 96 .comment
+nplace 2 98 .debug_frame 80 40
+discard 1 28 comdat
+discard 1 30 comdat
+discard 1 32 comdat
+discard 1 34 comdat
+discard 1 36 comdat
+discard 1 38 comdat
+discard 1 40 comdat
+discard 1 42 comdat
+discard 1 44 comdat
+discard 1 46 comdat
+discard 1 48 comdat
+discard 1 50 comdat
+discard 1 52 comdat
+discard 1 54 comdat
+discard 1 56 comdat
+discard 1 58 comdat
+discard 1 60 comdat
+discard 2 38 comdat
+discard 2 40 comdat
+discard 2 44 comdat
+discard 2 46 comdat
+discard 2 48 comdat
+discard 2 50 comdat
+discard 2 52 comdat
+discard 2 54 comdat
+discard 2 56 comdat
+discard 2 74 comdat
+discard 2 76 comdat
+discard 2 80 comdat
+discard 2 82 comdat
+discard 2 84 comdat
+discard 2 86 comdat
+discard 2 88 comdat
+discard 2 90 comdat
+chunk synthetic .symtab - c0
+chunk synthetic .strtab - 3c
+chunk synthetic .shstrtab - 9a
+chunk synthetic .comment - d
+arg -m
+arg elf_x86_64
+arg -static
+arg --build-id=none
+arg -e
+arg main
+arg a.o
+arg b.o
+arg c.o
+arg -o
+arg out
+arg --mortar-map=out.map
+end
