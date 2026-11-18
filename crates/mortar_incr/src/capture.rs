@@ -2321,3 +2321,131 @@ fn replay_inner(
     let Map { files, sections, symbols, outsecs, .. } = m;
     Ok((layout, Translation { files, sections, symbols, outsecs, by_identity, frag_rows }))
 }
+
+// ---- WP-225 G-2: the capture's per-file rows, restricted to a list of files --
+
+/// One file's rows as a full link's capture makes them (WP-225 G-2, the
+/// update's U4 producers): the same private makers [`capture`] and the
+/// format-5 rows call, for the files asked only. Ids are the LINK's
+/// (`SectionId`, `SymbolId`); the join translates them to the update's.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct FileRows {
+    pub file: FileId,
+    /// Its first section's id (`Resolution::section_base`): `sections[k]`
+    /// is `SectionId(first_section + k)`.
+    pub first_section: u32,
+    /// Its `SECTIONS` rows, as [`capture`] writes them (placement from
+    /// `layout`; `Str`s in the caller's `strings`).
+    pub sections: Vec<SectionRow>,
+    /// Its symbol table's first non-local entry (`sh_info`; 0 without a
+    /// symbol table).
+    pub first_global: u32,
+    /// `MENTIONS` by position: the `k`-th is entry `first_global + k`
+    /// (`tables::file_mentions`, `symbol` the link's `SymbolId`, `section`
+    /// its `SectionId` or `NONE`). Empty for a file the link did not keep
+    /// (a member not extracted), as in the capture.
+    pub mentions: Vec<crate::format::MentionRow>,
+    /// `(st_value, st_size)` of each mention, position for position.
+    pub values: Vec<(u64, u64)>,
+    /// Its non-local entries whose name holds an `@` (`META.versioned`'s
+    /// count, as the format-5 capture counts it).
+    pub versioned: u32,
+}
+
+/// [`FileRows`] for each of `files`, in that order: O(those files'
+/// sections and symbols), no pass over the link's other files.
+///
+/// Not produced here (they need lines this function may not change, a
+/// finding of WP-225 G-2): `INDEX` (`tables::index_file` is private to
+/// `tables`), and `KEY_REFS`/`COMMONS`/`COPIES`/`GROUPS` (the format-5
+/// capture makes them in a closure inside `rows5`), `demand` and `facts`
+/// (the scan's, whole-link).
+///
+/// # Errors
+/// A file or section without identity, or a symbol table that is not
+/// the one the input phase read.
+pub fn file_rows(
+    link: &Link<'_, '_>,
+    keys: &Keys<'_>,
+    layout: &Layout,
+    strings: &mut Strings,
+    files: &[FileId],
+) -> Result<Vec<FileRows>, String> {
+    use mortar_core::resolution::FileLive;
+    let inputs = link.inputs;
+    let res = link.resolution;
+    let p = &layout.placement;
+    let mut out = Vec::with_capacity(files.len());
+    for &file in files {
+        let f = inputs.files.get(file).ok_or("a file of the list is not the link's")?;
+        let range = res.section_base.get(file).copied().ok_or("a file without sections' base")?;
+        let mut rows = FileRows {
+            file,
+            first_section: range.start.0,
+            sections: Vec::new(),
+            first_global: 0,
+            mentions: Vec::new(),
+            values: Vec::new(),
+            versioned: 0,
+        };
+        // SECTIONS: `capture`'s row per section.
+        for sid in range.start.0..range.end.0 {
+            let id = SectionId(sid);
+            let si = keys.identities.section(res, id).ok_or("a section without identity")?;
+            let (owner, index) = res.sh_index(id).ok_or("a section without index")?;
+            let (anchor_kind, anchor) = anchor_row(strings, si.key.anchor);
+            let mut row = SectionRow {
+                file: owner.0,
+                anchor_kind,
+                anchor,
+                name: strings.add(si.key.name),
+                ordinal: si.ordinal,
+                place_chunk: NONE,
+                ..SectionRow::default()
+            };
+            (row.sh_type, row.sh_flags, row.size, row.align, row.offset) =
+                header_fields(inputs, owner, index);
+            if let Some((chunk, offset)) = p.place.get(id).and_then(|pl| pl.get()) {
+                row.place_chunk = chunk.0;
+                row.place_offset = offset;
+            }
+            rows.sections.push(row);
+        }
+        // MENTIONS, their values, `first_global`, `versioned`: the format-5
+        // capture's per-file reading.
+        if let Reader::Object(object) = f.reader {
+            let bad = || format!("{}: symbol table", String::from_utf8_lossy(f.path));
+            if let Some(table) = object.symbols().map_err(|_| bad())? {
+                let first = table.first_global().0;
+                rows.first_global = first;
+                let globals = table.len().saturating_sub(first) as usize;
+                if inputs.sym_map_of(file).len() < globals {
+                    return Err(format!(
+                        "{}: the symbol table is not the one the input phase read",
+                        String::from_utf8_lossy(f.path)
+                    ));
+                }
+                for k in 0..globals {
+                    let sym = table
+                        .get(mortar_elf::symbol::SymbolIndex(first + k as u32))
+                        .map_err(|_| bad())?;
+                    if table.name(&sym).map_err(|_| bad())?.contains(&b'@') {
+                        rows.versioned += 1;
+                    }
+                }
+                let live = res.file_live.get(file).is_some_and(|l| *l != FileLive::Dead);
+                if live {
+                    rows.mentions = crate::tables::file_mentions(inputs, res, file, &table);
+                    for k in 0..rows.mentions.len() {
+                        let sym = table
+                            .get(mortar_elf::symbol::SymbolIndex(first + k as u32))
+                            .map_err(|_| bad())?;
+                        rows.values.push((sym.st_value, sym.st_size));
+                    }
+                }
+            }
+        }
+        out.push(rows);
+    }
+    Ok(out)
+}

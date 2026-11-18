@@ -2501,3 +2501,74 @@ fn the_small_output_knob_reaches_the_update() {
     assert!(o.success(), "{}", o.stderr_text());
     line_with(&o.stderr_text(), "full (update-not-implemented (resolve))");
 }
+
+// spec: WP-225 G-2 (the update's producers are the capture's own row
+// makers, restricted to a list of files): `capture::file_rows` over every
+// file of a link gives each file's `SECTIONS` rows exactly as the whole
+// capture writes them, and its `MENTIONS` as the capture's (by symbol,
+// the rows a format-4 capture keeps), with one value per mention.
+#[test]
+fn file_rows_are_the_whole_capture_s() {
+    use mortar_incr::capture::{Keys, Link, capture, file_rows};
+    let mut ran = 0;
+    for prog in [Prog::c(), Prog::asm_x86_64()].into_iter().flatten() {
+        ran += 1;
+        let args = prog.args("o", &["--incremental=full"]);
+        let parsed = mortar_cli::parse(&args);
+        assert!(!parsed.failed());
+        let store = mortar_input::store::Store::new(mortar_input::store::StorePolicy::from_env());
+        let diag = mortar_diag::Collector::new(mortar_diag::Policy::default());
+        let env = mortar::front::Env {
+            cwd: &prog.built.dir,
+            pool: mortar_core::par::Pool::new(2),
+            replay: None,
+            slack: true,
+            state5: false,
+        };
+        let f = mortar::front::front(
+            parsed.plan,
+            env,
+            &store,
+            &diag,
+            &mut mortar::timing::Timer::new(false),
+        )
+        .unwrap_or_else(|| panic!("front: {:?}", diag.finish()));
+        let link = Link {
+            inputs: &f.inputs,
+            resolution: &f.resolution,
+            assignment: &f.assignment,
+            split: &f.merge.split,
+        };
+        let keys = Keys::new(&link).unwrap();
+        let mut strings = format::Strings::default();
+        let whole =
+            capture(&link, &keys, &f.layout, &mut strings, &|_| Some([0; 16]), f.arch.get())
+                .unwrap();
+        let all: Vec<mortar_core::FileId> =
+            (0..f.inputs.files.len()).map(|i| mortar_core::FileId(i as u32)).collect();
+        let rows = file_rows(&link, &keys, &f.layout, &mut strings, &all).unwrap();
+        assert_eq!(rows.len(), all.len());
+        let (mut sections, mut mentions) = (0usize, 0usize);
+        for r in &rows {
+            let at = r.first_section as usize;
+            assert_eq!(whole.sections[at..at + r.sections.len()], r.sections[..], "{:?}", r.file);
+            sections += r.sections.len();
+            assert_eq!(r.values.len(), r.mentions.len());
+            let shape = |m: &format::MentionRow| (m.kind, m.bind, m.typ, m.other, m.section);
+            let mut mine: Vec<_> = r.mentions.clone();
+            mine.sort_by_key(|m| m.symbol);
+            mine.dedup_by_key(|m| m.symbol);
+            let mut a: Vec<_> = mine.iter().map(shape).collect();
+            let mut b: Vec<_> =
+                whole.mentions.iter().filter(|m| m.file == r.file.0).map(shape).collect();
+            a.sort_unstable();
+            b.sort_unstable();
+            assert_eq!(a, b, "{:?}'s mentions", r.file);
+            mentions += mine.len();
+        }
+        assert_eq!(sections, whole.sections.len());
+        assert_eq!(mentions, whole.mentions.len());
+        assert!(mentions > 0);
+    }
+    assert!(ran == 2 || !tools_required(), "{ran} of the 2 programs built");
+}
