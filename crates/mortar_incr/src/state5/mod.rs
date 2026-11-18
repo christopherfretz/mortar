@@ -34,7 +34,7 @@ use crate::format::{
 use crate::update::diags::{DiagRow, Subject};
 use crate::update::rows::{
     CloneProbe, CommonRow, EdgeRow, FileIndexRow, FileRow, FileTable, FragRow, GroupRow, HoleRow,
-    IndexRow, KeyRefRow, MentionRow, MetaRow, NameRow, OdrClassRow, OdrRefRow, RegionRow,
+    IndexRow, KeyRefRow, MentionRow, MetaRow, NameRow, RegionRow,
     ResolvedRow, RowRange, SymbolRow, SymtabKeyRow, SymtabRow, key_ref_flags,
 };
 use crate::update::view::Rows;
@@ -74,8 +74,10 @@ pub enum Class {
 }
 
 /// Every table of format 5, in file (kind) order, with its class and row
-/// width. A kind not here is `state-corrupt` (IN-18e).
-pub const TABLES: [(u32, Class, usize); 39] = [
+/// width. A kind not here is `state-corrupt` (IN-18e). `ODR_CLASSES` (47)
+/// and `ODR_REFS` (48) are not written (supervisor's ruling on WP-220,
+/// R-1: provisional until WP-236; kinds 53 and 54 reserved for it).
+pub const TABLES: [(u32, Class, usize); 37] = [
     (kind::META, Class::Whole, MetaRow::WIDTH),
     (kind::STAT, Class::AppendOnly, <StatRow as Rec>::WIDTH),
     (kind::FILES, Class::AppendOnly, FileRow::WIDTH),
@@ -109,8 +111,6 @@ pub const TABLES: [(u32, Class, usize); 39] = [
     (kind::GROUPS, Class::KeyKeyed, GroupRow::WIDTH),
     (kind::KEY_REFS, Class::KeyKeyed, KeyRefRow::WIDTH),
     (kind::COMMONS, Class::KeyKeyed, CommonRow::WIDTH),
-    (kind::ODR_CLASSES, Class::KeyKeyed, OdrClassRow::WIDTH),
-    (kind::ODR_REFS, Class::KeyKeyed, OdrRefRow::WIDTH),
     (kind::DIAGS, Class::KeyKeyed, DiagRaw::WIDTH),
     (kind::SYMTAB_KEYS, Class::KeyParallel, SymtabKeyRow::WIDTH),
     (kind::REGIONS, Class::FileKeyed, RegionRow::WIDTH),
@@ -723,29 +723,6 @@ impl Rec for CommonRow {
     }
 }
 
-/// PROVISIONAL (U-8's ruling, WP-213 F-5): 28 bytes as IN-18e states and
-/// a tomb byte.
-impl Rec for OdrClassRow {
-    const WIDTH: usize = 29;
-    fn put(&self, w: &mut W<'_>) {
-        w.u32(self.key).bytes(&self.hash).u64(self.layout).u8(u8::from(self.tomb));
-    }
-    fn get(r: &mut R<'_>) -> Self {
-        Self { key: r.u32(), hash: r.h(), layout: r.u64(), tomb: tomb(r) }
-    }
-}
-
-/// PROVISIONAL (U-8's ruling): IN-18e's 12 bytes, tomb included.
-impl Rec for OdrRefRow {
-    const WIDTH: usize = 12;
-    fn put(&self, w: &mut W<'_>) {
-        w.u32(self.key).u32(self.file).u8(self.kind).u8(u8::from(self.tomb)).u16(self.class);
-    }
-    fn get(r: &mut R<'_>) -> Self {
-        Self { key: r.u32(), file: r.u32(), kind: r.u8(), tomb: tomb(r), class: r.u16() }
-    }
-}
-
 impl Rec for SymtabKeyRow {
     const WIDTH: usize = 8;
     fn put(&self, w: &mut W<'_>) {
@@ -885,8 +862,6 @@ keyed!(KeyRefRow, (u32, u32), |x| (x.key, x.file));
 keyed!(FragRow, (u32, Hash16, u32), |x| (x.out, x.hash, x.ordinal));
 keyed!(HoleRow, (u32, u64), |x| (x.chunk, x.offset));
 keyed!(CommonRow, u32, |x| x.key);
-keyed!(OdrClassRow, (u32, Hash16), |x| (x.key, x.hash));
-keyed!(OdrRefRow, (u32, u32, u8), |x| (x.key, x.file, x.kind));
 
 impl Keyed for GroupRow {
     type K = Vec<u8>;

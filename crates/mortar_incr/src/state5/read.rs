@@ -539,10 +539,13 @@ impl StateRows for Reader {
         Ok(self.core.keyed::<CommonRow>(kind::COMMONS, &key.0, &|k| *k == key.0)?.pop())
     }
     fn odr_classes(&self, odr_key: u32) -> Rows<Vec<OdrClassRow>> {
-        self.core.keyed::<OdrClassRow>(kind::ODR_CLASSES, &(odr_key, [0; 16]), &|k| k.0 == odr_key)
+        // Format 5 holds no ODR record table (WP-220 R-1, WP-236).
+        let _ = odr_key;
+        Ok(Vec::new())
     }
     fn odr_refs(&self, odr_key: u32) -> Rows<Vec<OdrRefRow>> {
-        self.core.keyed::<OdrRefRow>(kind::ODR_REFS, &(odr_key, 0, 0), &|k| k.0 == odr_key)
+        let _ = odr_key;
+        Ok(Vec::new())
     }
     fn diags(&self) -> Rows<Vec<DiagRow>> {
         let s: StrFn<'_> = &|x| self.core.string(x);
@@ -637,8 +640,6 @@ pub(crate) fn decode_core(c: &Core) -> Rows<MemoryState> {
         frags: c.all(kind::FRAGS)?,
         holes: c.all(kind::HOLES)?,
         commons: c.all(kind::COMMONS)?,
-        odr_classes: c.all(kind::ODR_CLASSES)?,
-        odr_refs: c.all(kind::ODR_REFS)?,
         names: c.all(kind::NAMES)?,
         ..MemoryState::default()
     };
@@ -658,8 +659,6 @@ pub(crate) fn decode_core(c: &Core) -> Rows<MemoryState> {
     check_sorted::<FragRow>(c, kind::FRAGS, &m.frags, s)?;
     check_sorted::<HoleRow>(c, kind::HOLES, &m.holes, s)?;
     check_sorted::<CommonRow>(c, kind::COMMONS, &m.commons, s)?;
-    check_sorted::<OdrClassRow>(c, kind::ODR_CLASSES, &m.odr_classes, s)?;
-    check_sorted::<OdrRefRow>(c, kind::ODR_REFS, &m.odr_refs, s)?;
     check_sorted::<DiagRaw>(c, kind::DIAGS, &raw, s)?;
     check_sorted::<NameRow>(c, kind::NAMES, &m.names, s)?;
     // The file-keyed tables: per live file its range; ranges in bounds and
