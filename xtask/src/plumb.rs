@@ -901,6 +901,18 @@ impl ComposeArgs {
 /// # Errors
 /// A file cannot be read, or a map does not parse.
 pub fn run_compose(args: &ComposeArgs) -> Result<bool, String> {
+    let (clean, text) = compose_report(args)?;
+    print!("{text}");
+    Ok(clean)
+}
+
+/// [`run_compose`]'s verdict and text, unprinted (the census's `-r` lines,
+/// RL-7).
+///
+/// # Errors
+/// A file cannot be read, or a map does not parse.
+pub fn compose_report(args: &ComposeArgs) -> Result<(bool, String), String> {
+    use std::fmt::Write as _;
     let read = |p: &Path| std::fs::read(p).map_err(|e| format!("{}: {e}", p.display()));
     let mut outputs = Vec::new();
     let mut maps = Vec::new();
@@ -938,12 +950,12 @@ pub fn run_compose(args: &ComposeArgs) -> Result<bool, String> {
         &v,
         &mortar_plumb::compose::Partial { link: r, path: &path },
     );
-    print!("{}", report.render(&args.links[1].0.display().to_string()));
+    let mut text = report.render(&args.links[1].0.display().to_string());
     for n in mortar_plumb::compose::not_judged(&report) {
-        println!("composition not judged: {n}");
+        let _ = writeln!(text, "composition not judged: {n}");
     }
-    print!("{}", report.summary());
-    Ok(report.clean())
+    text.push_str(&report.summary());
+    Ok((report.clean(), text))
 }
 
 pub const EQUIV_USAGE: &str = "usage: cargo xtask plumb --equiv <X.map> <F.map> <X> <F>\n";

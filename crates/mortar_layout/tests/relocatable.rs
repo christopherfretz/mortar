@@ -655,6 +655,8 @@ struct Case {
     target: Target,
     plan: Plan,
     notes: NoteSizes,
+    /// RV-R3's names with no key (`undefined_without_key`).
+    undefined: Vec<Box<[u8]>>,
 }
 
 /// Shapes that cannot be read (rule 1's reading).
@@ -684,6 +686,7 @@ impl Case {
             target: Target::of(machine),
             plan: Plan::default(),
             notes: NoteSizes::default(),
+            undefined: Vec::new(),
         }
     }
 
@@ -706,6 +709,7 @@ impl Case {
             &self.target,
             &self.plan,
             self.notes,
+            &self.undefined,
             pool,
         )
     }
@@ -1274,6 +1278,85 @@ fn r_stack_note() {
     assert_eq!((stack.sh_type, stack.flags, stack.size, stack.align), (PROGBITS, X, 0, 0));
     assert_eq!(outsecs_named(&r, ".note.GNU-stack").len(), 1);
     assert_eq!(size(&r, ".symtab"), 15 * 24);
+}
+
+#[test]
+fn r_stack_note_options() {
+    // WP-187 (RL-7): L-R6a's table, each row on each target, with each
+    // option. `N`/`X`: an input note without/with SHF_EXECINSTR; `-`: none.
+    let rows: [(&str, &[Option<u64>]); 6] = [
+        ("all N", &[Some(0), Some(0)]),
+        ("all X", &[Some(X), Some(X)]),
+        ("N and X", &[Some(0), Some(X)]),
+        ("N and absent", &[Some(0), None]),
+        ("X and absent", &[Some(X), None]),
+        ("all absent", &[None, None]),
+    ];
+    for m in [Machine::AArch64, Machine::X86_64, Machine::I386] {
+        for (row, notes) in rows {
+            for option in [None, Some(true), Some(false)] {
+                let objs: Vec<Obj> = notes
+                    .iter()
+                    .map(|n| {
+                        let mut o = Obj::new(m);
+                        o.sec(".text", PROGBITS, A | X, 4, vec![0; 4]);
+                        if let Some(flags) = *n {
+                            o.sec(".note.GNU-stack", PROGBITS, flags, 1, Vec::new());
+                        }
+                        o
+                    })
+                    .collect();
+                let mut case = Case::new(m, &objs);
+                case.plan.z.execstack = option;
+                let r = case.ok();
+                let any_x = notes.contains(&Some(X));
+                let any = notes.iter().any(Option::is_some);
+                let want = match option {
+                    _ if any_x => Some(X),
+                    None if any => Some(0),
+                    None => None,
+                    Some(true) if !any || m == Machine::AArch64 => Some(X),
+                    Some(_) => Some(0),
+                };
+                let what = format!("{m:?}, {row}, -z {option:?}");
+                let stack = outsecs_named(&r, ".note.GNU-stack");
+                match want {
+                    None => assert!(stack.is_empty(), "{what}: a note"),
+                    Some(flags) => {
+                        assert_eq!(stack.len(), 1, "{what}: one note");
+                        let c = r.layout.placement.chunks[chunk(&r, ".note.GNU-stack")];
+                        assert_eq!(
+                            (c.sh_type, c.flags, c.size, c.align),
+                            (PROGBITS, flags, 0, 0),
+                            "{what}"
+                        );
+                    }
+                }
+                // A note no input has comes after every output section.
+                if want.is_some() && !any {
+                    let n = names(&r);
+                    let at = n.iter().position(|x| x == ".note.GNU-stack").unwrap();
+                    assert_eq!(n[at + 1], ".symtab", "{what}: {n:?}");
+                }
+            }
+        }
+    }
+}
+
+#[test]
+fn r_undefined_without_key() {
+    // WP-187 (RL-7): RV-R3's names with no key are written after the
+    // keys, one entry and one `.strtab` string each.
+    let m = Machine::AArch64;
+    let mut o = Obj::new(m);
+    o.sec(".text", PROGBITS, A | X, 4, vec![0; 4]);
+    let mut case = Case::new(m, &[o]);
+    let before = case.ok();
+    case.undefined = vec![Box::from(&b"missing"[..]), Box::from(&b"$x"[..])];
+    let after = case.ok();
+    assert_eq!(size(&after, ".symtab"), size(&before, ".symtab") + 2 * 24);
+    // `$x` is in the fixed table (S2).
+    assert_eq!(size(&after, ".strtab"), size(&before, ".strtab") + 8);
 }
 
 #[test]

@@ -7,8 +7,9 @@
 
 use crate::{Diagnostic, Kind, RefusalClass};
 
-/// `unsupported feature: relocatable output (-r)`: the line has `-r` (or
-/// `-Ur`), until RL-7 joins the stages (`spec/resolve.md` §1, §11).
+/// `unsupported feature: relocatable output (-r)`: the line had `-r` (or
+/// `-Ur`) until RL-7 joined the stages (WP-187); now RL-9's REL stub
+/// (`mortar_image::relrel::write`) only (`spec/resolve.md` §1, §11).
 pub const RELOCATABLE_OUTPUT: &str = "relocatable output (-r)";
 /// `shared object input with -r` (`spec/cli.md` C-R5), `.at` the file.
 pub const SHARED_OBJECT_INPUT: &str = "shared object input with -r";
@@ -19,6 +20,50 @@ pub const NO_INPUT_OF_A_KNOWN_MACHINE_NOTE: &str = "give -m EMULATION";
 /// `GCC LTO sections with -r` (`spec/resolve.md` RV-R9, a fat LTO
 /// object), `.at` the file.
 pub const GCC_LTO_SECTIONS: &str = "GCC LTO sections with -r";
+
+/// `section groups with -r` (`spec/layout.md` L-R2, L-R3), `.at` the
+/// first kept `SHT_GROUP` section: writing them is RL-8's (the cut of RL-7
+/// is C, record `spec/landed/layout/WP-154.md` §F).
+pub const SECTION_GROUPS: &str = "section groups with -r";
+/// The note of [`SECTION_GROUPS`].
+pub const SECTION_GROUPS_NOTE: &str =
+    "RL-8 lifts this at -r (spec/layout.md L-R2, L-R3: COMDAT groups, C++)";
+/// `{machine} output with -r` (`x86-64`, `i386`): RL-9's (REL targets and
+/// x86-64's parts, record WP-154 §F).
+pub const TARGET_WITH_R: &str = "{machine} output with -r";
+/// The note of [`TARGET_WITH_R`].
+pub const TARGET_WITH_R_NOTE: &str = "RL-9 lifts this at -r (AArch64 only until then)";
+
+/// `removed .eh_frame records at -r` (`spec/layout.md` L-R6): an FDE of a
+/// dropped section is removed with its records, RL-8's (the image and the
+/// driver both refuse a non-empty `eh_removed`).
+pub const EH_RECORDS_REMOVED: &str = "removed .eh_frame records at -r";
+/// An input with a Mason container section (kiln's objects): MT-30 at
+/// `-r` is RL-12's. `mortar_layout::relocatable` raises it (WP-183 §B.12)
+/// with this text; listed in `spec/diag.md` §4.4 by WP-187.
+pub const MASON_CONTAINER: &str = "the Mason container at -r (RL-12)";
+/// The note of [`EH_RECORDS_REMOVED`].
+pub const EH_RECORDS_REMOVED_NOTE: &str = "RL-8 (spec/layout.md L-R6) lifts this at -r";
+
+/// `unsupported feature: removed .eh_frame records at -r` (RL-8).
+#[must_use]
+pub fn refused_eh_records_removed() -> Diagnostic {
+    Diagnostic::refused(RefusalClass::Feature, EH_RECORDS_REMOVED).note(EH_RECORDS_REMOVED_NOTE)
+}
+
+/// `unsupported feature: section groups with -r` (RL-8).
+#[must_use]
+pub fn refused_section_groups() -> Diagnostic {
+    Diagnostic::refused(RefusalClass::Feature, SECTION_GROUPS).note(SECTION_GROUPS_NOTE)
+}
+
+/// `unsupported feature: {machine} output with -r` (RL-9), `machine` as
+/// `Machine::name` spells it.
+#[must_use]
+pub fn refused_target_with_r(machine: &str) -> Diagnostic {
+    Diagnostic::refused(RefusalClass::Feature, TARGET_WITH_R.replace("{machine}", machine))
+        .note(TARGET_WITH_R_NOTE)
+}
 
 /// The note of `-T with -r` (C-R3, RV-R10).
 pub const SCRIPT_NOTE: &str = "kernel modules and scripts at -r are not supported yet";
@@ -178,7 +223,12 @@ const NONE: &str = "—";
 
 /// §4.4's table, in its order.
 pub const ROWS: &[Row] = &[
-    refusal(RELOCATABLE_OUTPUT, RefusalClass::Feature, &[RELOCATABLE_OUTPUT], "RL-7 (the join)"),
+    refusal(
+        RELOCATABLE_OUTPUT,
+        RefusalClass::Feature,
+        &[RELOCATABLE_OUTPUT],
+        "RL-7 for -r itself (lifted, WP-187); RL-9 for the stub",
+    ),
     row("conflicting-options, first = -r", Entry::Kind("conflicting-options"), NONE),
     refusal("-T with -r", RefusalClass::Option, &["-T with -r"], "RL-11"),
     refusal("--defsym with -r", RefusalClass::Option, &["--defsym with -r"], "RL-11"),
@@ -209,6 +259,10 @@ pub const ROWS: &[Row] = &[
         "RL-11 (-d, -s, -S, -x), RL-10 (-b), RL-8 (--force-group-allocation)",
     ),
     refusal(SHARED_OBJECT_INPUT, RefusalClass::Feature, &[SHARED_OBJECT_INPUT], NONE),
+    refusal(SECTION_GROUPS, RefusalClass::Feature, &[SECTION_GROUPS], "RL-8"),
+    refusal(TARGET_WITH_R, RefusalClass::Feature, &[TARGET_WITH_R], "RL-9"),
+    refusal(EH_RECORDS_REMOVED, RefusalClass::Feature, &[EH_RECORDS_REMOVED], "RL-8"),
+    refusal(MASON_CONTAINER, RefusalClass::Feature, &[MASON_CONTAINER], "RL-12"),
     refusal(
         NO_INPUT_OF_A_KNOWN_MACHINE,
         RefusalClass::Feature,

@@ -1,0 +1,148 @@
+# RL-7 (WP-187): spec/layout.md L-R6a, GNU ld's `.note.GNU-stack` table
+# at -r on AArch64, each row with no option, `-z execstack` and
+# `-z noexecstack` (spec/cli.md C-R3). N is a note without SHF_EXECINSTR,
+# X one with it. An input's X always wins; `-z execstack` turns N into X
+# on AArch64; with no input note only the option writes one. Each output
+# is judged by stage R and linked twice (LT-R4); GNU ld's -r of the same
+# line gives the same flags (measured: .build rl7/m1, and the record's
+# work/stack.log). The all-N output is final-linked by every linker.
+#@ spec: layout.md "24"
+#@ spec: cli.md "3.16"
+#@ spec: harness.md "Relocatable outputs"
+#@ arch: aarch64
+
+as n.s -o n.o
+as n2.s -o n2.o
+as x.s -o x.o
+as a.s -o a.o
+as a2.s -o a2.o
+cc -O2 main.c -o main.o
+partial mortar -o r-n.o n.o n2.o
+partial bfd -m %{emulation} -o r-n.bfd.o n.o n2.o
+partial mortar -z execstack -o r-n-exec.o n.o n2.o
+partial bfd -m %{emulation} -z execstack -o r-n-exec.bfd.o n.o n2.o
+partial mortar -z noexecstack -o r-n-noexec.o n.o n2.o
+partial bfd -m %{emulation} -z noexecstack -o r-n-noexec.bfd.o n.o n2.o
+partial mortar -o r-x.o x.o
+partial bfd -m %{emulation} -o r-x.bfd.o x.o
+partial mortar -z noexecstack -o r-x-noexec.o x.o
+partial bfd -m %{emulation} -z noexecstack -o r-x-noexec.bfd.o x.o
+partial mortar -o r-nx.o n.o x.o
+partial bfd -m %{emulation} -o r-nx.bfd.o n.o x.o
+partial mortar -z noexecstack -o r-nx-noexec.o n.o x.o
+partial bfd -m %{emulation} -z noexecstack -o r-nx-noexec.bfd.o n.o x.o
+partial mortar -o r-na.o n.o a.o
+partial bfd -m %{emulation} -o r-na.bfd.o n.o a.o
+partial mortar -z execstack -o r-na-exec.o n.o a.o
+partial bfd -m %{emulation} -z execstack -o r-na-exec.bfd.o n.o a.o
+partial mortar -z noexecstack -o r-na-noexec.o n.o a.o
+partial bfd -m %{emulation} -z noexecstack -o r-na-noexec.bfd.o n.o a.o
+partial mortar -o r-xa.o x.o a.o
+partial bfd -m %{emulation} -o r-xa.bfd.o x.o a.o
+partial mortar -z noexecstack -o r-xa-noexec.o x.o a.o
+partial bfd -m %{emulation} -z noexecstack -o r-xa-noexec.bfd.o x.o a.o
+partial mortar -o r-a.o a.o a2.o
+partial bfd -m %{emulation} -o r-a.bfd.o a.o a2.o
+partial mortar -z execstack -o r-a-exec.o a.o a2.o
+partial bfd -m %{emulation} -z execstack -o r-a-exec.bfd.o a.o a2.o
+partial mortar -z noexecstack -o r-a-noexec.o a.o a2.o
+partial bfd -m %{emulation} -z noexecstack -o r-a-noexec.bfd.o a.o a2.o
+check readelf -SW a.o
+  not: .note.GNU-stack
+check readelf -SW x.o
+  has: .note.GNU-stack * 00 X 0 0 1$
+check readelf -SW r-n.o
+  has: .note.GNU-stack *PROGBITS * 000000 00 0 0 1$
+check readelf -SW r-n.bfd.o
+  has: .note.GNU-stack *PROGBITS * 000000 00 0 0 1$
+check readelf -SW r-n-exec.o
+  has: .note.GNU-stack *PROGBITS * 000000 00 X 0 0 1$
+check readelf -SW r-n-exec.bfd.o
+  has: .note.GNU-stack *PROGBITS * 000000 00 X 0 0 1$
+check readelf -SW r-n-noexec.o
+  has: .note.GNU-stack *PROGBITS * 000000 00 0 0 1$
+check readelf -SW r-n-noexec.bfd.o
+  has: .note.GNU-stack *PROGBITS * 000000 00 0 0 1$
+check readelf -SW r-x.o
+  has: .note.GNU-stack *PROGBITS * 000000 00 X 0 0 1$
+check readelf -SW r-x.bfd.o
+  has: .note.GNU-stack *PROGBITS * 000000 00 X 0 0 1$
+check readelf -SW r-x-noexec.o
+  has: .note.GNU-stack *PROGBITS * 000000 00 X 0 0 1$
+check readelf -SW r-x-noexec.bfd.o
+  has: .note.GNU-stack *PROGBITS * 000000 00 X 0 0 1$
+check readelf -SW r-nx.o
+  has: .note.GNU-stack *PROGBITS * 000000 00 X 0 0 1$
+check readelf -SW r-nx.bfd.o
+  has: .note.GNU-stack *PROGBITS * 000000 00 X 0 0 1$
+check readelf -SW r-nx-noexec.o
+  has: .note.GNU-stack *PROGBITS * 000000 00 X 0 0 1$
+check readelf -SW r-nx-noexec.bfd.o
+  has: .note.GNU-stack *PROGBITS * 000000 00 X 0 0 1$
+check readelf -SW r-na.o
+  has: .note.GNU-stack *PROGBITS * 000000 00 0 0 1$
+check readelf -SW r-na.bfd.o
+  has: .note.GNU-stack *PROGBITS * 000000 00 0 0 1$
+check readelf -SW r-na-exec.o
+  has: .note.GNU-stack *PROGBITS * 000000 00 X 0 0 1$
+check readelf -SW r-na-exec.bfd.o
+  has: .note.GNU-stack *PROGBITS * 000000 00 X 0 0 1$
+check readelf -SW r-na-noexec.o
+  has: .note.GNU-stack *PROGBITS * 000000 00 0 0 1$
+check readelf -SW r-na-noexec.bfd.o
+  has: .note.GNU-stack *PROGBITS * 000000 00 0 0 1$
+check readelf -SW r-xa.o
+  has: .note.GNU-stack *PROGBITS * 000000 00 X 0 0 1$
+check readelf -SW r-xa.bfd.o
+  has: .note.GNU-stack *PROGBITS * 000000 00 X 0 0 1$
+check readelf -SW r-xa-noexec.o
+  has: .note.GNU-stack *PROGBITS * 000000 00 X 0 0 1$
+check readelf -SW r-xa-noexec.bfd.o
+  has: .note.GNU-stack *PROGBITS * 000000 00 X 0 0 1$
+check readelf -SW r-a.o
+  not: .note.GNU-stack
+check readelf -SW r-a.bfd.o
+  not: .note.GNU-stack
+check readelf -SW r-a-exec.o
+  has: .note.GNU-stack *PROGBITS * 000000 00 X 0 0 1$
+check readelf -SW r-a-exec.bfd.o
+  has: .note.GNU-stack *PROGBITS * 000000 00 X 0 0 1$
+check readelf -SW r-a-noexec.o
+  has: .note.GNU-stack *PROGBITS * 000000 00 0 0 1$
+check readelf -SW r-a-noexec.bfd.o
+  has: .note.GNU-stack *PROGBITS * 000000 00 0 0 1$
+
+link gcc -static main.o r-n.o -o via
+run via
+  stdout: 7
+
+#--- n.s
+	.text
+	.globl n_fn
+n_fn:	mov w0, #3
+	ret
+	.section .note.GNU-stack,"",%progbits
+#--- n2.s
+	.text
+	.globl n2_fn
+n2_fn:	ret
+	.section .note.GNU-stack,"",%progbits
+#--- x.s
+	.text
+	.globl x_fn
+x_fn:	mov w0, #4
+	ret
+	.section .note.GNU-stack,"x",%progbits
+#--- a.s
+	.text
+	.globl a_fn
+a_fn:	mov w0, #5
+	ret
+#--- a2.s
+	.text
+	.globl a2_fn
+a2_fn:	ret
+#--- main.c
+#include <stdio.h>
+int n_fn(void);
+int main(void) { printf("%d\n", n_fn() + 4); return 0; }

@@ -1,0 +1,41 @@
+# RL-7 (WP-187): an archive alone at -r extracts nothing (spec/resolve.md
+# RV-R2; record spec/landed/layout/WP-154.md §B.3, all three references):
+# mortar's output has none of the members' symbols, and is judged by stage
+# R and linked twice (LT-R4); with it, a final link takes the member from
+# the archive itself.
+#@ spec: resolve.md "11"
+#@ spec: harness.md "Relocatable outputs"
+#@ arch: aarch64
+#@ requires: eu-elflint
+
+cc -O2 m1.c -o m1.o
+cc -O2 m2.c -o m2.o
+cc -O2 main.c -o main.o
+ar rcs libm12.a m1.o m2.o
+partial mortar -o alone.o libm12.a
+partial bfd -m %{emulation} -o alone.bfd.o libm12.a
+check readelf -hW alone.o
+  has: Type: *REL (Relocatable file)
+check readelf -sW alone.o
+  not: m1_value
+  not: m2_value
+check readelf -sW alone.bfd.o
+  not: m1_value
+check elflint alone.o
+
+# GNU ld's and lld's maps of a final link do not name an input that
+# contributes no section, and the verifier finds M11 on them (a finding on
+# the references' outputs, listed for the verifier's owner, WP-187); mortar
+# and mold final-link it here.
+link(mortar,mold) gcc -static main.o alone.o libm12.a -o via
+run(mortar,mold) via
+  stdout: 11
+
+#--- m1.c
+int m1_value(void) { return 11; }
+#--- m2.c
+int m2_value(void) { return 22; }
+#--- main.c
+#include <stdio.h>
+int m1_value(void);
+int main(void) { printf("%d\n", m1_value()); return 0; }

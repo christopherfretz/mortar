@@ -5,8 +5,10 @@
 # --incremental cannot record an input that is no file yet
 # (odr-runtime-incremental); -nostdlib leaves the runtime's references
 # to libc undefined: the ordinary undefined-symbol error, which names
-# the runtime input <mortar:odr-runtime>. At -r the option is a no-op:
-# the line fails as the line without it does, by -r's own refusal. i386
+# the runtime input <mortar:odr-runtime>. At -r the option is a no-op
+# (spec/cli.md C-R2b, C-ODR-RT): the line links or fails as the line
+# without it does. Since -r links (RL-7, WP-187) that is the same bytes
+# on aarch64 and -r's own refusal of x86-64 output (RL-9). i386
 # is refused by name (odr-runtime-unsupported-target).
 #@ spec: cli.md "--odr-runtime"
 #@ spec: diag.md "§4"
@@ -29,9 +31,14 @@ link(mortar,aarch64,x86_64) gcc -nostdlib -no-pie nolibc.o -Wl,--odr-runtime=rep
   exit: fail
   diag: undefined symbol: write
   diag: <mortar:odr-runtime>
-link(mortar,aarch64,x86_64) ld -r main.o --odr-runtime=fatal -o r.o
+link(mortar,aarch64) ld -r main.o --odr-runtime=fatal -o r.o
+  no-diag: odr-runtime
+link(mortar,aarch64) ld -r main.o -o r0.o
+check(mortar,aarch64) cmp r.o r0.o
+  has: ^identical$
+link(mortar,x86_64) ld -r main.o --odr-runtime=fatal -o rx.o
   exit: fail
-  diag: unsupported option: -r
+  diag: unsupported feature: x86-64 output with -r
   no-diag: odr-runtime
 link(mortar,i386) gcc -pie main.o -Wl,--odr-runtime=report -o i386
   exit: fail

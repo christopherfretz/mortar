@@ -49,9 +49,13 @@ const SUPPORTED: &[&str] = &[
     "-pie",
     // The default kind, position-dependent (WP-042).
     "-no-pie",
+    // Relocatable output, joined by RL-7 (WP-187).
+    "-r",
     // The front of the pipeline honors these (WP-027a).
     "-m",
     "-e",
+    // `-r` with `plan.ur` (RL-7, WP-187).
+    "-Ur",
     "-s",
     "-S",
     "-x",
@@ -282,7 +286,7 @@ fn every_row_has_a_class_at_r() {
 
 // spec: cli.md C-R2b's last bullet (an option that acts at `-r` "until" a
 // package lands is `Refused{Option, "<option> with -r"}` until then), C-R1
-// (`-r` and `-Ur` until the join, RL-7)
+// (`-r` and `-Ur` acted until the join, RL-7; WP-187 lifted them)
 #[test]
 fn the_rows_that_act_until_a_package() {
     let mut until: Vec<(String, &str, &str)> = rows()
@@ -291,8 +295,6 @@ fn the_rows_that_act_until_a_package() {
         .collect();
     until.sort_unstable();
     let mut want = vec![
-        ("-r", "RL-7", "relocatable output (-r)"),
-        ("-Ur", "RL-7", "relocatable output (-r)"),
         ("-d", "RL-11", "-d with -r"),
         ("-s", "RL-11", "-s with -r"),
         ("-S", "RL-11", "-S with -r"),

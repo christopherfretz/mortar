@@ -824,7 +824,7 @@ keeps blanks (with `\"` and `\\`).
 | `link <driver> <args>` | a link; `<driver>` is `ld` (the linker itself) or `gcc`, `g++`, `gfortran`, `clang`, `clang++` |
 | `run <program> [<args>]` | runs a linked program |
 | `check <tool> <args>` | `readelf`, `nm`, `objdump` (the architecture's), `llvm-readelf`, `llvm-dwarfdump` (WP-080: `--verify`, the DWARF of a split-DWARF output), `text` (the file named by the one argument, read), `cmp` (two files, compared byte for byte), `elflint`, `ldd`, `gdb`, `lldb` ("Checks") |
-| `partial mortar <args>` | (RL-6, WP-186; usable once RL-7 lifts the `-r` refusal, its tests are `.test.pending` until then) the same as `partial <reference>` with mortar as the linker: `mortar -m <emulation> -r --mortar-map=.linktest-partial-<line>.map <args>`, judged by L3's stage R (a finding fails the unit), with LT-R4's mode and determinism checks; the same file for every linker of the matrix. A refused `partial mortar` fails the unit (mortar must link what GNU ld links; a `partial` step takes no `exit:`). Without a mortar binary in the run the unit is skipped by name |
+| `partial mortar <args>` | (RL-6, WP-186; usable since RL-7, WP-187, lifted the `-r` refusal: AArch64 until RL-9) the same as `partial <reference>` with mortar as the linker: `mortar -m <emulation> -r --mortar-map=.linktest-partial-<line>.map <args>`, judged by L3's stage R (a finding fails the unit), with LT-R4's mode and determinism checks; the same file for every linker of the matrix. A refused `partial mortar` fails the unit (mortar must link what GNU ld links; a `partial` step takes no `exit:`). Without a mortar binary in the run the unit is skipped by name |
 
 The build steps come before every link, run and check step. Expectations
 are the indented lines under a step:
@@ -1227,8 +1227,8 @@ says what mortar does.
 | `-r -u NAME`, no definition | `UND NAME` written | not written | not written | written (RV-R3) | planned (RL-2) |
 | `-r`: debug records into a dropped COMDAT copy | retargeted to the kept copy | `NONE` records | against symbol 0 (A97) | dropped, the field tombstoned (`spec/image.md` I-R7) | planned (RL-8, `r-debug-gdb`) |
 | `-r`: the FDE of a dropped copy | removed, a `NONE` record left | **kept** (A91) | removed | removed with its records (L-R6) | planned (RL-8, `r-eh-*`) |
-| `-r`: an input `.note.GNU-stack` with `X` | X | **N** (A93) | X | X (`spec/layout.md` L-R6a) | planned (RL-7, `r-stack-note`) |
-| `-r --build-id` | note written | note written | **none** (A98) | written over the file (I-R8) | planned (RL-7) |
+| `-r`: an input `.note.GNU-stack` with `X` | X | **N** (A93) | X | X (`spec/layout.md` L-R6a) | `relocatable/r-stack-note` (RL-7, WP-187; AArch64) |
+| `-r --build-id` | note written | note written | **none** (A98) | written over the file (I-R8) | `relocatable/r-busybox-clang` (RL-7, WP-187) |
 | `-r -e SYM` | `e_entry` = `SYM`'s offset | the same | 0 | 0 (L-R7) | planned (RL-2) |
 | `-r`: `SHF_GNU_RETAIN` and plain pieces of one name | two sections | one, `R` kept | one, **`R` dropped** (A99) | two (L-R1a) | planned (RL-8) |
 | `-r`: `SHF_LINK_ORDER` pieces | `sh_link` kept | kept | **0** (A101) | kept (L-R1) | planned (RL-8) |
@@ -1284,7 +1284,7 @@ through -r differs from the direct link").
 
 **LT-R3 (the mixed-toolchain case).** Each reference's `-r` output of
 the same inputs (`partial bfd`, `partial lld`, `partial mold`; plus
-`partial mortar` once RL-7 lands) is fed to mortar's final link and to
+`partial mortar` since RL-7, WP-187) is fed to mortar's final link and to
 GNU ld's, and LT-R1 and LT-R2 apply to each. mold's `-r` outputs are
 known wrong in four named ways; a test whose inputs have one of them
 says `skip(mold)` with the reason's name, and the lane checks that the
@@ -1317,7 +1317,7 @@ files byte for byte (I-R11). Neither is a verifier rule (§14.7 of
 `tests/relocatable-design/exp/rl0/none.sh`): `_start` with `.reloc .,
 R_*_NONE, keepme` (`R_AARCH64_NONE`, `R_X86_64_NONE`, `R_386_NONE`),
 `keepme` in its own section `.text.keepme` of a second object; the two
-partially linked by `partial bfd`, `partial lld` and (after RL-7)
+partially linked by `partial bfd`, `partial lld` and (since RL-7)
 `partial mortar`; each `-r` output final-linked with `--gc-sections
 -e _start` by GNU ld and by mortar (LT-R1), `check nm` finding `keepme`
 in every final output, and the direct link's the same. Measured
@@ -1340,8 +1340,11 @@ clean. A refusal is a pass only with a key of `OUT_OF_M4R` (the
 refusals `spec/diag.md` §4.4 lists, each printed). The census's last
 line adds the `-r` counts: `census: <n> lines (<r> -r), ... <p> pass
 (<rp> -r), <f> fail (<rf> -r)`; RL-6 lands the counting with every
-`-r` line refused by mortar (`OUT_OF_M4R` holds `-r` itself until RL-7)
-and RL-7 to RL-12 move the lines to pass. A `-r` line mortar links is,
+`-r` line refused by mortar (`OUT_OF_M4R` held `-r` itself until RL-7)
+and RL-7 to RL-12 move the lines to pass. Since RL-7 (WP-187)
+`OUT_OF_M4R` holds the later packages' names (`section groups with -r`,
+`{machine} output with -r`, `-s with -r`, ...) and C-R4's lasting
+refusals (`--gc-sections with -r`). A `-r` line mortar links is,
 at RL-6, judged by stage R and final-linked by the driver (GNU ld) from
 mortar's and the reference's `-r` output, both programs run and
 compared; the final link by mortar and P-P1 on the census lines are

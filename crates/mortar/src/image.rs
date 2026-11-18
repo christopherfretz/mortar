@@ -88,7 +88,7 @@ pub fn output_path(front: &Front<'_>, cwd: &Path) -> PathBuf {
 }
 
 /// `CopyError` of the store's recheck (`ReadError`).
-fn copy_error(e: &ReadError) -> CopyError {
+pub(crate) fn copy_error(e: &ReadError) -> CopyError {
     match e {
         ReadError::Changed => CopyError::Changed,
         ReadError::Os { errno, .. } => CopyError::Read(Errno(errno.unwrap_or(0))),

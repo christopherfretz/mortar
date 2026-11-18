@@ -65,6 +65,73 @@ fn p1(msg: impl Into<String>) -> Finding {
     Finding::new(Rule::Rel(1), msg)
 }
 
+/// The members of the thin archives the `-r` line names (§2.2): the
+/// archive's path, the member's name, and its own path normalized
+/// lexically (the stored path, from the archive's directory). Read from
+/// the `-r` link's source; an archive it cannot read gives nothing.
+fn thin_of(src: &dyn Source, r: &RModel) -> Vec<(String, String, String)> {
+    let archives: BTreeSet<&str> = r.members.iter().map(|(p, _)| p.as_str()).collect();
+    let mut out = Vec::new();
+    for i in 0..src.count() {
+        let path = src.path(i);
+        if !archives.contains(path) {
+            continue;
+        }
+        let Ok(n) = usize::try_from(src.len(i)) else { continue };
+        let mut b = vec![0u8; n];
+        if src.read_at(i, 0, &mut b).is_err() || !b.starts_with(b"!<thin>\n") {
+            continue;
+        }
+        let Ok(a) = mortar_elf::archive::Archive::parse(&b) else { continue };
+        for m in a.members().filter_map(Result::ok) {
+            if let mortar_elf::archive::Content::External { path: stored } = m.content() {
+                let own = crate::locate::thin_member_path(path, stored);
+                out.push((
+                    path.to_string(),
+                    String::from_utf8_lossy(m.name()).into_owned(),
+                    crate::inset::norm(&own),
+                ));
+            }
+        }
+    }
+    out
+}
+
+/// A link's thin members named the way the `-r` map names them (§14.5,
+/// WP-232): GNU ld's map names a thin archive's member by its own path
+/// alone (`m1.o`), mold's by `archive(path as opened)`; both become
+/// `(archive, member name)`. A bare path is a member only when exactly one
+/// member of the `-r` line's thin archives has it as its own path and no
+/// word of the link's line is that path (a file named both as an object
+/// and through a thin archive is not told apart: not renamed).
+fn alias_thin(side: &mut Side<'_>, thin: &[(String, String, String)], line: Option<&[String]>) {
+    if thin.is_empty() {
+        return;
+    }
+    let plain: BTreeSet<String> =
+        line.unwrap_or(&[]).iter().map(|w| crate::inset::norm(w)).collect();
+    for k in &mut side.keys {
+        let found: Vec<&(String, String, String)> = match &k.1 {
+            None => {
+                let own = crate::inset::norm(&k.0);
+                if plain.contains(&own) {
+                    continue;
+                }
+                thin.iter().filter(|t| t.2 == own).collect()
+            }
+            Some(m) => thin
+                .iter()
+                .filter(|t| t.0 == k.0 && t.1 != *m && t.2 == crate::inset::norm(m))
+                .collect(),
+        };
+        if let [t] = found.as_slice() {
+            k.0.clone_from(&t.0);
+            k.1 = Some(t.1.clone());
+        }
+    }
+    side.by_key = side.keys.iter().enumerate().map(|(i, k)| (k.clone(), i)).collect();
+}
+
 /// The words of a link's line: mortar's `arg` records, else the caller's.
 fn words(l: &Link<'_>) -> Option<Vec<String>> {
     if l.map.format == Format::Mortar {
@@ -220,6 +287,18 @@ impl Spans {
         if inside.is_empty() { at_end } else { inside }
     }
 
+    /// The pieces holding `t` (not those that only end at it), whole:
+    /// `(start, end, object, section, input offset)`.
+    fn holders(&self, t: u64) -> Vec<(u64, u64, usize, usize, u64)> {
+        let n = self.v.partition_point(|s| s.0 <= t);
+        (0..n)
+            .rev()
+            .take_while(|&i| self.max_end[i] >= t)
+            .filter(|&i| t < self.v[i].1)
+            .map(|i| self.v[i])
+            .collect()
+    }
+
     /// Whether a piece holds `t` (not only ends at it).
     fn holds(&self, t: u64) -> bool {
         let n = self.v.partition_point(|s| s.0 <= t);
@@ -350,6 +429,102 @@ impl Side<'_> {
 
     fn mask(&self, v: u64) -> u64 {
         if self.class64 { v } else { v & 0xffff_ffff }
+    }
+
+    /// The input section a record's symbol is defined in.
+    fn sym_section(&self, o: usize, sym: u32) -> Option<usize> {
+        let t = self.objs.get(o)?.symtab?;
+        let y = t.get(mortar_elf::SymbolIndex(sym)).ok()?;
+        match t.section_of(mortar_elf::SymbolIndex(sym), &y) {
+            Ok(mortar_elf::SymbolSection::Section(k)) => Some(k.0 as usize),
+            _ => None,
+        }
+    }
+
+    /// What `t` is by content, once per mergeable input piece holding it
+    /// (P-P1 item 3 for a mergeable target, WP-232): see [`MergeKey`].
+    /// Empty when no `SHF_MERGE` piece holds `t`, or when its entry or
+    /// string does not end inside the piece.
+    fn merge_keys(&self, space: &Space, t: u64) -> Vec<MergeKey> {
+        let Some(sp) = self.spans.get(space) else { return Vec::new() };
+        let out = match space {
+            Space::Mem => self.image.alloc_section_of(t, 1).map(|(_, s)| s),
+            Space::Non(name) => self.image.nonalloc_section(name).map(|i| &self.image.sections[i]),
+        };
+        let Some(out) = out else { return Vec::new() };
+        let mut keys: Vec<MergeKey> = Vec::new();
+        for (a, z, o, s, b) in sp.holders(t) {
+            let sh = &self.objs[o].secs[s].shdr;
+            if sh.sh_flags & SHF_MERGE == 0 {
+                continue;
+            }
+            let e = sh.sh_entsize.max(1);
+            let inner = b.wrapping_add(t - a) % e;
+            let start = t - inner;
+            if start < a {
+                continue;
+            }
+            let end = if sh.sh_flags & SHF_STRINGS != 0 {
+                // The string's terminator: the first entry of zeros at or
+                // after `t`'s entry, inside the piece.
+                let mut k = start;
+                loop {
+                    if k.saturating_add(e) > z {
+                        break None;
+                    }
+                    match self.bytes(space, k, e) {
+                        Some(u) if u.iter().all(|&x| x == 0) => break Some(k + e),
+                        Some(_) => k += e,
+                        None => break None,
+                    }
+                }
+            } else {
+                (start.saturating_add(e) <= z).then_some(start + e)
+            };
+            let from = if sh.sh_flags & SHF_STRINGS != 0 { t } else { start };
+            let Some(bytes) = end.and_then(|end| self.bytes(space, from, end - from)) else {
+                continue;
+            };
+            let k = MergeKey {
+                flags: sh.sh_flags,
+                entsize: sh.sh_entsize,
+                out: out.name.clone(),
+                out_flags: out.shdr.sh_flags,
+                bytes: bytes.to_vec(),
+                inner,
+            };
+            if !keys.contains(&k) {
+                keys.push(k);
+            }
+        }
+        keys
+    }
+}
+
+/// A place inside a mergeable input piece, by content (P-P1 item 3,
+/// WP-232): the input section's `sh_flags` and `sh_entsize`, the output
+/// section's name and `sh_flags`, the bytes (a string: from the place
+/// through its terminator; fixed-size entries: the entry's), and the
+/// place's offset inside its entry.
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct MergeKey {
+    flags: u64,
+    entsize: u64,
+    out: String,
+    out_flags: u64,
+    bytes: Vec<u8>,
+    inner: u64,
+}
+
+impl MergeKey {
+    fn show(&self) -> String {
+        format!(
+            "{:?} in {} (flags {:#x}, entsize {})",
+            String::from_utf8_lossy(&self.bytes),
+            self.out,
+            self.flags,
+            self.entsize
+        )
     }
 }
 
@@ -695,8 +870,11 @@ fn items23(cx: &mut Cx<'_, '_>) {
                 }
                 continue;
             };
-            // Item 2: the output section of the same name.
-            let (nd, nv) = (d.out_name(&space, da, size), v.out_name(&vspace, va, size));
+            // Item 2: the output section of the same name. A mergeable
+            // section's pieces are placed apart (and shared), so its size
+            // is not its extent: its first byte names the section.
+            let n = if sec.shdr.sh_flags & SHF_MERGE != 0 { size.min(1) } else { size };
+            let (nd, nv) = (d.out_name(&space, da, n), v.out_name(&vspace, va, n));
             if size > 0 && nd != nv {
                 cx.out.push(
                     p1(format!(
@@ -782,6 +960,42 @@ fn items23(cx: &mut Cx<'_, '_>) {
                     continue;
                 };
                 let tspace = target_space(d, o, sym);
+                // A target in a mergeable piece (WP-232): by content. The
+                // field's full value is the place (`S + A` of a merged
+                // section is the piece holding `A`, not `S` plus `A`), so
+                // the addend's effect is judged with it.
+                if d.sym_section(o, sym).is_some_and(|k| {
+                    d.objs[o].secs.get(k).is_some_and(|x| x.shdr.sh_flags & SHF_MERGE != 0)
+                }) && let (Some(fd), Some(fv)) =
+                    (full_target(d, &space, pd, ty), full_target(v, &v.space_of(wo, ws), pv, ty))
+                {
+                    let kd = d.merge_keys(&tspace, fd);
+                    if !kd.is_empty() {
+                        cx.cov.merged_by_content += 1;
+                        let kv = v.merge_keys(&tspace, fv);
+                        if kv.iter().any(|k| kd.contains(k)) {
+                            let (_, exact) = cx.phi_addr(&tspace, fd);
+                            if !cx.hits(&exact, &tspace, fv) {
+                                cx.tol("t5");
+                            }
+                        } else {
+                            let shown = kv
+                                .first()
+                                .map_or_else(|| "no mergeable piece".to_string(), MergeKey::show);
+                            cx.out.push(
+                                p1(format!(
+                                    "P-P1 {}+{off:#x} {tname} resolves to {fd:#x} ({}: {}) in the direct link and to {fv:#x} ({shown}) through -r, not equal content",
+                                    d.label(o, s),
+                                    describe(d, &tspace, fd),
+                                    kd[0].show()
+                                ))
+                                .site(at_site)
+                                .at(pv),
+                            );
+                        }
+                        continue;
+                    }
+                }
                 // S = (S + A) - A with D's addend on both sides: x86's
                 // `S - 4` may lie in the piece before S.
                 let ad = addend_of(d, o, s, off, w, a);
@@ -1106,10 +1320,10 @@ fn exclusions(l: &[String], rl: &[String], r: &RModel, d: &Side<'_>) -> Vec<(cha
         // input set is judged by §3.8 on its own link).
         let paths: BTreeSet<&str> = r.members.iter().map(|(p, _)| p.as_str()).collect();
         let in_d: BTreeSet<(String, String)> = d
-            .objs
+            .keys
             .iter()
-            .filter(|o| paths.contains(o.path.as_str()))
-            .filter_map(|o| o.member.clone().map(|m| (o.path.clone(), m)))
+            .filter(|k| paths.contains(k.0.as_str()))
+            .filter_map(|k| k.1.clone().map(|m| (k.0.clone(), m)))
             .collect();
         if in_d != r.members {
             x.push((
@@ -1266,7 +1480,7 @@ pub fn compose(direct: &Link<'_>, via: &Link<'_>, rmap: &Partial<'_>) -> Report 
     let d = side("direct link", direct.output, &ds, direct.map, lwords.as_deref());
     let vwords = words(via);
     let v = side("link through -r", via.output, &vs, via.map, vwords.as_deref());
-    let (d, v) = match (d, v) {
+    let (mut d, mut v) = match (d, v) {
         (Ok(d), Ok(v)) => (d, v),
         (d, v) => {
             for e in [d.err(), v.err()].into_iter().flatten() {
@@ -1276,6 +1490,9 @@ pub fn compose(direct: &Link<'_>, via: &Link<'_>, rmap: &Partial<'_>) -> Report 
             return report;
         }
     };
+    let thin = thin_of(rmap.link.src, &r);
+    alias_thin(&mut d, &thin, lwords.as_deref());
+    alias_thin(&mut v, &thin, vwords.as_deref());
     let excl =
         exclusions(lwords.as_deref().unwrap_or(&[]), rwords.as_deref().unwrap_or(&[]), &r, &d);
     if !excl.is_empty() {

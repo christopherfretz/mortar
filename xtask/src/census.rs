@@ -208,10 +208,36 @@ pub const QUICK_VARIATIONS: &[&str] =
     &["default", "no-pie", "rdynamic", "x-no-pie-now", "x-static-pie", "r-plain"];
 
 /// The refusals of a `-r` line that are out of M4-r for now: a key
-/// mortar's diagnostic carries, and why (`spec/diag.md` §4.4). `-r`
-/// itself until RL-7 lifts the refusal.
-pub const OUT_OF_M4R: &[(&str, &str)] =
-    &[("unsupported option: -r", "-r is refused until RL-7 (docs/ROADMAP.md M4-r)")];
+/// mortar's diagnostic carries, and why (`spec/diag.md` §4.4). RL-7
+/// (WP-187) lifted `-r` itself; what stays refused is a later package's
+/// name (or C-R4's for good).
+pub const OUT_OF_M4R: &[(&str, &str)] = &[
+    ("unsupported feature: section groups with -r", "RL-8: COMDAT groups at -r (C++)"),
+    ("unsupported feature: removed .eh_frame records at -r", "RL-8: spec/layout.md L-R6"),
+    (
+        "unsupported feature: relocations against a dropped COMDAT copy at -r",
+        "RL-8: spec/image.md I-R7",
+    ),
+    (
+        "unsupported feature: the Mason container at -r",
+        "RL-12: spec/meta.md MT-30 at -r (kiln's objects)",
+    ),
+    ("unsupported feature: x86-64 output with -r", "RL-9: x86-64 at -r"),
+    ("unsupported feature: i386 output with -r", "RL-9: i386 (REL) at -r"),
+    ("unsupported option: -s with -r", "RL-11: spec/image.md I-R9"),
+    ("unsupported option: --strip-all with -r", "RL-11: spec/image.md I-R9"),
+    ("unsupported option: -S with -r", "RL-11: spec/image.md I-R9"),
+    ("unsupported option: --strip-debug with -r", "RL-11: spec/image.md I-R9"),
+    ("unsupported option: -T with -r", "RL-11: spec/cli.md C-R3"),
+    (
+        "unsupported option: --gc-sections with -r",
+        "spec/cli.md C-R4: a partial link cannot know what the final link needs (for good)",
+    ),
+    (
+        "unsupported feature: GCC LTO sections with -r",
+        "spec/resolve.md RV-R9: a line that needs it",
+    ),
+];
 
 /// The refusals a rule puts out of M2: a key mortar's diagnostic carries,
 /// and the rule.
@@ -671,7 +697,7 @@ impl Lane {
             };
         }
         if var.is_relocatable() {
-            return self.relocatable(d, &dir, &reference, &out, &map, ref_run.is_some());
+            return self.relocatable(d, var, &dir, &reference, &out, &map, ref_run.is_some());
         }
         let ours = match self.try_output(d, var, &out) {
             Ok(r) => r,
@@ -733,9 +759,11 @@ impl Lane {
     /// reference's, final-linked by the driver (GNU ld) and run: the two
     /// programs must end and print alike. LT-R1's final link by mortar
     /// and P-P1 are the link tests' (RL-7 adds them here).
+    #[allow(clippy::too_many_arguments, reason = "one line's files")]
     fn relocatable(
         &self,
         d: &Driver,
+        var: &Variation,
         dir: &Path,
         reference: &Path,
         out: &Path,
@@ -765,7 +793,12 @@ impl Lane {
                 f.message
             ));
         }
-        let env: Vec<(&str, &str)> = d.env.iter().map(|(k, v)| (k.as_str(), v.as_str())).collect();
+        let mut env: Vec<(&str, &str)> =
+            d.env.iter().map(|(k, v)| (k.as_str(), v.as_str())).collect();
+        // The final line's words, for mortar's own finals (below).
+        let final_args = dir.join("final.args");
+        let final_args_s = final_args.display().to_string();
+        env.push(("CENSUS_ARGS", &final_args_s));
         let mut runs = Vec::new();
         for (name, rout) in [("ref", reference), ("mortar", out)] {
             let exe = dir.join(format!("{name}.final"));
@@ -793,7 +826,91 @@ impl Lane {
                 runs[0], runs[1]
             ));
         }
-        Outcome::Ok
+        self.mortar_finals(d, var, dir, out, map, &final_args, &runs[0])
+    }
+
+    /// RL-7 (WP-187; spec/harness.md "The census at `-r`"): mortar's own
+    /// final link, on the driver's final words (the last final above, of
+    /// mortar's `-r` output), of the object directly (`D`) and of mortar's
+    /// `-r` output (`V`); both programs run as GNU ld's through `-r` did,
+    /// and P-P1 judges `D`, `V` and the `-r` output `R`.
+    #[allow(clippy::too_many_arguments, reason = "one line's files")]
+    fn mortar_finals(
+        &self,
+        d: &Driver,
+        var: &Variation,
+        dir: &Path,
+        r_out: &Path,
+        r_map: &Path,
+        final_args: &Path,
+        want: &(End, String),
+    ) -> Outcome {
+        let Ok(captured) = std::fs::read_to_string(final_args) else {
+            return Outcome::Fail("no final line captured".to_owned());
+        };
+        let wrap_s = self.wrap_dir(d.arch).display().to_string();
+        let words: Vec<String> = captured
+            .lines()
+            .skip(1)
+            .filter(|w| !(w.starts_with("-L") && w[2..].trim_end_matches('/') == wrap_s))
+            .map(str::to_owned)
+            .collect();
+        let r_s = r_out.display().to_string();
+        if !words.contains(&r_s) {
+            return Outcome::Fail(format!("the final line does not name {r_s}"));
+        }
+        let object = self.object(d, var.flavour).display().to_string();
+        let mut links = Vec::new();
+        for (name, input) in [("direct", object.as_str()), ("via", r_s.as_str())] {
+            let exe = dir.join(format!("mortar.{name}"));
+            let exe_map = dir.join(format!("mortar.{name}.map"));
+            let mut argv: Vec<String> = words
+                .iter()
+                .map(|w| if *w == r_s { input.to_owned() } else { w.clone() })
+                .collect();
+            if let Some(i) = argv.iter().position(|w| w == "-o")
+                && let Some(o) = argv.get_mut(i + 1)
+            {
+                *o = exe.display().to_string();
+            }
+            argv.push(format!("--mortar-map={}", exe_map.display()));
+            match run(&self.mortar, &argv, dir, &[], TOOL_LIMITS) {
+                Ok(o) if o.end.success() => {}
+                Ok(o) => {
+                    return Outcome::Fail(format!(
+                        "mortar's final link ({name}): {}",
+                        o.first_error_line()
+                    ));
+                }
+                Err(e) => return Outcome::Fail(format!("mortar's final link ({name}): {e}")),
+            }
+            match self.run_program(d.arch, &exe) {
+                Ok(r) if r == *want => {}
+                Ok(r) => {
+                    return Outcome::Fail(format!(
+                        "mortar's final ({name}) runs differently: {r:?}, GNU ld's through -r {want:?}"
+                    ));
+                }
+                Err(e) => return Outcome::Fail(format!("mortar's final ({name}): {e}")),
+            }
+            links.push((exe, exe_map));
+        }
+        let [(dx, dm), (vx, vm)]: [(PathBuf, PathBuf); 2] =
+            links.try_into().unwrap_or_else(|_| unreachable!());
+        let args = crate::plumb::ComposeArgs {
+            links: [(dx, dm), (vx, vm), (r_out.to_path_buf(), r_map.to_path_buf())],
+            format: mortar_plumb::Format::Mortar,
+            r_format: mortar_plumb::Format::Mortar,
+            lines: [None, None, None],
+        };
+        match crate::plumb::compose_report(&args) {
+            Ok((true, _)) => Outcome::Ok,
+            Ok((false, text)) => Outcome::Fail(format!(
+                "P-P1: {}",
+                text.lines().find(|l| l.contains("P-P1")).unwrap_or(text.trim())
+            )),
+            Err(e) => Outcome::Fail(format!("P-P1: {e}")),
+        }
     }
 }
 
@@ -1141,7 +1258,7 @@ mod tests {
     }
 
     // "The census at `-r`" (RL-6): the `-r` lines are a class of the
-    // summary line, refused by name until RL-7.
+    // summary line; since RL-7 a refusal passes by a later package's name.
     #[test]
     fn relocatable_lines_are_counted() {
         let line = |variation, outcome| Line {

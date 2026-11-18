@@ -1,0 +1,82 @@
+# RL-7 (WP-187): BusyBox's partial-link line as clang-22 passes it
+# (record spec/landed/layout/WP-154.md §A.1: `applets/applets.o` into
+# `applets/built-in.o`), with clang's objects: `--build-id` writes the
+# note over the -r output (I-R8). GNU ld keeps clang's `.llvm_addrsig`
+# at -r (elflint does not know its type); mortar drops it (L-R1). The applet table is a
+# `.data.rel.ro` array of names and function pointers, as BusyBox's.
+# mortar's -r is judged by stage R, linked twice (LT-R4), and
+# final-linked by every linker of the matrix, static and PIE (LT-R1,
+# LT-R3); GNU ld's -r of the same line beside it for the tools.
+#@ spec: harness.md "Relocatable outputs"
+#@ spec: cli.md "3.16"
+#@ arch: aarch64
+#@ requires: clang eu-elflint
+
+cc(clang) -O2 -ffunction-sections -fdata-sections applets.c -o applets.o
+cc(clang) -O2 main.c -o main.o
+partial mortar -EL --hash-style=gnu --build-id --eh-frame-hdr -o built-in.o applets.o
+partial bfd -EL --hash-style=gnu --build-id --eh-frame-hdr -o built-in.bfd.o applets.o
+check readelf -hW built-in.o
+  has: Type: *REL (Relocatable file)
+check readelf -nW built-in.o
+  has: NT_GNU_BUILD_ID
+check nm built-in.o
+  has: T run_applet$
+  has: T list_applets$
+  has: t hello_main$
+check elflint built-in.o
+check elflint built-in.bfd.o
+  allow: '.llvm_addrsig' has unsupported type
+
+link gcc -static main.o applets.o -o direct
+run direct
+  stdout: answer
+  stdout: hello
+  stdout: true
+  stdout: hello
+  stdout: 42
+  exit: 0
+link gcc -static main.o built-in.o -o via
+run via
+  stdout: answer
+  stdout: hello
+  stdout: true
+  stdout: hello
+  stdout: 42
+link gcc main.o applets.o -o direct-pie
+run direct-pie
+  stdout: answer
+  stdout: hello
+  stdout: true
+  stdout: hello
+  stdout: 42
+link gcc main.o built-in.o -o via-pie
+run via-pie
+  stdout: answer
+  stdout: hello
+  stdout: true
+  stdout: hello
+  stdout: 42
+
+#--- applets.c
+#include <stdio.h>
+#include <string.h>
+static int answer_main(void) { printf("%d\n", 42); return 0; }
+static int hello_main(void) { puts("hello"); return 0; }
+static int true_main(void) { return 0; }
+static const struct { const char *name; int (*main)(void); } applets[] = {
+  {"answer", answer_main}, {"hello", hello_main}, {"true", true_main},
+};
+int list_applets(void) {
+  for (unsigned i = 0; i < sizeof applets / sizeof applets[0]; i++) puts(applets[i].name);
+  return 0;
+}
+int run_applet(const char *name) {
+  for (unsigned i = 0; i < sizeof applets / sizeof applets[0]; i++)
+    if (strcmp(applets[i].name, name) == 0) return applets[i].main();
+  return 127;
+}
+#--- main.c
+int list_applets(void);
+int run_applet(const char *);
+int main(void) { list_applets(); return run_applet("hello") + run_applet("answer"); }

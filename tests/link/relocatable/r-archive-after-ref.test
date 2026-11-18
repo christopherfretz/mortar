@@ -1,0 +1,56 @@
+# RL-7 (WP-187): an archive after an object that references a member
+# (spec/resolve.md RV-R2): the member is extracted at -r as in a final
+# link, and the member it references in turn; the third is not. Judged by
+# stage R, linked twice (LT-R4), final-linked by every linker of the
+# matrix, static and PIE.
+#@ spec: resolve.md "11"
+#@ spec: harness.md "Relocatable outputs"
+#@ arch: aarch64
+#@ requires: eu-elflint
+
+cc -O2 m1.c -o m1.o
+cc -O2 m2.c -o m2.o
+cc -O2 m3.c -o m3.o
+cc -O2 user.c -o user.o
+cc -O2 main.c -o main.o
+ar rcs libm.a m1.o m2.o m3.o
+partial mortar -o comp.o user.o libm.a
+partial bfd -m %{emulation} -o comp.bfd.o user.o libm.a
+check nm comp.o
+  has: T m1_value$
+  has: T m2_value$
+  has: T user_value$
+  not: m3_value
+check nm comp.bfd.o
+  has: T m1_value$
+  has: T m2_value$
+  not: m3_value
+check elflint comp.o
+
+link gcc -static main.o user.o libm.a -o direct
+run direct
+  stdout: 33
+link gcc -static main.o comp.o -o via
+run via
+  stdout: 33
+link gcc main.o user.o libm.a -o direct-pie
+run direct-pie
+  stdout: 33
+link gcc main.o comp.o -o via-pie
+run via-pie
+  stdout: 33
+
+#--- m1.c
+int m2_value(void);
+int m1_value(void) { return 11 + m2_value(); }
+#--- m2.c
+int m2_value(void) { return 22; }
+#--- m3.c
+int m3_value(void) { return 33; }
+#--- user.c
+int m1_value(void);
+int user_value(void) { return m1_value(); }
+#--- main.c
+#include <stdio.h>
+int user_value(void);
+int main(void) { printf("%d\n", user_value()); return 0; }

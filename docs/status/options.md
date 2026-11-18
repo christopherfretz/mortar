@@ -4,9 +4,9 @@ Generated from `crates/mortar_cli/src/rows.rs` by `mortar_cli::status_markdown`;
 do not edit. `MORTAR_BLESS=1 cargo test -p mortar_cli --test table` rewrites it.
 The rules are `spec/cli.md`.
 
-488 rows: 111 supported, 8 partial, 29 noop, 340 refused.
+488 rows: 113 supported, 8 partial, 29 noop, 338 refused.
 
-At `-r` (`spec/cli.md` C-R2b): 25 act (11 of them refused until their package lands), 153 noop, 271 as in a final link, 20 conflicting-options with -r, 19 refused.
+At `-r` (`spec/cli.md` C-R2b): 25 act (9 of them refused until their package lands), 153 noop, 271 as in a final link, 20 conflicting-options with -r, 19 refused.
 
 Origin: 292 GNU ld, 117 lld only, 21 mold only, 39 lld and mold only, 19 mortar's own.
 
@@ -22,11 +22,11 @@ Origin: 292 GNU ld, 117 lld only, 21 mold only, 39 lld and mold only, 19 mortar'
 | `-shared`, `--Bshareable` |  | GNU, lld, mold | all | partial: AArch64 and x86-64 (i386 refused, `feature`, until WP-130; local-exec TLS in a shared object refused, dyn.md D-119; `extern "C++"` version-script entries refused, dyn.md D-114). Not caught (with every reference): non-PIC AArch64 code that reaches its own exported data only through a form dyn.md D-117's analysis does not follow (a spilled or reloaded base, a computed index, a 32-bit register, a value passed to a callee, code outside a sized function symbol, hand-written assembly; 3 of 306 measured bound definitions, every object refused for another use); an object whose `reloc-model` row (hod's) says `static` or `pie` and that defines an exported preemptible datum is refused whatever that analysis finds (meta.md MT-26, WP-129). Refused although correct: -fPIC code that forms an address before the start of a static object placed after exported data (`tab - 1`, GCC and Clang AArch64 -O0; dyn.md D-117; remedy -fdata-sections). Not judged on x86-64 (x64.md X-62): a section-relative PC-relative field in code naming exported data (none measured in GCC, Clang or kiln output at any -O) | conflicting-options with -r (C-R1) | `kind` | Produce a shared object |
 | `-pie`, `--pic-executable` |  | GNU, lld, mold | all | supported | conflicting-options with -r (C-R1) | `kind` | Produce a position-independent executable |
 | `-no-pie`, `--no-pic-executable` |  | GNU, lld, mold | all | supported | noop (C-R2) | `kind` | Produce a position-dependent executable (default) |
-| `-r`, `-i`, `--relocatable` |  | GNU, lld, mold | all | refused | acts: the kind; refused until RL-7 (`relocatable output (-r)`) (C-R1) | `kind` | Produce a relocatable object |
+| `-r`, `-i`, `--relocatable` |  | GNU, lld, mold | all | supported | acts: the kind (joined by RL-7, WP-187) (C-R1) | `kind` | Produce a relocatable object |
 | `-m` | EMULATION | GNU, lld, mold | all | supported | noop: a wrong emulation still refused (C-R2) | `emulation` | Link for EMULATION: aarch64linux, aarch64elf, elf_x86_64, elf_i386 |
 | `-e`, `--entry` | SYMBOL | GNU, lld, mold | all | supported | acts: accepted, e_entry 0, not a root (C-R3, L-R7, RV-R2) | `entry` | Start execution at SYMBOL |
 | `--oformat` | FORMAT | GNU, lld, mold | all | refused | as in a final link (C-R2b) | `other` | Write the output in FORMAT |
-| `-Ur` |  | GNU | all | refused | acts: as `-r` (`plan.ur`); refused until RL-7 (`relocatable output (-r)`) (C-R1) | `ur` | Produce a relocatable object with constructor tables built |
+| `-Ur` |  | GNU | all | supported | acts: as `-r` (`plan.ur`; joined by RL-7, WP-187) (C-R1) | `ur` | Produce a relocatable object with constructor tables built |
 | `-d`, `--dc`, `--dp` |  | GNU, lld, mold | all | refused | acts: commons allocated; refused until RL-11 (`-d with -r`) (C-R3, RV-R5) | `define_common` | Allocate common symbols even in a relocatable link |
 | `--no-define-common` |  | GNU | all | refused | as in a final link (C-R2b) | `other` | Leave common symbols unallocated |
 | `-q`, `--emit-relocs` |  | GNU, lld, mold | all | refused | noop: the class at -r wins (C-R2, C-R2b) | `shaping.emit_relocs` | Keep relocations in the output |

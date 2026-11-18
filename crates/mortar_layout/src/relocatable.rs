@@ -76,7 +76,9 @@ pub struct NoteSizes {
 ///
 /// WP-183 added `split` (the `.eh_frame` records of L-R6) and `notes`
 /// (the sizes `mortar_synth` plans) to WP-181's signature (`rl-sizes`
-/// S16).
+/// S16). WP-187 (RL-7) added `undefined`: the names
+/// `mortar_resolve::relocatable::undefined_without_key` lists (RV-R3), each
+/// written as one more global entry after the keys' (`spec/image.md` I-R4).
 ///
 /// # Errors
 ///
@@ -96,6 +98,7 @@ pub fn layout<'s>(
     target: &Target,
     plan: &Plan,
     notes: NoteSizes,
+    undefined: &[Box<[u8]>],
     pool: &Pool,
 ) -> Result<RelocatableLayout<'s>, Vec<LayoutDiag>> {
     // L-R4: `-d`'s commons are RL-11's; L-R2/L-R3 under
@@ -114,7 +117,8 @@ pub fn layout<'s>(
     let objects = objects(inputs, resolution)?;
     let roles = roles(resolution, liveness, &headers, target)?;
     let groups = kept_groups(&objects, resolution, &roles)?;
-    let assigned = assign(resolution, &headers, &roles, &groups, target)?;
+    let mut assigned = assign(resolution, &headers, &roles, &groups, target)?;
+    stack_note(&mut assigned, plan, target).map_err(|e| vec![e])?;
     let removed = eh_removed(split, &assigned.eh_inputs, |s| {
         matches!(
             resolution.sections.get(s).map(|r| r.state),
@@ -143,6 +147,7 @@ pub fn layout<'s>(
         removed_sizes,
         target,
         notes,
+        undefined,
         pool,
     })
 }
@@ -969,6 +974,53 @@ fn assign<'n>(
     })
 }
 
+/// The name of L-R6a's note.
+const STACK_NOTE: &[u8] = b".note.GNU-stack";
+
+/// L-R6a (`.note.GNU-stack`), GNU ld's rule per target, over the output
+/// sections L-R1 made. The inputs' notes are merged by L-R1 (an input's
+/// `SHF_EXECINSTR` wins by L-R1a's union of flags: the "no option"
+/// column). Then:
+/// - `-z execstack` on AArch64 makes a merged note X (GNU ld 2.44's x86
+///   back ends leave it as the inputs make it);
+/// - with no input note, `-z execstack` makes an X note and
+///   `-z noexecstack` an N note: an output section with no piece,
+///   `PROGBITS`, alignment 1, size 0, placed after every other output
+///   section (L-R8; a choice: it has no input position);
+/// - `-z noexecstack` never clears an input's X.
+fn stack_note(a: &mut Assigned<'_>, plan: &Plan, target: &Target) -> Result<(), LayoutDiag> {
+    let notes: Vec<usize> = (0..a.pieces.len())
+        .filter(|&o| !a.member[o] && a.assignment.outsecs[OutSecId(o as u32)].name == STACK_NOTE)
+        .collect();
+    match (notes.is_empty(), plan.z.execstack) {
+        (false, Some(true)) if target.machine == Machine::AArch64 => {
+            for o in notes {
+                a.assignment.outsecs[OutSecId(o as u32)].flags |= SHF_EXECINSTR;
+            }
+        }
+        (true, Some(x)) => {
+            a.assignment
+                .outsecs
+                .push(OutSec {
+                    name: STACK_NOTE,
+                    sh_type: SHT_PROGBITS,
+                    flags: if x { SHF_EXECINSTR } else { 0 },
+                    merge: None,
+                    keep: false,
+                    fill: None,
+                    constraint: None,
+                    script_position: None,
+                })
+                .map_err(|_| internal("too many output sections"))?;
+            a.pieces.push(Vec::new());
+            a.align.push(0);
+            a.member.push(false);
+        }
+        _ => {}
+    }
+    Ok(())
+}
+
 // ---------------------------------------------------------------------
 // Step 5: the relocation records (I-R5, S6) and the removed records'
 // sizes (S12).
@@ -1165,6 +1217,8 @@ struct Build<'a, 's> {
     removed_sizes: Vec<u64>,
     target: &'a Target,
     notes: NoteSizes,
+    /// RV-R3's names with no key, written after the keys (I-R4).
+    undefined: &'a [Box<[u8]>],
     pool: &'a Pool,
 }
 
@@ -1346,7 +1400,9 @@ fn build<'s>(b: &Build<'_, 's>) -> Result<RelocatableLayout<'s>, Vec<LayoutDiag>
     // target; then .symtab, .symtab_shndx, .strtab, .shstrtab.
     let mut units: Vec<(SectionId, Unit)> = Vec::with_capacity(nout + 1);
     for (o, list) in a.pieces.iter().enumerate() {
-        units.push((list[0], Unit::Out(o as u32)));
+        // An output section with no piece is L-R6a's stack note made by
+        // `-z [no]execstack` alone: after every other output section.
+        units.push((list.first().copied().unwrap_or(SectionId(u32::MAX)), Unit::Out(o as u32)));
     }
     if let Some((_, first)) = property {
         units.push((first, Unit::Property));
@@ -1358,7 +1414,7 @@ fn build<'s>(b: &Build<'_, 's>) -> Result<RelocatableLayout<'s>, Vec<LayoutDiag>
             .members
             .iter()
             .filter_map(|&m| a.assignment.out(m))
-            .min_by_key(|o| a.pieces[o.0 as usize][0]);
+            .min_by_key(|o| a.pieces[o.0 as usize].first().copied());
         match first {
             Some(o) => groups_before.entry(o.0).or_default().push(k),
             // A kept group with no placed member stands at its own
@@ -1593,7 +1649,7 @@ fn local_index(
     }
     let index = out_index[s];
     // The merged stack note is made by the `-r` itself (I-R4).
-    if index == 0 || h.name == b".note.GNU-stack" {
+    if index == 0 || h.name == STACK_NOTE {
         return None;
     }
     Some(index)
@@ -1685,6 +1741,12 @@ fn global_counts(
                 errors.push(internal(format!("key {}: a shared definition at -r", text(key.name))));
             }
         }
+    }
+    // RV-R3: the names with no key, `STB_GLOBAL` `SHN_UNDEF` after the
+    // keys (I-R4).
+    for name in b.undefined {
+        c.entries += 1;
+        c.strtab += EntryName { name, version: None }.strtab_bytes();
     }
     if errors.is_empty() { Ok(c) } else { Err(errors) }
 }

@@ -1,0 +1,62 @@
+# RL-7 (WP-187): the kernel-style line `ld -r -o built-in.o a.o b.o`
+# without `-m` (record spec/landed/layout/WP-154.md §A.3): every linker of
+# the matrix links it as `ld` (its own -r output; mortar's judged by stage
+# R), a second time into another name compared byte for byte (I-R11,
+# LT-R4), and the result final-linked by the same linker and run.
+# `-Ur` (spec/cli.md C-R1): GNU ld and mortar link it, mortar's bytes are
+# its `-r` output's; lld and mold reject the option. Kbuild's objects:
+# `-fno-common`, a static counter, initialized and zero data, merged
+# strings, a call between the two files.
+#@ spec: harness.md "Relocatable outputs"
+#@ spec: resolve.md "11"
+#@ arch: aarch64
+#@ requires: eu-elflint
+
+cc -O2 -fno-common a.c -o a.o
+cc -O2 -fno-common b.c -o b.o
+cc -O2 main.c -o main.o
+link ld -r -o built-in.o a.o b.o
+link ld -r -o built-in.again.o a.o b.o
+check cmp built-in.o built-in.again.o
+  has: ^identical$
+link(bfd,mortar) ld -Ur -o built-in.ur.o a.o b.o
+check(mortar) cmp built-in.o built-in.ur.o
+  has: ^identical$
+check readelf -hW built-in.o
+  has: Type: *REL (Relocatable file)
+check nm built-in.o
+  has: T a_next$
+  has: T b_report$
+  has: b a_count$
+check elflint built-in.o
+
+link gcc -static main.o a.o b.o -o direct
+run direct
+  stdout: a=3 b=7 s=kernel
+link gcc -static main.o built-in.o -o via
+run via
+  stdout: a=3 b=7 s=kernel
+link gcc main.o a.o b.o -o direct-pie
+run direct-pie
+  stdout: a=3 b=7 s=kernel
+link gcc main.o built-in.o -o via-pie
+run via-pie
+  stdout: a=3 b=7 s=kernel
+
+#--- a.c
+static int a_count;
+int a_seed = 2;
+int a_next(void) { return a_seed + ++a_count; }
+const char *a_name(void) { return "kernel"; }
+#--- b.c
+#include <stdio.h>
+int a_next(void);
+const char *a_name(void);
+int b_table[4] = {4, 5, 6, 7};
+void b_report(void) {
+  int a = a_next();
+  printf("a=%d b=%d s=%s\n", a, b_table[3], a_name());
+}
+#--- main.c
+void b_report(void);
+int main(void) { b_report(); return 0; }

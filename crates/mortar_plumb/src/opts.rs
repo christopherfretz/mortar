@@ -25,8 +25,10 @@ R Next gnu -o --output
 R No gnu -shared --Bshareable
 R No gnu -pie --pic-executable
 R No gnu -no-pie --no-pic-executable
+R No gnu -r -i --relocatable
 R Next gnu -m
 R Next gnu -e --entry
+R No gnu -Ur
 R No gnu -s --strip-all
 R No gnu -S --strip-debug
 R No gnu --strip-discarded
@@ -178,9 +180,7 @@ R Next gnu --max-cache-size
 /// linker's output of a line mortar refused): whether such an option
 /// takes the next word is the table's, as for every row (WP-131, V6).
 pub const REFUSED: &str = "\
-R No gnu -r -i --relocatable
 R Next gnu --oformat
-R No gnu -Ur
 R No gnu -d --dc --dp
 R No gnu --no-define-common
 R No gnu -q --emit-relocs

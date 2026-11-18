@@ -573,6 +573,7 @@ impl World {
             recheck: &RECHECK,
             build_id: self.plan.shaping.build_id.as_ref().and_then(mortar_image::link::tree_style),
             args: &[],
+            undefined: &[],
         }
     }
 

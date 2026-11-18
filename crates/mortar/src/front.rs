@@ -250,7 +250,7 @@ const BYTES_PER_WORKER: u64 = 4 << 20;
 /// link does not pay for workers it cannot use. The count is a function
 /// of the inputs, never of a clock; an explicit `--threads` (or a
 /// scheduling seed, which exists to exercise schedules) keeps the pool.
-fn capped(pool: Pool, plan: &Plan, resident: u64) -> Pool {
+pub(crate) fn capped(pool: Pool, plan: &Plan, resident: u64) -> Pool {
     if plan.bookkeeping.threads.is_some() || pool.seed().is_some() {
         return pool;
     }
@@ -312,7 +312,7 @@ fn mismatches(out: &mortar_resolve::Outcome) -> Vec<Mismatch> {
 /// A layout diagnostic as the collector takes it: its own key, else
 /// `fallback` (`spec/model.md` §8: `(90, 0, ChunkId)`, or a count); its
 /// input section as the place.
-fn layout_diag(
+pub(crate) fn layout_diag(
     inputs: &Inputs<'_>,
     res: &Resolution,
     d: LayoutDiag,

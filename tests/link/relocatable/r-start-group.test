@@ -1,0 +1,49 @@
+# RL-7 (WP-187): `--start-group`/`--end-group` at -r (record
+# spec/landed/layout/WP-154.md §A.3, all three references): two archives
+# that need each other are searched until nothing changes, as in a final
+# link (spec/resolve.md RV-R2). Judged by stage R, linked twice (LT-R4),
+# final-linked by every linker of the matrix.
+#@ spec: resolve.md "11"
+#@ spec: harness.md "Relocatable outputs"
+#@ arch: aarch64
+#@ requires: eu-elflint
+
+cc -O2 a1.c -o a1.o
+cc -O2 b1.c -o b1.o
+cc -O2 a2.c -o a2.o
+cc -O2 user.c -o user.o
+cc -O2 main.c -o main.o
+ar rcs liba.a a1.o a2.o
+ar rcs libb.a b1.o
+partial mortar -o comp.o user.o --start-group liba.a libb.a --end-group
+partial bfd -m %{emulation} -o comp.bfd.o user.o --start-group liba.a libb.a --end-group
+check nm comp.o
+  has: T a1_value$
+  has: T b1_value$
+  has: T a2_value$
+check nm comp.bfd.o
+  has: T a2_value$
+check elflint comp.o
+
+link gcc -static main.o user.o -Wl,--start-group liba.a libb.a -Wl,--end-group -o direct
+run direct
+  stdout: 6
+link gcc -static main.o comp.o -o via
+run via
+  stdout: 6
+
+#--- a1.c
+int b1_value(void);
+int a1_value(void) { return 1 + b1_value(); }
+#--- b1.c
+int a2_value(void);
+int b1_value(void) { return 2 + a2_value(); }
+#--- a2.c
+int a2_value(void) { return 3; }
+#--- user.c
+int a1_value(void);
+int user_value(void) { return a1_value(); }
+#--- main.c
+#include <stdio.h>
+int user_value(void);
+int main(void) { printf("%d\n", user_value()); return 0; }

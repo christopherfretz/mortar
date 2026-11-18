@@ -849,8 +849,11 @@ GNU ld and mold exit 0.
 
 ### 3.16 Relocatable output (`-r`) [M4-r; planned: WP-154's cut, record `spec/landed/layout/WP-154.md` §F]
 
-Until the join of the first `-r` package, `-r` stays `refused`
-(`unsupported option: -r`, as today). The rules below are those the
+The join of the first `-r` package (RL-7, WP-187) made `-r` and `-Ur`
+`supported`: AArch64 C objects link; what a later package owns stays
+refused by name (`spec/diag.md` §4.4: section groups and removed
+`.eh_frame` records until RL-8, x86-64 and i386 outputs until RL-9, and
+the option refusals of C-R2b and C-R4). The rules below are those the
 packages implement. "At `-r`" means `Plan.kind == Relocatable`. The
 evidence for each row is in `tests/relocatable-design/work/options.log`
 and `census-lines.txt` (record §A, §B).
@@ -961,9 +964,9 @@ of the rows C-R2, C-R2a, C-R3 and C-R4 do not name:
   option as the parse completes its spelling (`Use::spelling`: `-s`,
   `--strip-all`, `--script` for `--script=x`); a `-z` keyword with its
   value (`-z stack-size=4096`, `-z gcs=always`) and `--format` with its
-  value (`--format=binary`) (WP-182). `-r` and `-Ur` are the exception:
-  until the join they keep their final-link refusal,
-  `unsupported option: -r`.
+  value (`--format=binary`) (WP-182). `-r` and `-Ur` were the exception
+  until the join (RL-7, WP-187): they kept their final-link refusal,
+  `unsupported option: -r`, and are `supported` since.
 
 **C-R2a (`-z` keywords at `-r`, by measurement).** Every `-z` keyword
 that GNU ld 2.44 lists in `--help` for each target was run at `-r`
@@ -1008,7 +1011,7 @@ per refused keyword), `r-stack-note`.
 | `--defsym SYM=EXPR` | GNU ld and lld define `SYM` in the output: absolute, or relative to a section. mold does nothing. | refused until RL-11, then GNU ld's | RL-11 |
 | `--force-group-allocation` | every group is dissolved: its members become ordinary sections merged by name, and no `SHT_GROUP` is written (GNU ld and lld). This is the sound form of the pre-link idiom (record §A.4): `--force-group-allocation` before `objcopy --localize-hidden` | L-R3 | RL-8 |
 | `--build-id[=STYLE]` | the note is written over the `-r` output (I-69's styles; GNU ld and lld write one, mold none) | I-R8 | RL-4 |
-| `-z execstack`, `-z noexecstack` | GNU ld's stack-note table, per target | L-R6a | RL-7 |
+| `-z execstack`, `-z noexecstack` | GNU ld's stack-note table, per target (an option-made note with no input note is written last before `.symtab`, L-R8) | L-R6a | RL-7 (landed, WP-187) |
 | `--unique`, `--unique=PATTERN` | one output section per selected input section (GNU ld's form; lld has only the bare form, mold misparses it) | L-R11 | RL-11 |
 
 **C-R4 (options refused at `-r`, by name).** Each is

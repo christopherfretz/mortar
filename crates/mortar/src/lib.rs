@@ -22,6 +22,7 @@ pub mod image;
 pub mod incremental;
 pub mod odr_runtime;
 mod proof;
+pub mod relocatable;
 mod sites;
 pub mod syms;
 pub mod timing;
@@ -298,6 +299,50 @@ fn invoke_with(
         }
     };
     let env = front::Env { cwd, pool, replay, slack: session.is_some() };
+    let mut incremental_lines = String::new();
+    let mut removed = String::new();
+    let outputs = Outputs {
+        map: map_path.as_deref(),
+        mortar_map: mortar_map_path.as_deref(),
+        dependency: dependency_path.as_deref(),
+        verbose: plan.bookkeeping.verbose,
+        print_map,
+        print_to,
+    };
+    // `-r` (WP-187): its own front and image (`relocatable`); a final link
+    // pays this one comparison.
+    if plan.kind == mortar_core::plan::OutputKind::Relocatable {
+        let mut r = relocatable::front(plan.clone(), env, &store, &diagnostics, &mut timer);
+        if let Some(f) = &mut r {
+            f.args = parsed.args.iter().map(|a| a.as_encoded_bytes().to_vec()).collect();
+        }
+        let reads = written::Reads::new(&parsed, cwd, store.inodes());
+        if let Some(f) = &r
+            && written::clear(
+                &written::registry(&parsed, cwd, &out_path, &[]),
+                &reads,
+                &f.inputs.link.opened,
+                cwd,
+                &diagnostics,
+            )
+            && let Some(w) = relocatable::write(f, &store, &out_path, &diagnostics, &mut timer)
+        {
+            let maps = Maps { text: w.text, machine: w.machine };
+            outputs.write(&maps, &f.plan, &f.inputs.link, &mut stdout, &diagnostics);
+        }
+        drop(r);
+        return finish(
+            diagnostics,
+            &emit_refusals,
+            &out_path,
+            &reads,
+            timer,
+            stdout,
+            color,
+            removed,
+            incremental_lines,
+        );
+    }
     let mut front = front::front(plan.clone(), env, &store, &diagnostics, &mut timer);
     // The map's `arg` records, in every map (`spec/plumb.md` §3.2a).
     if let Some(f) = &mut front {
@@ -306,8 +351,9 @@ fn invoke_with(
     if let Some(f) = &mut front {
         f.keep_leaves = session.is_some();
     }
-    let mut incremental_lines = String::new();
-    let removed = front.as_ref().map_or_else(String::new, |f| removed_lines(prog, f));
+    if let Some(f) = &front {
+        removed = removed_lines(prog, f);
+    }
     // cli.md §3.14: no file the link writes is a file it read or another
     // file it writes, decided before anything is written.
     let reads = written::Reads::new(&parsed, cwd, store.inodes());
@@ -327,48 +373,7 @@ fn invoke_with(
     {
         let linked = link_image(f, &store, &out_path, &diagnostics, &mut timer);
         if let Some((maps, written)) = linked {
-            // I-79, I-120: the maps of a successful link only.
-            for (path, text) in [(&map_path, &maps.text), (&mortar_map_path, &maps.machine)] {
-                if let Some(m) = path
-                    && let Err((k, d)) = mortar_image::output::write_whole(m, text, 0o666)
-                {
-                    diagnostics.emit(k, d);
-                }
-            }
-            // input.md §10.4: the dependency file, of a successful link.
-            if let Some(d) = &dependency_path {
-                write_dependency_file(f, d, &diagnostics);
-            }
-            // cli.md §5.1: `--verbose`'s text (a message, S-1) of a link
-            // that succeeded, before -M's map.
-            if plan.bookkeeping.verbose && !diagnostics.has_errors() {
-                let text = mortar_cli::print_version_text(mortar_cli::VersionStyle::Emulations);
-                match print_to {
-                    PrintMap::Capture => stdout.push_str(&text),
-                    PrintMap::Stdout => {
-                        let _ = mortar_diag::stream::to_stdout(&text);
-                    }
-                }
-            }
-            // cli.md §3.15 (S-2): -M's map is an output; written last of
-            // the outputs that can fail the link, before the state.
-            if print_map && !diagnostics.has_errors() {
-                let text = String::from_utf8_lossy(&maps.text);
-                match print_to {
-                    PrintMap::Capture => stdout.push_str(&text),
-                    PrintMap::Stdout => {
-                        if let Err(e) = mortar_diag::stream::to_stdout(&text) {
-                            diagnostics.emit(
-                                Key::new(mortar_image::PHASE_OUTPUT, 0, 0),
-                                Diagnostic::error(mortar_diag::Kind::CannotWriteOutput {
-                                    path: "standard output (-M)".to_owned(),
-                                    reason: mortar_diag::os_reason(&e),
-                                }),
-                            );
-                        }
-                    }
-                }
-            }
+            outputs.write(&maps, &f.plan, &f.inputs.link, &mut stdout, &diagnostics);
             // spec/incr.md IN-17, IN-21: the state, of a successful link.
             if let Some(s) = session
                 && !diagnostics.has_errors()
@@ -385,15 +390,43 @@ fn invoke_with(
         }
     }
     drop(front);
+    finish(
+        diagnostics,
+        &emit_refusals,
+        &out_path,
+        &reads,
+        timer,
+        stdout,
+        color,
+        removed,
+        incremental_lines,
+    )
+}
+
+/// The end of a link (final or `-r`): the refusals of options, then the
+/// verdict. I-66: a link that fails after the command line leaves no
+/// output (GNU ld's choice; never an input, never a non-regular file).
+#[allow(clippy::too_many_arguments, reason = "the parts of an Invocation")]
+fn finish(
+    diagnostics: Collector,
+    emit_refusals: &dyn Fn(&Collector),
+    out_path: &Path,
+    reads: &written::Reads,
+    timer: Timer,
+    stdout: String,
+    color: Color,
+    removed: String,
+    incremental: String,
+) -> Invocation {
     emit_refusals(&diagnostics);
     if diagnostics.has_errors() {
-        // I-66: a link that fails after the command line leaves no output
-        // (GNU ld's choice; never an input, never a non-regular file).
-        mortar_image::output::remove_stale_output(&out_path, &reads.identities());
+        mortar_image::output::remove_stale_output(out_path, &reads.identities());
         return Invocation {
+            outcome: Outcome::Failed(diagnostics.finish()),
+            color,
+            phases: timer.finish(),
             removed,
-            incremental: incremental_lines,
-            ..failed(diagnostics, timer.finish())
+            incremental,
         };
     }
     Invocation {
@@ -401,7 +434,72 @@ fn invoke_with(
         color,
         phases: timer.finish(),
         removed,
-        incremental: incremental_lines,
+        incremental,
+    }
+}
+
+/// The files a successful link writes after its output (I-79, I-120,
+/// `spec/input.md` §10.4, `spec/cli.md` §3.15, §5.1).
+struct Outputs<'p> {
+    map: Option<&'p Path>,
+    mortar_map: Option<&'p Path>,
+    dependency: Option<&'p Path>,
+    verbose: bool,
+    print_map: bool,
+    print_to: PrintMap,
+}
+
+impl Outputs<'_> {
+    fn write(
+        &self,
+        maps: &Maps,
+        plan: &Plan,
+        link: &mortar_core::inputs::LinkInputs<'_>,
+        stdout: &mut String,
+        diagnostics: &Collector,
+    ) {
+        // I-79, I-120: the maps of a successful link only.
+        for (path, text) in [(self.map, &maps.text), (self.mortar_map, &maps.machine)] {
+            if let Some(m) = path
+                && let Err((k, d)) = mortar_image::output::write_whole(m, text, 0o666)
+            {
+                diagnostics.emit(k, d);
+            }
+        }
+        // input.md §10.4: the dependency file, of a successful link.
+        if let Some(d) = self.dependency {
+            write_dependency_file(plan, link, d, diagnostics);
+        }
+        // cli.md §5.1: `--verbose`'s text (a message, S-1) of a link that
+        // succeeded, before -M's map.
+        if self.verbose && !diagnostics.has_errors() {
+            let text = mortar_cli::print_version_text(mortar_cli::VersionStyle::Emulations);
+            match self.print_to {
+                PrintMap::Capture => stdout.push_str(&text),
+                PrintMap::Stdout => {
+                    let _ = mortar_diag::stream::to_stdout(&text);
+                }
+            }
+        }
+        // cli.md §3.15 (S-2): -M's map is an output; written last of the
+        // outputs that can fail the link, before the state.
+        if self.print_map && !diagnostics.has_errors() {
+            let text = String::from_utf8_lossy(&maps.text);
+            match self.print_to {
+                PrintMap::Capture => stdout.push_str(&text),
+                PrintMap::Stdout => {
+                    if let Err(e) = mortar_diag::stream::to_stdout(&text) {
+                        diagnostics.emit(
+                            Key::new(mortar_image::PHASE_OUTPUT, 0, 0),
+                            Diagnostic::error(mortar_diag::Kind::CannotWriteOutput {
+                                path: "standard output (-M)".to_owned(),
+                                reason: mortar_diag::os_reason(&e),
+                            }),
+                        );
+                    }
+                }
+            }
+        }
     }
 }
 
@@ -414,13 +512,18 @@ fn removed_lines(prog: &str, f: &front::Front<'_>) -> String {
     mortar_live::print_gc_sections(prog, &f.inputs, &f.resolution, &f.assignment, &f.liveness)
 }
 
-/// `--dependency-file` (`spec/input.md` §10.4) of the link `f` to `path`.
-fn write_dependency_file(f: &front::Front<'_>, path: &Path, diagnostics: &Collector) {
-    let target = f.plan.output.as_deref().unwrap_or_else(|| OsStr::new("a.out"));
+/// `--dependency-file` (`spec/input.md` §10.4) of a link to `path`.
+fn write_dependency_file(
+    plan: &Plan,
+    link: &mortar_core::inputs::LinkInputs<'_>,
+    path: &Path,
+    diagnostics: &Collector,
+) {
+    let target = plan.output.as_deref().unwrap_or_else(|| OsStr::new("a.out"));
     // WP-150: the `--version-script` and `--dynamic-list` files, in
     // command-line order before the inputs (GNU ld's order; lld lists
     // them before the inputs too, mold sorted), each once.
-    let scripts = f.plan.scripts.iter().filter(|s| {
+    let scripts = plan.scripts.iter().filter(|s| {
         matches!(
             s.role,
             mortar_core::plan::ScriptRole::VersionScript
@@ -430,7 +533,7 @@ fn write_dependency_file(f: &front::Front<'_>, path: &Path, diagnostics: &Collec
     let mut seen = std::collections::HashSet::new();
     let paths: Vec<&[u8]> = scripts
         .map(|s| s.path.as_encoded_bytes())
-        .chain(mortar_input::dependency_paths(&f.inputs.link))
+        .chain(mortar_input::dependency_paths(link))
         // The runtime input (WP-198) is no file: Make has nothing to stat.
         .filter(|p| *p != odr_runtime::NAME.as_bytes())
         .filter(|p| seen.insert(*p))

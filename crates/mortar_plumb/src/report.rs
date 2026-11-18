@@ -530,9 +530,12 @@ pub struct CompCoverage {
     /// Records whose target has no input piece to map (a linker-made
     /// place, a slot, a TLS offset): judged by their form only.
     pub records_by_form: u64,
+    /// Records whose target lies in a piece of an `SHF_MERGE` section:
+    /// judged by content (item 3, WP-232), not by address.
+    pub merged_by_content: u64,
     /// What P-P1 leaves to other rules, by name (`.eh_frame` pieces).
     pub not_compared: BTreeMap<String, u64>,
-    /// The tolerances used: (t1)-(t4) and how often.
+    /// The tolerances used: (t1)-(t5) and how often.
     pub tolerances: BTreeMap<String, u64>,
 }
 
@@ -822,8 +825,8 @@ impl Report {
             );
             let _ = writeln!(
                 s,
-                "composition compared: pieces {}, records {} ({} by form), bytes {}, globals {}",
-                p.pieces, p.records, p.records_by_form, p.bytes, p.symbols
+                "composition compared: pieces {}, records {} ({} by form), bytes {}, globals {}, merged-by-content={}",
+                p.pieces, p.records, p.records_by_form, p.bytes, p.symbols, p.merged_by_content
             );
             for (l, why) in &p.not_judged {
                 let _ = writeln!(s, "not judged: relocatable composition ({l}): {why}");
