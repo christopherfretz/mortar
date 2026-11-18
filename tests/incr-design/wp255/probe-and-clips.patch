@@ -1,0 +1,198 @@
+diff --git a/crates/mortar/Cargo.toml b/crates/mortar/Cargo.toml
+index 4cfb3c41..16b2748c 100644
+--- a/crates/mortar/Cargo.toml
++++ b/crates/mortar/Cargo.toml
+@@ -49,6 +49,7 @@ mortar_plumb.workspace = true
+ # `mortar_incr::testhook`): off by default; without it no environment
+ # variable is read.
+ testhooks = ["mortar_incr/testhooks"]
++wp255probe = ["mortar_core/wp255probe"]
+ 
+ [lints]
+ workspace = true
+diff --git a/crates/mortar_core/Cargo.toml b/crates/mortar_core/Cargo.toml
+index f87437d1..b13d3cdb 100644
+--- a/crates/mortar_core/Cargo.toml
++++ b/crates/mortar_core/Cargo.toml
+@@ -8,6 +8,9 @@ license.workspace = true
+ repository.workspace = true
+ publish.workspace = true
+ 
++[features]
++wp255probe = []
++
+ [dependencies]
+ mortar_diag.workspace = true
+ mortar_elf.workspace = true
+diff --git a/crates/mortar_core/src/column.rs b/crates/mortar_core/src/column.rs
+index 25e61f00..3282b897 100644
+--- a/crates/mortar_core/src/column.rs
++++ b/crates/mortar_core/src/column.rs
+@@ -81,6 +81,8 @@ impl<I: Id, T> Column<I, T> {
+     /// Row `id`, if there is one.
+     #[must_use]
+     pub fn get(&self, id: I) -> Option<&T> {
++        #[cfg(feature = "wp255probe")]
++        probe::hit(std::any::type_name::<(I, T)>(), id.slot() as u32, 0, 1);
+         self.rows.get(id.slot())
+     }
+ 
+@@ -92,17 +94,23 @@ impl<I: Id, T> Column<I, T> {
+     /// The rows of `range`, if it lies in the column.
+     #[must_use]
+     pub fn range(&self, range: IdRange<I>) -> Option<&[T]> {
++        #[cfg(feature = "wp255probe")]
++        probe::hit(std::any::type_name::<(I, T)>(), range.slots().start as u32, 2, range.slots().len() as u64);
+         self.rows.get(range.slots())
+     }
+ 
+     /// The rows with their ids, in id order.
+     pub fn iter(&self) -> impl DoubleEndedIterator<Item = (I, &T)> + ExactSizeIterator {
++        #[cfg(feature = "wp255probe")]
++        probe::hit(std::any::type_name::<(I, T)>(), u32::MAX, 1, self.rows.len() as u64);
+         self.rows.iter().enumerate().map(|(i, row)| (I::from_index(i as u32), row))
+     }
+ 
+     /// The rows, in id order.
+     #[must_use]
+     pub fn as_slice(&self) -> &[T] {
++        #[cfg(feature = "wp255probe")]
++        probe::hit(std::any::type_name::<(I, T)>(), u32::MAX, 1, self.rows.len() as u64);
+         &self.rows
+     }
+ 
+@@ -164,6 +172,8 @@ impl<I: Id, T: fmt::Debug> fmt::Debug for Column<I, T> {
+ impl<I: Id, T> Index<I> for Column<I, T> {
+     type Output = T;
+     fn index(&self, id: I) -> &T {
++        #[cfg(feature = "wp255probe")]
++        probe::hit(std::any::type_name::<(I, T)>(), id.slot() as u32, 0, 1);
+         &self.rows[id.slot()]
+     }
+ }
+@@ -173,3 +183,43 @@ impl<I: Id, T> IndexMut<I> for Column<I, T> {
+         &mut self.rows[id.slot()]
+     }
+ }
++
++/// WP-255 throwaway probe (never committed): counts of Column reads by
++/// (phase, column type, row, kind) while `ON`.
++#[cfg(feature = "wp255probe")]
++pub mod probe {
++    use std::collections::HashMap;
++    use std::sync::Mutex;
++    use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
++    pub static ON: AtomicBool = AtomicBool::new(false);
++    pub static PHASE: AtomicU32 = AtomicU32::new(0);
++    type Log = HashMap<(u32, &'static str, u32, u8), u64>;
++    pub static LOG: Mutex<Option<Log>> = Mutex::new(None);
++    pub static NAMES: Mutex<Vec<String>> = Mutex::new(Vec::new());
++    #[inline]
++    pub fn hit(t: &'static str, id: u32, kind: u8, n: u64) {
++        if !ON.load(Ordering::Relaxed) {
++            return;
++        }
++        let ph = PHASE.load(Ordering::Relaxed);
++        let mut g = LOG.lock().unwrap();
++        *g.get_or_insert_with(HashMap::new).entry((ph, t, id, kind)).or_insert(0) += n;
++    }
++    pub fn step(name: &str) {
++        if !ON.load(Ordering::Relaxed) {
++            return;
++        }
++        NAMES.lock().unwrap().push(name.to_owned());
++        PHASE.fetch_add(1, Ordering::Relaxed);
++    }
++    pub fn start() {
++        *LOG.lock().unwrap() = Some(HashMap::new());
++        NAMES.lock().unwrap().clear();
++        PHASE.store(0, Ordering::Relaxed);
++        ON.store(true, Ordering::Relaxed);
++    }
++    pub fn stop() -> (Log, Vec<String>) {
++        ON.store(false, Ordering::Relaxed);
++        (LOG.lock().unwrap().take().unwrap_or_default(), NAMES.lock().unwrap().clone())
++    }
++}
+diff --git a/crates/mortar_core/src/wp032b_steps.rs b/crates/mortar_core/src/wp032b_steps.rs
+index f6517c3b..bad0c9f2 100644
+--- a/crates/mortar_core/src/wp032b_steps.rs
++++ b/crates/mortar_core/src/wp032b_steps.rs
+@@ -49,6 +49,8 @@ impl Steps {
+     /// (`n` 0: no unit cost is printed).
+     #[allow(clippy::cast_precision_loss)] // a printed duration
+     pub fn step(&mut self, name: &str, n: u64, unit: &str) {
++        #[cfg(feature = "wp255probe")]
++        crate::column::probe::step(&format!("{}/{name}", self.phase));
+         let Some(last) = self.last else { return };
+         let now = Instant::now();
+         let ns = now.duration_since(last).as_nanos();
+diff --git a/crates/mortar_image/src/link.rs b/crates/mortar_image/src/link.rs
+index 8cf99c1b..12d60db6 100644
+--- a/crates/mortar_image/src/link.rs
++++ b/crates/mortar_image/src/link.rs
+@@ -2543,6 +2543,45 @@ pub fn refill(link: &Link<'_, '_>, path: &Path, windows: &[u64]) -> Result<Refil
+     })
+ }
+ 
++/// WP-255 THROWAWAY: [`refill`] with the jobs given as file ranges (the
++/// update's `want` ranges), each filled as a clip.
++pub fn refill_ranges(link: &Link<'_, '_>, ranges: &[std::ops::Range<u64>]) -> Result<Refilled, Failed> {
++    with_image(link, Path::new(""), |img, plan, sealed, steps| {
++        let jobs: Vec<std::ops::Range<u64>> = ranges.to_vec();
++        let leaf_fn = img.build_id.map_or(mortar_digest::TreeFn::L128, TreeStyle::tree_fn);
++        let filled = link.pool.map(jobs.len(), |k| {
++            let j = jobs[k].clone();
++            let mut buf = vec![0u8; (j.end - j.start) as usize];
++            let mut errs = Vec::new();
++            let r = fill::fill_range(img, j.start, &mut buf, &mut errs);
++            (buf, errs, r)
++        });
++        let mut diagnostics = Vec::new();
++        let mut out = Vec::with_capacity(jobs.len());
++        for (j, (buf, errs, r)) in jobs.into_iter().zip(filled) {
++            diagnostics.extend(errs);
++            if let Err(kd) = r {
++                diagnostics.push(kd);
++            }
++            out.push((j, buf));
++        }
++        steps.step("refill", out.iter().map(|j| j.1.len() as u64).sum(), "byte");
++        if !diagnostics.is_empty() {
++            return Err(Failed { diagnostics });
++        }
++        Ok(Refilled {
++            jobs: out,
++            leaves: Vec::new(),
++            leaf_fn,
++            build_id: img.build_id,
++            sealed,
++            file_size: plan.file_size,
++            rows: plan.rows.len(),
++            total_jobs: plan.jobs.len(),
++        })
++    })
++}
++
+ // ---- the map (§9.2) --------------------------------------------------------
+ 
+ /// The map of a link (I-77, I-78; `spec/plumb.md` §3.2), from the tables
+diff --git a/crates/mortar_image/src/update.rs b/crates/mortar_image/src/update.rs
+index 41ba1c36..ac96c5cf 100644
+--- a/crates/mortar_image/src/update.rs
++++ b/crates/mortar_image/src/update.rs
+@@ -314,8 +314,12 @@ pub fn refill(
+     let want = normalize(want);
+     let windows = windows_of(&want);
+     counts.windows = windows.len() as u64;
+-    let refilled =
+-        crate::link::refill(link, Path::new(""), &windows).map_err(RefillError::Failed)?;
++    let refilled = if std::env::var_os("WP255_CLIPS").is_some() {
++        crate::link::refill_ranges(link, &want)
++    } else {
++        crate::link::refill(link, Path::new(""), &windows)
++    }
++    .map_err(RefillError::Failed)?;
+     counts.jobs = refilled.jobs.len() as u64;
+     counts.filled = refilled.jobs.iter().map(|j| j.1.len() as u64).sum();
+     recheck(link, &mut counts)?;

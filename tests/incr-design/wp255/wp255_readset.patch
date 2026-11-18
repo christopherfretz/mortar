@@ -1,0 +1,407 @@
+diff --git a/crates/mortar/tests/wp255_readset.rs b/crates/mortar/tests/wp255_readset.rs
+new file mode 100644
+index 00000000..f5b754b4
+--- /dev/null
++++ b/crates/mortar/tests/wp255_readset.rs
+@@ -0,0 +1,401 @@
++//! WP-255 THROWAWAY (never committed under crates/; kept as
++//! tests/incr-design/wp255/readset.patch): U-6's refill on a REAL workload
++//! with one archive member edited (same size, the layout replayed), the
++//! Column reads of the refill counted per phase, per column, per file
++//! class, and the refill's bytes judged against a full link of the edited
++//! inputs with the same layout.
++//!
++//! Env: WP255_WL (workload dir: stamp, response.txt), WP255_OUT (scratch),
++//! WP255_ARCHIVE (the archive's name as the response file gives it),
++//! WP255_EDITED (the edited copy's absolute path), WP255_MEMBER (member
++//! name), WP255_REPS (timing repetitions, default 1).
++
++use std::ffi::OsString;
++use std::fs::File;
++use std::path::{Path, PathBuf};
++use std::time::Instant;
++
++use mortar::front::{Env, Front, front};
++use mortar::timing::Timer;
++use mortar_core::incr::{LayoutDelta, MemoryLayout, RefillSet, RefillUnit, StoredLayout, SymtabPlan};
++use mortar_core::layout::Layout;
++use mortar_core::par::Pool;
++use mortar_core::{FileId, SectionId};
++use mortar_diag::{Collector, Policy};
++use mortar_image::update::refill;
++use mortar_input::store::{Store, StorePolicy};
++
++fn env(k: &str) -> String {
++    std::env::var(k).unwrap_or_else(|_| panic!("{k}"))
++}
++
++struct Wl {
++    cwd: PathBuf,
++    args: Vec<OsString>,
++    out: PathBuf,
++}
++
++impl Wl {
++    fn new() -> Self {
++        let wl = PathBuf::from(env("WP255_WL"));
++        let stamp = std::fs::read_to_string(wl.join("stamp")).unwrap();
++        let cwd = stamp.lines().find_map(|l| l.strip_prefix("cwd\t")).unwrap().into();
++        let resp = std::fs::read(wl.join("response.txt")).unwrap();
++        let args: Vec<OsString> = mortar_cli::response::split(&resp)
++            .into_iter()
++            .map(|a| OsString::from(String::from_utf8(a).unwrap()))
++            .collect();
++        Self { cwd, args, out: PathBuf::from(env("WP255_OUT")) }
++    }
++
++    fn args(&self, out: &str, edited: bool) -> Vec<OsString> {
++        let mut v = Vec::new();
++        let mut skip = false;
++        let arch = env("WP255_ARCHIVE");
++        for a in &self.args {
++            if skip {
++                v.push(self.out.join(out).into_os_string());
++                skip = false;
++                continue;
++            }
++            let s = a.to_str().unwrap();
++            if s.starts_with("--dependency-file") {
++                continue;
++            }
++            if s == "-o" {
++                skip = true;
++            }
++            if edited && s == arch {
++                v.push(OsString::from(env("WP255_EDITED")));
++                continue;
++            }
++            v.push(a.clone());
++        }
++        v
++    }
++
++    fn with_front<T>(
++        &self,
++        out: &str,
++        edited: bool,
++        replay: Option<&Layout>,
++        go: impl FnOnce(&mut Front<'_>, &Store) -> T,
++    ) -> T {
++        let parsed = mortar_cli::parse(&self.args(out, edited));
++        assert!(!parsed.failed());
++        let store = Store::new(StorePolicy::from_env());
++        let diag = Collector::new(Policy::default());
++        let hook = |_: &mortar_incr::capture::Link<'_, '_>, _: &Layout| {
++            Ok::<Layout, String>(replay.cloned().expect("a replay"))
++        };
++        let env = Env {
++            cwd: &self.cwd,
++            pool: Pool::new(std::thread::available_parallelism().map_or(4, |n| n.get())),
++            replay: replay.map(|_| &hook as &mortar::front::Replay<'_>),
++            slack: true,
++            state5: false,
++        };
++        let t = Instant::now();
++        let mut f = front(parsed.plan, env, &store, &diag, &mut Timer::new(false))
++            .unwrap_or_else(|| panic!("front: {:?}", diag.finish()));
++        eprintln!("[wp255] front {out} edited={edited}: {:.1} ms", t.elapsed().as_secs_f64() * 1e3);
++        f.keep_leaves = true;
++        go(&mut f, &store)
++    }
++
++    fn write(&self, out: &str, edited: bool, replay: Option<&Layout>) -> (Layout, Vec<[u8; 32]>) {
++        self.with_front(out, edited, replay, |f, store| {
++            let t = Instant::now();
++            let w = mortar::image::write(f, store, &self.out.join(out), &|_| {}, &mut |_, _| {})
++                .unwrap_or_else(|e| panic!("write: {:?}", e.diagnostics));
++            eprintln!("[wp255] image {out}: {:.1} ms", t.elapsed().as_secs_f64() * 1e3);
++            let (_, leaves) = w.leaves.expect("leaves");
++            let leaves = leaves
++                .iter()
++                .map(|l| {
++                    let mut d = [0u8; 32];
++                    d[..l.as_bytes().len()].copy_from_slice(l.as_bytes());
++                    d
++                })
++                .collect();
++            (f.layout.clone(), leaves)
++        })
++    }
++}
++
++fn member_of(f: &Front<'_>, name: &str) -> FileId {
++    let found: Vec<FileId> = f
++        .inputs
++        .files
++        .iter()
++        .filter(|(_, r)| r.member.is_some_and(|m| m.name == name.as_bytes()))
++        .map(|(id, _)| id)
++        .collect();
++    assert_eq!(found.len(), 1, "member {name}: {found:?}");
++    found[0]
++}
++
++#[test]
++#[ignore = "WP-255 experiment: run by tests/incr-design/wp255/readset.sh"]
++fn wp255_readset() {
++    let wl = Wl::new();
++    let (l0, leaves) = wl.write("prev", false, None);
++    let (_, want_leaves) = wl.write("want", true, Some(&l0));
++    let prev = std::fs::read(wl.out.join("prev")).unwrap();
++    let want = std::fs::read(wl.out.join("want")).unwrap();
++    assert_eq!(prev.len(), want.len());
++    let differ = prev.iter().zip(&want).filter(|(a, b)| a != b).count();
++    eprintln!("[wp255] prev/want: {} bytes, {differ} differ", prev.len());
++    let reps: usize = std::env::var("WP255_REPS").ok().and_then(|s| s.parse().ok()).unwrap_or(1);
++    wl.with_front("want", true, Some(&l0), |f, store| {
++        let changed = member_of(f, &env("WP255_MEMBER"));
++        let delta = LayoutDelta { files: vec![changed], ..LayoutDelta::default() };
++        let mut units: Vec<RefillUnit> = f.resolution.section_base[changed]
++            .iter()
++            .map(|section: SectionId| RefillUnit { section, reasons: 1 })
++            .collect();
++        units.sort();
++        let set = RefillSet { units, ..RefillSet::default() };
++        let rows = MemoryLayout::default();
++        let stored = StoredLayout::new(&rows);
++        let file = File::open(wl.out.join("prev")).unwrap();
++        for rep in 0..reps {
++            #[cfg(feature = "wp255probe")]
++            mortar_core::column::probe::start();
++            let t = Instant::now();
++            let got = mortar::image::with_link(f, store, &|_| {}, |l| {
++                #[cfg(feature = "wp255probe")]
++                mortar_core::column::probe::step("with_link/built");
++                let t1 = Instant::now();
++                let r = refill(l, &delta, &SymtabPlan::default(), &set, &stored, &file, &leaves);
++                (r, t1.elapsed())
++            })
++            .unwrap();
++            let all = t.elapsed();
++            #[cfg(feature = "wp255probe")]
++            let (log, names) = mortar_core::column::probe::stop();
++            let (r, inner) = got;
++            let r = r.unwrap_or_else(|e| panic!("refill: {e:?}"));
++            eprintln!(
++                "[wp255] rep {rep}: with_link+refill {:.1} ms, refill {:.1} ms, counts {:?}",
++                all.as_secs_f64() * 1e3,
++                inner.as_secs_f64() * 1e3,
++                r.counts
++            );
++            // Judge: the previous output patched by the ranges is `want`.
++            let mut got = prev.clone();
++            let mut at = 0usize;
++            for d in &r.ranges {
++                let (o, n) = (d.offset as usize, d.len as usize);
++                got[o..o + n].copy_from_slice(&r.bytes[at..at + n]);
++                at += n;
++            }
++            assert!(got == want, "the patched output differs from the full link");
++            assert_eq!(r.leaves, want_leaves, "leaves");
++            #[cfg(feature = "wp255probe")]
++            if rep == 0 {
++                dump(f, changed, &log, &names, &wl.out.join("readset.tsv"));
++            }
++        }
++        if std::env::var_os("WP255_MUTATE").is_some() {
++            mutate(f, store, &delta, &set, &stored, &wl, &prev, &want, &leaves);
++        }
++    });
++}
++
++/// The offsets at which `a` and `b` differ.
++fn differing(a: &[u8], b: &[u8]) -> Vec<usize> {
++    a.iter().zip(b).enumerate().filter(|(_, (x, y))| x != y).map(|(i, _)| i).collect()
++}
++
++/// WP-255 §7: a trusted datum mutated, the update run, what differs from
++/// the full link and whether the refill noticed.
++#[allow(clippy::too_many_arguments)]
++fn mutate(
++    f: &Front<'_>,
++    store: &Store,
++    delta: &LayoutDelta,
++    set: &RefillSet,
++    stored: &StoredLayout<'_>,
++    wl: &Wl,
++    prev: &[u8],
++    want: &[u8],
++    leaves: &[[u8; 32]],
++) {
++    let w = mortar_digest::IMAGE_BLOCK as usize;
++    let run = |prev_path: &Path, prev: &[u8], leaves: &[[u8; 32]]| -> Result<Vec<u8>, String> {
++        let file = File::open(prev_path).unwrap();
++        let r = mortar::image::with_link(f, store, &|_| {}, |l| {
++            refill(l, delta, &SymtabPlan::default(), set, stored, &file, leaves)
++        })
++        .unwrap();
++        let r = r.map_err(|e| format!("{e:?}"))?;
++        let mut got = prev.to_vec();
++        let mut at = 0usize;
++        for d in &r.ranges {
++            let (o, n) = (d.offset as usize, d.len as usize);
++            got[o..o + n].copy_from_slice(&r.bytes[at..at + n]);
++            at += n;
++        }
++        Ok(got)
++    };
++    let clean = differing(prev, want);
++    let blocks: std::collections::BTreeSet<usize> = clean.iter().map(|i| i / w).collect();
++    let quiet = (0..leaves.len()).find(|k| !blocks.contains(k) && *k > 0).unwrap();
++    // m1: a stored LEAVES row wrong (a block no dirty range touches).
++    let mut bad = leaves.to_vec();
++    bad[quiet][0] ^= 1;
++    match run(&wl.out.join("prev"), prev, &bad) {
++        Ok(got) => {
++            let d = differing(&got, want);
++            eprintln!(
++                "[wp255-mutate] m1 LEAVES[{quiet}] flipped: refill Ok, {} bytes differ from the full link (at {:x?}), dirty blocks {blocks:?}",
++                d.len(),
++                &d[..d.len().min(4)]
++            );
++        }
++        Err(e) => eprintln!("[wp255-mutate] m1 LEAVES[{quiet}] flipped: refill refused: {e}"),
++    }
++    // m2: the previous output differs from what the state describes
++    // (a byte of a block no dirty range touches; same size, same inode
++    // would pass IN-21's stat binding if the mtime were kept).
++    let mut p2 = prev.to_vec();
++    let at = quiet * w + w / 2;
++    p2[at] ^= 0x40;
++    std::fs::write(wl.out.join("prev-m2"), &p2).unwrap();
++    match run(&wl.out.join("prev-m2"), &p2, leaves) {
++        Ok(got) => {
++            let d = differing(&got, want);
++            eprintln!(
++                "[wp255-mutate] m2 previous output byte {at:#x} flipped: refill Ok, {} bytes differ from the full link (at {:x?})",
++                d.len(),
++                &d[..d.len().min(4)]
++            );
++        }
++        Err(e) => eprintln!("[wp255-mutate] m2: refill refused: {e}"),
++    }
++    let _ = std::fs::remove_file(wl.out.join("prev-m2"));
++}
++
++#[cfg(feature = "wp255probe")]
++fn dump(
++    f: &Front<'_>,
++    changed: FileId,
++    log: &std::collections::HashMap<(u32, &'static str, u32, u8), u64>,
++    names: &[String],
++    path: &Path,
++) {
++    use std::collections::{BTreeMap, BTreeSet};
++    use std::fmt::Write as _;
++    let phase = |p: u32| names.get(p as usize).cloned().unwrap_or_else(|| "after".into());
++    let file_of = |t: &str, id: u32| -> Option<u32> {
++        let idt = t.trim_start_matches('(').split(',').next().unwrap_or("");
++        if idt.ends_with("FileId") {
++            Some(id)
++        } else if idt.ends_with("SectionId") {
++            f.resolution.sh_index(SectionId(id)).map(|(file, _)| file.0)
++        } else if idt.ends_with("FragId") {
++            let row = f.merge.split.frags.as_slice().get(id as usize)?;
++            f.resolution.sh_index(row.section).map(|(file, _)| file.0)
++        } else {
++            None
++        }
++    };
++    // Files with a section read in the fill step: "W" (an unchanged unit
++    // in a dirty window, or a file the fill reads otherwise).
++    let mut window: BTreeSet<u32> = BTreeSet::new();
++    for (&(p, t, id, k), _) in log {
++        if k != 1 && phase(p) == "image/refill" {
++            if let Some(file) = file_of(t, id) {
++                window.insert(file);
++            }
++        }
++    }
++    // The windows refilled here: the changed file's units', the header's
++    // (0) and the build-id note's.
++    let pl = &f.layout.placement;
++    let wsz = mortar_digest::IMAGE_BLOCK;
++    let range_of = |s: SectionId| -> Option<(u64, u64)> {
++        let (c, at) = pl.place.get(s)?.get()?;
++        let ch = pl.chunks.get(c)?;
++        if !ch.in_file() {
++            return None;
++        }
++        let size = f.headers.get(s).map_or(0, |h| if h.sh_type == 8 { 0 } else { h.size });
++        if size == 0 {
++            return None;
++        }
++        Some((ch.offset + at, ch.offset + at + size))
++    };
++    let mut wins: BTreeSet<u64> = BTreeSet::new();
++    wins.insert(0);
++    for s in f.resolution.section_base[changed].iter() {
++        if let Some((a, b)) = range_of(s) {
++            wins.extend(a / wsz..b.div_ceil(wsz));
++        }
++    }
++    for (k, id) in &f.synth.chunks {
++        if *k == mortar_synth::chunks::SynthKind::NoteGnuBuildId {
++            if let Some(c) = pl.chunks.get(*id) {
++                wins.insert(c.offset / wsz);
++            }
++        }
++    }
++    let mut in_win: BTreeSet<u32> = BTreeSet::new();
++    let mut units_in_win = 0u64;
++    for (file, r) in f.resolution.section_base.iter() {
++        for s in r.iter() {
++            if let Some((a, b)) = range_of(s) {
++                if (a / wsz..b.div_ceil(wsz)).any(|w| wins.contains(&w)) {
++                    in_win.insert(file.0);
++                    units_in_win += 1;
++                }
++            }
++        }
++    }
++    eprintln!("[wp255] windows {wins:?}: {} files, {units_in_win} sections in them", in_win.len());
++    let class = |file: u32| {
++        if file == changed.0 {
++            "C"
++        } else if in_win.contains(&file) {
++            "W"
++        } else if window.contains(&file) {
++            "T"
++        } else {
++            "U"
++        }
++    };
++    // (phase, type, kind, class) -> (distinct rows, distinct files, reads)
++    let mut agg: BTreeMap<(String, &str, u8, &str), (BTreeSet<u32>, BTreeSet<u32>, u64)> =
++        BTreeMap::new();
++    for (&(p, t, id, k), &n) in log {
++        let (cl, file) = if k == 1 {
++            ("WHOLE", None)
++        } else {
++            match file_of(t, id) {
++                Some(file) => (class(file), Some(file)),
++                None => ("global", None),
++            }
++        };
++        let e = agg.entry((phase(p), t, k, cl)).or_default();
++        e.0.insert(id);
++        if let Some(file) = file {
++            e.1.insert(file);
++        }
++        e.2 += n;
++    }
++    let mut s = String::new();
++    let _ = writeln!(
++        s,
++        "# files {} changed {} fill-touched {} in-window {} names {:?}",
++        f.inputs.files.len(),
++        changed.0,
++        window.len(),
++        in_win.len(),
++        names
++    );
++    for ((p, t, k, cl), (rows, files, n)) in &agg {
++        let _ = writeln!(s, "{p}\t{t}\t{k}\t{cl}\t{}\t{}\t{n}", rows.len(), files.len());
++    }
++    std::fs::write(path, s).unwrap();
++}
