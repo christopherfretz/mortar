@@ -1672,8 +1672,9 @@ fn with_image<T>(
         eh: link.eh.map(|e| e.1),
     };
     let target = Target::from_facts(link.arch.facts());
-    let mut plan = layout_plan::from_layout(&model, target, &extras, IMAGE_BLOCK, link.pool)
-        .map_err(failed)?;
+    let mut plan =
+        layout_plan::from_layout(&model, tables.rows(), target, &extras, IMAGE_BLOCK, link.pool)
+            .map_err(failed)?;
     plan.deferred_order = deferred_orders(link, &plan)?;
     steps.step("plan", plan.rows.len() as u64, "row");
     let output_ref = FileRef::new(path.display().to_string());

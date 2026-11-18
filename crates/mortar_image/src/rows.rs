@@ -15,15 +15,17 @@
 use std::ops::Deref;
 
 use mortar_arch::{
-    DemandFlags, FillTables, SlotKind, SymFacts, SymNames, SymValue, TargetKind, TlsBlock,
+    DemandFlags, FillTables, ProofRun, SlotKind, SymFacts, SymNames, SymValue, TargetKind, TlsBlock,
 };
 use mortar_core::inputs::Reader;
 use mortar_core::layout::{Addresses, AllocKey, Chunk, ChunkKind, SlotIndex};
 use mortar_core::place::NoPlace;
 use mortar_core::resolution::{Def, SectionKind};
-use mortar_core::{ChunkId, Column, FragId, SectionId, SymEntry, SymKey, SymKind, SymbolId};
+use mortar_core::{
+    ChunkId, Column, FileId, FragId, SectionId, SymEntry, SymKey, SymKind, SymbolId,
+};
 use mortar_diag::Diagnostic;
-use mortar_elf::{SymbolSection, SymbolTable};
+use mortar_elf::{SectionIndex, SymbolSection, SymbolTable};
 use mortar_merge::What;
 use mortar_merge::refs::{self, PieceRef};
 use mortar_synth::chunks::SynthKind;
@@ -33,8 +35,10 @@ use mortar_synth::{EhValue, EhWho, SynthError};
 use crate::fill::{SplitPlace, Tables};
 use crate::layout_plan;
 use crate::link::Link;
+use crate::plan::{Builder, InputUnit, RecRows, RelaTable, RelocSection};
 
 const SHF_ALLOC: u64 = 0x2;
+const SHF_EXECINSTR: u64 = 0x4;
 const STT_SECTION: u8 = 3;
 
 fn internal(what: impl Into<String>) -> Diagnostic {
@@ -1031,4 +1035,69 @@ impl Rows for FrontRows<'_, '_> {
             align: 1u64 << t.align,
         })
     }
+}
+
+// ---- the plan's rows ---------------------------------------------------------
+
+/// What [`row_for`] reads of one input section from its file's front: its
+/// header (`sh_size`, `sh_flags`, file offset, name) and its relocation
+/// table, when it has one.
+#[derive(Debug, Clone, Copy)]
+pub struct SectionFront<'f> {
+    pub file: FileId,
+    pub index: SectionIndex,
+    pub size: u64,
+    pub flags: u64,
+    /// The section's offset in its file.
+    pub src: u64,
+    pub name: &'f [u8],
+    pub rela: Option<RelaTable>,
+}
+
+/// The plan row of placed input section `s` at `(chunk, offset)` (I-27;
+/// WP-255 §9.1 `Input`): its unit, its relocation section with the
+/// section's proof runs, its file range. The caller has checked that the
+/// chunk is an in-file `Body` chunk and that the section has file bytes.
+///
+/// # Errors
+///
+/// `internal-error` for a chunk the rows do not hold.
+pub fn row_for<R: Rows>(
+    r: &R,
+    s: SectionId,
+    place: (ChunkId, u64),
+    front: &SectionFront<'_>,
+    proof: &dyn Fn(FileId, SectionIndex, u64) -> Vec<ProofRun>,
+    b: &mut Builder,
+) -> Result<(), Diagnostic> {
+    let (c, off) = place;
+    let chunk = r
+        .chunks()
+        .get(c)
+        .ok_or_else(|| internal(format!("invalid fill plan: section {} in no chunk", s.0)))?;
+    let size = front.size;
+    let name = b.name(front.name);
+    let alloc = front.flags & SHF_ALLOC != 0;
+    let exec = front.flags & SHF_EXECINSTR != 0;
+    let relocs = front.rela.map(|t| {
+        let rows = RecRows::Rela(t);
+        let proof = proof(front.file, front.index, size).into_boxed_slice();
+        b.relocs(RelocSection { section: s, rows, proof })
+    });
+    let addr = if alloc { chunk.addr.map_or(0, |a| a + off) } else { 0 };
+    let unit = InputUnit {
+        file: front.file,
+        index: front.index.0,
+        section: s,
+        src: front.src,
+        start: 0,
+        section_size: size,
+        addr,
+        alloc,
+        exec,
+        name,
+        relocs,
+    };
+    b.input(chunk.offset + off, size, unit);
+    Ok(())
 }
