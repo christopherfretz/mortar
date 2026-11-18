@@ -21,17 +21,26 @@ pub struct LiveDelta {
 }
 
 /// The update's liveness (WP-211 §C; IN-71a). Called by the join after
-/// `resolve` (IN-70 U6). `options`: the link's root keys (liveness
-/// roots), passed in (WP-215 D3-D5).
+/// `resolve` (IN-70 U6). `options`: what the update reads of the plan,
+/// passed in (WP-215 D3-D5).
+///
+/// IN-29's stored graph and IN-71a's walk are not built (WP-215 seam 3,
+/// G3; [later] WP-238): without `--gc-sections` the delta is empty and
+/// nothing is read; with it, every update falls back, decided from the
+/// option alone. Never "empty" under `--gc-sections`: a section of an
+/// unchanged file that a change makes live would be missed.
 ///
 /// # Errors
-/// `state-corrupt`. Until U-3 lands: `update-not-implemented (resolve)`.
+/// `update-not-implemented (live)` under `--gc-sections`.
 pub fn live(
     view: &StateView<'_>,
     changed: &ChangedFiles,
     resolved: &ResolveDelta,
     options: &OptionKeys,
 ) -> Result<LiveDelta, IncrReason> {
-    let _ = (view, changed, resolved, options);
-    Err(IncrReason::UpdateNotImplemented(Some(Unimplemented::Resolve)))
+    let _ = (view, changed, resolved);
+    if options.gc_sections {
+        return Err(IncrReason::UpdateNotImplemented(Some(Unimplemented::Live)));
+    }
+    Ok(LiveDelta::default())
 }

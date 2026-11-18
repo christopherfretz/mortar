@@ -6,15 +6,17 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 
-use mortar_core::incr::{IncrReason, LayoutDelta, OptionKey, OptionKeys};
+use mortar_core::incr::{IncrReason, LayoutDelta, OptionKey, OptionKeys, Unimplemented};
 use mortar_core::{FileId, SectionId};
-use mortar_incr::format::{NONE, def_kind};
+use mortar_incr::format::{NONE, Str, def_kind};
 use mortar_incr::update::rows::{
     FileRow, KeyRefRow, MentionRow, SymbolRow, file_flags, key_ref_flags, sym_kind,
 };
 use mortar_incr::update::testing::MemoryState;
-use mortar_incr::update::view::{Change, ChangedFile, ChangedFiles, KeyName, OdrRows};
-use mortar_incr::update::{defined, extract, refill, resolve};
+use mortar_incr::update::view::{
+    Change, ChangedFile, ChangedFiles, KeyName, MentionValue, OdrRows,
+};
+use mortar_incr::update::{defined, extract, live, refill, resolve};
 
 const WEAK: u8 = 2;
 const GLOBAL: u8 = 1;
@@ -238,6 +240,7 @@ fn key_ref(k: u32, file: u32, x: &M, lazy: bool) -> KeyRefRow {
 fn changed_file(file: u32, change: Change, f: Option<&F>) -> ChangedFile {
     let mut keys: Vec<KeyName> = Vec::new();
     let mut mentions = Vec::new();
+    let mut values = Vec::new();
     let mut row = FileRow::default();
     if let Some(f) = f
         && !matches!(change, Change::Gone | Change::NoLongerExtracted)
@@ -257,6 +260,7 @@ fn changed_file(file: u32, change: Change, f: Option<&F>) -> ChangedFile {
                 }
             };
             mentions.push(mention(k as u32, x));
+            values.push(MentionValue::default());
         }
         row = FileRow {
             kind: 1,
@@ -273,7 +277,9 @@ fn changed_file(file: u32, change: Change, f: Option<&F>) -> ChangedFile {
         first_section: SectionId(0),
         sections: Vec::new(),
         keys,
+        first_global: 0,
         mentions,
+        values,
         index: Vec::new(),
         edges: Vec::new(),
         eh_records: Vec::new(),
@@ -728,6 +734,44 @@ fn extraction_random_series() {
     assert_eq!(runs, 3000);
 }
 
+// spec: incr.md IN-71a (not built: WP-238): without `--gc-sections` the
+// empty delta, with it `update-not-implemented (live)` from the option
+// alone (WP-215 seam 3, G3)
+#[test]
+fn live_is_empty_without_gc_and_falls_back_under_it() {
+    let m = MemoryState::default();
+    let view = m.view();
+    let changed = ChangedFiles::default();
+    let resolved = resolve::ResolveDelta::default();
+    let mut options = OptionKeys::default();
+    assert_eq!(live::live(&view, &changed, &resolved, &options), Ok(live::LiveDelta::default()));
+    options.gc_sections = true;
+    assert_eq!(
+        live::live(&view, &changed, &resolved, &options).err(),
+        Some(IncrReason::UpdateNotImplemented(Some(Unimplemented::Live)))
+    );
+}
+
+// spec: incr.md IN-70 (WP-215 seam 3, G2): one reader for a `Str` of the
+// update's id space; equality by bytes
+#[test]
+fn changed_files_string_reads_state_and_buffer() {
+    let mut m = MemoryState::default();
+    let a = m.intern(b".text.f");
+    let view = m.view();
+    let changed = ChangedFiles { strings: b".text.f.data".to_vec(), ..ChangedFiles::default() };
+    let n = a.len;
+    assert_eq!(changed.string(&view, a).unwrap(), b".text.f");
+    // The same bytes at the buffer's offset: another `Str`, equal bytes.
+    let b = Str { off: n, len: n };
+    assert_ne!(a, b);
+    assert_eq!(changed.string(&view, b).unwrap(), changed.string(&view, a).unwrap());
+    assert_eq!(changed.string(&view, Str { off: n + 8, len: 4 }).unwrap(), b"data");
+    let corrupt = |at| matches!(changed.string(&view, at), Err(IncrReason::StateCorrupt(_)));
+    assert!(corrupt(Str { off: n - 1, len: 2 }), "straddles the boundary");
+    assert!(corrupt(Str { off: n + 10, len: 3 }), "runs past the buffer");
+}
+
 // ---- the other entry points (until their tests) ---------------------------------
 
 // spec: incr.md IN-71c, IN-74
@@ -738,6 +782,6 @@ fn empty_update_recompute_and_refill_set() {
     let layout = LayoutDelta::default();
     assert!(defined::recompute(&view, &layout).is_empty());
     let resolved = resolve::ResolveDelta::default();
-    let set = refill::refill_set(&view, &resolved, &layout, &[]).unwrap();
+    let set = refill::refill_set(&view, &ChangedFiles::default(), &resolved, &layout, &[]).unwrap();
     assert!(set.units.is_empty());
 }

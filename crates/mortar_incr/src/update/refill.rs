@@ -14,12 +14,15 @@ use mortar_elf::consts::SHF_ALLOC;
 use super::defined::DefinedChange;
 use super::resolve::ResolveDelta;
 use super::rows::{FileTable, IndexRow};
-use super::view::StateView;
+use super::view::{ChangedFiles, StateView};
 use crate::delta::{TOO_MUCH, reason};
 use crate::format::{def_kind, index_kind, kind};
 
 /// The units the update refills (WP-211 §C; IN-74). Called by the join
 /// after `recompute` (IN-70 U8).
+///
+/// `changed` (WP-215 seam 3): the new sections' rows (their sizes count
+/// toward IN-16's bound) and the files of IN-27's row 1.
 ///
 /// IN-27's rows, without reading an unchanged input:
 /// - `file`: every section past the state's `SECTIONS` count (a changed,
@@ -39,15 +42,27 @@ use crate::format::{def_kind, index_kind, kind};
 /// tables, headers, gaps) are U-6's: `chunks` stays empty.
 ///
 /// # Errors
-/// `too-much-changed` (IN-16: the allocated bytes of the stored units in
-/// the set over [`TOO_MUCH`] of the output's), `state-corrupt`.
+/// `too-much-changed` (IN-16: the allocated bytes of the units in the
+/// set, stored and new, over [`TOO_MUCH`] of the output's),
+/// `state-corrupt`.
 pub fn refill_set(
     view: &StateView<'_>,
+    changed: &ChangedFiles,
     resolved: &ResolveDelta,
     layout: &LayoutDelta,
     defined: &[DefinedChange],
 ) -> Result<RefillSet, IncrReason> {
     let mut r = Refill::new(view, layout)?;
+    r.changed = changed
+        .files
+        .iter()
+        .flat_map(|c| {
+            c.sections.iter().enumerate().map(move |(i, x)| {
+                (c.first_section.0 + i as u32, (c.file.0, x.sh_flags & SHF_ALLOC != 0, x.size))
+            })
+        })
+        .collect();
+    r.changed_files = changed.files.iter().map(|c| c.file.0).collect();
     // IN-27 row 1: the new rows.
     for id in r.sections..layout.placement.place.len() {
         r.add(SectionId(id), reason::FILE);
@@ -100,6 +115,9 @@ struct Refill<'a, 's> {
     symbols: u32,
     units: BTreeMap<u32, u32>,
     index: BTreeMap<u32, Vec<IndexRow>>,
+    /// The new sections: (file, allocated, size).
+    changed: BTreeMap<u32, (u32, bool, u64)>,
+    changed_files: BTreeSet<u32>,
 }
 
 impl<'a, 's> Refill<'a, 's> {
@@ -115,6 +133,8 @@ impl<'a, 's> Refill<'a, 's> {
             symbols: count(kind::SYMBOLS)?,
             units: BTreeMap::new(),
             index: BTreeMap::new(),
+            changed: BTreeMap::new(),
+            changed_files: BTreeSet::new(),
         })
     }
 
@@ -203,7 +223,8 @@ impl<'a, 's> Refill<'a, 's> {
 
     /// A stored file's non-allocated units.
     fn file_nonalloc(&mut self, f: FileId, why: u32) -> Result<(), IncrReason> {
-        if self.view.file(f)?.kind == 0 {
+        // A changed or drawn-in file's units are its new rows (`file`).
+        if self.changed_files.contains(&f.0) || self.view.file(f)?.kind == 0 {
             return Ok(());
         }
         let start = self.view.file_index(f)?.ranges[FileTable::Sections as usize].first;
@@ -226,6 +247,11 @@ impl<'a, 's> Refill<'a, 's> {
                 files.insert(x.file);
                 if x.sh_flags & SHF_ALLOC != 0 {
                     set.unit_bytes += x.size;
+                }
+            } else if let Some(&(file, alloc, size)) = self.changed.get(&s) {
+                files.insert(file);
+                if alloc {
+                    set.unit_bytes += size;
                 }
             }
         }

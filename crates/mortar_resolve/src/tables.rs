@@ -706,6 +706,7 @@ pub fn option_keys(
         require_defined: by_role(SymbolRole::RequireDefined),
         wrap: plan.wraps().into_iter().map(Into::into).collect(),
         defsym,
+        gc_sections: plan.shaping.gc_sections,
     }
 }
 

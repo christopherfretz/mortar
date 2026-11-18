@@ -277,7 +277,9 @@ pub struct RegionRow {
 /// U-8 (a changed keeper is ODR-affected, IN-71d).
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct GroupRow {
-    /// The signature (bytes in `STRINGS`): the key's first part.
+    /// The signature (bytes in `STRINGS`): the key's first part. Equal
+    /// by BYTES, never by `Str` value (a changed file's copy of the same
+    /// signature sits at another offset; WP-215 seam 3).
     pub signature: Str,
     /// The `FILES` row of the file with the copy: the key's second part.
     pub file: u32,
