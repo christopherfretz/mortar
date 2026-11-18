@@ -436,7 +436,7 @@ impl StateRows for &MemoryState {
                 v.push(*g);
             }
         }
-        v.sort_by_key(|g| g.file);
+        // No promised order (WP-215): the rows' order is the vector's.
         Ok(v)
     }
     fn frags_in(&self, out: OutSecId) -> Rows<Vec<FragRow>> {
@@ -452,10 +452,7 @@ impl StateRows for &MemoryState {
         Ok(v)
     }
     fn commons(&self, key: SymbolId) -> Rows<Vec<CommonRow>> {
-        let mut v: Vec<CommonRow> =
-            self.commons.iter().filter(|c| c.key == key.0 && !c.tomb).copied().collect();
-        v.sort_by_key(|c| c.file);
-        Ok(v)
+        Ok(self.commons.iter().filter(|c| c.key == key.0 && !c.tomb).copied().collect())
     }
     fn odr_classes(&self, odr_key: u32) -> Rows<Vec<OdrClassRow>> {
         Ok(self.odr_classes.iter().filter(|c| c.key == odr_key && !c.tomb).copied().collect())
@@ -553,24 +550,35 @@ mod tests {
     // (key, file); the keeper and the winning common computed, WP-215)
     #[test]
     fn groups_and_commons_by_file() {
-        let mut m = MemoryState::default();
+        // Rows 0..=5 in load order; row 6 appended with a rank between
+        // rows 2 and 3 (an update's appeared member).
+        let mut m = MemoryState {
+            files: (0..6u64).map(|i| FileRow { rank: i << 20, ..FileRow::default() }).collect(),
+            ..MemoryState::default()
+        };
+        m.files.push(FileRow { rank: (2 << 20) + 1, ..FileRow::default() });
         let sig = m.intern(b"_ZN1fEv");
         let other = m.intern(b"g");
         for (file, tomb) in [(4, false), (2, true), (3, false)] {
             m.groups.push(GroupRow { signature: sig, file, tomb });
         }
         m.groups.push(GroupRow { signature: other, file: 1, tomb: false });
+        m.groups.push(GroupRow { signature: sig, file: 6, tomb: false });
         m.commons.push(CommonRow { key: 0, file: 5, size: 16, align: 4, tomb: false });
         m.commons.push(CommonRow { key: 0, file: 3, size: 8, align: 8, tomb: false });
+        m.commons.push(CommonRow { key: 0, file: 6, size: 2, align: 2, tomb: false });
         m.commons.push(CommonRow { key: 1, file: 1, size: 99, align: 1, tomb: false });
         let v = m.view();
-        let rows = v.group(b"_ZN1fEv").unwrap();
-        assert_eq!(rows.iter().map(|r| r.file).collect::<Vec<_>>(), [3, 4]);
-        assert_eq!(super::super::rows::keeper(&rows).map(|r| r.file), Some(3));
+        let mut rows = v.group(b"_ZN1fEv").unwrap();
+        rows.sort_by_key(|r| r.file);
+        assert_eq!(rows.iter().map(|r| r.file).collect::<Vec<_>>(), [3, 4, 6]);
+        let rank = |f: u32| Ok(v.file(FileId(f))?.rank);
+        // Row 6 is appended but before row 3 in load order: the keeper.
+        assert_eq!(super::super::rows::keeper(&rows, rank).unwrap().map(|r| r.file), Some(6));
         assert!(v.group(b"none").unwrap().is_empty());
-        assert_eq!(v.commons(SymbolId(0)).unwrap().len(), 2);
+        assert_eq!(v.commons(SymbolId(0)).unwrap().len(), 3);
         let w = v.common(SymbolId(0)).unwrap().unwrap();
-        assert_eq!((w.file, w.size, w.align), (3, 16, 8));
+        assert_eq!((w.file, w.size, w.align), (6, 16, 8));
         assert_eq!(v.common(SymbolId(2)).unwrap(), None);
     }
 
