@@ -52,9 +52,11 @@ Options:
                  binary BIN (`neutral::tests::emit_forms`); this script
                  only chooses where. `.debug_types` units then use code 2
                  of the 17-byte table (compile and type-unit abbreviations,
-                 IN-51b as proposed): mortar's own table hole when it holds
-                 17 bytes, else a copy written in the dead file's
-                 `.debug_abbrev` range (needs 28 bytes)
+                 IN-51b as proposed, with WP-229's two address-base
+                 abbreviations: 38 bytes): mortar's own table hole when it
+                 holds the table, else a copy written at the start of the
+                 dead file's `.debug_abbrev` range; --addr-base then
+                 writes code 3 (DWARF 5) or 4 (DWARF 4, GNU split)
   --form-version=N  with --rust: the version the forms are asked for (5,
                  what the image writes; 4 for the v2-v4 forms)
 Prints one line per section: ranges and bytes neutralized.
@@ -135,13 +137,16 @@ def rust(req):
     return _memo[req]
 
 
-def neutral(name, size, abbrev, addr_size=8, addr_base=None, abbrev_addr=None, sig=0xdead000000000000):
+def neutral(name, size, abbrev, addr_size=8, addr_base=None, abbrev_addr=None, sig=0xdead000000000000,
+            ver=None):
     """The neutral unit of `size` bytes of section `name` (neutral.rs's
     `unit` with version 5, ported; and the proposed forms)."""
     L = size
     if RUST is not None:
         if name == '.debug_info' and addr_base is not None:
-            return rust('addrbase %d %d %d %d' % (L, addr_size, abbrev_addr, addr_base))
+            return rust('addrbase %d %d %d %d %d' % (L, ver or 5, addr_size, abbrev_addr, addr_base))
+        if name == '.debug_addr' and ver is not None:
+            return rust('unit %s %d %d %d %d' % (name, L, ver, addr_size, 0))
         if name == '.debug_types':
             return rust('type %d %d %d %d' % (L, addr_size, abbrev, sig & 0xffffffffffff))
         return rust('unit %s %d %d %d %d' % (name, L, FORMV, addr_size, abbrev or 0))
@@ -262,11 +267,11 @@ def main():
             FORMV = int(o.split('=', 1)[1])
     if RUST is not None:
         # neutral.rs's table: the compile-unit abbreviation first (8 bytes;
-        # 16 with the type unit's after the 17-byte table's commit)
+        # all four after the one table's commit); the one table: the four
+        # abbreviations (compile, type unit, addr_base, GNU addr_base) and
+        # the 0 ending it, 38 bytes
         assert rust('table compile')[:8] == ABBREV, 'the compile-unit table'
-        ABBREV_ADDR = rust('table addrbase')
-        # the 17-byte table: both abbreviations and the 0 ending it
-        ABBREV_TYPE = ABBREV + rust('table type') + b'\0'
+        TABLE1 = rust('table one')
     elf = Elf(open(src, 'rb').read())
     b = bytearray(elf.b)
     lines = open(mapf).read().splitlines()
@@ -292,9 +297,9 @@ def main():
     if ab is not None:
         abd = bytes(b[ab.off:ab.off + ab.size])
         abbrev_at = abd.rfind(ABBREV)
-    # --rust: mortar's table hole already holds the 17-byte table
+    # --rust: mortar's table hole already holds the one table
     shared17 = RUST is not None and abbrev_at is not None and abbrev_at >= 0 \
-        and abd[abbrev_at:abbrev_at + 17] == ABBREV_TYPE
+        and abd[abbrev_at:abbrev_at + len(TABLE1)] == TABLE1
     new_dead = []  # (sec, off, size)
     report = {}
     dead_files = sorted(dead)
@@ -303,7 +308,18 @@ def main():
         addr = ranges.get((f, '.debug_addr'), [])
         abr = ranges.get((f, '.debug_abbrev'), [])
         type_abbrev = None
-        if (f, '.debug_types') in ranges:
+        one_at = None  # --rust: where the one table is, if this file needs it
+        fver = 5
+        if (f, '.debug_info') in ranges:
+            fver, = struct.unpack_from('<H', b, sec['.debug_info'].off + ranges[(f, '.debug_info')][0][0] + 4)
+        if RUST is not None and ((f, '.debug_types') in ranges or (addr_base_on and addr)):
+            if shared17:
+                one_at = abbrev_at
+            else:
+                assert abr and abr[0][1] >= len(TABLE1), 'no room for the one table'
+                one_at = abr[0][0]
+            type_abbrev = one_at
+        elif (f, '.debug_types') in ranges:
             if shared17:
                 type_abbrev = abbrev_at
             else:
@@ -333,7 +349,10 @@ def main():
                     else:
                         chunks = [(o, size)]
                     for k, (p, L) in enumerate(chunks):
-                        if k == 0 and addr_base_on and addr and abr and abr[0][1] >= 11:
+                        if k == 0 and one_at is not None and addr_base_on and addr:
+                            base = addr[0][0] + (8 if fver >= 5 else 0)
+                            data = neutral(name, L, abbrev_at, addr_base=base, abbrev_addr=one_at, ver=fver)
+                        elif k == 0 and RUST is None and addr_base_on and addr and abr and abr[0][1] >= 11:
                             abo = abr[0][0]
                             data = neutral(name, L, abbrev_at, addr_base=addr[0][0] + 8, abbrev_addr=abo)
                         else:
@@ -351,13 +370,18 @@ def main():
                             q += L
                     else:
                         data = neutral(name, size, type_abbrev if name == '.debug_types' else abbrev_at,
-                                       sig=0xdead000000000000 | o)
+                                       sig=0xdead000000000000 | o,
+                                       ver=fver if (RUST is not None and name == '.debug_addr') else None)
                         assert len(data) == size, (name, size, len(data))
                         b[s.off + o:s.off + o + size] = data
-                    if name == '.debug_abbrev' and addr_base_on and addr and (o, size) == abr[0] and size >= 11:
+                    if name == '.debug_abbrev' and one_at is not None and not shared17 and (o, size) == abr[0]:
+                        b[s.off + o:s.off + o + len(TABLE1)] = TABLE1
+                    elif RUST is not None:
+                        pass
+                    elif name == '.debug_abbrev' and addr_base_on and addr and (o, size) == abr[0] and size >= 11:
                         b[s.off + o:s.off + o + len(ABBREV_ADDR)] = ABBREV_ADDR
                     if name == '.debug_abbrev' and type_abbrev is not None and (o, size) == abr[0] \
-                            and not shared17:
+                            and not shared17 and RUST is None:
                         b[s.off + type_abbrev:s.off + type_abbrev + len(ABBREV_TYPE)] = ABBREV_TYPE
                 new_dead.append((name, o, size))
                 r = report.setdefault(name, [0, 0])

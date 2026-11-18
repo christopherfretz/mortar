@@ -20,7 +20,11 @@
 # Step 2 (WP-228 part A): RUST_BIN=<mortar_image test binary> makes
 # place.py take every neutral form from neutral.rs (--rust); VARIANTS
 # overrides the variant list (plain pieces perunit addrbase v4; v4 = plain
-# with the version-4 forms, DWARF 4 only; addrbase Clang/kiln DWARF 5 only). One line per check in OUTDIR/emulate.log; FINAL line
+# with the version-4 forms, DWARF 4 only; addrbase only where b.o has a
+# .debug_addr: Clang/kiln DWARF 5, and -gsplit-dwarf skeletons).
+# NO_GNU_PUB=1 removes .debug_gnu_pubnames/pubtypes from every object
+# before linking (IN-55 option (A): an incremental-mode output has none;
+# -gsplit-dwarf objects carry them). One line per check in OUTDIR/emulate.log; FINAL line
 # "EMULATE-DONE runs=N same=N differ=N".
 set -u
 ulimit -c 0
@@ -151,6 +155,9 @@ for c in $CONFIGS; do
     for sym in $(readelf -gW b.o | sed -n 's/^COMDAT group section \[ *[0-9]*\] `[^'"'"']*'"'"' \[\([^]]*\)\].*/\1/p' | sort -u); do
       case " $rn " in *" --redefine-sym $sym="*) ;; *) rn="$rn --redefine-sym $sym=old_$sym";; esac
     done
+    if [ "${NO_GNU_PUB:-0}" = 1 ]; then
+      for s in a b b2 c; do $OC --remove-section=.debug_gnu_pubnames --remove-section=.debug_gnu_pubtypes $s.o; done
+    fi
     # shellcheck disable=SC2086
     $OC $rn b.o bold.o || { note "$tag objcopy FAIL"; continue; }
     L() { local name=$1; shift
@@ -178,7 +185,7 @@ for c in $CONFIGS; do
     "$XT" plumb ref1 --map ref1.map --map-format mortar > ref1.plumb 2>&1
     note "$tag ref1 plumb $(tail -1 ref1.plumb)"
     variants="${VARIANTS:-plain pieces perunit addrbase}"
-    case $c-$dw in clang*-5|kiln*-5) ;; *) variants=$(echo " $variants " | sed 's/ addrbase / /');; esac
+    readelf -SW b.o | grep -q ' \.debug_addr ' || variants=$(echo " $variants " | sed 's/ addrbase / /')
     case $dw in 4) ;; *) variants=$(echo " $variants " | sed 's/ v4 / /');; esac
     for s in s2 s3 s4 s5; do
       case $s in s2) ref=ref1;; s3|s5) ref=ref3;; s4) ref=ref4;; esac

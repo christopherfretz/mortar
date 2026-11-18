@@ -48,22 +48,41 @@ fn block(out: &mut Vec<u8>, size: u64) -> Option<()> {
     Some(())
 }
 
-/// The neutral `.debug_info` unit of `size` bytes that keeps
-/// `DW_AT_addr_base` (IN-51, DWARF 5 only: a dead file's `.debug_addr`
-/// table stays named): `size-4` (u32), 5 (u16), `DW_UT_compile` (1),
-/// `addr_size`, `abbrev` (u32, the offset of
-/// [`ABBREV_TABLE_ADDR_BASE`] in `.debug_abbrev`), code 1, `addr_base`
-/// (u32: the dead table's offset plus its 8-byte header), then IN-51's
-/// block to the end; 19 bytes at least. `None` below that.
+/// The neutral `.debug_info` unit of `size` bytes that keeps its address
+/// base (IN-51; WP-229's skeletons: a dead file's address table stays
+/// named), DWARF 5 (`version` not 2 to 4): `size-4` (u32), 5 (u16),
+/// `DW_UT_compile` (1), `addr_size`, `abbrev` (u32), code 3
+/// (`DW_AT_addr_base`), `addr_base` (u32: the dead table's offset plus
+/// its 8-byte header), then IN-51's block to the end; 19 bytes at least.
+/// DWARF 2 to 4: `size-4` (u32), 4 (u16), `abbrev` (u32), `addr_size`,
+/// code 4 (`DW_AT_GNU_addr_base`), `addr_base` (u32: the dead table's
+/// offset, which has no header), the block; 18 bytes at least. `abbrev` is
+/// the offset of the table holding [`ABBREV_ADDR_BASE`] and
+/// [`ABBREV_GNU_ADDR_BASE`]. A skeleton unit (`DW_UT_skeleton`, a DWARF 4
+/// unit with `DW_AT_GNU_dwo_name`) takes this form or [`unit`]'s: its
+/// dwo_id is inside the block. `None` below the minimum.
 #[must_use]
-pub fn info_addr_base(size: u64, addr_size: u8, abbrev: u32, addr_base: u32) -> Option<Vec<u8>> {
+pub fn info_addr_base(
+    size: u64,
+    version: u16,
+    addr_size: u8,
+    abbrev: u32,
+    addr_base: u32,
+) -> Option<Vec<u8>> {
     let length = u32::try_from(size.checked_sub(4)?).ok()?;
     let mut out = Vec::with_capacity(usize::try_from(size).ok()?);
     u32le(&mut out, length);
-    u16le(&mut out, 5);
-    out.extend_from_slice(&[1, addr_size]);
-    u32le(&mut out, abbrev);
-    out.push(1);
+    if (2..=4).contains(&version) {
+        u16le(&mut out, 4);
+        u32le(&mut out, abbrev);
+        out.push(addr_size);
+        out.push(ABBREV_GNU_ADDR_BASE[0]);
+    } else {
+        u16le(&mut out, 5);
+        out.extend_from_slice(&[1, addr_size]);
+        u32le(&mut out, abbrev);
+        out.push(ABBREV_ADDR_BASE[0]);
+    }
     u32le(&mut out, addr_base);
     block(&mut out, size)?;
     Some(out)
@@ -90,20 +109,22 @@ pub fn type_unit(size: u64, addr_size: u8, abbrev: u32, signature: u64) -> Optio
     Some(out)
 }
 
-/// The neutral abbreviation table of a unit that keeps `DW_AT_addr_base`
-/// (IN-51): code 1, `DW_TAG_compile_unit`, no children, `DW_AT_addr_base`
-/// as `DW_FORM_sec_offset`, `DW_AT_lo_user` as `DW_FORM_block`, the two
-/// zeros ending the attribute list. It is written at the start of the dead
-/// file's `.debug_abbrev` range, whose next byte (0) ends the table: it
-/// needs 11 bytes there.
-pub const ABBREV_TABLE_ADDR_BASE: [u8; 10] =
-    [0x01, 0x11, 0x00, 0x73, 0x17, 0x80, 0x40, 0x09, 0x00, 0x00];
-
 /// The abbreviation of a neutral DWARF 4 type unit (IN-51b,
 /// `.debug_types`): code 2, `DW_TAG_type_unit`, no children,
 /// `DW_AT_lo_user` as `DW_FORM_block`, the two zeros ending its attribute
 /// list.
 pub const ABBREV_TYPE_UNIT: [u8; 8] = [0x02, 0x41, 0x00, 0x80, 0x40, 0x09, 0x00, 0x00];
+
+/// The abbreviation of a neutral DWARF 5 unit that keeps its address base
+/// (IN-51): code 3, `DW_TAG_compile_unit`, no children, `DW_AT_addr_base`
+/// (0x73) as `DW_FORM_sec_offset`, `DW_AT_lo_user` as `DW_FORM_block`, the
+/// two zeros.
+pub const ABBREV_ADDR_BASE: [u8; 10] = [0x03, 0x11, 0x00, 0x73, 0x17, 0x80, 0x40, 0x09, 0x00, 0x00];
+
+/// The same for DWARF 2 to 4 (a GNU split unit): code 4,
+/// `DW_AT_GNU_addr_base` (0x2133, ULEB `b3 42`) as `DW_FORM_sec_offset`.
+pub const ABBREV_GNU_ADDR_BASE: [u8; 11] =
+    [0x04, 0x11, 0x00, 0xb3, 0x42, 0x17, 0x80, 0x40, 0x09, 0x00, 0x00];
 
 /// The type signature of a neutral type unit at offset `at` of
 /// `.debug_types`: `0xdead` in the top 16 bits, the offset below them, so
@@ -119,7 +140,8 @@ pub fn type_signature(at: u64) -> u64 {
 /// section has no neutral form here (`.debug_types`: [`type_unit`]; a
 /// `.debug_info` unit with `DW_AT_addr_base`: [`info_addr_base`]).
 /// `version` is the DWARF version of the unit (`.debug_info`,
-/// `.debug_line` and `.debug_macro` write version 4 for 2 to 4, else 5;
+/// `.debug_line` and `.debug_macro` write version 4 for 2 to 4, else 5,
+/// and `.debug_addr` has no header for 2 to 4;
 /// the image writes 5, whatever the contributions around it, since a
 /// unit's version is its own; the other headers are version 5, or 1 for
 /// the `.debug_frame` CIE, whatever `version` is); `addr_size` the
@@ -136,7 +158,8 @@ pub fn type_signature(at: u64) -> u64 {
 /// - `.debug_str_offsets`: `L-4` (u32), 5 (u16), 0 (u16), zero entries;
 ///   8 at least, a multiple of 4;
 /// - `.debug_addr`: `L-4` (u32), 5 (u16), `A`, 0, zero entries; 8 at
-///   least, a multiple of `A`;
+///   least, a multiple of `A`; for `version` 2 to 4 (a GNU split table,
+///   no header) `L` zero bytes, a multiple of `A`;
 /// - `.debug_frame`: one CIE: `L-4` (u32), `ff ff ff ff` (`CIE_id`),
 ///   version 1, augmentation "" (0), code alignment 1, data alignment −4
 ///   (`7c`), return-address register 30 (`1e`), then `DW_CFA_nop` (0); 13
@@ -218,12 +241,19 @@ pub fn unit(name: &[u8], size: u64, version: u16, addr_size: u8, abbrev: u32) ->
             u16le(&mut out, 0);
         }
         b".debug_addr" => {
-            if size < 8 || addr_size == 0 || !size.is_multiple_of(u64::from(addr_size)) {
+            if addr_size == 0 || !size.is_multiple_of(u64::from(addr_size)) {
                 return None;
             }
-            u32le(&mut out, length);
-            u16le(&mut out, 5);
-            out.extend_from_slice(&[addr_size, 0]);
+            // A v5 table has a header; a GNU (DWARF 4 split) one has
+            // none: zero entries only.
+            if v5 {
+                if size < 8 {
+                    return None;
+                }
+                u32le(&mut out, length);
+                u16le(&mut out, 5);
+                out.extend_from_slice(&[addr_size, 0]);
+            }
         }
         b".debug_frame" => {
             u32le(&mut out, length);
@@ -341,6 +371,9 @@ mod tests {
         assert_eq!(u, [8, 0, 0, 0, 5, 0, 4, 0, 0, 0, 0, 0]);
         assert!(unit(b".debug_addr", 12, 5, 8, 0).is_none());
         assert!(unit(b".debug_addr", 4, 5, 4, 0).is_none());
+        // A GNU (DWARF 4 split) table: no header.
+        assert_eq!(unit(b".debug_addr", 16, 4, 8, 0).unwrap(), vec![0; 16]);
+        assert!(unit(b".debug_addr", 12, 4, 8, 0).is_none());
         assert!(unit(b".debug_addr", 16, 5, 0, 0).is_none());
     }
 
@@ -368,12 +401,15 @@ mod tests {
     // spec: incr.md §6 IN-51 (the DW_AT_addr_base variant), IN-51b (.debug_types)
     #[test]
     fn in51_addr_base_and_type_units() {
-        let u = info_addr_base(19, 8, 0x30, 0x48).unwrap();
-        assert_eq!(u, [15, 0, 0, 0, 5, 0, 1, 8, 0x30, 0, 0, 0, 1, 0x48, 0, 0, 0, 1, 0]);
-        assert!(info_addr_base(18, 8, 0, 0).is_none());
+        let u = info_addr_base(19, 5, 8, 0x30, 0x48).unwrap();
+        assert_eq!(u, [15, 0, 0, 0, 5, 0, 1, 8, 0x30, 0, 0, 0, 3, 0x48, 0, 0, 0, 1, 0]);
+        assert!(info_addr_base(18, 5, 8, 0, 0).is_none());
+        let u = info_addr_base(18, 4, 8, 0x30, 0x40).unwrap();
+        assert_eq!(u, [14, 0, 0, 0, 4, 0, 0x30, 0, 0, 0, 8, 4, 0x40, 0, 0, 0, 1, 0]);
+        assert!(info_addr_base(17, 4, 8, 0, 0).is_none());
         for size in 19..300u64 {
-            let u = info_addr_base(size, 8, 0, 8).unwrap();
-            assert_eq!(u.len() as u64, size);
+            assert_eq!(info_addr_base(size, 5, 8, 0, 8).unwrap().len() as u64, size);
+            assert_eq!(info_addr_base(size, 4, 4, 0, 0).unwrap().len() as u64, size);
         }
         let sig = type_signature(0x1234);
         assert_eq!(sig, 0xdead_0000_0000_1234);
@@ -387,8 +423,12 @@ mod tests {
             assert_eq!(type_unit(size, 4, 0, sig).unwrap().len() as u64, size);
         }
         // The tables end their attribute lists with two zeros.
-        assert_eq!(&ABBREV_TABLE_ADDR_BASE[8..], &[0, 0]);
+        for t in [&ABBREV_TYPE_UNIT[..], &ABBREV_ADDR_BASE, &ABBREV_GNU_ADDR_BASE] {
+            assert_eq!(&t[t.len() - 2..], &[0, 0]);
+        }
         assert_eq!(&ABBREV_TYPE_UNIT[..2], &[2, 0x41]);
+        assert_eq!(&ABBREV_ADDR_BASE[..1], &[3]);
+        assert_eq!(&ABBREV_GNU_ADDR_BASE[..1], &[4]);
     }
 
     /// Not a check: the bytes of the forms, for the scripts that place them
@@ -397,8 +437,8 @@ mod tests {
     /// line, from the file `MORTAR_NEUTRAL_REQ` and writes one line of hex
     /// (or `none`) per request to `MORTAR_NEUTRAL_OUT`:
     /// `unit NAME SIZE VERSION ADDR_SIZE ABBREV`,
-    /// `addrbase SIZE ADDR_SIZE ABBREV ADDR_BASE`,
-    /// `type SIZE ADDR_SIZE ABBREV OFFSET`, `table compile|addrbase|type`.
+    /// `addrbase SIZE VERSION ADDR_SIZE ABBREV ADDR_BASE`,
+    /// `type SIZE ADDR_SIZE ABBREV OFFSET`, `table compile|one` (the constant; the 38-byte table).
     #[test]
     #[ignore = "run by tests/incr-design/wp228/place.py --rust"]
     fn emit_forms() {
@@ -414,12 +454,23 @@ mod tests {
             let n = |i: usize| -> u64 { w[i].parse().unwrap() };
             let bytes = match w.first().copied() {
                 Some("unit") => unit(w[1].as_bytes(), n(2), n(3) as u16, n(4) as u8, n(5) as u32),
-                Some("addrbase") => info_addr_base(n(1), n(2) as u8, n(3) as u32, n(4) as u32),
+                Some("addrbase") => {
+                    info_addr_base(n(1), n(2) as u16, n(3) as u8, n(4) as u32, n(5) as u32)
+                }
                 Some("type") => type_unit(n(1), n(2) as u8, n(3) as u32, type_signature(n(4))),
                 Some("table") => Some(match w[1] {
                     "compile" => ABBREV_TABLE.to_vec(),
-                    "addrbase" => ABBREV_TABLE_ADDR_BASE.to_vec(),
-                    _ => ABBREV_TYPE_UNIT.to_vec(),
+                    // The one table of the four abbreviations and its end
+                    // (IN-51b as proposed; ABBREV_TABLE once its commit
+                    // lands).
+                    _ => {
+                        let mut t = ABBREV_TABLE[..8].to_vec();
+                        t.extend_from_slice(&ABBREV_TYPE_UNIT);
+                        t.extend_from_slice(&ABBREV_ADDR_BASE);
+                        t.extend_from_slice(&ABBREV_GNU_ADDR_BASE);
+                        t.push(0);
+                        t
+                    }
                 }),
                 _ => None,
             };
