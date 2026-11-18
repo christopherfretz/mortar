@@ -14,6 +14,7 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use common::{Sec, World, sec};
 use mortar_core::assignment::Assignment;
 use mortar_core::column::Column;
+use mortar_core::demands::DemandFlags;
 use mortar_core::id::{ChunkId, FileId, OutSecId, SectionId};
 use mortar_core::identity::{Anchor, SectionKey};
 use mortar_core::incr::{
@@ -24,7 +25,7 @@ use mortar_core::incr::{
 };
 use mortar_core::layout::{
     Chunk, ChunkKind, Defined, Hole, HoleKind, Patch, Place, Placement, Redirect, Segment,
-    SymPlace, Tls,
+    SlotKind, SymPlace, Tls,
 };
 use mortar_core::par::Pool;
 use mortar_elf::Machine;
@@ -1029,6 +1030,8 @@ struct Counting<'a> {
     frags: AtomicUsize,
     /// `FILES`' eh columns, `FRAG_USE` and `KEY_REFS` ranges.
     ranges: AtomicUsize,
+    /// `SLOTS` (whole).
+    slots: AtomicUsize,
 }
 
 impl<'a> Counting<'a> {
@@ -1040,6 +1043,7 @@ impl<'a> Counting<'a> {
             holes: AtomicUsize::new(0),
             frags: AtomicUsize::new(0),
             ranges: AtomicUsize::new(0),
+            slots: AtomicUsize::new(0),
         }
     }
 }
@@ -1094,6 +1098,7 @@ impl LayoutRows for Counting<'_> {
         self.inner.section(id)
     }
     fn slots(&self) -> Result<Vec<StoredSlot>, IncrReason> {
+        self.slots.fetch_add(1, Ordering::Relaxed);
         self.inner.slots()
     }
     fn patches(&self) -> Result<Vec<Patch>, IncrReason> {
@@ -1142,7 +1147,33 @@ fn reads_only_what_changed() {
     assert!(rows.holes.load(Ordering::Relaxed) <= 4, "{}", rows.holes.load(Ordering::Relaxed));
     assert_eq!(rows.frags.load(Ordering::Relaxed), 0);
     assert_eq!(rows.ranges.load(Ordering::Relaxed), 6, "three ranges per file (items 5-7)");
+    assert_eq!(rows.slots.load(Ordering::Relaxed), 1, "SLOTS once: a file has a new version");
     assert_eq!(d.regions_opened.len(), 1);
+    // A file drawn in alone, with no slot demand old or new: SLOTS unread.
+    let (changes, _) = changes_of(&s0, &Edit::new(s0.files()).drawn(&[7]));
+    let rows = Counting::new(&s0.mem);
+    layout(&StoredLayout::new(&rows), &input(&changes), &s0.world.target).unwrap();
+    assert_eq!(rows.slots.load(Ordering::Relaxed), 0);
+    assert_eq!(rows.frags.load(Ordering::Relaxed), 0);
+}
+
+// spec: incr.md IN-72 item 6 (IN-18c: the `FRAGS` row of each key whose
+// count changes, and nothing of the other files' fragments)
+#[test]
+fn item6_reads_only_changed_keys() {
+    let model: Vec<MFile> = (0..40).map(|_| mfile(&[1, 2])).collect();
+    let s0 = mfirst(&model, &[]);
+    let mut next = model.clone();
+    next[19] = mfile(&[1, 3]);
+    let (changes, pieces) = minput(&s0, &next, &[20]);
+    let rows = Counting::new(&s0.mem);
+    let inp = LayoutInput { changes: &changes, pieces: &pieces, ..LayoutInput::default() };
+    let d = layout(&StoredLayout::new(&rows), &inp, &s0.world.target).unwrap();
+    assert_eq!(rows.frags.load(Ordering::Relaxed), 2, "keys 2 (40 to 39) and 3 (new)");
+    assert_eq!(rows.ranges.load(Ordering::Relaxed), 3, "one file's three ranges");
+    assert_eq!(rows.sections.load(Ordering::Relaxed), 1);
+    assert_eq!(rows.holes.load(Ordering::Relaxed), 0, "no fragment died or revived");
+    assert_eq!(d.frags.len(), 2, "{:?}", d.frags);
 }
 
 // spec: incr.md IN-72 (determinism, IN-6: no dependence on the thread
@@ -1329,18 +1360,140 @@ fn edit_moves_only_changed_sections() {
     }
 }
 
-// IN-28b's slots: the order of IRELATIVE slots needs the update's slot
-// demand; item 7 is refused wholesale until WP-239's ruling on the stored
-// state (`items_5_6_7_refused_wholesale`).
-#[test]
-#[ignore = "item 7: refused wholesale until WP-239 (WP-216.md §Q)"]
-fn two_ifuncs_added_irelative_order() {}
+// ---- item 7: slots (WP-242) -------------------------------------------------
 
-// ---- items 5, 6, 7: refused wholesale (until WP-239) ------------------------
+fn gkey(id: u32) -> mortar_core::id::SymKey {
+    mortar_core::id::SymKey::global(mortar_core::id::SymbolId(id))
+}
+
+fn slot(kind: SlotKind, key: mortar_core::id::SymKey, index: u32, refs: u32) -> StoredSlot {
+    StoredSlot { kind, key, index, refs }
+}
+
+fn key_ref(id: u32, file: u32, demand: DemandFlags) -> StoredKeyRef {
+    StoredKeyRef { key: mortar_core::id::SymbolId(id), file: FileId(file), demand }
+}
+
+/// The first link of `two_text_files` with `slots` and `key_refs` stored,
+/// and file 1 changed (its `.text.a` grown) with its new slot demand.
+fn slots_hop(
+    machine: Machine,
+    slots: &[StoredSlot],
+    key_refs: &[StoredKeyRef],
+    demand: &[(mortar_core::id::SymKey, DemandFlags)],
+) -> Result<LayoutDelta, IncrReason> {
+    let mut s0 = first(machine, &two_text_files());
+    s0.mem.slots = slots.to_vec();
+    s0.mem.key_refs = key_refs.to_vec();
+    let mut files = s0.files();
+    files[0][0].size = 60;
+    let (changes, _) = changes_of(&s0, &Edit::new(files).changed(&[1]));
+    let demands = [FileDemands {
+        file: FileId(1),
+        demands: demand.iter().map(|&(key, flags)| SlotDemand { key, flags }).collect(),
+    }];
+    let inp = LayoutInput { demands: &demands, ..input(&changes) };
+    layout(&StoredLayout::new(&s0.mem), &inp, &s0.world.target)
+}
+
+// spec: incr.md IN-72 item 7 (two IRELATIVE slots added by one update: in
+// `SymKey` order after every stored IPLT slot, S-64/S-113; the order is
+// `delta::slots`' `two_iplt_appended_in_key_order`, against the full
+// link's rows). The seam carries no region capacity for slots (S-63:
+// capacity = count; R-M4 not built, WP-242 finding D), so the update
+// refuses by name, naming the kind.
+#[test]
+fn two_ifuncs_added_irelative_order() {
+    const IPLT: DemandFlags = DemandFlags::IPLT;
+    for m in [Machine::X86_64, Machine::AArch64] {
+        // Given in key order (the join's contract): 3 before 5.
+        let e = slots_hop(m, &[], &[], &[(gkey(3), IPLT), (gkey(5), IPLT)]).unwrap_err();
+        assert_eq!(e.name(), "reserve-exhausted", "{e:?}");
+        assert!(e.report().contains("IPLT"), "{e:?}");
+        // Not in key order: the join's contract broken, refused.
+        let e = slots_hop(m, &[], &[], &[(gkey(5), IPLT), (gkey(3), IPLT)]).unwrap_err();
+        assert_eq!(e, not_implemented());
+        // An IPLT slot retired changes `.rela.plt`'s size and
+        // `__rela_iplt_end` (finding F): refused.
+        let e = slots_hop(m, &[slot(SlotKind::Iplt, gkey(3), 0, 1)], &[key_ref(3, 1, IPLT)], &[])
+            .unwrap_err();
+        assert_eq!(e, not_implemented());
+    }
+}
+
+// spec: incr.md IN-72 item 7 (a slot whose `refs` falls to 0 is retired:
+// `slots_dead`, written 0, S-113; `refs` counts FILES, WP-239 S4-4)
+#[test]
+fn item7_got_retired_and_counted() {
+    const GOT: DemandFlags = DemandFlags::GOT;
+    const IE: DemandFlags = DemandFlags::GOT_TPREL;
+    for m in [Machine::X86_64, Machine::AArch64] {
+        // File 1 alone needed GOT[0] (key 3): retired.
+        let stored = [slot(SlotKind::Got, gkey(3), 0, 1), slot(SlotKind::Got, gkey(4), 1, 1)];
+        let refs = [key_ref(3, 1, GOT), key_ref(4, 2, GOT)];
+        let d = slots_hop(m, &stored, &refs, &[]).unwrap();
+        assert_eq!(d.slots_dead, vec![slot(SlotKind::Got, gkey(3), 0, 0)]);
+        assert!(d.slots_appended.is_empty());
+        // Unchanged demand: nothing.
+        let d = slots_hop(m, &stored, &refs, &[(gkey(3), GOT)]).unwrap();
+        assert!(d.slots_dead.is_empty() && d.slots_appended.is_empty(), "{d:?}");
+        // GOT|GOT_TPREL in one row, once per file per kind: both retired.
+        let stored = [slot(SlotKind::Got, gkey(3), 0, 1), slot(SlotKind::TlsIe, gkey(3), 0, 1)];
+        let d = slots_hop(m, &stored, &[key_ref(3, 1, GOT.union(IE))], &[]).unwrap();
+        assert_eq!(
+            d.slots_dead,
+            vec![slot(SlotKind::Got, gkey(3), 0, 0), slot(SlotKind::TlsIe, gkey(3), 0, 0)]
+        );
+        // Shared by both files (refs 2): file 1 drops it, refs 1. No
+        // field of `LayoutDelta` carries a live slot's count (finding B).
+        let shared = [slot(SlotKind::Got, gkey(3), 0, 2)];
+        let both = [key_ref(3, 1, GOT), key_ref(3, 2, GOT)];
+        assert_eq!(slots_hop(m, &shared, &both, &[]).unwrap_err(), not_implemented());
+        // Drawn in on a live slot: refs 2, the same.
+        let one = [slot(SlotKind::Got, gkey(3), 0, 1)];
+        let e = slots_hop(m, &one, &[key_ref(3, 2, GOT)], &[(gkey(3), GOT)]).unwrap_err();
+        assert_eq!(e, not_implemented());
+        // A dead slot revived in place: the same.
+        let dead = [slot(SlotKind::Got, gkey(3), 0, 0)];
+        assert_eq!(slots_hop(m, &dead, &[], &[(gkey(3), GOT)]).unwrap_err(), not_implemented());
+        // A stored demand with no slot: corrupt.
+        let e = slots_hop(m, &[], &[key_ref(3, 1, GOT)], &[]).unwrap_err();
+        assert_eq!(e.name(), "state-corrupt", "{e:?}");
+    }
+}
+
+// spec: incr.md IN-28b (a local's slot is its file's alone: a changed
+// file's old local slots all die, its new local demand is a new slot)
+#[test]
+fn item7_local_slots_belong_to_their_file() {
+    const GOT: DemandFlags = DemandFlags::GOT;
+    let local = |file: u32, index: u32| {
+        mortar_core::id::SymKey::local(mortar_core::id::LocalSym {
+            file: FileId(file),
+            index: mortar_elf::SymbolIndex(index),
+        })
+    };
+    for m in [Machine::X86_64, Machine::AArch64] {
+        let stored =
+            [slot(SlotKind::Got, local(1, 7), 0, 1), slot(SlotKind::Got, local(2, 7), 1, 1)];
+        // File 1 changed, no local demand now: its slot dies, file 2's stays.
+        let d = slots_hop(m, &stored, &[], &[]).unwrap();
+        assert_eq!(d.slots_dead, vec![slot(SlotKind::Got, local(1, 7), 0, 0)]);
+        // The same local index demanded again is a new slot (no identity
+        // across versions): appended, past capacity.
+        let e = slots_hop(m, &stored, &[], &[(local(1, 7), GOT)]).unwrap_err();
+        assert_eq!(e.name(), "reserve-exhausted", "{e:?}");
+        // Another file's local: no file demands one.
+        let e = slots_hop(m, &stored, &[], &[(local(2, 7), GOT)]).unwrap_err();
+        assert_eq!(e, not_implemented());
+    }
+}
+
+// ---- item 5: refused wholesale; items 6, 7 built (WP-242) -------------------
 
 // spec: incr.md IN-72 items 5, 6, 7 (v1 as the supervisor ruled on WP-216's
-// seam 4: any `.eh_frame` record, merged piece or slot demand of a file of
-// the update, new or old, is `update-not-implemented (layout)`)
+// seam 4: any `.eh_frame` record of a file of the update, new or old, is
+// `update-not-implemented (layout)`; items 6 and 7 are WP-242's)
 #[test]
 fn items_5_6_7_refused_wholesale() {
     let s0 = first(Machine::X86_64, &two_text_files());
@@ -1373,13 +1526,15 @@ fn items_5_6_7_refused_wholesale() {
         file: f1,
         demands: vec![SlotDemand {
             key: mortar_core::id::SymKey::global(mortar_core::id::SymbolId(3)),
-            flags: mortar_core::demands::DemandFlags::GOT,
+            flags: DemandFlags::GOT,
         }],
     }];
     let with = |i: LayoutInput<'_>| run(&s0.mem, &i).err();
     assert_eq!(with(LayoutInput { eh: &eh, ..input(&changes) }), Some(not_implemented()));
     assert_eq!(with(LayoutInput { pieces: &pieces, ..input(&changes) }), Some(not_implemented()));
-    assert_eq!(with(LayoutInput { demands: &demands, ..input(&changes) }), Some(not_implemented()));
+    // Item 7 is built (WP-242): a new slot is past its region's capacity.
+    let e = with(LayoutInput { demands: &demands, ..input(&changes) }).unwrap();
+    assert_eq!(e.name(), "reserve-exhausted", "{e:?}");
     // Empty lists are no demand.
     let none = [EhFile { file: f1, rank: 1, records: Vec::new() }];
     assert!(with(LayoutInput { eh: &none, ..input(&changes) }).is_none());
@@ -1395,11 +1550,12 @@ fn items_5_6_7_refused_wholesale() {
     // Item 6 is built (WP-242): a use with no `FRAGS` row is corrupt.
     assert_eq!(old(&|m| m.frag_uses.push(fu)).map(|e| e.name()), Some("state-corrupt"));
     let key = mortar_core::id::SymbolId(3);
-    let got = mortar_core::demands::DemandFlags::GOT;
+    let got = DemandFlags::GOT;
     let slot = StoredKeyRef { key, file: f1, demand: got };
-    assert_eq!(old(&|m| m.key_refs.push(slot)), Some(not_implemented()));
+    // Item 7 is built: a stored demand with no `SLOTS` row is corrupt.
+    assert_eq!(old(&|m| m.key_refs.push(slot)).map(|e| e.name()), Some("state-corrupt"));
     // A mention with no demand is no slot; another file's rows are not read.
-    let plain = StoredKeyRef { key, file: f1, demand: mortar_core::demands::DemandFlags::empty() };
+    let plain = StoredKeyRef { key, file: f1, demand: DemandFlags::empty() };
     assert!(old(&|m| m.key_refs.push(plain)).is_none());
     assert!(old(&|m| m.eh_ranges.push((FileId(2), r))).is_none());
 }
@@ -1787,12 +1943,12 @@ fn mcheck(st: &MState) {
 /// A merged update: `next` the new model, `files` the files of the update
 /// (1-based); those in `st.absent` appear. `extra` adjusts the input.
 #[allow(clippy::too_many_lines, reason = "the input, then the delta applied row by row")]
-fn mhop_with(
-    st: &MState,
+/// The update's changes and pieces for `files` of `next`.
+fn minput<'a>(
+    st: &'a MState,
     next: &[MFile],
     files: &[u32],
-    extra: &dyn Fn(&mut Vec<FilePieces>),
-) -> Result<(MState, LayoutDelta), IncrReason> {
+) -> (Vec<SectionChange<'a>>, Vec<FilePieces>) {
     let w = &st.world;
     let mut changes = Vec::new();
     let mut pieces = Vec::new();
@@ -1834,6 +1990,17 @@ fn mhop_with(
         pieces.push(fp);
     }
     changes.sort_by_key(|c| c.id);
+    (changes, pieces)
+}
+
+fn mhop_with(
+    st: &MState,
+    next: &[MFile],
+    files: &[u32],
+    extra: &dyn Fn(&mut Vec<FilePieces>),
+) -> Result<(MState, LayoutDelta), IncrReason> {
+    let w = &st.world;
+    let (changes, mut pieces) = minput(st, next, files);
     extra(&mut pieces);
     let stored = StoredLayout::new(&st.mem);
     let inp = LayoutInput { changes: &changes, pieces: &pieces, ..LayoutInput::default() };

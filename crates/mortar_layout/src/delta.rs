@@ -8,7 +8,8 @@
 //!
 //! What it reads (IN-18c, O(change)): the whole small tables (`CHUNKS`,
 //! `ORDER`, `SEGMENTS`, `OUTSECS`, `PATCHES`, `REDIRECTS`, `SYM_PLACE`,
-//! `DEFINED`, `LAYOUT`; `SLOTS` only when a file changed), and per file of
+//! `DEFINED`, `LAYOUT`; `SLOTS` only when a file of `changes` has a new
+//! version or an old or new slot demand, item 7, `slots`), and per file of
 //! `changes` its `SECTIONS`, `REGIONS`, `FRAG_USE` and `KEY_REFS` ranges
 //! and its `FILES` row's `.eh_frame` columns, the `FRAGS` row of each
 //! fragment key whose count changes (item 6, `frags`), and `HOLES` of the
@@ -18,22 +19,27 @@
 //! What it gives (`spec/landed/incr/WP-216.md` §2): `placement` has the
 //! stored whole tables, updated (chunks grown or moved by the growth steps,
 //! the segments derived again, the TLS template and the entry moved with
-//! them); the placement is SPARSE (WP-216 R-3), read through
+//! them; `defined` is the stored `DEFINED`, whole and unchanged: its
+//! chunk-relative values follow their chunks, and a row whose value is a
+//! chunk's end is not moved when the update grows that chunk, WP-242
+//! finding G); the placement is SPARSE (WP-216 R-3), read through
 //! `LayoutDelta::place_of` and `holes_of` only: `files` names the files
 //! whose sections `placement.place` places, `hole_chunks` the chunks whose
 //! holes `placement.holes` replaces; `sized` is empty (not a row
 //! `LayoutRows` gives).
 //!
 //! Every refusal is a reason of `spec/incr.md` §7 by name; what this
-//! package cannot do (IN-72 item 4's rewrite; items 5 and 7 wholesale;
-//! item 6's dead string, WP-242 finding C) is `update-not-implemented
-//! (layout)`, never a guess. Commons are not placed by an update in v1
-//! (WP-216 R-2: the join's `update-not-implemented (common)`).
+//! package cannot do (IN-72 item 4's rewrite; item 5 wholesale; item 6's
+//! dead string, WP-242 finding C; item 7's recounted, revived or retired
+//! PLT/IPLT slot, findings B and F) is `update-not-implemented (layout)`,
+//! never a guess; item 7's new slot is `reserve-exhausted` (finding D).
+//! Commons are not placed by an update in v1 (WP-216 R-2: the join's
+//! `update-not-implemented (common)`).
 
 use std::collections::{BTreeMap, BTreeSet};
 
 use mortar_core::column::Column;
-use mortar_core::id::{ChunkId, FileId, OutSecId, SectionId, SymKind};
+use mortar_core::id::{ChunkId, FileId, OutSecId, SectionId};
 use mortar_core::incr::{
     GrowthStep, IncrReason, LayoutDelta, LayoutInput, SectionChange, StoredLayout, StoredRegion,
     StoredSection, Unimplemented,
@@ -56,6 +62,7 @@ use crate::slack::{self, Slack};
 use crate::target::Target;
 
 mod frags;
+mod slots;
 
 /// Place the update's sections in the stored layout (WP-211 §C; IN-72).
 /// `input.changes`: every section of every changed, appeared, drawn-in or
@@ -90,30 +97,35 @@ pub fn layout(
     }
     let ids: Vec<FileId> = files.keys().copied().collect();
     item_5_refused(stored, input, &ids)?;
-    item_7_refused(stored, input, &ids)?;
     let base = Base::read(stored, target)?;
     let mut u = Update::new(&base, changes);
     for (&file, members) in &files {
         u.file(stored, file, members)?;
     }
     u.merged = frags::item_6(&base, &mut u.chunks, stored, input, &ids, &u.pieces)?;
-    u.items_7_and_link_order(stored)?;
+    u.link_order()?;
+    let file_of: Vec<slots::FileOf> = ids
+        .iter()
+        .map(|&file| slots::FileOf { file, changed: u.changed.contains(&file) })
+        .collect();
+    let (slots_dead, slots_appended) = slots::item_7(stored, &file_of, input.demands)?;
     u.overflow()?;
     u.growth()?;
     u.holes(stored)?;
     u.left_empty(stored)?;
     let mut delta = u.finish()?;
     delta.files = files.into_keys().collect();
+    delta.slots_dead = slots_dead;
+    delta.slots_appended = slots_appended;
     Ok(delta)
 }
 
-// Items 5 and 7 are refused wholesale until they are built (the
-// supervisor's word on WP-216's seam 4), one clause per item so that each
-// can be taken by its own package: a file of the update with kept
-// `.eh_frame` records or a slot demand, in its new version (`input`) or its
-// old one (its stored range), is `update-not-implemented (layout)`; so is a
-// non-empty list in `input` for any file. An accessor the stored rows do not
-// give is the same reason (its provided body). Item 6 is `frags` (WP-242).
+// Item 5 is refused wholesale until it is built (the supervisor's word on
+// WP-216's seam 4): a file of the update with kept `.eh_frame` records, in
+// its new version (`input`) or its old one (its stored range), is
+// `update-not-implemented (layout)`; so is a non-empty list in `input` for
+// any file. An accessor the stored rows do not give is the same reason (its
+// provided body). Item 6 is `frags`, item 7 `slots` (WP-242).
 
 /// Item 5 (`.eh_frame`, IN-34a): refused wholesale (WP-243's).
 fn item_5_refused(
@@ -126,24 +138,6 @@ fn item_5_refused(
     }
     for &file in files {
         if stored.eh_range_of(file)?.is_some() {
-            return Err(not_implemented());
-        }
-    }
-    Ok(())
-}
-
-/// Item 7 (slots): refused wholesale (a stored demand on any key of the
-/// file).
-fn item_7_refused(
-    stored: &StoredLayout<'_>,
-    input: &LayoutInput<'_>,
-    files: &[FileId],
-) -> Result<(), IncrReason> {
-    if input.demands.iter().any(|f| !f.demands.is_empty()) {
-        return Err(not_implemented());
-    }
-    for &file in files {
-        if stored.key_refs_of(file)?.iter().any(|r| !r.demand.is_empty()) {
             return Err(not_implemented());
         }
     }
@@ -898,9 +892,8 @@ impl<'b, 'c> Update<'b, 'c> {
         Ok(())
     }
 
-    /// Item 7 (IN-28b: a slot keyed by a local of a changed file) and
-    /// item 4's `SHF_LINK_ORDER` rule, and the killed fixed sections.
-    fn items_7_and_link_order(&mut self, stored: &StoredLayout<'_>) -> Result<(), IncrReason> {
+    /// Item 4's `SHF_LINK_ORDER` rule, and the killed fixed sections.
+    fn link_order(&mut self) -> Result<(), IncrReason> {
         // A killed fixed section (items 4, 8, 10): its old place cannot
         // become a hole.
         let base = self.base;
@@ -950,16 +943,6 @@ impl<'b, 'c> Update<'b, 'c> {
                 || self.orphans.iter().any(|o| o.file == c.file);
             if moved {
                 return Err(Why::LinkOrder.reason(c.key.name, "follows a section that moved"));
-            }
-        }
-        // Item 7 / IN-28b.
-        if !self.changed.is_empty() {
-            for s in stored.slots()? {
-                if let SymKind::Local(e) = s.key.kind()
-                    && self.changed.contains(&e.file)
-                {
-                    return Err(not_implemented());
-                }
             }
         }
         Ok(())
