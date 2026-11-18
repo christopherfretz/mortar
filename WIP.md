@@ -25,3 +25,9 @@
 
 ## How to resume
 Read the brief (`briefs/u-2-to-9.md` U-3), this file, then the record §Q.
+
+## Seam commit (2026-11-17)
+- Seam commit 89c735e4 sits alone on base 294101b1; the first-step record was cherry-picked on top as 407c1fcb (the original is kept on local branch `wp215-firststep`).
+- cxx-large-g: 1 closure iteration (10.7 s, 2.0 GB RSS; the 1.13 GB output was deleted). protoc: 1.
+- D8 measured: no non-local entry with `@` in protoc's inputs, the C hello, the Fortran hello (AArch64 GCC 14/glibc 2.41 libraries), or the x86-64/i386 libc.a.
+- Next, when the coordinator resumes: the package (extract, resolve, live, recompute, refill_set), the --start-lib refusal, the named tests incl. feedback_check_is_sound_random, the full gate, the record.
