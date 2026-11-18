@@ -1095,11 +1095,9 @@ fn experiment_states_round_trip() {
             let t = std::time::Instant::now();
             let n = mortar_incr::state5::compact::normalize(&m).map_err(|e| e.to_string())?;
             let t_norm = t.elapsed();
+            let t = std::time::Instant::now();
             let b = mortar_incr::state5::write::encode(&n).map_err(|e| e.to_string());
-            println!(
-                "{p}: decode {t_decode:?}, normalize {t_norm:?}, encode {:?}",
-                t.elapsed() - t_norm
-            );
+            println!("{p}: decode {t_decode:?}, normalize {t_norm:?}, encode {:?}", t.elapsed());
             b
         });
         match again {

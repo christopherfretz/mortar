@@ -278,7 +278,6 @@ impl MemoryState {
     /// incremental link).
     fn index_rows(&self) -> Vec<FileIndexRow> {
         use super::rows::{FileTable, RowRange};
-        let mut rows = vec![FileIndexRow::default(); self.files.len()];
         fn note(r: &mut RowRange, i: usize) {
             if r.count == 0 {
                 r.first = u32::try_from(i).unwrap_or(u32::MAX);
@@ -286,6 +285,7 @@ impl MemoryState {
             r.count += 1;
             r.capacity = r.count;
         }
+        let mut rows = vec![FileIndexRow::default(); self.files.len()];
         let mut by = |t: FileTable, files: &mut dyn Iterator<Item = u32>| {
             for (i, f) in files.enumerate() {
                 if let Some(row) = rows.get_mut(f as usize) {
