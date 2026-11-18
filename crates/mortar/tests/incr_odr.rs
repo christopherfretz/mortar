@@ -351,8 +351,13 @@ fn w1_w2_input_from_rows_equals_the_links() {
     let mut linked = 0;
     for arch in [Arch::Aarch64, Arch::X86_64] {
         let list = producers(arch);
-        if list.len() < 3 {
-            assert!(!tools_required(), "{arch:?}: gcc, clang and kiln are required");
+        // GCC and Clang are required where tools are; kiln is taken where
+        // the workspace has a build of it (as the census does): the hosted
+        // `test` step has none, kiln is required by the mason step.
+        for needed in ["gcc", "clang"] {
+            if !list.iter().any(|p| p.name == needed) {
+                assert!(!tools_required(), "{arch:?}: {needed} is required");
+            }
         }
         for p in &list {
             let label = format!("{}-{}", arch.triple(), p.name);

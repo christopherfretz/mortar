@@ -28,14 +28,17 @@ defaults:
 jobs:
   # The whole gate in one job: `cargo xtask ci` (fmt, clippy, the tests,
   # the link tests on all three architectures; the runner's natively, the
-  # others under qemu-user). It takes about a quarter of an hour, not the
-  # hour of hod's or kiln's, so it is not split by `--step`: a job of its
+  # others under qemu-user). It is not split by `--step`: a job of its
   # own per step would pay the set-up (2 to 3 minutes) again for each.
+  # Measured 2026-11-18: 38 minutes on the arm runner, about 50 on the
+  # x86-64 one (the tests 21, the link tests 15), which the limit of 45
+  # cancelled (run 44300379924); the limit is 60 until the lane is split
+  # or made faster.
   gate:
     name: gate
     runs-on: ${{ inputs.runner }}
     container: buildpack-deps:trixie-scm
-    timeout-minutes: 45
+    timeout-minutes: 60
     steps:
       - uses: actions/checkout@v4
       - uses: ./.github/actions/mortar-ci
