@@ -912,6 +912,30 @@ fn key_refs_single_mentioner() {
     assert_eq!(d.new_keys[0].name, b"only".to_vec());
 }
 
+// spec: incr.md IN-71 (a common's stored value; WP-215 R.6 5, ruled): an
+// UNCHANGED file whose common has alignment 0 (`st_value` 0) becomes the
+// winner: its value is not stored, `COMMONS.align` holds 1, and the full
+// link writes `max(1, st_value)` (`tables::resolved_row`): the update's row
+// equals the full link's, value 1.
+#[test]
+fn unchanged_align0_common_becomes_winner() {
+    let mut a = Link::new();
+    let f1 = a.add(R, false, vec![common("c").val(8, 8), def("x")]);
+    a.add(2 * R, false, vec![common("c").val(0, 4)]);
+    let mut b = a.clone();
+    b.files[f1 as usize].as_mut().unwrap().ments = vec![def("x")];
+    let (d, drawn) = hop_ok(&a, &b);
+    assert!(drawn.is_empty(), "never a draw-in for a common");
+    let row = d.resolved.iter().find(|(k, _)| *k == key_of(&a, "c")).unwrap().1;
+    assert_eq!((row.kind, row.value, row.size), (def_kind::COMMON, 1, 4));
+    // And back: a changed file's alignment-0 common wins: 1 as well.
+    let mut c = a.clone();
+    c.files[f1 as usize].as_mut().unwrap().ments = vec![common("c").val(0, 2), def("x")];
+    let (d, _) = hop_ok(&a, &c);
+    let row = d.resolved.iter().find(|(k, _)| *k == key_of(&a, "c")).unwrap().1;
+    assert_eq!((row.value, row.size), (1, 4));
+}
+
 // spec: incr.md IN-71b "Live keys" (WP-215 R.6 3, ruled): a DEAD key (no
 // stored mention by a live file, no `LAZY` definition, no option) is inert
 // to every reader of the update, and found and reused when it gets a

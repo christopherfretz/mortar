@@ -374,7 +374,8 @@ impl Link {
                     .max()
                     .unwrap();
                 full.by.insert(k.clone(), at.1);
-                Row { size, ..row_of(at.1, m) }
+                // The value: `max(1, st_value)` (`tables::resolved_row`).
+                Row { size, value: m.value.max(1), ..row_of(at.1, m) }
             } else if let Some((at, m)) = ms
                 .iter()
                 .find(|(at, m)| m.defined() && m.bind == WEAK && !demoted(at.1, m))

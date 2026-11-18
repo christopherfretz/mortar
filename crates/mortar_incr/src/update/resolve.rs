@@ -869,7 +869,8 @@ impl<'c, 'a, 's> Res<'c, 'a, 's> {
             let v = c.values.get(p).ok_or_else(|| {
                 corrupt("a changed file's values are not parallel to its mentions")
             })?;
-            (row.typ, row.bind, row.other, row.value) = (x.typ, x.bind, x.other, v.value);
+            // `max(1, st_value)`: the full link's (`tables::resolved_row`).
+            (row.typ, row.bind, row.other, row.value) = (x.typ, x.bind, x.other, v.value.max(1));
             return Ok(row);
         }
         if let Some(old) = old
