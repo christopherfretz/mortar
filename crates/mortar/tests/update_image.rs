@@ -89,7 +89,7 @@ impl Fixture {
             assert!(!tools_required(), "{} is required", arch.gnu("gcc"));
             return None;
         }
-        let f = Self { scratch: Scratch::new(label), arch, leaves: Default::default() };
+        let f = Self { scratch: Scratch::new(label), arch, leaves: std::cell::RefCell::default() };
         let [a, b, c] = sources(arch, 42, 0);
         f.assemble("a", &a);
         f.assemble("b", &b);
@@ -485,7 +485,9 @@ fn growth_step_rewrites_headers() {
             if z1 <= target && target - z1 < 0x400 {
                 break;
             }
+            #[allow(clippy::cast_precision_loss)]
             let slope = (z1 - z0) as f64 / (s1 - s0) as f64;
+            #[allow(clippy::cast_precision_loss)]
             let next = s1 as f64 + ((target - 0x200) as f64 - z1 as f64) / slope;
             (s0, z0) = (s1, z1);
             s1 = next as u64;
@@ -883,6 +885,7 @@ fn a_without_got(arch: Arch) -> String {
 // `MORTAR_U6_DUMP`, the output, its map and the inputs are kept for
 // `cargo xtask plumb`.
 #[test]
+#[allow(clippy::many_single_char_names)]
 fn a_retired_slot_is_zero_and_a_hole() {
     use mortar_core::layout::{Hole, HoleKind};
     use mortar_image::map::{render, update_map};
@@ -908,7 +911,7 @@ fn a_retired_slot_is_zero_and_a_hole() {
                 .chunks
                 .iter()
                 .find(|(_, c)| c.name(&f.assignment) == Some(&b".got"[..]))
-                .map(|(id, c)| (id, c.clone()))
+                .map(|(id, c)| (id, *c))
                 .unwrap();
             // d's slot: the 8-byte word of `.got` holding d's address.
             let d = {
