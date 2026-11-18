@@ -983,11 +983,8 @@ fn r_xindex_past_shn_loreserve() {
     // AArch64 host: a host's own `ld.bfd` has no `aarch64linux`
     // emulation); `ld.lld` reads the machine from its input on any host.
     for ld in ["ld.bfd", "ld.lld"] {
-        let found = if ld == "ld.bfd" {
-            TArch::Aarch64.tool(ld)
-        } else {
-            mortar_testutil::tool(ld)
-        };
+        let found =
+            if ld == "ld.bfd" { TArch::Aarch64.tool(ld) } else { mortar_testutil::tool(ld) };
         let Some(l) = found else {
             assert!(!tools_required(), "{ld} is required");
             named_skip(&format!("{T} ({ld})"), &format!("{ld} is not installed"));
