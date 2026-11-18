@@ -1,33 +1,30 @@
 # WIP: WP-215 (U-3), branch wp/215-incr-resolve
 
 ## Done
-- First step (the brief's "before code" page): `spec/landed/incr/WP-215.md` §Q.
-  Result: an update cannot follow §4.1's iterations (Q.1); the trigger is
-  decidable per affected key (Q.2) given D1; eight data the stored tables
-  lack (Q.3, D1-D8); IN-71b sentence proposed (Q.4). Stopped there, as the
-  brief says, for the supervisor's ruling.
-- Release build of the base in `.build/target-wp-143/release/mortar`;
-  protoc run with `MORTAR_STEPS=1` (one iteration): scratch
-  `.build/target-wp-143/wp215/` (medium.steps, *.rsp, cxx-medium-static.out).
+- Record §Q (first step); seam 1 + seam 2 (85c3b28e, accepted).
+- Step 1 committed 165110d7: `mortar_resolve::tables::option_keys`
+  (static-identical 3450 links 0 differ; protoc 10 interleaved runs each,
+  median 0.29-0.30 s before, 0.29 s after; RSS 150,040 vs 148,432 KiB).
+- `update/extract.rs`: shared `Ctx` (update's link: facts by current rank,
+  ments_old/new, targets, wrap redirect/sources, edges) and `extract`
+  (IN-71b: lost/gained edges, removal cone by round, re-seed + addition).
+  Being compiled.
 
-## Next (after the ruling)
-1. Apply the ruling to Q.3 (which data come, which cases fall back by name).
-2. Code, in this order (each independent of the others' data gaps):
-   `defined::recompute` (IN-71c; from `view.defined()` and `LayoutDelta`),
-   `refill::refill_set` (IN-74; INDEX by key/section), `live::live`
-   (IN-71a; needs D3's roots), `extract::extract` (IN-71b + Q.2),
-   `resolve::resolve` (IN-71).
-3. The join's loop (for the record): extract and resolve are called again
-   after the join reads newly extracted / drawn-in files, until no file flips.
-4. Tests in `crates/mortar_incr/tests/update_resolve.rs` (replace the
-   "until it lands" tests); named tests: WP-207 §D U-3 row, WP-211 §D.
-5. `crates/mortar/src/incremental.rs`: `--start-lib` refusal line + test.
+## Next
+1. `resolve.rs` (defs per §3.2 classes, COMDAT re-election, Q.2 closure
+   check, symbol-kind-changed, KEY_REFS/GROUPS/COMMONS edits; fallbacks
+   for gaps G1 values, G2 strings), `live.rs` (G3: empty without gc, else
+   named fallback), `defined.rs` recompute, `refill.rs`.
+2. `--start-lib` refusal in `crates/mortar/src/incremental.rs` + test.
+3. Tests in `crates/mortar_incr/tests/update_resolve.rs`; the random
+   feedback test in `crates/mortar/tests/` (flag it).
+4. Cherry-pick U-8's seam when its hash arrives; do NOT touch ChangedFile.
+5. Gate, record `spec/landed/incr/WP-215.md`, delete this file.
+
+## Gaps to report (rulings): G1 ChangedFile lacks st_value/st_size;
+G2 ChangedFile Strs unreadable; G3 SECTIONS lacks IN-29 root flags, gc
+unknown.
 
 ## How to resume
-Read the brief (`briefs/u-2-to-9.md` U-3), this file, then the record §Q.
-
-## Seam commit (2026-11-17)
-- Seam commit 89c735e4 sits alone on base 294101b1; the first-step record was cherry-picked on top as 407c1fcb (the original is kept on local branch `wp215-firststep`).
-- cxx-large-g: 1 closure iteration (10.7 s, 2.0 GB RSS; the 1.13 GB output was deleted). protoc: 1.
-- D8 measured: no non-local entry with `@` in protoc's inputs, the C hello, the Fortran hello (AArch64 GCC 14/glibc 2.41 libraries), or the x86-64/i386 libc.a.
-- Next, when the coordinator resumes: the package (extract, resolve, live, recompute, refill_set), the --start-lib refusal, the named tests incl. feedback_check_is_sound_random, the full gate, the record.
+Brief `briefs/u-2-to-9.md` U-3 + `briefs/wp-215-rulings.md`, this file,
+record §Q. Scratch `.build/target-wp-143/wp215/` (chk.sh = cargo check).
