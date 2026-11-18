@@ -3106,7 +3106,11 @@ a pass over a whole table of the state; **O(output)**.
   *Argued, not run* (no update code; kiln's kind 2 rows are not yet
   emitted). *Test (O-1 package):* each K of odr.md §2 introduced by an
   update, removed by the next, introduced again (three hops): the
-  diagnostics equal the full link's.
+  diagnostics equal the full link's; *(U-8, WP-211)*
+  `odr_unchanged_pair_made_live_by_changed_file` (two unchanged units
+  in conflict, made live by a changed file's call: the finding appears
+  as in the full link) and `odr_runtime_note_under_update`
+  (`--odr-runtime`'s `.note.mason` under an update).
 
 - **IN-71a [v1] Liveness from stored edges.** IN-29's stored graph is the
   `EDGES` table (IN-18e: per file a range of rows, each IN-29's row
@@ -3316,7 +3320,10 @@ a pass over a whole table of the state; **O(output)**.
   `SHF_LINK_ORDER` section whose target dies is drawn in or the update
   ends `link-order-moved`; WP-211), `cross_file_eh_frame_fde_target_dies`
   (an FDE of an unchanged file whose function section dies: the range
-  drops the FDE as the full link does; WP-211), each three hops; L10 grow and shrink steps past each capacity in turn
+  drops the FDE as the full link does; WP-211),
+  `alignment_growth_is_reserve_exhausted` (item 10),
+  `region_with_three_sections_one_grows` (WP-211, review-wp207 §10: the
+  region models were `.text`-only), each three hops; L10 grow and shrink steps past each capacity in turn
   (IN-32's test).
 
 - **IN-73 [v1] What WP-064a refused, and where it now goes.** Every edit
