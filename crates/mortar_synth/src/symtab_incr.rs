@@ -233,46 +233,7 @@ pub fn plan(
         debug_assert!(false, "a global given twice");
         return Err(not_built());
     }
-    // WP-217 ruling 1: the stored rows of the kinds that have an entry.
-    let mut removed = Vec::new();
-    let mut changed: Vec<(&GlobalChange<'_>, u32, u32)> = Vec::new();
-    for g in globals {
-        if !matches!(g.kind, GlobalKind::Removed | GlobalKind::Demoted)
-            && g.place == GlobalPlace::Common
-        {
-            return Err(not_built());
-        }
-        match (g.kind, g.stored) {
-            (GlobalKind::Added | GlobalKind::Promoted, None) => {}
-            (GlobalKind::Added | GlobalKind::Promoted, Some(_)) => {
-                debug_assert!(false, "an appended global with a stored row");
-                return Err(not_built());
-            }
-            (_, None) => {
-                return Err(corrupt(format!("SYMTAB_KEYS: key {} has no row", g.key.0)));
-            }
-            (GlobalKind::Removed | GlobalKind::Demoted, Some((NO_ENTRY, _))) => {}
-            (GlobalKind::Changed, Some((NO_ENTRY, _))) => {
-                return Err(corrupt(format!(
-                    "SYMTAB_KEYS: key {} is changed and has no .symtab entry",
-                    g.key.0
-                )));
-            }
-            (_, Some((i, _))) if i < area.first || i >= old_end => {
-                return Err(corrupt(format!(
-                    "SYMTAB_KEYS: key {}'s index {i} is outside the global area [{}, {old_end})",
-                    g.key.0, area.first
-                )));
-            }
-            (GlobalKind::Changed, Some((i, name))) => changed.push((g, i, name)),
-            (_, Some((i, _))) => removed.push(i),
-        }
-    }
-    let mut taken: Vec<u32> = removed.iter().copied().chain(changed.iter().map(|c| c.1)).collect();
-    taken.sort_unstable();
-    if taken.windows(2).any(|w| w[0] == w[1]) {
-        return Err(corrupt("SYMTAB_KEYS: two keys have one .symtab index"));
-    }
+    let (removed, changed) = stored_rows(globals, area.first, old_end)?;
     let (kept_end, mut moves) = area_after_removals(area.first, old_end, &removed);
     let mut order: Vec<&FileSymbols<'_>> = files.iter().collect();
     order.sort_by_key(|f| f.file);
@@ -290,29 +251,7 @@ pub fn plan(
     }
     // The global area: removed and demoted entries left it; changed ones
     // in place (or where the move of their entry puts them).
-    changed.sort_by_key(|c| c.1);
-    let mut written: Vec<(u32, u32)> = Vec::new();
-    for (g, i, name) in changed {
-        let to = match moves.iter().position(|m| m.0 == i) {
-            Some(k) => moves.remove(k).1,
-            None => i,
-        };
-        let at = cx.global_where(g)?;
-        let (shndx, value) = cx.resolve(g.name, g.info, at)?;
-        out.entries.push(SymtabEntry {
-            index: to,
-            name,
-            info: g.info,
-            other: g.other,
-            shndx,
-            value,
-            size: g.size,
-        });
-        written.push((to, to + 1));
-        if to != i {
-            out.globals.push((g.key, to, name));
-        }
-    }
+    let mut written = write_changed(&mut cx, changed, &mut moves, &mut out)?;
     for g in globals {
         if matches!(g.kind, GlobalKind::Removed | GlobalKind::Demoted)
             && g.stored.is_some_and(|s| s.0 != NO_ENTRY)
@@ -373,6 +312,94 @@ pub fn plan(
         out.remap = complement(merged(written), 1, end);
     }
     Ok(out)
+}
+
+/// A changed global with its stored index and `.strtab` offset.
+type Changed<'g, 'a> = (&'g GlobalChange<'a>, u32, u32);
+
+/// WP-217 ruling 1: the stored `SYMTAB_KEYS` rows of `globals` checked
+/// against the global area `[first, old_end)`: the indices removed and
+/// demoted globals leave, and the changed globals with theirs.
+fn stored_rows<'g, 'a>(
+    globals: &'g [GlobalChange<'a>],
+    first: u32,
+    old_end: u32,
+) -> Result<(Vec<u32>, Vec<Changed<'g, 'a>>), IncrReason> {
+    let mut removed = Vec::new();
+    let mut changed: Vec<Changed<'g, 'a>> = Vec::new();
+    for g in globals {
+        if !matches!(g.kind, GlobalKind::Removed | GlobalKind::Demoted)
+            && g.place == GlobalPlace::Common
+        {
+            return Err(not_built());
+        }
+        match (g.kind, g.stored) {
+            (GlobalKind::Added | GlobalKind::Promoted, None)
+            | (GlobalKind::Removed | GlobalKind::Demoted, Some((NO_ENTRY, _))) => {}
+            (GlobalKind::Added | GlobalKind::Promoted, Some(_)) => {
+                debug_assert!(false, "an appended global with a stored row");
+                return Err(not_built());
+            }
+            (_, None) => {
+                return Err(corrupt(format!("SYMTAB_KEYS: key {} has no row", g.key.0)));
+            }
+            (GlobalKind::Changed, Some((NO_ENTRY, _))) => {
+                return Err(corrupt(format!(
+                    "SYMTAB_KEYS: key {} is changed and has no .symtab entry",
+                    g.key.0
+                )));
+            }
+            (_, Some((i, _))) if i < first || i >= old_end => {
+                return Err(corrupt(format!(
+                    "SYMTAB_KEYS: key {}'s index {i} is outside the global area [{}, {old_end})",
+                    g.key.0, first
+                )));
+            }
+            (GlobalKind::Changed, Some((i, name))) => changed.push((g, i, name)),
+            (_, Some((i, _))) => removed.push(i),
+        }
+    }
+    let mut taken: Vec<u32> = removed.iter().copied().chain(changed.iter().map(|c| c.1)).collect();
+    taken.sort_unstable();
+    if taken.windows(2).any(|w| w[0] == w[1]) {
+        return Err(corrupt("SYMTAB_KEYS: two keys have one .symtab index"));
+    }
+    Ok((removed, changed))
+}
+
+/// The changed globals' entries (at their index, or at the `to` of the
+/// move of their entry, which is then dropped from `moves`); the index
+/// ranges written.
+fn write_changed(
+    cx: &mut Cx<'_, '_>,
+    mut changed: Vec<Changed<'_, '_>>,
+    moves: &mut Vec<(u32, u32)>,
+    out: &mut SymtabPlan,
+) -> Result<Vec<(u32, u32)>, IncrReason> {
+    changed.sort_by_key(|c| c.1);
+    let mut written: Vec<(u32, u32)> = Vec::new();
+    for (g, i, name) in changed {
+        let to = match moves.iter().position(|m| m.0 == i) {
+            Some(k) => moves.remove(k).1,
+            None => i,
+        };
+        let at = cx.global_where(g)?;
+        let (shndx, value) = cx.resolve(g.name, g.info, at)?;
+        out.entries.push(SymtabEntry {
+            index: to,
+            name,
+            info: g.info,
+            other: g.other,
+            shndx,
+            value,
+            size: g.size,
+        });
+        written.push((to, to + 1));
+        if to != i {
+            out.globals.push((g.key, to, name));
+        }
+    }
+    Ok(written)
 }
 
 /// The `SYMTAB_KEYS` rows of the entries [`plan`] moved (WP-217 ruling 2;
@@ -568,6 +595,9 @@ enum Name {
 /// an update (a symbol that takes it is refused).
 const AFTER_THE_FILE: u64 = u64::MAX;
 
+/// A fragment's key: output section, class word, hash (`FRAGS`).
+type FragKey = (OutSecId, u32, [u8; 16]);
+
 /// What [`plan`] reads of the placement, each row once.
 struct Cx<'s, 'a> {
     stored: &'s StoredLayout<'a>,
@@ -576,8 +606,8 @@ struct Cx<'s, 'a> {
     /// `LayoutDelta::eh`'s range of a file, by file (built on first need).
     eh_ranges: Option<HashMap<FileId, &'s EhRange>>,
     /// `LayoutDelta::frags` by key (built on first need).
-    new_frags: Option<HashMap<(OutSecId, u32, [u8; 16]), StoredFrag>>,
-    stored_frags: HashMap<(OutSecId, u32, [u8; 16]), Option<StoredFrag>>,
+    new_frags: Option<HashMap<FragKey, StoredFrag>>,
+    stored_frags: HashMap<FragKey, Option<StoredFrag>>,
     addrs: Addrs<'s>,
 }
 
@@ -688,8 +718,8 @@ impl<'s, 'a> Cx<'s, 'a> {
         &mut self,
         file: FileId,
         eh: FileEh<'_>,
-        s: usize,
-        l: &LocalSymbol<'_>,
+        row: usize,
+        local: &LocalSymbol<'_>,
     ) -> Result<Option<Where>, IncrReason> {
         let layout = self.layout;
         // The file's records are not placed by this update.
@@ -706,12 +736,13 @@ impl<'s, 'a> Cx<'s, 'a> {
                 eh.kept.len()
             )));
         }
-        let sec = &eh.frames.sections[s];
-        let first = sec.records.start;
-        let kept = |g: u32| {
-            let piece = g.checked_sub(first)?;
-            let k = eh.kept.iter().position(|r| r.section == sec.section && r.piece == piece)?;
-            range.records.get(k).copied()
+        let sec = &eh.frames.sections[row];
+        let first_record = sec.records.start;
+        let kept = |global: u32| {
+            let piece = global.checked_sub(first_record)?;
+            let at =
+                eh.kept.iter().position(|rec| rec.section == sec.section && rec.piece == piece)?;
+            range.records.get(at).copied()
         };
         // S-50 rule 3's "next kept record after E's records in output
         // order": the file's next one, when E has a kept record and a
@@ -719,35 +750,35 @@ impl<'s, 'a> Cx<'s, 'a> {
         let after = eh
             .kept
             .iter()
-            .rposition(|r| r.section == sec.section)
-            .and_then(|k| range.records.get(k + 1).copied())
+            .rposition(|rec| rec.section == sec.section)
+            .and_then(|at| range.records.get(at + 1).copied())
             .unwrap_or(AFTER_THE_FILE);
-        let Ok(r) = i64::try_from(l.value) else { return Err(not_built()) };
-        let value = |who| eh_ref(eh.frames, s, r, who, kept, after).map_err(|_| not_built());
-        let v = if is_mapping(l.name) {
+        let Ok(offset) = i64::try_from(local.value) else { return Err(not_built()) };
+        let value = |who| eh_ref(eh.frames, row, offset, who, kept, after).map_err(|_| not_built());
+        let got = if is_mapping(local.name) {
             value(EhWho::Mapping)?
         } else {
             // S-50 rule 4 drops a local no relocation refers to; the join
             // does not say: refused when that decides it.
-            let v = value(EhWho::Symbol { droppable: true })?;
-            if v != value(EhWho::Symbol { droppable: false })? {
+            let dropped = value(EhWho::Symbol { droppable: true })?;
+            if dropped != value(EhWho::Symbol { droppable: false })? {
                 return Err(not_built());
             }
-            v
+            dropped
         };
-        let o = match v {
+        let at = match got {
             EhValue::Dropped => return Ok(None),
             EhValue::Offset(AFTER_THE_FILE) => return Err(not_built()),
-            EhValue::Offset(o) => o,
+            EhValue::Offset(at) => at,
         };
-        let Some(c) = layout.placement.chunks.get(layout_eh.chunk) else {
+        let Some(chunk) = layout.placement.chunks.get(layout_eh.chunk) else {
             return Err(corrupt(format!(".eh_frame: chunk {} is none", layout_eh.chunk.0)));
         };
-        let (Some(shndx), Some(addr)) = (c.shndx, c.addr) else {
+        let (Some(shndx), Some(addr)) = (chunk.shndx, chunk.addr) else {
             return Err(corrupt(format!(".eh_frame: chunk {} has no address", layout_eh.chunk.0)));
         };
         self.addrs.eh = Some((shndx, addr));
-        Ok(Some(Where::Eh(o)))
+        Ok(Some(Where::Eh(at)))
     }
 
     /// S-19 for a named local at `v` of a split merge section, `pieces`
@@ -825,6 +856,10 @@ struct OutRow {
     size: u64,
 }
 
+/// The output sections by `.symtab` section index, and each output
+/// section's merged chunk.
+type OutSections = (Vec<Option<OutRow>>, HashMap<OutSecId, ChunkId>);
+
 /// [`SymAddrs`] over an update's placement: the answers the full link's
 /// image gives (`mortar_image::link`'s `LinkTables`), for the entries
 /// [`Cx`] prepared.
@@ -834,7 +869,7 @@ struct Addrs<'s> {
     tls: Option<u64>,
     /// The output sections by index, and the merged chunks by output
     /// section (one pass over the chunks, on first need).
-    out: Option<(Vec<Option<OutRow>>, HashMap<OutSecId, ChunkId>)>,
+    out: Option<OutSections>,
     /// A section placed whole: its chunk and offset.
     bases: HashMap<SectionId, (ChunkId, u64)>,
     /// A local of a split section at `(section, value)`: its place.

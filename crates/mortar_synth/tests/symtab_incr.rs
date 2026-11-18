@@ -1013,7 +1013,7 @@ fn non_allocated_local_is_its_output_section_offset() {
 /// File 1's `.eh_frame` (section 5): a CIE at 0 (0x14 bytes), FDEs at
 /// 0x14 and 0x2c (0x18 bytes each); the update keeps the CIE and the
 /// first FDE, at 0x100 and 0x114 of the `.eh_frame` chunk (3, at
-/// 0x48_0000, `.symtab` section 4).
+/// `0x48_0000`, `.symtab` section 4).
 fn eh_frames() -> EhFrames {
     let cie = Cie {
         class: 0,
@@ -1133,7 +1133,7 @@ fn piece(offset: u64, size: u64, hash: u8) -> MergedPiece {
 }
 
 /// File 1's split section 6 (pieces at 0 and 4, 4 and 6 bytes) in output
-/// section 5's merged chunk (4: at 0x46_0000 when `alloc`, `.symtab`
+/// section 5's merged chunk (4: at `0x46_0000` when `alloc`, `.symtab`
 /// section 5); the first piece's fragment stored at 0x10, the second's
 /// placed by the update at 0x30.
 fn merge_rows(alloc: bool, refs: u32) -> (MemoryLayout, LayoutDelta) {
