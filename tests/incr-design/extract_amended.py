@@ -1,10 +1,10 @@
-# Runs R-2's extract_mine.py (read-only, imported by path) in the reading
+# Runs R-2's extract_mine.py (review-wp207/, beside this file; imported by path) in the reading
 # WP-211's amended IN-71b states ("archive member (extracted or not)" = the
 # model's 'kind'), and judges ROUND by IN-78's amended canon: the SUPPORT
 # property (every live member has a live in-edge from a smaller round),
 # not equality with the breadth-first round.
-import importlib.util, random, sys
-spec = importlib.util.spec_from_file_location('em', '/Volumes/AgentWork/mortar-helper/.build/review-wp207/extract_mine.py')
+import importlib.util, os, random, sys
+spec = importlib.util.spec_from_file_location('em', os.path.join(os.path.dirname(os.path.abspath(__file__)), 'review-wp207', 'extract_mine.py'))
 em = importlib.util.module_from_spec(spec); spec.loader.exec_module(em)
 
 def supported(files, roots, rnd):

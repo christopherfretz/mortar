@@ -1,0 +1,60 @@
+COPIED from the re-review's scratch (.build/review-wp207 of the supervisor's workspace) at WP-211's merge, unchanged, so the
+measurements spec/incr.md cites stay runnable. The absolute paths below and inside gnu-warning.sh and ar-flips.sh
+(lines 7-8) are that scratch's: set them to a scratch directory of your own before running those two. The four
+Python scripts take their paths as arguments.
+
+R-2 (WP-208) scratch: the re-review of WP-207's second design pass of the
+incremental update. Report: briefs/reviews/review-wp207.md. Everything here
+is mine; nothing of mine lives elsewhere. Run each script from any directory
+with absolute paths, as below. Python 3, GNU toolchain (gcc, ld.bfd), and for
+gnu-warning.sh the mortar `ld` shim of .build/review-in72/bin (read-only).
+
+extract_mine.py [PROGRAMS]          (default 3000; the report used 1000)
+  My own model of resolve.md 4.1 (closure from scratch) and of incr.md
+  IN-71b, written from their text, in two readings of "lazy" (archive member
+  / FILES LAZY flag). Named cases R1a, R1b, R2-1 (round shortcut) and a
+  random series of 4 hops per program; also compares the stored ROUND with
+  the full link's breadth-first round (IN-78 lists round as "computed afresh").
+    python3 /Volumes/AgentWork/mortar-helper/.build/review-wp207/extract_mine.py 1000 \
+      > /Volumes/AgentWork/mortar-helper/.build/review-wp207/extract_mine.out
+  ~1 minute.
+
+ar-flips.sh
+  GNU ld -t -t member sets of a static AArch64 link for one-line source edits
+  (c0..c2: C; x0..x4: C++: iostream, thread, to_string, regex); counts members
+  flipped and their defined globals. Work files in ar/. Output: ar-flips.out.
+    /Volumes/AgentWork/mortar-helper/.build/review-wp207/ar-flips.sh \
+      > /Volumes/AgentWork/mortar-helper/.build/review-wp207/ar-flips.out
+  ~1 minute (gcc/g++ -O1 -static, 8 links).
+
+syncprobe.py DIR [MB] [ROUNDS]
+  The fixed cost of IN-77's W1..W6 plus the lock round trip, on DIR's file
+  system, 50 MB output, 9 MB state, 4 dirty 1 MiB windows. Creates and removes
+  DIR/out.bin, DIR/.out.bin.mortar-torn, DIR/out.bin.mortar-state. DIR must
+  exist (virtiofs: a directory under .build/review-wp207; overlay: a
+  `mktemp -d` removed afterwards by its literal printed path).
+    python3 /Volumes/AgentWork/mortar-helper/.build/review-wp207/syncprobe.py <DIR> 50 15
+
+aside.py DIR
+  IN-77's aside name: (1) exec of P while U1's O_RDWR descriptor is open
+  (ETXTBSY); (2) W4's rename(A, P) over a foreign file a plain link put at P;
+  (3) link(A, P) gives EEXIST instead; (3b) link+unlink leaves nlink 1.
+  Creates and removes DIR/out and DIR/.out.mortar-torn.
+    python3 /Volumes/AgentWork/mortar-helper/.build/review-wp207/aside.py <DIR>
+
+gnu-warning.sh
+  IN-75a's subject: glibc's .gnu.warning.mktemp (an UNCHANGED libc.a member)
+  produces a warning whose existence and text ("referenced by c.o:(.text+0x24)")
+  are decided by the CHANGED file c.o. Mortar (full links, incremental mode)
+  and GNU ld, v1 -> v2 -> v1. Work files and logs in gw/.
+    /Volumes/AgentWork/mortar-helper/.build/review-wp207/gnu-warning.sh
+
+region_day.py [SEED] [HOPS]
+  My own model of IN-72 item 2 (keep / grow in place / first fit / overflow
+  region) and item 3 (tail reserve, growth step) over a "day" of 200 random
+  one-function edits on abstract .text-only files; 40 and 400 files, one or
+  ten files edited, 10 seeds each. Output: region_day.out. ~10 s.
+    python3 /Volumes/AgentWork/mortar-helper/.build/review-wp207/region_day.py 1 200 \
+      > /Volumes/AgentWork/mortar-helper/.build/review-wp207/region_day.out
+
+Removal: find /Volumes/AgentWork/mortar-helper/.build/review-wp207 -mindepth 1 -delete

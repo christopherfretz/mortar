@@ -3013,7 +3013,7 @@ a pass over a whole table of the state; **O(output)**.
     weak-undefined mentions, root keys) with four edit hops each, 12,000
     updates with 3,534 extraction flips: 0 differ from §4.1's closure
     from scratch. The reviewer's own model
-    (`.build/review-wp207/extract_mine.py`, written from the text alone)
+    (`tests/incr-design/review-wp207/extract_mine.py`, written from the text alone)
     gave 0 of 4,000 differences when "lazy" was read as *member* and
     1,130 of 4,000 (R1b's cycle kept) when it was read as `LAZY`; the
     words above leave only the first reading. Re-run on WP-211's text
@@ -3416,7 +3416,7 @@ a pass over a whole table of the state; **O(output)**.
   file and the key; a `.gnu.warning.SYM` warning's are the file holding
   the warning section, every referring file and the key, since a changed
   referrer decides whether it appears and its "referenced by" text:
-  `.build/review-wp207/gnu-warning.sh`). An update drops every row with
+  `tests/incr-design/review-wp207/gnu-warning.sh`). An update drops every row with
   **any** subject that is a changed, appeared, gone, drawn-in, newly
   extracted or no longer extracted file, an affected or ODR-affected key
   (IN-71, IN-71d), or an output section or the link (these are recomputed
@@ -3518,7 +3518,7 @@ a pass over a whole table of the state; **O(output)**.
   m-5). In place, the descriptor is open for writing **from U1 to W4**
   (U1 opens it read-write; WP-211, review-wp207 m-1), so from U1 an
   `exec` of `P` fails with `ETXTBSY` where the kernel denies it (measured
-  on overlay and virtiofs, kernel 6.8, `.build/review-wp207/aside.py`
+  on overlay and virtiofs, kernel 6.8, `tests/incr-design/review-wp207/aside.py`
   (1); IN-45 names where it does not).
 
   **IN-77b [v1] One lock** (review-in77 B-2; replaces "image.md I-59's
