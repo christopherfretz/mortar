@@ -113,12 +113,10 @@ pub mod flags {
     /// demoted mention; [`REF_REGULAR`] without the roots of §4.2).
     /// `spec/dyn.md` D-11 item 2: a root makes no shared object needed.
     pub const OBJ_REF: u16 = 1 << 11;
-    /// One of the [`OBJ_REF`] mentions is not weak.
+    /// One of the [`OBJ_REF`] mentions is an undefined mention that is not
+    /// weak. A demoted mention never sets it (§6.2, WP-200: it makes no
+    /// `--as-needed` shared object needed, whatever its binding).
     pub const OBJ_STRONG: u16 = 1 << 12;
-    /// A demoted mention is not weak and `first` of the key is a lazy
-    /// file the closure left out (§6.2, WP-200: it extracts it if no live
-    /// object defines the key).
-    pub(crate) const PULLS: u16 = 1 << 13;
 }
 
 /// The entry address (§5.5).
@@ -226,16 +224,11 @@ struct Ctx<'a, V> {
     feedback: Option<Feedback<'a>>,
 }
 
-/// The closure's iteration D1 checks (§6.2, WP-200): `again` is set when
-/// a demoted mention of a live file feeds back (`live::feeds_back`);
-/// `pulls` when one would extract a member if nothing live defines its
-/// key (`live::would_pull`; the key gets [`flags::PULLS`]).
+/// The closure's iteration D1 checks (§4.1, WP-200): `again` is set when
+/// a demoted mention of a live file feeds back (`live::feeds_back`).
 struct Feedback<'a> {
     targets: &'a Targets,
-    kinds: &'a [FileKind],
-    live: &'a [FileLive],
     again: &'a AtomicBool,
-    pulls: &'a AtomicBool,
 }
 
 /// The effect of one mention of a live object, after demotion (§6.2).
@@ -332,16 +325,16 @@ fn resolve_stage<V: View>(
     let redirect = opts.redirect(view.keys());
     let roots = opts.roots();
     let mut problems = Vec::new();
-    // §6.2 (WP-200): a demoted mention is an undefined mention of its key
-    // from the moment its copy is dropped. The closure runs again from
-    // its live files when D1 finds a demoted mention that feeds back
-    // (`live::feeds_back`), or a non-weak one that would extract a member
-    // for a key no live object defines (`live::would_pull`), with the
-    // keepers of the iteration before; a link without one runs once.
+    // §4.1's iterations (WP-200): a dropped copy's definitions stop
+    // counting for `first` and `cfirst` when it is dropped. The closure
+    // runs again from its live files when D1 finds a demoted mention whose
+    // definition was `first` or `cfirst` of its key (`live::feeds_back`),
+    // with the targets recomputed without the demoted definitions; a link
+    // without one runs once.
     let mut prior: Option<PriorOwned> = None;
     let mut iterations = 1;
     let (mut file_live, rounds, live_objects, keepers, section_base, sections, acc, found) = loop {
-        let p = prior.as_ref().map(|(live, keeper, open)| Prior { live, keeper, open });
+        let p = prior.as_ref().map(|(live, _)| live.as_slice());
         let Closure { live: file_live, rounds } =
             closure(view, &kinds, &targets, &redirect, &roots, &stage.sources, p, pool);
         steps.step("resolve.closure");
@@ -375,20 +368,13 @@ fn resolve_stage<V: View>(
         steps.step("resolve.section_base");
 
         let again = AtomicBool::new(false);
-        let pulls = AtomicBool::new(false);
         let ctx = Ctx {
             view,
             keeper: &keepers.keeper,
             redirect: &redirect,
             lto_slim: view.find_key(b"__gnu_lto_slim"),
             opts,
-            feedback: Some(Feedback {
-                targets: &targets,
-                kinds: &kinds,
-                live: &file_live,
-                again: &again,
-                pulls: &pulls,
-            }),
+            feedback: Some(Feedback { targets: &targets, again: &again }),
         };
         let acc = Acc::new(keys);
         for root in &roots {
@@ -410,27 +396,16 @@ fn resolve_stage<V: View>(
                 },
             );
         }
-        let back = again.into_inner();
-        if back || pulls.into_inner() {
-            // Per key: no live object defines it outside a dropped copy.
-            let open: Vec<bool> = pool.unit_cost(2).map(keys, |k| {
-                acc.strong[k].load(Relaxed) == u64::MAX
-                    && acc.weak[k].load(Relaxed) == u64::MAX
-                    && acc.common[k].load(Relaxed) == u64::MAX
-            });
-            let pull = (0..keys).any(|k| open[k] && acc.flags[k].load(Relaxed) & flags::PULLS != 0);
-            if back || pull {
-                let p = Prior { live: &file_live, keeper: &keepers.keeper, open: &open };
-                let next = crate::live::next_targets(view, &kinds, &targets, p, pool);
-                let still = prior
-                    .as_ref()
-                    .is_some_and(|(l, k, o)| *l == file_live && *k == keepers.keeper && *o == open);
-                if !(next == targets && still) {
-                    targets = next;
-                    prior = Some((file_live, keepers.keeper, open));
-                    iterations += 1;
-                    continue;
-                }
+        if again.into_inner() {
+            let p = Prior { live: &file_live, keeper: &keepers.keeper };
+            let next = crate::live::next_targets(view, &kinds, &targets, p, pool);
+            let still =
+                prior.as_ref().is_some_and(|(l, k)| *l == file_live && *k == keepers.keeper);
+            if !(next == targets && still) {
+                targets = next;
+                prior = Some((file_live, keepers.keeper));
+                iterations += 1;
+                continue;
             }
         }
         break (file_live, rounds, live_objects, keepers, section_base, sections, acc, found);
@@ -461,7 +436,7 @@ fn resolve_stage<V: View>(
     }
     let mut props: Vec<Props> = pool.unit_cost(1).map(keys, |k| Props {
         visibility: rank_vis(acc.vis[k].load(Relaxed)),
-        flags: acc.flags[k].load(Relaxed) & !flags::PULLS,
+        flags: acc.flags[k].load(Relaxed),
     });
     let mut common: Vec<(SymbolId, CommonShape)> = def
         .iter()
@@ -730,21 +705,20 @@ fn d1_file<V: View>(
         if dropped
             && class.is_candidate()
             && let Some(fb) = &ctx.feedback
+            && !fb.again.load(Relaxed)
+            && crate::live::feeds_back(m, file, fb.targets)
         {
-            if !fb.again.load(Relaxed) && crate::live::feeds_back(m, file, fb.targets) {
-                fb.again.store(true, Relaxed);
-            }
-            if crate::live::would_pull(m, fb.targets, fb.kinds, fb.live) {
-                or_u16(&acc.flags[m.key.0 as usize], flags::PULLS);
-                fb.pulls.store(true, Relaxed);
-            }
+            fb.again.store(true, Relaxed);
         }
         match effect(m, class, dropped, ctx.redirect) {
             Effect::Ref { key, weak } => {
                 let k = key.0 as usize;
                 let mut bits = tls | flags::REF_REGULAR | flags::OBJ_REF;
                 if !weak {
-                    bits |= flags::REF_STRONG | flags::OBJ_STRONG;
+                    bits |= flags::REF_STRONG;
+                    if !dropped {
+                        bits |= flags::OBJ_STRONG;
+                    }
                 }
                 if dropped {
                     bits |= flags::DEMOTED;

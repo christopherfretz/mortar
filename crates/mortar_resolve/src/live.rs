@@ -112,19 +112,17 @@ fn targets_demoted<V: View>(
 }
 
 /// A [`Prior`]'s columns, owned between iterations.
-pub(crate) type PriorOwned = (Vec<FileLive>, Vec<OptId<FileId>>, Vec<bool>);
+pub(crate) type PriorOwned = (Vec<FileLive>, Vec<OptId<FileId>>);
 
 /// The previous iteration of the closure (§4.1, §6.2; WP-200): its live
-/// files, the keepers over them, and per key whether no live object
-/// defines it outside a dropped copy (`open`). A mention of one of those
-/// files in a section its keepers drop is demoted: an undefined mention of
-/// its key with its binding, for the edges and the targets of the next
-/// iteration.
+/// files and the keepers over them. A mention of one of those files in a
+/// section its keepers drop is demoted: from then on its definition is no
+/// definition of its key for `first` and `cfirst`. It is no edge either
+/// (§6.2: a demoted mention extracts nothing, whatever its binding).
 #[derive(Debug, Clone, Copy)]
 pub(crate) struct Prior<'a> {
     pub live: &'a [FileLive],
     pub keeper: &'a [OptId<FileId>],
-    pub open: &'a [bool],
 }
 
 impl Prior<'_> {
@@ -156,22 +154,6 @@ pub(crate) fn is_demoted(m: &Mention, map: &SectionMap) -> bool {
     }
 }
 
-/// The lazy target of the edge out of a demoted mention (§6.2, WP-200),
-/// given that no live object defines its key outside a dropped copy: an
-/// undefined mention of its own key with its binding, so a weak one has
-/// none. A key a live object defines (the keeper's copy) takes no member:
-/// the mention binds to that definition (GNU ld: the i386 thunks
-/// `__x86.get_pc_thunk.*`, a global in a group of every object, extract
-/// no lower member that has a copy too).
-#[inline]
-fn demoted_edge(m: &Mention, targets: &Targets, kinds: &[FileKind]) -> Option<u32> {
-    if m.binding == mortar_elf::consts::STB_WEAK {
-        return None;
-    }
-    let target = targets.first[m.key.0 as usize];
-    (target != NO_FILE && kinds[target as usize].is_lazy()).then_some(target)
-}
-
 /// Whether the definition the demoted mention `m` of the live file `file`
 /// had is `first` or `cfirst` of its key (§6.2, WP-200), which then moves
 /// on. A link without a mismatched COMDAT copy has none: a kept copy
@@ -182,18 +164,6 @@ pub(crate) fn feeds_back(m: &Mention, file: FileId, targets: &Targets) -> bool {
         let k = key.0 as usize;
         targets.first[k] == file.0 || targets.cfirst[k] == file.0
     })
-}
-
-/// Whether the demoted mention `m` would extract a member `live` left
-/// out, if no live object defines its key (§6.2, WP-200).
-#[inline]
-pub(crate) fn would_pull(
-    m: &Mention,
-    targets: &Targets,
-    kinds: &[FileKind],
-    live: &[FileLive],
-) -> bool {
-    demoted_edge(m, targets, kinds).is_some_and(|t| !live[t as usize].is_live())
 }
 
 /// The targets of the iteration after `prior` (§6.2, WP-200): `targets`
@@ -264,7 +234,8 @@ const INLINE_FRONTIER: usize = 16;
 /// `sources` (per `FileId`, may be short) are the shared objects whose
 /// references are edges in this stage although [`extracts`] says no: the
 /// members of N under `--as-needed` of an earlier stage (`spec/dyn.md`
-/// D-12, WP-167).
+/// D-12, WP-167). `prior` (§4.1's iterations, WP-200): the live files of
+/// the iteration before, which stay live with their pulling references.
 #[allow(clippy::too_many_arguments, reason = "the closure's inputs, one per column")]
 pub(crate) fn closure<V: View>(
     view: &V,
@@ -273,7 +244,7 @@ pub(crate) fn closure<V: View>(
     redirect: &[SymbolId],
     roots: &[Root],
     sources: &[bool],
-    prior: Option<Prior<'_>>,
+    prior: Option<&[FileLive]>,
     pool: &Pool,
 ) -> Closure {
     let n = kinds.len();
@@ -282,7 +253,7 @@ pub(crate) fn closure<V: View>(
     let mut frontier: Vec<u32> = Vec::new();
     for (f, kind) in kinds.iter().enumerate() {
         let source = sources.get(f).copied().unwrap_or(false);
-        let before = prior.and_then(|p| p.live.get(f)).copied();
+        let before = prior.and_then(|p| p.get(f)).copied();
         if let Some(FileLive::Extracted(e)) = before {
             min_u64(&pull[f], entry_word(e.file, e.index));
         }
@@ -317,22 +288,13 @@ pub(crate) fn closure<V: View>(
         let run = if frontier.len() < INLINE_FRONTIER { &inline } else { pool };
         run.unit_cost(1500).for_each_init(
             frontier.len(),
-            || (Vec::new(), Vec::new(), SectionMap::default(), Vec::new()),
-            |(buf, found, map, scratch), u| {
+            || (Vec::new(), Vec::new()),
+            |(buf, found), u| {
                 let file = FileId(frontier[u]);
                 buf.clear();
                 view.mentions(file, buf);
-                let demote =
-                    prior.is_some_and(|p| p.fill(view, kinds[file.0 as usize], file, map, scratch));
                 for m in buf.iter() {
-                    let target = if demote && is_demoted(m, map) {
-                        prior
-                            .filter(|p| p.open[m.key.0 as usize])
-                            .and_then(|_| demoted_edge(m, targets, kinds))
-                    } else {
-                        edge(m, targets, redirect, kinds)
-                    };
-                    if let Some(target) = target {
+                    if let Some(target) = edge(m, targets, redirect, kinds) {
                         min_u64(&pull[target as usize], m.word(file));
                         if live.set(target as usize) {
                             found.push(target);
@@ -378,10 +340,10 @@ pub fn oracle<V: View>(
 /// of edges, as [`crate::resolve`]'s later stages have them (`spec/dyn.md`
 /// D-12, WP-167).
 ///
-/// The iterations of §6.2 (WP-200): after each closure, the keepers over
+/// The iterations of §4.1 (WP-200): after each closure, the keepers over
 /// its live objects (§6.1); when a demoted mention [`feeds_back`], the
-/// closure again from its live files, the demoted mentions undefined with
-/// their binding and the targets without them; until nothing changes.
+/// closure again from its live files with the targets without the demoted
+/// definitions; until no demoted mention feeds back or nothing changes.
 pub fn oracle_with<V: View>(
     view: &V,
     targets: &Targets,
@@ -394,7 +356,7 @@ pub fn oracle_with<V: View>(
     let mut targets = targets.clone();
     let mut prior: Option<PriorOwned> = None;
     loop {
-        let p = prior.as_ref().map(|(live, keeper, open)| Prior { live, keeper, open });
+        let p = prior.as_ref().map(|(live, _)| live.as_slice());
         let live = oracle_once(view, &kinds, &targets, redirect, roots, sources, p);
         let objects: Vec<FileId> = (0..kinds.len())
             .filter(|&f| live[f].is_live() && kinds[f].is_object())
@@ -404,43 +366,28 @@ pub fn oracle_with<V: View>(
         let mut map = SectionMap::default();
         let mut scratch = Vec::new();
         let mut buf = Vec::new();
-        let mut open = vec![true; view.keys() as usize];
         let mut back = false;
-        let mut pulls = Vec::new();
         for &file in &objects {
             map.fill(view, file, view.file(file).sections, &keeper, false, &mut scratch);
             buf.clear();
             view.mentions(file, &mut buf);
             for m in &buf {
                 let (class, _) = classify(m, mortar_core::SymEntry { file, index: m.index });
-                if !class.is_candidate() {
-                    continue;
-                }
-                if map.any && is_demoted(m, &map) {
+                if class.is_candidate() && map.any && is_demoted(m, &map) {
                     back |= feeds_back(m, file, &targets);
-                    if would_pull(m, &targets, &kinds, &live) {
-                        pulls.push(m.key);
-                    }
-                } else {
-                    for key in [Some(m.key), m.also.get()].into_iter().flatten() {
-                        open[key.0 as usize] = false;
-                    }
                 }
             }
         }
-        let again = back || pulls.iter().any(|k| open[k.0 as usize]);
-        if !again {
+        if !back {
             return live;
         }
-        let p = Prior { live: &live, keeper: &keeper, open: &open };
+        let p = Prior { live: &live, keeper: &keeper };
         let next = next_targets(view, &kinds, &targets, p, &seq);
-        if next == targets
-            && prior.as_ref().is_some_and(|(l, k, o)| *l == live && *k == keeper && *o == open)
-        {
+        if next == targets && prior.as_ref().is_some_and(|(l, k)| *l == live && *k == keeper) {
             return live;
         }
         targets = next;
-        prior = Some((live, keeper, open));
+        prior = Some((live, keeper));
     }
 }
 
@@ -452,7 +399,7 @@ fn oracle_once<V: View>(
     redirect: &[SymbolId],
     roots: &[(SymbolId, u32)],
     sources: &[bool],
-    prior: Option<Prior<'_>>,
+    prior: Option<&[FileLive]>,
 ) -> Vec<FileLive> {
     let n = kinds.len();
     let mut live = vec![false; n];
@@ -460,7 +407,7 @@ fn oracle_once<V: View>(
     let mut work = std::collections::BTreeSet::new();
     for (f, kind) in kinds.iter().enumerate() {
         let source = sources.get(f).copied().unwrap_or(false);
-        let before = prior.and_then(|p| p.live.get(f)).copied();
+        let before = prior.and_then(|p| p.get(f)).copied();
         if let Some(FileLive::Extracted(e)) = before {
             pull[f] = pull[f].min(entry_word(e.file, e.index));
         }
@@ -483,25 +430,14 @@ fn oracle_once<V: View>(
         }
     }
     let mut buf = Vec::new();
-    let mut map = SectionMap::default();
-    let mut scratch = Vec::new();
     while let Some(f) = work.pop_first() {
         if kinds[f as usize] == FileKind::Internal {
             continue;
         }
         buf.clear();
         view.mentions(FileId(f), &mut buf);
-        let demote = prior
-            .is_some_and(|p| p.fill(view, kinds[f as usize], FileId(f), &mut map, &mut scratch));
         for m in &buf {
-            let target = if demote && is_demoted(m, &map) {
-                prior
-                    .filter(|p| p.open[m.key.0 as usize])
-                    .and_then(|_| demoted_edge(m, targets, kinds))
-            } else {
-                edge(m, targets, redirect, kinds)
-            };
-            if let Some(target) = target {
+            if let Some(target) = edge(m, targets, redirect, kinds) {
                 let t = target as usize;
                 pull[t] = pull[t].min(m.word(FileId(f)));
                 if !live[t] {

@@ -691,3 +691,39 @@ fn d27_versioned_reference_binds_the_version() {
     assert_eq!(row(&r, lib), NEEDED);
     assert_eq!(def(&m, &r, "f@V1"), Def::Shared(SymEntry { file: lib, index: i }));
 }
+
+/// WP-200 (resolve.md §6.2, the supervisor's ruling): `wa.o` keeps group
+/// G, `wb.o`'s dropped copy defines a global `hx` that `libhx.so`
+/// (`--as-needed`) defines too. The demoted mention makes the library
+/// needed only if another reference does; with `z` from `a.o` it binds to
+/// the library's `hx`.
+#[test]
+fn d11_item2_demoted_strong_mention_needs_nothing() {
+    use mortar_elf::consts::{STB_GLOBAL, STT_FUNC};
+    use mortar_elf::{SectionIndex, SymbolSection};
+    for other in [false, true] {
+        let mut m = Model::new(A64);
+        let a = m.obj("a.o");
+        m.undef(a, "g");
+        if other {
+            m.undef(a, "z");
+        }
+        let wa = m.obj("wa.o");
+        m.comdat_def(wa, "G", "g");
+        let wb = m.obj("wb.o");
+        let s = m.comdat_def(wb, "G", "g");
+        m.sym(wb, "hx", STB_GLOBAL, STT_FUNC, SymbolSection::Section(SectionIndex(s)), 4, 4);
+        let lib = m.shlib("libhx.so", true);
+        let i = m.def(lib, "hx");
+        m.def(lib, "z");
+        let r = link(&m);
+        if other {
+            assert_eq!(row(&r, lib), NEEDED);
+            assert_eq!(def(&m, &r, "hx"), Def::Shared(SymEntry { file: lib, index: i }));
+        } else {
+            assert_eq!(row(&r, lib), FileLive::Dead);
+            assert_eq!(def(&m, &r, "hx"), Def::Undefined { weak: false });
+            assert_eq!(r.comdat_mismatch.len(), 1);
+        }
+    }
+}

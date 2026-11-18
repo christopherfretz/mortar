@@ -502,25 +502,46 @@ record):
   mold, E13; lld 19 extracts it, the programs run alike: §7.1, §16,
   WP-153).
 - **A dropped copy's definitions stop counting when it is dropped**
-  (§6.2; WP-200). While its file is lazy, a definition in a group section
-  is a definition whichever copy will be kept. Once a live file of lower
-  `FileId` holds the group (§6.1), the copy is dropped and its mentions
-  are demoted: undefined mentions of their keys with their bindings, for
-  extraction as for everything else. So the closure is **iterated**:
-  after a closure, the keepers over its live objects (§6.1); when a
-  demoted mention of a live file is `first` or `cfirst` of its key, or is
-  not weak and `first` of its key is a lazy file the closure left out,
-  the closure runs again from its live files (their pulling references
-  kept), the targets computed without the definitions it demotes and
-  each demoted mention an undefined mention with its binding (a non-weak
-  one an edge when no live object defines its key outside a dropped
-  copy, a weak one none); until an iteration changes nothing. A
-  member an earlier iteration extracted stays, as in GNU ld, lld and
-  mold, which load it and then drop its copy. Each iteration is a
-  function of the one before (§12.2). A link with no mismatched copies
-  runs once: a kept copy that defines the key has the lower `FileId`, so
-  `first` is never the dropped one's. A key that no live file defines
-  after the iterations, only dropped copies, is the error of §6.3.
+  (§6.2; WP-200, the supervisor's ruling). While its file is lazy, a
+  definition in a group section is a definition whichever copy will be
+  kept. Once a live file of lower `FileId` holds the group (§6.1), the
+  copy is dropped and its definitions are no definitions of their keys
+  for `first` and `cfirst`; another file's strong reference then extracts
+  the member that defines the key. A demoted mention itself is never an
+  edge, whatever its binding (§6.2). So the closure is **iterated**, as
+  this procedure (within each stage of `spec/dyn.md` D-12):
+  1. Iteration 1: `T₁` is `first` and `cfirst` as above (with §7.2's
+     `--defsym` keys removed); `L₁` the closure of this section from the
+     roots of §4.2 under `T₁`; `C₁` the keepers of §6.1 over the
+     relocatable objects of `L₁`.
+  2. **Trigger.** After iteration `i`, a mention **feeds back** when it is
+     a defined (strong, weak or common) non-local mention of a
+     relocatable object live in `L_i`, in a section `C_i` drops (§6.2),
+     and that object is `first(K)` or `cfirst(K)` in `T_i` for its key
+     `K` or, for a versioned `foo@V` mention, for the unversioned `foo`
+     too. If none does, the closure is `L_i` and the keepers `C_i`: stop.
+  3. **Recomputed.** `T_{i+1}`: `first` and `cfirst` computed over all
+     files as above, except that a mention of a file live in `L_i`
+     defined in a section `C_i` drops is not counted; then, per key and
+     per column, the later of that and `T_i` (no file counts as later
+     than every file, so a key `T_i` has none of keeps none). `L_{i+1}`:
+     the closure under `T_{i+1}` from the roots of §4.2 and every file
+     live in `L_i` (an extracted member stays extracted; its pulling
+     reference is the least of the one it had and those of this
+     closure's edges into it); the edges are this section's, so a
+     demoted mention, a defined mention, adds none. `C_{i+1}`: the
+     keepers over the relocatable objects of `L_{i+1}`.
+  4. **End.** Go to 2 with `i+1`, except when the iteration would repeat
+     the one before: `T_{i+1} = T_i`, `L_i = L_{i−1}` and
+     `C_i = C_{i−1}`; then the closure is `L_i` and the keepers `C_i`.
+  The live sets and the dropped copies only grow and the targets only
+  move to higher `FileId`s, so it ends. A member an earlier iteration
+  extracted stays even if its definition is later dropped, as in GNU ld,
+  lld and mold, which load it and then drop its copy. A link with no
+  mismatched copies runs once: a kept copy that defines the key has the
+  lower `FileId`, so `first` is never the dropped one's. A key that no
+  live file defines after the iterations, only dropped copies, is the
+  error of §6.3.
 - **Extraction reads the members' own symbol tables, never the archive's
   index** (finding 13): `spec/archive.md` reads every member anyway, a
   stale index cannot mislead mortar, and an archive without an index
@@ -1085,18 +1106,20 @@ even with the same name). Its symbols:
 
 - a non-local mention defined in a dropped section is **demoted** (§2): it
   takes part in resolution as an undefined mention of its key with its
-  binding, so it binds to the keeper's definition (all three). The binding
-  counts for everything resolution decides (precedence, and archive
-  extraction: a demoted weak mention extracts no member, as any weak
-  undefined mention, §4; a demoted `STB_GLOBAL` or `STB_GNU_UNIQUE` one
-  extracts as a strong undefined mention, unless a live object defines
-  the key outside a dropped copy: it binds to that definition and
-  extracts nothing, as GNU ld), from the moment its copy is
-  dropped: from then on its definition is no definition of the key for
-  extraction (`first`, `cfirst`), a lazy object (`--start-lib`) or a
-  `--start-group` member as an archive member, and another file's strong
-  reference extracts the member that defines the key (§4.1's iterations,
-  WP-200), but not for the verdict of a reference through
+  binding, so it binds to the keeper's definition (all three), or to
+  whatever defines the key once the closure has ended: another live
+  file's definition, a member some other reference extracted, a shared
+  object needed for another reason. Its binding counts for precedence and
+  for the verdict's wording, **never for extraction or neededness**: a
+  demoted mention, weak, `STB_GLOBAL` or `STB_GNU_UNIQUE`, extracts no
+  archive member, no lazy object (`--start-lib`) and no `--start-group`
+  member, and makes no `--as-needed` shared object needed (`spec/dyn.md`
+  D-11 item 2) (WP-200, the supervisor's ruling: GNU ld, lld and mold
+  extract nothing for one either, and refuse the program). From the
+  moment its copy is dropped its definition is no definition of the key
+  for `first` and `cfirst`, so another file's strong reference extracts
+  the member that defines the key (§4.1's iterations). Its binding does
+  not make the verdict of a reference through
   it: when the key ends with no definition, such a reference is
   `comdat-mismatch` (§6.3 case (b)) **whatever the mention's binding**
   (WP-176, the supervisor's ruling of 2026-11-17). The file had a
@@ -2339,7 +2362,7 @@ The ODR checks are as `spec/odr.md` says for a final link, with the
 
 | column | merge | order |
 |---|---|---|
-| `first(K)`, `cfirst(K)` | atomic minimum of `FileId` over the qualifying mentions of **all** files (§4.1), before the closure; again before each further iteration of §4.1 (WP-200), without the mentions the previous iteration's keepers demote | `FileId` |
+| `first(K)`, `cfirst(K)` | atomic minimum of `FileId` over the qualifying mentions of **all** files (§4.1), before the closure; again before each further iteration of §4.1 (WP-200), without the definitions the previous iteration's keepers demote, never lower than before | `FileId` |
 | `file_live` | reachability: per round, each file of the frontier ORs `live[M]` for the lazy targets of its edges; the next frontier is the newly set bits in `FileId` order; the pulling reference is an atomic minimum of `(FileId << 32) \| st_index` per member | `≺` |
 | per-key class minima over live files (`Strong`, `Common`, `Weak`, `Shared`, `Shared` data, `Assign`, `Provide`) | atomic minimum of `(FileId << 32) \| st_index` per class, after the closure | `≺` |
 | `def` | a pure function of the class minima (§3.2) | — |

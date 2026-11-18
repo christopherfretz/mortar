@@ -1495,11 +1495,11 @@ fn s6_2_wp200_orders_of_the_strong_reference_and_the_copy() {
 }
 
 #[test]
-fn s6_2_wp200_demoted_mention_extracts_by_its_binding() {
-    // No other reference to hx: a demoted weak mention extracts nothing
-    // (comdat-mismatch, as before); a demoted STB_GLOBAL or
-    // STB_GNU_UNIQUE one is a strong undefined mention and extracts hx.o,
-    // whether the archive is before or after the copy.
+fn s6_2_wp200_demoted_mention_extracts_nothing_whatever_its_binding() {
+    // No other reference to hx: a demoted mention pulls nothing, whatever
+    // its binding (§6.2, the supervisor's ruling on WP-200); with nothing
+    // live defining hx it is comdat-mismatch (§6.3 case (b)), its binding
+    // the verdict's. GNU ld, lld and mold refuse these cells.
     for binding in [STB_WEAK, STB_GLOBAL, STB_GNU_UNIQUE] {
         for archive_first in [false, true] {
             let mut m = Model::new(A64);
@@ -1512,16 +1512,10 @@ fn s6_2_wp200_demoted_mention_extracts_by_its_binding() {
             let hx = hx_first.unwrap_or_else(|| wp200_hx(&mut m));
             let r = link(&m);
             let what = format!("binding {binding}, archive first {archive_first}");
-            if binding == STB_WEAK {
-                assert!(!live_of(&r, hx), "{what}");
-                assert_eq!(def(&m, &r, "hx"), Def::Undefined { weak: true }, "{what}");
-                assert_eq!(r.comdat_mismatch.len(), 1, "{what}");
-            } else {
-                assert!(live_of(&r, hx), "{what}");
-                assert_eq!(r.file_live[hx.0 as usize], FileLive::Extracted(e(wb, SymbolIndex(2))));
-                assert_eq!(def(&m, &r, "hx").entry().unwrap().file, hx, "{what}");
-                assert!(r.comdat_mismatch.is_empty(), "{what}: {:?}", r.comdat_mismatch);
-            }
+            assert!(!live_of(&r, hx), "{what}");
+            let weak = binding == STB_WEAK;
+            assert_eq!(def(&m, &r, "hx"), Def::Undefined { weak }, "{what}");
+            assert_eq!(r.comdat_mismatch.len(), 1, "{what}");
         }
     }
 }
