@@ -27,7 +27,6 @@ use mortar_image::link::Written;
 use mortar_incr::capture::{Keys, Link};
 use mortar_incr::format::{self, Meta, StatRow, State, Strings, stat_tag};
 use mortar_incr::stamp::{self, DeviceStamp, Tuple};
-use mortar_incr::testhook::crash_point;
 use mortar_input::store::Store;
 
 use crate::front::Front;
@@ -76,6 +75,13 @@ pub struct Session {
     /// WP-094: the parts of the state's work, timed (ms), for
     /// `--time-phases` lines.
     times: Times,
+    /// IN-77b: `S`'s descriptor, locked, held to the state's write (its
+    /// drop with the session releases the lock); `None` when no state was
+    /// found or it could not be locked.
+    lock: Option<std::fs::File>,
+    /// IN-77b: `state-busy` or `lock-unavailable`: this link writes no
+    /// state (and, for `lock-unavailable`, removes the one at `S`).
+    writes_no_state: Option<&'static str>,
 }
 
 /// WP-094: timed parts (name, ms), shared with the caller.
@@ -249,12 +255,30 @@ pub fn start(parsed: &Parsed, cwd: &Path, out_path: &Path, diagnostics: &Collect
     let plan_hash = plan_hash(parsed, cwd);
     // IN-22a: one stamp per device, before any input is read.
     let stamps = take_stamps(parsed, cwd, out_path, &state_path);
-    let (reason, recorded_target, old) = if mode == IncrementalMode::Full {
+    // IN-77b: every mode that finds a state locks it before reading past
+    // its magic, and holds the lock to its state write; IN-77d: the lock
+    // holder sweeps the leftovers first.
+    let mut ops = mortar_incr::ops::StdOps;
+    let (lock, locked) = match crate::update::write::lock_state(&state_path, &mut ops) {
+        Ok(lock) => (lock, Ok(())),
+        Err(reason) => (None, Err(reason)),
+    };
+    if lock.is_some() {
+        crate::update::write::remove_leftovers(out_path, &state_path, &mut ops);
+    }
+    let writes_no_state = match locked {
+        Err(IncrReason::StateBusy(_)) => Some("state-busy"),
+        Err(IncrReason::LockUnavailable(_)) => Some("lock-unavailable"),
+        _ => None,
+    };
+    let (reason, recorded_target, old) = match locked {
+        Err(reason) if mode != IncrementalMode::Full => (Some(reason), None, None),
         // `--incremental=full` links from scratch whatever the state says.
-        (None, None, None)
-    } else {
-        let (reason, target, old) = check(&state_path, plan_hash, out_path);
-        (Some(reason), target, old)
+        _ if mode == IncrementalMode::Full => (None, None, None),
+        _ => {
+            let (reason, target, old) = check(lock.as_ref(), plan_hash, out_path);
+            (Some(reason), target, old)
+        }
     };
     // §7 `small-output`: a state that could be updated from, of an output
     // below the bound, is linked in full; `--incremental=update` updates
@@ -287,6 +311,8 @@ pub fn start(parsed: &Parsed, cwd: &Path, out_path: &Path, diagnostics: &Collect
         old,
         start,
         times: Times::default(),
+        lock,
+        writes_no_state,
     })
 }
 
@@ -365,26 +391,22 @@ fn own_files<'a>(
 /// state's target, which the link's is compared with once it is known
 /// (`Session::finish`).
 fn check(
-    state_path: &Path,
+    state: Option<&std::fs::File>,
     plan_hash: [u8; 16],
     out_path: &Path,
 ) -> (IncrReason, Option<(u16, u8)>, Option<State>) {
     // I-58b: a state is a regular file; anything else (a pipe through
     // /dev/stdout, which this process would read until it writes) is not
-    // read.
-    if std::fs::metadata(state_path).is_ok_and(|m| !m.is_file()) {
-        return (IncrReason::StateCorrupt("not a regular file".to_owned()), None, None);
-    }
-    let bytes = match std::fs::read(state_path) {
-        Ok(b) => b,
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
-            return (IncrReason::NoState(String::new()), None, None);
-        }
-        Err(e) => {
-            let why = format!("cannot read the state: {e}");
-            return (IncrReason::StateCorrupt(why), None, None);
-        }
+    // opened (`lock_state` refused it by name). IN-77b: it is read through
+    // the locked descriptor, never reopened by path.
+    let Some(mut file) = state else {
+        return (IncrReason::NoState(String::new()), None, None);
     };
+    let mut bytes = Vec::new();
+    if let Err(e) = std::io::Read::read_to_end(&mut file, &mut bytes) {
+        let why = format!("cannot read the state: {e}");
+        return (IncrReason::StateCorrupt(why), None, None);
+    }
     let state = match format::decode(&bytes, crate::VERSION.as_bytes()) {
         Ok(s) => s,
         Err(e) => return (e.into(), None, None),
@@ -556,6 +578,15 @@ impl Session {
                     option: "a shared object input (a dynamic executable)".to_owned(),
                 }),
             );
+        } else if let Some(why) = self.writes_no_state {
+            // IN-77b: another link keeps replacing the state (`state-busy`:
+            // it is left), or `flock` is not enforced there
+            // (`lock-unavailable`: no later link could use it; removed by
+            // its exact name).
+            if why == "lock-unavailable" {
+                let _ = mortar_image::output::remove_if_replaceable(&self.state_path);
+            }
+            let _ = writeln!(stderr, "incremental: no state written: {why}");
         } else {
             match self.state(f, store, written, cwd) {
                 Ok(state) => {
@@ -575,6 +606,8 @@ impl Session {
                 }
             }
         }
+        // IN-77b: the lock is held to the state's last write.
+        drop(self.lock.take());
         let (changed, refilled) =
             dry.as_ref().map_or((f.inputs.files.len().saturating_sub(1) as usize, 0), |d| {
                 (d.changed, d.refilled)
@@ -630,12 +663,31 @@ impl Session {
             lap(&self.times, &mut t, "bind");
             let bytes = format::encode(&state);
             lap(&self.times, &mut t, "encode");
-            let r = write_atomically(&self.state_path, &bytes)
-                .map_err(|e| format!("cannot write {}: {e}", self.state_path.display()));
+            // I-58b: the state is replaced only where the link may replace
+            // a file.
+            let r = mortar_image::output::may_replace(&self.state_path)
+                .map_err(std::io::Error::other)
+                .and_then(|()| {
+                    crate::update::write::write_state_whole(
+                        &self.state_path,
+                        &bytes,
+                        &mut mortar_incr::ops::StdOps,
+                    )
+                });
             lap(&self.times, &mut t, "write and sync");
-            r
+            r.map_err(|e| format!("cannot write {}: {e}", self.state_path.display()))
         });
-        if result.is_err() {
+        let busy = matches!(result, Ok(false));
+        let result = result.and_then(|written| {
+            // IN-77d: the temporary is another live link's: no state, and
+            // `S` is left as it is.
+            if written {
+                Ok(())
+            } else {
+                Err("state-busy (its temporary is another link's)".to_owned())
+            }
+        });
+        if result.is_err() && !busy {
             // No state is left that the next link could accept: an older
             // one describes an output this link has replaced.
             let _ = mortar_image::output::remove_if_replaceable(&self.state_path);
@@ -843,32 +895,15 @@ fn bind(mut state: State, out_path: &Path, written: &Written) -> Result<State, S
 }
 
 /// A temporary file in the state's directory, synced, renamed over the
-/// state, and the directory synced (IN-17).
+/// state, and the directory synced (IN-17), with IN-77d's protocol for the
+/// temporary (`crate::update::write::write_state_whole`; a temporary held
+/// by another link is an error here, `state-busy`).
 pub(crate) fn write_atomically(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
-    let dir = match path.parent() {
-        Some(p) if !p.as_os_str().is_empty() => p.to_path_buf(),
-        _ => PathBuf::from("."),
-    };
-    let mut tmp = path.as_os_str().to_owned();
-    tmp.push(format!(".tmp-{}", std::process::id()));
-    let tmp = PathBuf::from(tmp);
-    // I-58b: the state is replaced only where the link may replace a file.
     mortar_image::output::may_replace(path).map_err(std::io::Error::other)?;
-    let result = (|| {
-        let mut file = std::fs::File::create(&tmp)?;
-        file.write_all(bytes)?;
-        crash_point("F-state-written");
-        file.sync_data()?;
-        crash_point("F-state-synced");
-        drop(file);
-        std::fs::rename(&tmp, path)?;
-        crash_point("F-state-renamed");
-        std::fs::File::open(&dir)?.sync_all()?;
-        crash_point("F-state-dir");
+    let mut ops = mortar_incr::ops::StdOps;
+    if crate::update::write::write_state_whole(path, bytes, &mut ops)? {
         Ok(())
-    })();
-    if result.is_err() {
-        let _ = std::fs::remove_file(&tmp);
+    } else {
+        Err(std::io::Error::other("state-busy (its temporary is another link's)"))
     }
-    result
 }
