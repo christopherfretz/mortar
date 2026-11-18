@@ -471,6 +471,12 @@ impl<'a, 's> LinkTables<'a, 's> {
         self.got_addrs
     }
 
+    /// The link of these tables (WP-218: the map's decision records,
+    /// `crate::map::decisions_of`).
+    pub(crate) const fn link(&self) -> &Link<'a, 's> {
+        &self.link
+    }
+
     fn sym_of(&self, e: SymEntry) -> Option<(SymbolTable<'s>, mortar_elf::raw::Sym)> {
         let t = (*self.tables.get(e.file.0 as usize)?)?;
         let s = t.get(e.index).ok()?;
@@ -679,7 +685,7 @@ impl<'a, 's> LinkTables<'a, 's> {
 
     /// The section index and the address base of chunk `c`: its address,
     /// or for a non-alloc chunk its offset from its section's start.
-    fn chunk_at(&self, c: ChunkId, offset: u64) -> Option<(u32, u64)> {
+    pub(crate) fn chunk_at(&self, c: ChunkId, offset: u64) -> Option<(u32, u64)> {
         let chunk = self.link.layout.placement.chunks.get(c)?;
         let shndx = match chunk.kind {
             ChunkKind::FileHeader | ChunkKind::ProgramHeaders => 1,
@@ -2684,6 +2690,10 @@ impl LinkTables<'_, '_> {
         }
         m.incremental = self.incremental_layout();
         m.dead = self.dead_lines();
+        // WP-218: an incremental-mode map's decision records (I-78a).
+        if m.incremental {
+            m.decisions = Some(map::decisions_of(self));
+        }
         if let Some(d) = l.synth.dynamic {
             m.dynamic = Some(self.dyn_records(d));
         }
