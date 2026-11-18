@@ -237,10 +237,10 @@ pub fn plan(
     let mut removed = Vec::new();
     let mut changed: Vec<(&GlobalChange<'_>, u32, u32)> = Vec::new();
     for g in globals {
-        if g.kind != GlobalKind::Removed && g.kind != GlobalKind::Demoted {
-            if g.place == GlobalPlace::Common {
-                return Err(not_built());
-            }
+        if !matches!(g.kind, GlobalKind::Removed | GlobalKind::Demoted)
+            && g.place == GlobalPlace::Common
+        {
+            return Err(not_built());
         }
         match (g.kind, g.stored) {
             (GlobalKind::Added | GlobalKind::Promoted, None) => {}
