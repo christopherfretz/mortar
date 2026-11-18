@@ -216,8 +216,8 @@ pub fn class(name: &[u8], flags: u64) -> Class {
 mod tests {
     #[test]
     fn eh_pad_is_max_16_ceil4_eighth() {
-        let s = super::Slack::INCREMENTAL;
-        assert_eq!(super::Slack::NONE.eh_pad(1000), 0);
+        let s = Slack::INCREMENTAL;
+        assert_eq!(Slack::NONE.eh_pad(1000), 0);
         assert_eq!(s.eh_pad(0), 16);
         assert_eq!(s.eh_pad(24), 16);
         assert_eq!(s.eh_pad(128), 16);

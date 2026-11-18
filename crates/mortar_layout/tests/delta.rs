@@ -929,15 +929,28 @@ fn link_order_target_dies() {
 }
 
 // spec: incr.md IN-72 item 5 (WP-211: an unchanged file's FDE whose
-// function dies; `.eh_frame` ranges are not in the seam: the fall-back)
+// function dies; WP-243: the file is drawn in, its `EhFile` has no record
+// left (its CIE goes with its last FDE), its range becomes a hole merged
+// with the pad before it; without its `EhFile`, refused)
 #[test]
 fn cross_file_eh_frame_fde_target_dies() {
     let eh = sec(b".eh_frame", SHT_PROGBITS, SHF_ALLOC, 56, 3);
     let mut files = two_text_files();
     files[1].push(eh);
-    let s0 = first(Machine::X86_64, &files);
-    let e = hop(&s0, &Edit::new(files).drawn(&[2]).dead(&[(2, 1)])).err().unwrap();
-    assert_eq!(e, not_implemented());
+    let (s0, c) = first_with_eh(&files);
+    let edit = Edit::new(files).drawn(&[2]).dead(&[(2, 1)]);
+    let (changes, _) = changes_of(&s0, &edit);
+    let stored = StoredLayout::new(&s0.mem);
+    let t = &s0.world.target;
+    assert_eq!(layout(&stored, &input(&changes), t).err(), Some(not_implemented()));
+    let gone = [eh_file(2, &[])];
+    let d = layout(&stored, &LayoutInput { eh: &gone, ..input(&changes) }, t).unwrap();
+    assert!(d.eh.as_ref().is_some_and(|e| !e.whole && e.ranges.is_empty()));
+    let pad = Hole { chunk: c, offset: 64, size: 72, kind: HoleKind::EhPad };
+    assert_eq!(d.holes_of(&stored, c).unwrap(), vec![pad]);
+    // The `.eh_frame` input section is placed nowhere, as in the full link.
+    let sid = s0.world.sid(2, 3);
+    assert_eq!(d.place_of(&stored, sid).unwrap(), PlaceNow::NotPlaced);
 }
 
 // spec: incr.md IN-72 item 10 (a section with no output section in the
@@ -1377,7 +1390,10 @@ fn items_5_6_7_refused_wholesale() {
         }],
     }];
     let with = |i: LayoutInput<'_>| run(&s0.mem, &i).err();
-    assert_eq!(with(LayoutInput { eh: &eh, ..input(&changes) }), Some(not_implemented()));
+    // Item 5 (WP-243): records with no `.eh_frame` chunk in the stored
+    // link.
+    let no_eh = IncrReason::NewOutputSection(".eh_frame".into());
+    assert_eq!(with(LayoutInput { eh: &eh, ..input(&changes) }), Some(no_eh));
     assert_eq!(with(LayoutInput { pieces: &pieces, ..input(&changes) }), Some(not_implemented()));
     assert_eq!(with(LayoutInput { demands: &demands, ..input(&changes) }), Some(not_implemented()));
     // Empty lists are no demand.
@@ -1389,6 +1405,7 @@ fn items_5_6_7_refused_wholesale() {
         f(&mut m);
         run(&m, &input(&changes)).err()
     };
+    // A range and no `EhFile` for it (WP-243).
     let r = StoredEhRange { offset: 0, capacity: 40, records: 1 };
     assert_eq!(old(&|m| m.eh_ranges.push((f1, r))), Some(not_implemented()));
     let fu = StoredFragUse { file: f1, out: OutSecId(0), class: 0, hash: [1; 16] };
@@ -1462,4 +1479,126 @@ fn sparse_placement_names_files_and_touched_chunks() {
         .find(|c| d.hole_chunks.binary_search(c).is_err())
         .unwrap();
     assert_eq!(d.holes_of(&stored, untouched).unwrap(), s0.mem.holes_in(untouched).unwrap());
+}
+
+// ---- item 5: `.eh_frame` (WP-243) --------------------------------------------
+
+/// A first link of two text files with an `.eh_frame` chunk whose ranges
+/// are file 1's (24 + 40 bytes, capacity 80) and file 2's (40, capacity
+/// 56), as the capture stores them.
+fn first_with_eh(files: &[Vec<Sec>]) -> (State, ChunkId) {
+    use mortar_core::layout::Synth;
+    let mut w = world(Machine::X86_64, files);
+    w.synthetic = vec![mortar_layout::chunk::SynthChunk {
+        synth: Synth { name: b".eh_frame", address_dependent: false },
+        sh_type: SHT_PROGBITS,
+        flags: SHF_ALLOC,
+        align: 3,
+        size: 140,
+    }];
+    let mut s0 = first_with(w, no_anchors(files));
+    let eh = s0
+        .mem
+        .chunks
+        .iter()
+        .position(|c| matches!(c.kind, ChunkKind::Synthetic(s) if s.name == b".eh_frame"))
+        .map(|i| ChunkId(i as u32))
+        .expect("the .eh_frame chunk");
+    s0.mem.eh_ranges = vec![
+        (FileId(1), StoredEhRange { offset: 0, capacity: 80, records: 2 }),
+        (FileId(2), StoredEhRange { offset: 80, capacity: 56, records: 1 }),
+    ];
+    let pad = |offset, size| Hole { chunk: eh, offset, size, kind: HoleKind::EhPad };
+    s0.mem.holes.extend([pad(64, 16), pad(120, 16)]);
+    s0.mem.holes.sort_by_key(|h| (h.chunk, h.offset));
+    (s0, eh)
+}
+
+fn eh_file(file: u32, sizes: &[u64]) -> EhFile {
+    EhFile {
+        file: FileId(file),
+        rank: u64::from(file) << 20,
+        records: sizes
+            .iter()
+            .enumerate()
+            .map(|(i, &size)| EhRecordIn {
+                section: SectionId(1),
+                piece: i as u32,
+                size,
+                cie: i == 0,
+            })
+            .collect(),
+    }
+}
+
+// spec: incr.md IN-34a, IN-72 item 5 (WP-243: a changed file's records
+// fit its range: rewritten in place, the rest a pad, through `layout`;
+// IN-18c: one `FILES` eh read per file of the update, one `HOLES` read of
+// the `.eh_frame` chunk)
+#[test]
+fn eh_frame_range_rewritten_in_place() {
+    let (s0, eh) = first_with_eh(&two_text_files());
+    let mut files = s0.files();
+    files[0][0].size = 60;
+    let (changes, _) = changes_of(&s0, &Edit::new(files).changed(&[1]));
+    let t = &s0.world.target;
+    let plain = Counting::new(&s0.mem);
+    let base = layout(&StoredLayout::new(&plain), &input(&changes), t);
+    // A file with a range and no `EhFile`: its records are not known.
+    assert_eq!(base.err(), Some(not_implemented()));
+    let ehf = [eh_file(1, &[24, 40, 8])];
+    let rows = Counting::new(&s0.mem);
+    let inp = LayoutInput { eh: &ehf, ..input(&changes) };
+    let d = layout(&StoredLayout::new(&rows), &inp, t).unwrap();
+    assert_eq!(rows.ranges.load(Ordering::Relaxed), 3, "one FILES eh read for the one file");
+    let without = {
+        let mut m = s0.mem.clone();
+        m.eh_ranges.clear();
+        m.holes.retain(|h| h.chunk != eh);
+        let r = Counting::new(&m);
+        layout(&StoredLayout::new(&r), &input(&changes), t).unwrap();
+        r.holes.load(Ordering::Relaxed)
+    };
+    assert_eq!(rows.holes.load(Ordering::Relaxed), without + 1, "one HOLES read of .eh_frame");
+    let got = d.eh.clone().expect("item 5's layout");
+    assert_eq!(got.chunk, eh);
+    assert!(!got.whole);
+    assert_eq!(got.ranges.len(), 1);
+    assert_eq!(got.ranges[0].file, FileId(1));
+    assert_eq!((got.ranges[0].offset, got.ranges[0].capacity), (0, 80));
+    assert_eq!(got.ranges[0].records, vec![0, 24, 64]);
+    let stored = StoredLayout::new(&s0.mem);
+    let pad = |offset, size| Hole { chunk: eh, offset, size, kind: HoleKind::EhPad };
+    assert_eq!(d.holes_of(&stored, eh).unwrap(), vec![pad(72, 8), pad(120, 16)]);
+    assert!(d.hole_chunks.binary_search(&eh).is_ok());
+    assert!(d.holes.contains(&pad(72, 8)) && !d.holes.contains(&pad(120, 16)));
+    assert_eq!(d.placement.chunks[eh], s0.placed.placement.chunks[eh], "the chunk is unchanged");
+    // The same with the file gone: its range is a hole, merged with the
+    // pad before it.
+    let none = [eh_file(2, &[])];
+    let mut files = s0.files();
+    files[1][0].size = 50;
+    let (changes2, _) = changes_of(&s0, &Edit::new(files).changed(&[2]));
+    let d2 = layout(&stored, &LayoutInput { eh: &none, ..input(&changes2) }, t).unwrap();
+    assert!(d2.eh.as_ref().unwrap().ranges.is_empty());
+    assert_eq!(d2.holes_of(&stored, eh).unwrap(), vec![pad(64, 72)]);
+    // A file with records and no range: the whole rewrite, which needs
+    // every `FILES` row with a range (WP-243 F-1).
+    let grown = [eh_file(1, &[24, 40, 40])];
+    assert_eq!(layout(&stored, &LayoutInput { eh: &grown, ..inp }, t).err(), Some(not_implemented()));
+}
+
+// spec: incr.md IN-72 item 5 (WP-243: no `.eh_frame` in the update and
+// none stored: nothing read past the `FILES` row, `eh` is `None`)
+#[test]
+fn eh_frame_untouched_is_none() {
+    let (s0, eh) = first_with_eh(&two_text_files());
+    let mut files = s0.files();
+    files[0][0].size = 60;
+    let (changes, _) = changes_of(&s0, &Edit::new(files).changed(&[1]));
+    let mut m = s0.mem.clone();
+    m.eh_ranges.retain(|e| e.0 != FileId(1));
+    let d = layout(&StoredLayout::new(&m), &input(&changes), &s0.world.target).unwrap();
+    assert_eq!(d.eh, None);
+    assert!(d.hole_chunks.binary_search(&eh).is_err());
 }
