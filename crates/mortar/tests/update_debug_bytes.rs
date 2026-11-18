@@ -767,7 +767,7 @@ fn update(
             for &(nb, ob) in &ch {
                 changed_of(rows, new, ob, nb, first, &mut changed);
                 firsts.insert(nb, first);
-                first = SectionId(first.0 + old.base[ob].len() as u32);
+                first = SectionId(first.0 + old.base[ob].len());
             }
             for &ob in &removed {
                 changed.files.push(file_row(rows, ob, Change::Gone, first, Vec::new()));
@@ -1452,7 +1452,11 @@ fn median_of<T>(n: usize, mut f: impl FnMut() -> T) -> (Duration, T) {
 // each step reads.
 #[test]
 #[ignore = "a measurement: MORTAR_WP228_RSP and MORTAR_WP228_CWD"]
-#[allow(clippy::too_many_lines, reason = "one measurement in order")]
+#[allow(
+    clippy::too_many_lines,
+    clippy::many_single_char_names,
+    reason = "one measurement in order"
+)]
 fn measure_debug_steps_at_scale() {
     let (Some(rsp), Some(cwd)) =
         (std::env::var_os("MORTAR_WP228_RSP"), std::env::var_os("MORTAR_WP228_CWD"))
@@ -1608,7 +1612,7 @@ fn measure_debug_steps_at_scale() {
                     at += 4 + len;
                 }
                 let (t, v) = median_of(5, || debug::aranges(&pa, &[(os, oe, sets.clone())]));
-                (Some(t), v.map(|v| v.len()).unwrap_or(0))
+                (Some(t), v.map_or(0, |v| v.len()))
             }
             _ => (None, 0),
         };
