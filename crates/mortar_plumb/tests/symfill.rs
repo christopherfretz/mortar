@@ -118,7 +118,8 @@ fn rejected_alone<S: AsRef<std::ffi::OsStr> + std::fmt::Debug>(
     let Some(x) = edit(arch, "x", ops) else { return };
     let got = lines(&single(&x).findings);
     assert!(
-        !got.is_empty() && got.iter().all(|l| l.starts_with(&format!("{rule} ")) && l.contains(needle)),
+        !got.is_empty()
+            && got.iter().all(|l| l.starts_with(&format!("{rule} ")) && l.contains(needle)),
         "{arch} {ops:?}: want only {rule} '{needle}', got {got:#?}"
     );
 }
@@ -154,7 +155,13 @@ fn in49a_shape_is_accepted() {
         assert!(r.summary().contains("decision records: 10 read"), "{arch}");
         let f = edit::<&str>(arch, "f", &[]).unwrap();
         let e = equiv(&x, &f);
-        assert!(e.clean(), "{arch}: {:#?} {:#?} {:#?}", lines(&e.findings), lines(&e.x.findings), lines(&e.f.findings));
+        assert!(
+            e.clean(),
+            "{arch}: {:#?} {:#?} {:#?}",
+            lines(&e.findings),
+            lines(&e.x.findings),
+            lines(&e.f.findings)
+        );
         assert_eq!(e.x.coverage.fillers, Some(70), "{arch}: 2 per block and a tail of 64");
         assert_eq!(e.f.coverage.fillers, None, "{arch}: a plain side counts none");
         // The plain map states no common's <file>: read, not judged, named.
@@ -206,7 +213,8 @@ fn near_filler_reported() {
         let Some(f) = edit::<&str>(arch, "f", &[]) else { return };
         for field in ["st_name", "st_info", "st_other", "st_shndx", "st_value", "st_size"] {
             let x = edit(arch, "x", &with(&[&format!("near={field}")])).unwrap();
-            let e = rejected_by_equiv(&x, &f, field, "P-E3", &format!("a filler but for its {field}"));
+            let e =
+                rejected_by_equiv(&x, &f, field, "P-E3", &format!("a filler but for its {field}"));
             assert!(e.x.findings.is_empty(), "{arch} {field}: {:#?}", lines(&e.x.findings));
             assert_eq!(e.x.coverage.fillers, Some(69), "{arch} {field}");
         }
@@ -249,7 +257,12 @@ fn p_i2_p_i5_file_slack() {
         rejected_alone(arch, &with(&["slack-long"]), "P-I2", "runs past the next section");
         rejected_alone(arch, &with(&["slack-nonzero"]), "P-I5", "is not zero");
         rejected_alone(arch, &with(&["slack-off"]), "P-I2", "outside '.symtab'");
-        rejected_alone(arch, &with(&["hole-nonalloc"]), "P-I2", "a hole is in an allocated section only");
+        rejected_alone(
+            arch,
+            &with(&["hole-nonalloc"]),
+            "P-I2",
+            "a hole is in an allocated section only",
+        );
     }
 }
 
@@ -282,9 +295,20 @@ fn p_e2_common_file() {
     for arch in ARCHS {
         let Some(x) = edit(arch, "x", SHAPE) else { return };
         let e = equiv(&x, &x);
-        assert!(e.clean() && e.not_judged.is_empty(), "{arch}: {:#?} {:?}", lines(&e.findings), e.not_judged);
+        assert!(
+            e.clean() && e.not_judged.is_empty(),
+            "{arch}: {:#?} {:?}",
+            lines(&e.findings),
+            e.not_judged
+        );
         let other = edit(arch, "x", &with(&["common-file=0"])).unwrap();
-        rejected_by_equiv(&other, &x, "common-file", "P-E2", "the common 'shared_c' is allocated from");
+        rejected_by_equiv(
+            &other,
+            &x,
+            "common-file",
+            "P-E2",
+            "the common 'shared_c' is allocated from",
+        );
     }
 }
 
@@ -293,7 +317,8 @@ fn shdr_at(b: &[u8], name: &str) -> usize {
     let u16_at = |o: usize| u16::from_le_bytes([b[o], b[o + 1]]) as usize;
     let u64_at = |o: usize| u64::from_le_bytes(b[o..o + 8].try_into().unwrap()) as usize;
     let u32_at = |o: usize| u32::from_le_bytes(b[o..o + 4].try_into().unwrap()) as usize;
-    let (shoff, shentsize, shnum, shstrndx) = (u64_at(0x28), u16_at(0x3a), u16_at(0x3c), u16_at(0x3e));
+    let (shoff, shentsize, shnum, shstrndx) =
+        (u64_at(0x28), u16_at(0x3a), u16_at(0x3c), u16_at(0x3e));
     let strs = u64_at(shoff + shstrndx * shentsize + 0x18);
     (0..shnum)
         .map(|i| shoff + i * shentsize)

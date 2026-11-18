@@ -1097,7 +1097,9 @@ fn units(x: &Side<'_>, f: &Side<'_>, out: &mut Vec<Finding>, eq: &mut Equiv) {
         match (a, ff.get(name)) {
             (Some(a), Some(Some(b))) if a != b => out.push(finding(
                 2,
-                format!("the common '{name}' is allocated from {a} in the update, {b} in the full link"),
+                format!(
+                    "the common '{name}' is allocated from {a} in the update, {b} in the full link"
+                ),
             )),
             (Some(_), Some(Some(_))) | (_, None) => {}
             _ => unstated += 1,

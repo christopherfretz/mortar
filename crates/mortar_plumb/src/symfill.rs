@@ -130,7 +130,11 @@ fn room(image: &Image<'_>, sec: usize) -> u64 {
     let mut end = image.data.len() as u64;
     for (j, o) in image.sections.iter().enumerate() {
         let t = &o.shdr;
-        if j != sec && j != 0 && t.sh_type != SHT_NOBITS && t.sh_size > 0 && t.sh_offset > s.sh_offset
+        if j != sec
+            && j != 0
+            && t.sh_type != SHT_NOBITS
+            && t.sh_size > 0
+            && t.sh_offset > s.sh_offset
         {
             end = end.min(t.sh_offset);
         }

@@ -177,8 +177,7 @@ pub(crate) fn check(
     // `.strtab`'s dead names (IN-49a) are judged above (their NUL) and
     // in `crate::symfill`; they name nothing the DWARF walk reads.
     let dwarf = debug_ranges.iter().any(|r| image.sections[r.sec].name != ".strtab");
-    if !dwarf && !set.ranges.iter().any(|r| crate::dead::is_eh_frame(image, r.sec))
-    {
+    if !dwarf && !set.ranges.iter().any(|r| crate::dead::is_eh_frame(image, r.sec)) {
         return;
     }
     live_references(&dbg, set, out);

@@ -59,10 +59,10 @@
 use std::fmt::Write as _;
 
 use super::{
-    Capacity, Chunk, ChunkKind, CommonAlloc, CopyHint, DeadKind, DeadRange, Defined,
-    DiscardReason, Discarded, DynRecords, Fold, Format, Frag, Map, MapError, MapFile, NonAlloc,
-    Order, OutputKind, Part, Placed, RCommon, RFrame, RGroup, RPlace, Redirect, Region, RelRecords,
-    RunpathTag, SectionRef, Slot, SlotKey, SlotKind, SymBlock, dec, hex,
+    Capacity, Chunk, ChunkKind, CommonAlloc, CopyHint, DeadKind, DeadRange, Defined, DiscardReason,
+    Discarded, DynRecords, Fold, Format, Frag, Map, MapError, MapFile, NonAlloc, Order, OutputKind,
+    Part, Placed, RCommon, RFrame, RGroup, RPlace, Redirect, Region, RelRecords, RunpathTag,
+    SectionRef, Slot, SlotKey, SlotKind, SymBlock, dec, hex,
 };
 
 /// The decision records' words, in their group order (§3.2).
@@ -803,7 +803,8 @@ pub fn parse(text: &str) -> Result<Map, MapError> {
                     return Err(bad("class (three hex numbers joined by ',')"));
                 };
                 let h = t[3];
-                if h.len() != 32 || !h.bytes().all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
+                if h.len() != 32
+                    || !h.bytes().all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
                 {
                     return Err(bad("hash (exactly 32 lower-case hex digits)"));
                 }
@@ -1426,9 +1427,8 @@ mod tests {
             capacity: 0x200,
             line: 0,
         });
-        for (i, part) in [Part::Body(2), Part::Island(0), Part::Merged, Part::Synthetic]
-            .into_iter()
-            .enumerate()
+        for (i, part) in
+            [Part::Body(2), Part::Island(0), Part::Merged, Part::Synthetic].into_iter().enumerate()
         {
             d.capacities.push(Capacity {
                 out: ".text".into(),
@@ -1453,7 +1453,12 @@ mod tests {
             addr: 0x60_0008,
             line: 0,
         });
-        d.slots.push(Slot { kind: SlotKind::TlsLd, key: SlotKey::Module, addr: 0x60_0018, line: 0 });
+        d.slots.push(Slot {
+            kind: SlotKind::TlsLd,
+            key: SlotKey::Module,
+            addr: 0x60_0018,
+            line: 0,
+        });
         d.redirects.push(Redirect {
             file: 1,
             section: SectionRef::Index(4),
