@@ -1,15 +1,13 @@
-# WIP — WP-221 (U-9)
+# WIP — WP-221 (U-9), step 2
 
-Done (step 1): `mortar_diag::subject`: `subjects` (diag.md's column;
-spec_tables compares both ways, WARNING_KINDS gone), the PROPOSED stored
-form `stored`/`from_stored` with unit tests. Fixture
-`tests/incr-update/scenarios/gnu_warning_reference_removed`. Record
-`spec/landed/incr/WP-221.md` "Step 1" (design, seam diff, experiments,
-F-1..F-8). Interim hand-back sent; waiting for the ruling.
+Done: rulings applied (817d7922 ruling 1, 865e056f F-3, b04204b4 seam 7,
+b6ebd81e diags+emit, ad665676 tests incl. dormant rows). Record step-2
+section written (spec/landed/incr/WP-221.md §2.x, §X8), A+ numbers pending
+(placeholders PROBE_RESULTS, CAPPED_FREQ).
 
-Experiment scratch: `.build/target-wp-156/wp221/` (probe-lane.tsv,
-measure.txt, glibc/, gw/). The main.rs probe was never committed.
+UNCOMMITTED PROBE (never commit): crates/mortar_scan/src/{events,report,lib}.rs
+and crates/mortar/src/lib.rs (MORTAR_WP221_PROBE). Revert with
+`git checkout crates/mortar_scan/src crates/mortar/src/lib.rs` after
+.build/target-wp-156/wp221/aplus/run.sh finishes (FINAL APLUS DONE).
 
-Next (after the ruling): step 2 — `diags` + `row`/`diagnostic` in
-`update/diags.rs`, the five named tests in `tests/update_diags.rs`
-(remove `diags_until_it_lands`), then the full gate.
+Next: fill A+ numbers; revert probe; full gate; delete WIP.md; hand back.
