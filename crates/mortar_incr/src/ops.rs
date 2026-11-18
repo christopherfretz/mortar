@@ -164,20 +164,51 @@ impl WriteOps for StdOps {
 /// whether it is a sync (a barrier for the replay).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Op {
-    Pwrite { file: u32, offset: u64, bytes: Vec<u8> },
-    SetLen { file: u32, len: u64 },
-    Fdatasync { file: u32 },
-    Fsync { file: u32 },
-    Rename { from: PathBuf, to: PathBuf },
-    HardLink { from: PathBuf, to: PathBuf },
-    Unlink { path: PathBuf },
-    FsyncDir { dir: PathBuf },
-    Flock { file: u32, mode: LockMode },
+    Pwrite {
+        file: u32,
+        offset: u64,
+        bytes: Vec<u8>,
+    },
+    SetLen {
+        file: u32,
+        len: u64,
+    },
+    Fdatasync {
+        file: u32,
+    },
+    Fsync {
+        file: u32,
+    },
+    Rename {
+        from: PathBuf,
+        to: PathBuf,
+    },
+    HardLink {
+        from: PathBuf,
+        to: PathBuf,
+    },
+    Unlink {
+        path: PathBuf,
+    },
+    FsyncDir {
+        dir: PathBuf,
+    },
+    Flock {
+        file: u32,
+        mode: LockMode,
+    },
     /// `file` is the new file's number (U-7: a created file always gets a
     /// new number, so an inode number the kernel reuses after an unlink
     /// is not taken for the old file).
-    CreateNew { path: PathBuf, file: u32 },
-    CopyRange { from: u32, to: u32, len: u64 },
+    CreateNew {
+        path: PathBuf,
+        file: u32,
+    },
+    CopyRange {
+        from: u32,
+        to: u32,
+        len: u64,
+    },
 }
 
 /// The crash harness's [`WriteOps`] (IN-77's power-loss test): the TYPE is
@@ -367,7 +398,8 @@ impl Effect {
     /// `None` for a sync (a barrier, not an effect); else whether a sync
     /// among `later` makes it durable.
     fn durable_after(&self, later: &[Effect]) -> Option<bool> {
-        let file_synced = |f: u32| later.iter().any(|e| matches!(e, Effect::SyncFile(g) if *g == f));
+        let file_synced =
+            |f: u32| later.iter().any(|e| matches!(e, Effect::SyncFile(g) if *g == f));
         let dir_synced =
             |p: &Path| later.iter().any(|e| matches!(e, Effect::SyncDir(d) if d == parent(p)));
         match self {

@@ -100,7 +100,9 @@ const OLD_BODY: u8 = 0xaa;
 const NEW_BODY: u8 = 0xbb;
 
 fn fnv(bytes: &[u8]) -> u64 {
-    bytes.iter().fold(0xcbf2_9ce4_8422_2325u64, |h, b| (h ^ u64::from(*b)).wrapping_mul(0x100_0000_01b3))
+    bytes
+        .iter()
+        .fold(0xcbf2_9ce4_8422_2325u64, |h, b| (h ^ u64::from(*b)).wrapping_mul(0x100_0000_01b3))
 }
 
 fn s_image(dev: u64, ino: u64, size: u64, body: u8, flag: u32) -> Vec<u8> {
@@ -140,23 +142,23 @@ fn stub_patch(state: &File, row: &StatRow, ops: &mut dyn WriteOps) -> Result<(),
 /// `.<base(S)>.mortar-compact`, synced, renamed over `S`, the directory
 /// synced (IN-77, IN-18f).
 fn stub_compact(s: &Path, row: &StatRow, ops: &mut dyn WriteOps) -> Result<(), WriteFailure> {
-    let c = beside(s, ".mortar-compact");
-    let f = |e| WriteFailure::Failed { step: "compact", error: e };
-    let t = ops.create_new(&c).map_err(f)?;
+    let tmp = beside(s, ".mortar-compact");
+    let fail = |e| WriteFailure::Failed { step: "compact", error: e };
+    let file = ops.create_new(&tmp).map_err(fail)?;
     let img = s_image(row.dev, row.ino, row.size, NEW_BODY, 0);
-    let r = ops
-        .flock(&t, LockMode::TryExclusive)
-        .and_then(|_| ops.pwrite(&t, 0, &img))
-        .and_then(|()| ops.fdatasync(&t));
-    if let Err(e) = r {
-        let _ = ops.unlink(&c);
-        return Err(f(e));
+    let res = ops
+        .flock(&file, LockMode::TryExclusive)
+        .and_then(|_| ops.pwrite(&file, 0, &img))
+        .and_then(|()| ops.fdatasync(&file));
+    if let Err(e) = res {
+        let _ = ops.unlink(&tmp);
+        return Err(fail(e));
     }
-    if let Err(e) = ops.rename(&c, s) {
-        let _ = ops.unlink(&c);
-        return Err(f(e));
+    if let Err(e) = ops.rename(&tmp, s) {
+        let _ = ops.unlink(&tmp);
+        return Err(fail(e));
     }
-    ops.fsync_dir(s.parent().unwrap()).map_err(f)
+    ops.fsync_dir(s.parent().unwrap()).map_err(fail)
 }
 
 fn beside(path: &Path, suffix: &str) -> PathBuf {
@@ -229,13 +231,6 @@ impl World {
         m.meta.output_kind = 0;
         m
     }
-
-    fn real(&self) -> impl Fn(&Path) -> Option<((u64, u64), Vec<u8>)> + use<> {
-        |p: &Path| {
-            let m = std::fs::metadata(p).ok()?;
-            Some(((m.dev(), m.ino()), std::fs::read(p).ok()?))
-        }
-    }
 }
 
 fn policy(path: WritePath) -> WritePolicy {
@@ -253,6 +248,12 @@ enum Verdict {
     NewPair,
     /// A named reason: a full link.
     Named(&'static str),
+}
+
+/// The real files: `P` or `S` by path.
+fn real(p: &Path) -> Option<((u64, u64), Vec<u8>)> {
+    let m = std::fs::metadata(p).ok()?;
+    Some(((m.dev(), m.ino()), std::fs::read(p).ok()?))
 }
 
 type Reader<'r> = dyn Fn(&Path) -> Option<((u64, u64), Vec<u8>)> + 'r;
@@ -286,9 +287,9 @@ fn judge(w: &World, read: &Reader<'_>, foreign: Option<&[u8]>) -> Result<Verdict
     match (s[40], bytes == w.p_old, bytes == w.p_new) {
         (OLD_BODY, true, _) => Ok(Verdict::OldPair),
         (NEW_BODY, _, true) => Ok(Verdict::NewPair),
-        (body, old, new) => Err(format!(
-            "a trusted mix: state body {body:#x} with an output old {old}, new {new}"
-        )),
+        (body, old, new) => {
+            Err(format!("a trusted mix: state body {body:#x} with an output old {old}, new {new}"))
+        }
     }
 }
 
@@ -305,10 +306,19 @@ fn run(
     let pair = Pair { out, out_path: &w.p, state, state_path: &w.s };
     let m = w.view();
     let s = w.s.clone();
-    write_with(&pair, &m.view(), &w.ranges, &w.bytes, compacts, ops, policy(path), &mut |row, ops| {
-        rows.push(row.clone());
-        if compacts { stub_compact(&s, row, ops) } else { stub_patch(state, row, ops) }
-    })
+    write_with(
+        &pair,
+        &m.view(),
+        &w.ranges,
+        &w.bytes,
+        compacts,
+        ops,
+        policy(path),
+        &mut |row, ops| {
+            rows.push(row.clone());
+            if compacts { stub_compact(&s, row, ops) } else { stub_patch(state, row, ops) }
+        },
+    )
 }
 
 // ---- the entry point --------------------------------------------------------
@@ -335,7 +345,7 @@ fn write_reaches_w5_with_u2_until_it_lands() {
     );
     let want = IncrReason::UpdateNotImplemented(Some(Unimplemented::State5));
     assert!(matches!(r, Err(WriteFailure::Fallback(ref e)) if *e == want), "{r:?}");
-    assert_eq!(judge(&w, &w.real(), None), Ok(Verdict::Named("output-torn")));
+    assert_eq!(judge(&w, &real, None), Ok(Verdict::Named("output-torn")));
     assert!(!w.p.exists() && !w.a.exists(), "IN-77e: the file at P after W4's link is removed");
 }
 
@@ -351,7 +361,7 @@ fn power_loss(path: WritePath, compacts: bool, grow: bool) -> Vec<(usize, Verdic
     let mut rows = Vec::new();
     let r = run(&w, &out, &state, path, compacts, &mut ops, &mut rows).unwrap();
     assert_eq!((r.path, r.compacted), (path, compacts));
-    assert_eq!(judge(&w, &w.real(), None), Ok(Verdict::NewPair), "the real files after it");
+    assert_eq!(judge(&w, &real, None), Ok(Verdict::NewPair), "the real files after it");
     let (p_id, s_id) = (ops.file_of(&out).unwrap(), ops.file_of(&state).unwrap());
     let mut before = Disk::default();
     before.names.insert(w.p.clone(), p_id);
@@ -369,11 +379,14 @@ fn power_loss(path: WritePath, compacts: bool, grow: bool) -> Vec<(usize, Verdic
             };
             match judge(&w, &read, None) {
                 Ok(v) => seen.push((k, v)),
-                Err(e) => bad.push(format!("prefix {k} ({:?}): {e}", ops.log.get(k.wrapping_sub(1)))),
+                Err(e) => {
+                    bad.push(format!("prefix {k} ({:?}): {e}", ops.log.get(k.wrapping_sub(1))));
+                }
             }
             // IN-77 "Why never a silent mix": a torn state has its flag set.
             if let Some(s) = d.read(&w.s) {
-                let torn = s[40..104].iter().any(|b| *b != s[40]) || fnv(&s[16..104]) != u64_at(s, 104);
+                let torn =
+                    s[40..104].iter().any(|b| *b != s[40]) || fnv(&s[16..104]) != u64_at(s, 104);
                 let flag = u32::from_le_bytes(s[12..16].try_into().unwrap());
                 if torn && flag == 0 {
                     bad.push(format!("prefix {k}: a torn state with its flag clear"));
@@ -382,6 +395,10 @@ fn power_loss(path: WritePath, compacts: bool, grow: bool) -> Vec<(usize, Verdic
         })
         .unwrap();
     assert!(bad.is_empty(), "{} of {n} outcomes:\n{}", bad.len(), bad.join("\n"));
+    eprintln!(
+        "power loss {path:?} compacts {compacts} grow {grow}: {} calls, {n} outcomes",
+        ops.log.len()
+    );
     assert!(seen.iter().any(|(_, v)| *v == Verdict::OldPair), "the old pair is reachable");
     assert!(seen.iter().any(|(_, v)| *v == Verdict::NewPair), "the new pair is reachable");
     assert_eq!(seen.last().map(|x| x.1), Some(Verdict::NewPair), "the whole log: the new pair");
@@ -435,8 +452,10 @@ fn output_not_racy_after_update() {
         let row = &rows[0];
         let now = Tuple::of(&std::fs::metadata(&w.p).unwrap());
         assert_eq!(r.tuple, now, "{path:?}: the tuple returned is P's");
-        assert_eq!((row.dev, row.ino, row.size, row.mtime_ns, row.ctime_ns),
-            (now.dev, now.ino, now.size, now.mtime_ns, now.ctime_ns));
+        assert_eq!(
+            (row.dev, row.ino, row.size, row.mtime_ns, row.ctime_ns),
+            (now.dev, now.ino, now.size, now.mtime_ns, now.ctime_ns)
+        );
         assert!(row.stamp_ns > row.ctime_ns, "{path:?}: the stamp is later than the ctime");
         assert_eq!(stamp::classify(&r.tuple, &now, Some(row.stamp_ns)), Cleanliness::Clean);
         assert_eq!(r.path == WritePath::InPlace, now.ino == u64_at(&w.s_old, 24), "{path:?}");
@@ -476,7 +495,11 @@ impl<'f> Faulty<'f> {
         Self { rec: RecordingOps::default(), calls: Vec::new(), fail, after: Box::new(after) }
     }
 
-    fn go<T>(&mut self, kind: Kind, f: impl FnOnce(&mut RecordingOps) -> io::Result<T>) -> io::Result<T> {
+    fn go<T>(
+        &mut self,
+        kind: Kind,
+        f: impl FnOnce(&mut RecordingOps) -> io::Result<T>,
+    ) -> io::Result<T> {
         let n = self.calls.len();
         self.calls.push(kind);
         if let Some((at, errno)) = self.fail
@@ -557,10 +580,17 @@ fn failure_at(path: WritePath, compacts: bool, at: usize, errno: i32) -> (Verdic
         after.iter().all(|k| *k == Kind::Unlink),
         "{path:?} {compacts} at {at} ({step}): IN-77e, nothing but removals after a failure: {after:?}"
     );
-    let v = judge(&w, &w.real(), None)
+    let v = judge(&w, &real, None)
         .unwrap_or_else(|e| panic!("{path:?} {compacts} at {at} ({step}): {e}"));
+    // W6's and C5's sync failing, or the compaction's directory sync after
+    // its rename: the cleared word (the new state) is already live (WP-219
+    // finding F-4): the next link sees it clear, and finds the new pair
+    // (copy) or `P` removed (`output-changed`).
+    let six = (matches!(step, "W6" | "C5") && ops.calls[at] == Kind::Fdatasync)
+        || (step == "compact" && ops.calls[at] == Kind::FsyncDir);
     assert!(
-        matches!(v, Verdict::OldPair | Verdict::Named("output-torn")),
+        matches!(v, Verdict::OldPair | Verdict::Named("output-torn"))
+            || (six && matches!(v, Verdict::NewPair | Verdict::Named("output-changed"))),
         "{path:?} {compacts} at {at} ({step}): {v:?}"
     );
     // The temporaries: `A` removed (in place), `T` removed (copy), the
@@ -691,7 +721,7 @@ fn output_replaced_between_check_and_write() {
                 !calls.contains(&Kind::Rename) && !calls.contains(&Kind::HardLink),
                 "{path:?}: no rename of P: {calls:?}"
             );
-            assert_eq!(judge(&w, &w.real(), Some(&p)), Ok(Verdict::Named("output-torn")));
+            assert_eq!(judge(&w, &real, Some(&p)), Ok(Verdict::Named("output-torn")));
         }
     }
 }
@@ -724,13 +754,14 @@ fn foreign_output_during_aside() {
     let calls = ops.calls.clone();
     drop(ops);
     let link = calls.iter().rposition(|k| *k == Kind::HardLink).unwrap();
-    assert_eq!(calls[link + 1..], [Kind::Unlink, Kind::FsyncDir], "nothing written after W4's link");
+    assert_eq!(
+        calls[link + 1..],
+        [Kind::Unlink, Kind::FsyncDir],
+        "nothing written after W4's link"
+    );
     assert_eq!(std::fs::read(&w.p).unwrap(), b"another link's output");
     assert!(!w.a.exists(), "A removed");
-    assert_eq!(
-        judge(&w, &w.real(), Some(b"another link's output")),
-        Ok(Verdict::Named("output-torn"))
-    );
+    assert_eq!(judge(&w, &real, Some(b"another link's output")), Ok(Verdict::Named("output-torn")));
 }
 
 // spec: incr.md IN-77 W2 (the file renamed aside is not the descriptor's:
@@ -752,13 +783,12 @@ fn w2_foreign_file_is_put_back() {
     assert!(matches!(r, Err(WriteFailure::Fallback(IncrReason::OutputChanged(_)))), "{r:?}");
     let log = ops.rec.log.clone();
     drop(ops);
-    assert!(log.iter().any(|o| matches!(o, Op::HardLink { from, to } if *from == w.a && *to == w.p)));
+    assert!(
+        log.iter().any(|o| matches!(o, Op::HardLink { from, to } if *from == w.a && *to == w.p))
+    );
     assert_eq!(std::fs::read(&w.p).unwrap(), b"another link's output");
     assert!(!w.a.exists());
-    assert_eq!(
-        judge(&w, &w.real(), Some(b"another link's output")),
-        Ok(Verdict::Named("output-torn"))
-    );
+    assert_eq!(judge(&w, &real, Some(b"another link's output")), Ok(Verdict::Named("output-torn")));
 }
 
 // ---- leftovers ----------------------------------------------------------------
@@ -784,10 +814,8 @@ fn leftovers_removed_only_when_unlocked() {
     assert!(!w.a.exists() && !w.c.exists(), "unheld leftovers removed");
     assert_eq!(std::fs::read(&w.t).unwrap(), b"leftover", "the held one is left");
     let first_write = ops.log.iter().position(|o| matches!(o, Op::Pwrite { .. })).unwrap();
-    let removed: Vec<&Op> = ops.log[..first_write]
-        .iter()
-        .filter(|o| matches!(o, Op::Unlink { .. }))
-        .collect();
+    let removed: Vec<&Op> =
+        ops.log[..first_write].iter().filter(|o| matches!(o, Op::Unlink { .. })).collect();
     assert_eq!(
         removed,
         [&Op::Unlink { path: w.a.clone() }, &Op::Unlink { path: w.c.clone() }],
@@ -830,7 +858,7 @@ fn leftover_aside_same_inode() {
     assert!(unlink < rename, "A removed before W2: {:?}", ops.log);
     assert_eq!(std::fs::read(&w.p).unwrap(), w.p_new);
     assert!(!w.a.exists());
-    assert_eq!(judge(&w, &w.real(), None), Ok(Verdict::NewPair));
+    assert_eq!(judge(&w, &real, None), Ok(Verdict::NewPair));
 }
 
 // ---- the state ----------------------------------------------------------------
@@ -855,7 +883,7 @@ fn hard_linked_state_is_compacted() {
 
     let r = run(&w, &out, &state, WritePath::InPlace, true, &mut StdOps, &mut Vec::new()).unwrap();
     assert!(r.compacted);
-    assert_eq!(judge(&w, &w.real(), None), Ok(Verdict::NewPair));
+    assert_eq!(judge(&w, &real, None), Ok(Verdict::NewPair));
     let kept = std::fs::read(&snapshot).unwrap();
     // WP-219 finding F-2: W1 sets the flag through `S`'s descriptor, which
     // is the snapshot's inode: the snapshot keeps its blocks, and its
@@ -883,7 +911,16 @@ fn write_path_default_by_size() {
         let mut m = w.view();
         m.meta.file_size = len;
         let pair = Pair { out: &out, out_path: &w.p, state: &state, state_path: &w.s };
-        let r = write_with(&pair, &m.view(), &w.ranges, &w.bytes, false, &mut StdOps, WRITE_PATH, &mut |row, ops| stub_patch(&state, row, ops))
+        let r = write_with(
+            &pair,
+            &m.view(),
+            &w.ranges,
+            &w.bytes,
+            false,
+            &mut StdOps,
+            WRITE_PATH,
+            &mut |row, ops| stub_patch(&state, row, ops),
+        )
         .unwrap();
         let after = std::fs::metadata(&w.p).unwrap();
         if big {
@@ -898,7 +935,12 @@ fn write_path_default_by_size() {
 
 /// An in-place update with one IN-45 condition broken: the copy path, a
 /// new inode at `P`.
-fn condition(label: &str, setup: impl FnOnce(&World) -> Option<std::process::Child>, writable: bool, kind: u8) {
+fn condition(
+    label: &str,
+    setup: impl FnOnce(&World) -> Option<std::process::Child>,
+    writable: bool,
+    kind: u8,
+) {
     let tmp = Tmp::new("cond");
     let w = World::create(&tmp.0, false);
     let mut child = setup(&w);
@@ -907,7 +949,16 @@ fn condition(label: &str, setup: impl FnOnce(&World) -> Option<std::process::Chi
     let pair = Pair { out: &out, out_path: &w.p, state: &state, state_path: &w.s };
     let mut m = w.view();
     m.meta.output_kind = kind;
-    let r = write_with(&pair, &m.view(), &w.ranges, &w.bytes, false, &mut StdOps, policy(WritePath::InPlace), &mut |row, ops| stub_patch(&state, row, ops));
+    let r = write_with(
+        &pair,
+        &m.view(),
+        &w.ranges,
+        &w.bytes,
+        false,
+        &mut StdOps,
+        policy(WritePath::InPlace),
+        &mut |row, ops| stub_patch(&state, row, ops),
+    );
     if let Some(c) = &mut child {
         let _ = c.kill();
         let _ = c.wait();
@@ -924,22 +975,37 @@ fn condition(label: &str, setup: impl FnOnce(&World) -> Option<std::process::Chi
 // the copy path"); the inode checked
 #[test]
 fn in_place_conditions_each_take_copy() {
-    condition("symbolic link", |w| {
-        let real = w.dir.join("real");
-        std::fs::rename(&w.p, &real).unwrap();
-        std::os::unix::fs::symlink(&real, &w.p).unwrap();
-        None
-    }, true, 0);
-    condition("two links", |w| {
-        std::fs::hard_link(&w.p, w.dir.join("other-name")).unwrap();
-        None
-    }, true, 0);
+    condition(
+        "symbolic link",
+        |w| {
+            let real = w.dir.join("real");
+            std::fs::rename(&w.p, &real).unwrap();
+            std::os::unix::fs::symlink(&real, &w.p).unwrap();
+            None
+        },
+        true,
+        0,
+    );
+    condition(
+        "two links",
+        |w| {
+            std::fs::hard_link(&w.p, w.dir.join("other-name")).unwrap();
+            None
+        },
+        true,
+        0,
+    );
     condition("not an executable", |_| None, true, 1);
     condition("not writable (ETXTBSY at U1)", |_| None, false, 0);
-    condition("held open by another process", |w| {
-        let f = File::open(&w.p).unwrap();
-        Some(std::process::Command::new("sleep").arg("30").stdin(f).spawn().unwrap())
-    }, true, 0);
+    condition(
+        "held open by another process",
+        |w| {
+            let f = File::open(&w.p).unwrap();
+            Some(std::process::Command::new("sleep").arg("30").stdin(f).spawn().unwrap())
+        },
+        true,
+        0,
+    );
     // The same with every condition holding: in place.
     let tmp = Tmp::new("cond-ok");
     let w = World::create(&tmp.0, false);
@@ -1004,6 +1070,7 @@ fn kill_child() {
 /// What a kill at `point` leaves (IN-77's table): the next link's verdict,
 /// whether `P` and `A` exist, and `A`'s `e_ident` zero.
 #[cfg(feature = "testhooks")]
+#[allow(clippy::struct_excessive_bools)]
 struct Killed {
     verdict: Verdict,
     p: bool,
@@ -1032,7 +1099,7 @@ fn kill_at(point: &str, path: WritePath, compacts: bool) -> (Killed, Tmp) {
     let err = String::from_utf8_lossy(&o.stderr);
     assert_eq!(o.status.signal(), Some(6), "{point} {mode}: aborted? {:?} {err}", o.status);
     assert!(err.contains(&format!("mortar: crash hook {point}")), "{point}: {err}");
-    let verdict = judge(&w, &w.real(), None).unwrap_or_else(|e| panic!("{point} {mode}: {e}"));
+    let verdict = judge(&w, &real, None).unwrap_or_else(|e| panic!("{point} {mode}: {e}"));
     let a = std::fs::read(&w.a).ok();
     let id = |p: &Path| std::fs::metadata(p).ok().map(|m| (m.dev(), m.ino()));
     let k = Killed {
@@ -1054,12 +1121,11 @@ fn table(point: &str) -> (WritePath, bool, Verdict, bool, bool) {
     let ip = WritePath::InPlace;
     let cp = WritePath::Copy;
     match point {
-        "W1" => (ip, false, torn, true, false),
         "W2-renamed" | "W2-written" | "W2" | "W3-written" | "W3" | "W4-written" => {
             (ip, false, torn, false, true)
         }
         "W4-linked" => (ip, false, torn, true, true),
-        "W4-unlinked" | "W4" | "W5-written" | "W5" => (ip, false, torn, true, false),
+        "W1" | "W4-unlinked" | "W4" | "W5-written" | "W5" => (ip, false, torn, true, false),
         "W6" => (ip, false, NewPair, true, false),
         "compact-written" => (ip, true, torn, true, false),
         "compact-renamed" => (ip, true, NewPair, true, false),
@@ -1146,12 +1212,7 @@ fn make_relinks_after_kill_at_w3() {
     let make = |dir: &Path| {
         let mark = dir.join("relinked");
         let _ = std::fs::remove_file(&mark);
-        let o = std::process::Command::new("make")
-            .arg("-s")
-            .arg("-C")
-            .arg(dir)
-            .arg("out")
-            .output();
+        let o = std::process::Command::new("make").arg("-s").arg("-C").arg(dir).arg("out").output();
         let Ok(o) = o else {
             assert!(!mortar_testutil::tools_required(), "make is required");
             return None;
@@ -1162,7 +1223,7 @@ fn make_relinks_after_kill_at_w3() {
     let setup = |dir: &Path| {
         std::fs::write(dir.join("Makefile"), "out: in.o\n\ttouch relinked\n").unwrap();
         std::fs::write(dir.join("in.o"), b"").unwrap();
-        let old = std::time::SystemTime::now() - std::time::Duration::from_secs(3600);
+        let old = std::time::SystemTime::now() - std::time::Duration::from_hours(1);
         File::options()
             .write(true)
             .open(dir.join("in.o"))
@@ -1196,7 +1257,12 @@ fn floor_state_temporary_is_the_compact_name() {
         "\t.text\n\t.globl _start\n_start:\n\tmov $60, %eax\n\txor %edi, %edi\n\tsyscall\n"
     };
     std::fs::write(&src, text).unwrap();
-    let cc = std::process::Command::new("cc").arg("-c").arg(&src).arg("-o").arg(tmp.0.join("a.o")).status();
+    let cc = std::process::Command::new("cc")
+        .arg("-c")
+        .arg(&src)
+        .arg("-o")
+        .arg(tmp.0.join("a.o"))
+        .status();
     if !cc.is_ok_and(|s| s.success()) {
         assert!(!mortar_testutil::tools_required(), "cc is required");
         return;

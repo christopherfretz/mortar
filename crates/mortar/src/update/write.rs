@@ -134,8 +134,7 @@ pub fn write(
 #[doc(hidden)]
 /// W5/C4's writer as [`write_with`] takes it: the binding W4 or C3 took,
 /// and the operations (U-7 wraps them for the crash points inside W5).
-pub type StateWriter<'w> =
-    dyn FnMut(&StatRow, &mut dyn WriteOps) -> Result<(), WriteFailure> + 'w;
+pub type StateWriter<'w> = dyn FnMut(&StatRow, &mut dyn WriteOps) -> Result<(), WriteFailure> + 'w;
 
 /// [`write`] with W5/C4's writer given (`w5`, called once with W4's or
 /// C3's `STAT` output row) instead of `state5::patch`/`compact`, and the
@@ -473,8 +472,6 @@ struct Job<'p, 'r> {
 /// Where the in-place update is, for IN-77e's clean-up.
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum Stage {
-    /// Only `S` written (W1): nothing to remove.
-    Flagged,
     /// `P` is at `A` (W2..W4 before the link).
     Aside,
     /// `P` and `A` name our file (W4 between the link and the unlink).
@@ -541,7 +538,6 @@ impl Job<'_, '_> {
             }
         };
         match stage {
-            Stage::Flagged => {}
             Stage::Aside => remove(aside),
             Stage::Linked => {
                 remove(self.pair.out_path);
@@ -549,6 +545,41 @@ impl Job<'_, '_> {
             }
             Stage::Back => remove(self.pair.out_path),
         }
+    }
+
+    /// W2's rename of `P` to `A`, and IN-77 W2's check that the file set
+    /// aside is the descriptor's (a foreign one is put back with `link`,
+    /// never `rename`, and the update ends with `output-changed`).
+    fn set_aside(
+        &self,
+        ops: &mut dyn WriteOps,
+        aside: &Path,
+        dir: &Path,
+    ) -> Result<(), WriteFailure> {
+        let out_path = self.pair.out_path;
+        ops.rename(out_path, aside).map_err(|e| failed("W2", e))?;
+        crash_point("W2-renamed");
+        if identity(aside) != Some((self.start.dev, self.start.ino)) {
+            // A foreign file was at `P`: put back with `link`, never
+            // `rename` (W4's form); on `EEXIST` a newer file is at `P`.
+            if identity(aside).is_some() {
+                match ops.hard_link(aside, out_path) {
+                    Ok(()) => {
+                        let _ = ops.unlink(aside);
+                    }
+                    Err(e) if e.kind() == io::ErrorKind::AlreadyExists => {
+                        let _ = ops.unlink(aside);
+                    }
+                    Err(_) => {} // left at `A`: not ours to remove
+                }
+                let _ = ops.fsync_dir(dir);
+            }
+            return Err(changed(format!(
+                "{} named another file when it was set aside (IN-77 W2)",
+                out_path.display()
+            )));
+        }
+        Ok(())
     }
 
     /// IN-77's W1..W6.
@@ -579,28 +610,7 @@ impl Job<'_, '_> {
         }
 
         // W2
-        ops.rename(out_path, aside).map_err(|e| failed("W2", e))?;
-        crash_point("W2-renamed");
-        if identity(aside) != Some((self.start.dev, self.start.ino)) {
-            // A foreign file was at `P`: put back with `link`, never
-            // `rename` (W4's form); on `EEXIST` a newer file is at `P`.
-            if identity(aside).is_some() {
-                match ops.hard_link(aside, out_path) {
-                    Ok(()) => {
-                        let _ = ops.unlink(aside);
-                    }
-                    Err(e) if e.kind() == io::ErrorKind::AlreadyExists => {
-                        let _ = ops.unlink(aside);
-                    }
-                    Err(_) => {} // left at `A`: not ours to remove
-                }
-                let _ = ops.fsync_dir(&dir);
-            }
-            return Err(changed(format!(
-                "{} named another file when it was set aside (IN-77 W2)",
-                out_path.display()
-            )));
-        }
+        self.set_aside(ops, aside, &dir)?;
         let step = |ops: &mut dyn WriteOps, r: io::Result<()>, name, stage| {
             r.map_err(|e| {
                 self.clean(ops, aside, stage);
@@ -753,7 +763,8 @@ impl Job<'_, '_> {
                 // Another link removed or took it between the create and
                 // the lock: not ours any more.
                 Ok(_) => {
-                    last = io::Error::other(format!("{} was taken by another link", path.display()));
+                    last =
+                        io::Error::other(format!("{} was taken by another link", path.display()));
                 }
                 Err(e) => {
                     if identity(&path) == Some(id) {
