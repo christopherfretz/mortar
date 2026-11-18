@@ -508,6 +508,12 @@ pub fn normalize(m: &MemoryState) -> Result<MemoryState, StateError> {
             .filter(|&v| v != NONE)
             .ok_or_else(|| bad(&format!("SECTIONS row {x}")))
     };
+    // RESOLVED.section names a SECTIONS row: renumbered with them (the
+    // encode does the same; without it a decoded state's fillers left
+    // every later reference pointing at another section).
+    for r in &mut n.resolved {
+        r.section = sec(r.section)?;
+    }
     for r in &m.chunks {
         n.chunks.push(crate::format::ChunkRow { name: intern(r.name)?, ..r.clone() });
     }

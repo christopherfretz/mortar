@@ -16,6 +16,7 @@ mod support;
 
 use std::collections::HashMap;
 use std::ffi::OsString;
+use std::fmt::Write as _;
 use std::path::PathBuf;
 
 use mortar::front::{Env, Front, front};
@@ -278,6 +279,51 @@ fn capture5_is_deterministic_and_decodes() {
         assert!(!m.key_refs.is_empty() && !m.mentions.is_empty() && !m.frags.is_empty());
         assert!(m.files.iter().any(|f| f.eh_records > 0), "{}: no .eh_frame range", line.label);
         assert!(m.resolved.iter().any(|r| r.facts != 0), "{}: no facts", line.label);
+    }
+}
+
+/// Per global key defined in a section: (RESOLVED's section, the key's
+/// MENTIONS sections); the first has to be among the second.
+fn resolved_off_its_mentions(m: &MemoryState) -> usize {
+    const NONE: u32 = u32::MAX;
+    let mut defs: HashMap<u32, Vec<u32>> = HashMap::new();
+    for (_, r) in &m.mentions {
+        if r.section != NONE {
+            defs.entry(r.symbol).or_default().push(r.section);
+        }
+    }
+    m.resolved
+        .iter()
+        .enumerate()
+        .filter(|(k, r)| {
+            r.section != NONE
+                && u32::try_from(*k)
+                    .ok()
+                    .and_then(|k| defs.get(&k))
+                    .is_some_and(|d| !d.contains(&r.section))
+        })
+        .count()
+}
+
+// WP-244: the compaction of a decoded capture (its SECTIONS with the
+// encode's fillers) renumbers RESOLVED.section with SECTIONS: the state
+// compacts again and every key stays on its definition. (Found on protoc:
+// before the fix 4512 RESOLVED rows named a dropped filler.)
+#[test]
+fn decoded_capture_compacts_again() {
+    for line in lines() {
+        let (err, bytes) = link5(&line, "rt", &[], false);
+        let bytes = bytes.unwrap_or_else(|| panic!("{}: no format-5 state: {err}", line.label));
+        let m = decode(&bytes).unwrap_or_else(|e| panic!("{}: {e}", line.label));
+        assert_eq!(resolved_off_its_mentions(&m), 0, "{}: the capture", line.label);
+        let n = mortar_incr::state5::compact::normalize(&m)
+            .unwrap_or_else(|e| panic!("{}: normalize: {e}", line.label));
+        assert_eq!(resolved_off_its_mentions(&n), 0, "{}: normalized", line.label);
+        let again = mortar_incr::state5::write::encode(&n)
+            .unwrap_or_else(|e| panic!("{}: encode: {e}", line.label));
+        let back = decode(&again).unwrap_or_else(|e| panic!("{}: {e}", line.label));
+        assert_eq!(resolved_off_its_mentions(&back), 0, "{}: re-encoded", line.label);
+        assert_eq!(back.resolved.len(), m.resolved.len(), "{}", line.label);
     }
 }
 
@@ -766,4 +812,390 @@ fn experiment_unchanged_files_rows_are_stable() {
         eprintln!("hop {n}->{}: {same} unchanged files, differing per table {differ:?}", n + 1);
     }
     assert_eq!(bad, 0, "unchanged files whose stored rows differ");
+}
+
+/// A state's rows by name, comparable across two states whose numbering
+/// differs (WP-244's canon(capture) vs canon(convert(format 4))): per
+/// table, each row's identity and value as text, keys as `(kind, name,
+/// version)`, files by path and member, sections by (file, position),
+/// strings by their bytes.
+struct Named {
+    tables: std::collections::BTreeMap<&'static str, std::collections::BTreeMap<String, String>>,
+}
+
+/// `Str { off: N, len: M }` in a `Debug` text replaced by the string.
+fn resolve_strs(m: &MemoryState, text: &str) -> String {
+    let mut out = String::new();
+    let mut rest = text;
+    while let Some(i) = rest.find("Str { off: ") {
+        out.push_str(&rest[..i]);
+        let tail = &rest[i + 11..];
+        let off_end = tail.find(',').unwrap();
+        let off: u32 = tail[..off_end].parse().unwrap();
+        let tail = &tail[off_end + 7..];
+        let len_end = tail.find(' ').unwrap();
+        let len: u32 = tail[..len_end].parse().unwrap();
+        let s = mortar_incr::format::Str { off, len };
+        let _ = write!(out, "{:?}", String::from_utf8_lossy(&string(m, s)));
+        rest = &tail[len_end + 2..];
+    }
+    out.push_str(rest);
+    out
+}
+
+#[allow(clippy::too_many_lines)] // one block per table
+fn named(m: &MemoryState) -> Named {
+    use std::collections::BTreeMap;
+    let file = |f: u32| -> String {
+        m.files.get(f as usize).map_or_else(
+            || format!("file#{f}"),
+            |r| {
+                format!(
+                    "{}({})",
+                    String::from_utf8_lossy(&string(m, r.path)),
+                    String::from_utf8_lossy(&string(m, r.member_name))
+                )
+            },
+        )
+    };
+    let key = |k: u32| -> String {
+        m.symbols.get(k as usize).map_or_else(
+            || format!("key#{k}"),
+            |r| {
+                let at = if r.kind == sym_kind::LOCAL {
+                    format!(" in {}", file(r.file))
+                } else {
+                    String::new()
+                };
+                format!(
+                    "{}:{}@{}{at}",
+                    r.kind,
+                    String::from_utf8_lossy(&string(m, r.name)),
+                    String::from_utf8_lossy(&string(m, r.version))
+                )
+            },
+        )
+    };
+    let mut first_sec: HashMap<u32, usize> = HashMap::new();
+    for (i, s) in m.sections.iter().enumerate() {
+        first_sec.entry(s.file).or_insert(i);
+    }
+    let sec = |s: u32| -> String {
+        if s == u32::MAX {
+            return "-".into();
+        }
+        m.sections.get(s as usize).map_or_else(
+            || format!("sec#{s}"),
+            |r| format!("{}#{}", file(r.file), s as usize - first_sec[&r.file]),
+        )
+    };
+    let mut t: BTreeMap<&'static str, BTreeMap<String, String>> = BTreeMap::new();
+    let mut put = |table: &'static str, id: String, v: String| {
+        let e = t.entry(table).or_default();
+        let mut id2 = id.clone();
+        let mut n = 1;
+        while e.contains_key(&id2) {
+            n += 1;
+            id2 = format!("{id} #{n}");
+        }
+        e.insert(id2, v);
+    };
+    for (i, r) in m.symbols.iter().enumerate() {
+        let at = if r.at_file == u32::MAX { "-".into() } else { file(r.at_file) };
+        put(
+            "SYMBOLS",
+            key(i as u32),
+            format!("at {at}:{} ord {} opt {}", r.at_index, r.ordinal, r.option),
+        );
+    }
+    for (i, r) in m.resolved.iter().enumerate() {
+        let mut x = *r;
+        let s = sec(x.section);
+        x.section = 0;
+        put("RESOLVED", key(i as u32), format!("{s} {x:?}"));
+    }
+    for r in &m.key_refs {
+        let mut x = *r;
+        (x.key, x.file) = (0, 0);
+        put("KEY_REFS", format!("{} in {}", key(r.key), file(r.file)), format!("{x:?}"));
+    }
+    for (f, r) in &m.mentions {
+        let mut x = *r;
+        let s = sec(x.section);
+        (x.symbol, x.section) = (0, 0);
+        put("MENTIONS", format!("{} {} {s} {x:?}", file(f.0), key(r.symbol)), String::new());
+    }
+    for (i, r) in m.sections.iter().enumerate() {
+        let mut x = r.clone();
+        x.file = 0;
+        put("SECTIONS", sec(i as u32), resolve_strs(m, &format!("{x:?}")));
+    }
+    for (i, r) in m.files.iter().enumerate() {
+        let mut x = r.clone();
+        x.rank = 0;
+        put("FILES", file(i as u32), resolve_strs(m, &format!("{x:?}")));
+    }
+    for (i, r) in m.file_index.iter().enumerate() {
+        put(
+            "FILE_INDEX",
+            file(i as u32),
+            format!("first_global {} locals {:?}", r.first_global, r.locals.count),
+        );
+    }
+    for r in &m.frags {
+        put(
+            "FRAGS",
+            format!("{} {} {:02x?}", r.out, r.class, r.hash),
+            format!("off {} size {} refs {}", r.offset, r.size, r.refs),
+        );
+    }
+    for (f, r) in &m.frag_uses {
+        put(
+            "FRAG_USE",
+            format!("{} {} {} {:02x?}", file(f.0), r.out, r.class, r.hash),
+            String::new(),
+        );
+    }
+    for r in &m.groups {
+        put(
+            "GROUPS",
+            format!("{:?} {}", String::from_utf8_lossy(&string(m, r.signature)), file(r.file)),
+            String::new(),
+        );
+    }
+    for r in &m.copies {
+        put(
+            "COPIES",
+            format!("{} {} {}", key(r.key), file(r.file), r.index),
+            format!("size {} typ {}", r.size, r.typ),
+        );
+    }
+    for r in &m.commons {
+        put(
+            "COMMONS",
+            format!("{} {}", key(r.key), file(r.file)),
+            format!("size {} align {}", r.size, r.align),
+        );
+    }
+    for r in &m.slots {
+        put("SLOTS", format!("{} {}", r.kind, key(r.symbol)), format!("refs {}", r.refs));
+    }
+    for (f, r) in &m.index {
+        let target = match r.kind {
+            1 | 3 | 4 | 5 => sec(r.target),
+            0 | 2 => key(r.target),
+            _ => r.target.to_string(),
+        };
+        put("INDEX", format!("{} {} {} {target}", file(f.0), sec(r.unit), r.kind), String::new());
+    }
+    for r in &m.names {
+        put("NAMES", key(r.row), String::new());
+    }
+    for r in &m.defined {
+        let mut x = r.clone();
+        x.symbol = 0;
+        put("DEFINED", key(r.symbol), format!("{x:?}"));
+    }
+    for r in &m.sym_place {
+        let mut x = r.clone();
+        x.symbol = 0;
+        put("SYM_PLACE", key(r.symbol), format!("{x:?}"));
+    }
+    macro_rules! plain {
+        ($($name:literal $f:ident),*) => {$(
+            for (i, r) in m.$f.iter().enumerate() {
+                put($name, i.to_string(), resolve_strs(m, &format!("{r:?}")));
+            }
+        )*};
+    }
+    plain!("PROBES" probes, "OUTSECS" outsecs, "CHUNKS" chunks, "ORDER" order, "SEGMENTS" segments,
+        "SIZES" sizes, "PATCHES" patches, "REDIRECTS" redirects, "SIZED" sized, "HOLES" holes,
+        "STAT" stat, "DIAGS" diags, "EDGES" edges, "SYMTAB" symtab, "REGIONS" regions,
+        "ODR_CLASSES" odr_classes, "ODR_REFS" odr_refs);
+    put("META", String::new(), resolve_strs(m, &format!("{:?}", m.meta)));
+    put("LAYOUT", String::new(), resolve_strs(m, &format!("{:?}", m.layout)));
+    Named { tables: t }
+}
+
+// WP-244 experiment "canon(capture) vs canon(convert(format 4))": the two
+// states of one link (`MORTAR_WP244_PAIR=<capture>\t<converted>`) compared
+// by name, per table: rows only in each, rows whose value differs, with
+// up to three samples of each. Every difference is to be explained (the
+// record, `spec/landed/incr/WP-244.md`).
+#[test]
+#[ignore = "an experiment over two states: MORTAR_WP244_PAIR"]
+fn experiment_capture_vs_convert() {
+    let Some(pair) = std::env::var("MORTAR_WP244_PAIR").ok() else { return };
+    let (a, b) = pair.split_once('\t').expect("<capture>\\t<converted>");
+    let load = |p: &str| {
+        let m = decode(&std::fs::read(p).expect("a state")).expect("decodes");
+        mortar_incr::state5::compact::normalize(&m).expect("normalizes")
+    };
+    let (a, b) = (named(&load(a)), named(&load(b)));
+    let empty = std::collections::BTreeMap::new();
+    let names: std::collections::BTreeSet<&str> =
+        a.tables.keys().chain(b.tables.keys()).copied().collect();
+    for t in names {
+        let (x, y) = (a.tables.get(t).unwrap_or(&empty), b.tables.get(t).unwrap_or(&empty));
+        let only_a: Vec<&String> = x.keys().filter(|k| !y.contains_key(*k)).collect();
+        let only_b: Vec<&String> = y.keys().filter(|k| !x.contains_key(*k)).collect();
+        let differ: Vec<&String> =
+            x.iter().filter(|(k, v)| y.get(*k).is_some_and(|w| w != *v)).map(|e| e.0).collect();
+        println!(
+            "{t}: capture {} convert {} | only capture {} only convert {} differ {}",
+            x.len(),
+            y.len(),
+            only_a.len(),
+            only_b.len(),
+            differ.len()
+        );
+        for k in only_a.iter().take(3) {
+            println!("  + {k} = {}", x[*k]);
+        }
+        for k in only_b.iter().take(3) {
+            println!("  - {k} = {}", y[*k]);
+        }
+        for k in differ.iter().take(3) {
+            println!("  ~ {k}: {} | {}", x[*k], y[*k]);
+        }
+    }
+}
+
+// WP-244: the compaction of a captured state is its identity (decode,
+// normalize, encode gives the same bytes): over the states that
+// `MORTAR_WP244_STATES=<file>` lists, one path per line.
+#[test]
+#[ignore = "an experiment over states: MORTAR_WP244_STATES"]
+fn experiment_states_round_trip() {
+    let Some(list) = std::env::var_os("MORTAR_WP244_STATES") else { return };
+    for p in std::fs::read_to_string(list).expect("the list").lines().filter(|l| !l.is_empty()) {
+        let bytes = std::fs::read(p).expect("a state");
+        let back = decode(&bytes).map_err(|e| e.to_string());
+        let again = back.and_then(|m| {
+            let n = mortar_incr::state5::compact::normalize(&m).map_err(|e| e.to_string())?;
+            mortar_incr::state5::write::encode(&n).map_err(|e| e.to_string())
+        });
+        match again {
+            Ok(b) if b == bytes => println!("{p}: round trip equal"),
+            Ok(b) => {
+                println!("{p}: round trip DIFFERS ({} vs {} bytes)", bytes.len(), b.len());
+                raw_table_diff(p, &decode(&bytes).expect("decodes"), &decode(&b).expect("decodes"));
+            }
+            Err(e) => println!("{p}: round trip fails: {e}"),
+        }
+        // Where a failure points: each table's references to a SECTIONS
+        // row with no file (a filler) or past the end, before and after
+        // the normalize.
+        let m = decode(&bytes).expect("decodes");
+        report_section_refs(p, "decoded", &m);
+        println!(
+            "{p}: encode of the decoded state alone: {}",
+            mortar_incr::state5::write::encode(&m).map_or_else(|e| e.to_string(), |_| "ok".into())
+        );
+        if let Ok(n) = mortar_incr::state5::compact::normalize(&m) {
+            report_section_refs(p, "normalized", &n);
+        }
+    }
+}
+
+/// Counts each table's references to a SECTIONS row that has no file
+/// (a filler) or is past the end, with the first such row.
+fn report_section_refs(p: &str, stage: &str, m: &MemoryState) {
+    const NONE: u32 = u32::MAX;
+    let bad = |x: u32| x != NONE && m.sections.get(x as usize).is_none_or(|r| r.file == NONE);
+    let mut out: Vec<(&str, usize, Option<u32>)> = Vec::new();
+    let mut tally = |name, xs: &mut dyn Iterator<Item = u32>| {
+        let v: Vec<u32> = xs.filter(|&x| bad(x)).collect();
+        out.push((name, v.len(), v.first().copied()));
+    };
+    tally("MENTIONS.section", &mut m.mentions.iter().map(|(_, r)| r.section));
+    tally("INDEX.unit", &mut m.index.iter().map(|(_, r)| r.unit));
+    tally(
+        "INDEX.target",
+        &mut m.index.iter().filter(|(_, r)| matches!(r.kind, 1 | 3..=5)).map(|(_, r)| r.target),
+    );
+    tally("RESOLVED.section", &mut m.resolved.iter().map(|r| r.section));
+    tally("REDIRECTS.section", &mut m.redirects.iter().map(|r| r.section));
+    println!(
+        "{p} [{stage}]: RESOLVED.section off its key's MENTIONS sections: {}",
+        resolved_off_its_mentions(m)
+    );
+    let fillers = m.sections.iter().filter(|r| r.file == NONE).count();
+    println!("{p} [{stage}]: SECTIONS {} (fillers {fillers})", m.sections.len());
+    for (name, n, first) in out {
+        if n > 0 {
+            println!("{p} [{stage}]:   {name}: {n} bad, first {first:?}");
+        }
+    }
+}
+
+/// Each table of two decoded states compared row by row: its counts, the
+/// rows that differ and the first of them.
+fn raw_table_diff(p: &str, a: &MemoryState, b: &MemoryState) {
+    fn rows<T: std::fmt::Debug>(p: &str, t: &str, x: &[T], y: &[T]) {
+        let differ: Vec<usize> = (0..x.len().min(y.len()))
+            .filter(|&i| format!("{:?}", x[i]) != format!("{:?}", y[i]))
+            .collect();
+        if differ.is_empty() && x.len() == y.len() {
+            return;
+        }
+        println!("{p}: {t}: {} vs {} rows, {} differ", x.len(), y.len(), differ.len());
+        if let Some(&i) = differ.first() {
+            println!("    [{i}] {:?}\n    [{i}] {:?}", x[i], y[i]);
+        }
+    }
+    macro_rules! tables {
+        ($($f:ident),*) => { $( rows(p, stringify!($f), &a.$f, &b.$f); )* };
+    }
+    tables!(
+        probes,
+        outsecs,
+        chunks,
+        order,
+        segments,
+        slots,
+        sizes,
+        sym_place,
+        defined,
+        patches,
+        redirects,
+        sized,
+        leaves,
+        files,
+        file_index,
+        stat,
+        sections,
+        mentions,
+        index,
+        edges,
+        frag_uses,
+        symtab,
+        regions,
+        key_refs,
+        groups,
+        frags,
+        holes,
+        commons,
+        copies,
+        odr_classes,
+        odr_refs,
+        diags,
+        names,
+        symbols,
+        resolved,
+        symtab_keys
+    );
+    rows(p, "meta", &[&a.meta], &[&b.meta]);
+    rows(p, "layout", &[&a.layout], &[&b.layout]);
+    println!("{p}: strings {} vs {} bytes", a.strings.len(), b.strings.len());
+    if let Some(i) = a.strings.iter().zip(&b.strings).position(|(x, y)| x != y) {
+        let at = |s: &[u8]| {
+            String::from_utf8_lossy(&s[i.saturating_sub(48)..(i + 48).min(s.len())]).into_owned()
+        };
+        println!(
+            "    first differing byte {i}\n    {:?}\n    {:?}",
+            at(&a.strings),
+            at(&b.strings)
+        );
+    }
 }
