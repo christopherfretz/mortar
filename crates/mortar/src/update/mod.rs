@@ -24,13 +24,16 @@ pub mod write;
 
 use std::path::{Path, PathBuf};
 
-use mortar_cli::Parsed;
+use mortar_cli::{Parsed, Plan};
 use mortar_core::id::FileId;
 use mortar_core::incr::{IncrReason, Unimplemented};
+use mortar_core::par::Pool;
+use mortar_diag::{Collector, Policy};
 use mortar_incr::detect::{Stat, stat_rule};
 use mortar_incr::format::{StatRow, kind, stat_tag};
 use mortar_incr::update::rows::file_flags;
 use mortar_incr::update::view::StateView;
+use mortar_input::store::Store;
 
 use crate::incremental::Session;
 
@@ -48,21 +51,47 @@ pub struct Detected {
     pub positional: Vec<FileId>,
 }
 
-/// Steps U2 on (IN-70) for a session that U1 accepted
-/// (`Start::Update`). M1: always the fall-back reason (before the first
-/// write; the caller links in full, or under `--incremental=update`
-/// reports it as the error).
-pub fn run(session: &Session, parsed: &Parsed, cwd: &Path) -> IncrReason {
-    match steps(session, parsed, cwd) {
-        Ok(never) => match never {},
-        Err(r) => r,
+/// What [`run`] needs to run path (A)'s front (WP-225 M2a step 1): the
+/// full link's own resources, built by the driver before the session
+/// starts. Borrowed: an update that falls back leaves them to the full
+/// link unchanged.
+pub struct Ctx<'c> {
+    pub plan: &'c Plan,
+    pub store: &'c Store,
+    /// The link's diagnostic switches: path (A)'s front emits into a
+    /// collector of its own (a fall-back after it must not report the
+    /// front's diagnostics twice).
+    pub policy: Policy,
+    pub pool: Pool,
+}
+
+impl std::fmt::Debug for Ctx<'_> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Ctx").field("pool", &self.pool).finish_non_exhaustive()
     }
 }
 
-/// An update that cannot finish in this milestone has no value.
-enum Never {}
+/// A finished update: what the driver puts into the `Invocation` (the
+/// `incremental:` lines). Not made at this state of the tree (M2a: U5 on
+/// are not wired).
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct Updated {
+    pub lines: String,
+}
 
-fn steps(session: &Session, parsed: &Parsed, cwd: &Path) -> Result<Never, IncrReason> {
+/// Steps U2 on (IN-70) for a session that U1 accepted
+/// (`Start::Update`): the update, or the reason it falls back (before
+/// its first write; the caller links in full, or under
+/// `--incremental=update` reports it as the error).
+///
+/// # Errors
+/// The fall-back's reason.
+pub fn run(
+    session: &Session,
+    parsed: &Parsed,
+    cwd: &Path,
+    ctx: &Ctx<'_>,
+) -> Result<Updated, IncrReason> {
     let lock = session.lock().ok_or_else(|| IncrReason::NoState(String::new()))?;
     let view = mortar_incr::state5::open(lock, session.plan_hash())?;
     let detected = detect(&view, cwd)?;
@@ -72,9 +101,56 @@ fn steps(session: &Session, parsed: &Parsed, cwd: &Path) -> Result<Never, IncrRe
     if parsed.plan.shaping.gc_sections {
         return Err(IncrReason::UpdateNotImplemented(Some(Unimplemented::Live)));
     }
-    // U4 (the changed files' rows, path (A)'s front) and U5 (extract,
-    // resolve): not wired at M1.
-    Err(IncrReason::UpdateNotImplemented(Some(Unimplemented::Resolve)))
+    // G-7: no update producer of the text map (`-Map`, `-M`,
+    // `--print-map`), and none yet of the machine map's `arg` records or
+    // of the dependency file: `(image)`, before anything is read.
+    let b = &ctx.plan.bookkeeping;
+    if b.map.is_some() || b.print_map || b.mortar_map.is_some() || b.dependency_file.is_some() {
+        return Err(IncrReason::UpdateNotImplemented(Some(Unimplemented::Image)));
+    }
+    // M2a: one changed object, not an archive member (U4's member-level
+    // judgement and U5's extraction loop are M2b's).
+    if detected.changed_files.len() != 1 || detected.changed_paths.len() != 1 {
+        return Err(IncrReason::UpdateNotImplemented(Some(Unimplemented::Resolve)));
+    }
+    if view.file(detected.changed_files[0])?.member != 0 {
+        return Err(IncrReason::UpdateNotImplemented(Some(Unimplemented::Resolve)));
+    }
+    image_link(ctx, cwd, None, |_front| {
+        // U4 (the changed files' rows from path (A)'s front,
+        // `capture::file_rows`) and U5 (extract, resolve): the next
+        // lines of M2a (WIP.md).
+        Err(IncrReason::UpdateNotImplemented(Some(Unimplemented::Resolve)))
+    })
+}
+
+/// Path (A) (record 0.1, ruling G-1): the WHOLE front over the new
+/// inputs, the update's placement `P_U` replayed when `replay` is given
+/// (materialized into the front's ids, G-3), and `go` on it. The front
+/// emits into a collector of its own: a front that fails or says anything
+/// at all is left to the full link, which says it once
+/// (`update-not-implemented (diags)`: M2a updates silent links only).
+///
+/// # Errors
+/// `go`'s, or the fall-back above.
+pub fn image_link<T>(
+    ctx: &Ctx<'_>,
+    cwd: &Path,
+    replay: Option<&crate::front::Replay<'_>>,
+    go: impl FnOnce(&crate::front::Front<'_>) -> Result<T, IncrReason>,
+) -> Result<T, IncrReason> {
+    let diag = Collector::new(ctx.policy);
+    let env = crate::front::Env { cwd, pool: ctx.pool, replay, slack: true, state5: true };
+    let mut timer = crate::timing::Timer::new(false);
+    let front = crate::front::front(ctx.plan.clone(), env, ctx.store, &diag, &mut timer);
+    let quiet = diag.finish().diagnostics().is_empty();
+    match front {
+        Some(mut f) if quiet => {
+            f.keep_leaves = true;
+            go(&f)
+        }
+        _ => Err(IncrReason::UpdateNotImplemented(Some(Unimplemented::Diags))),
+    }
 }
 
 /// A path of the state's `STRINGS`, relative to `cwd` as the link opened it.

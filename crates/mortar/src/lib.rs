@@ -358,7 +358,22 @@ fn invoke_with4(
         // `--incremental=update` the error.
         incremental::Start::Update(s) => {
             let mut s = *s;
-            let reason = update::run(&s, &parsed, cwd);
+            let ctx = update::Ctx { plan, store: &store, policy: diagnostics.policy(), pool };
+            let reason = match update::run(&s, &parsed, cwd, &ctx) {
+                // M2a: U5 on are not wired, so no update finishes yet; the
+                // finished one's lines go into the `Invocation` here.
+                Ok(done) => {
+                    emit_refusals(&diagnostics);
+                    return Invocation {
+                        outcome: Outcome::Linked { report: diagnostics.finish(), stdout },
+                        color,
+                        phases: timer.finish(),
+                        removed: String::new(),
+                        incremental: done.lines,
+                    };
+                }
+                Err(reason) => reason,
+            };
             if s.update_mode() {
                 let d = Diagnostic::error(mortar_diag::Kind::IncrementalUpdateFailed {
                     reason: reason.report(),
