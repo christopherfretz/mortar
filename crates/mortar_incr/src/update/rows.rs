@@ -20,6 +20,7 @@
 //! reader never returns a tombstone.
 
 pub use crate::format::{Hash16, NONE, Str};
+use mortar_core::incr::IncrReason;
 
 /// `FILES.flags` in format 5 (IN-18e, IN-71b): `POSITIONAL` (IN-28a) as in
 /// format 4, plus `LAZY` (an archive member not extracted: a row, with its
@@ -267,8 +268,10 @@ pub struct RegionRow {
 /// `GROUPS` (kind 44, key-keyed by `(signature, file)`; IN-18e, IN-71;
 /// WP-215 D2): one row per live relocatable object's copy of a COMDAT
 /// group (a file with several groups of one signature has one row). The
-/// keeper is not stored: it is the least row ([`keeper`], resolve.md
-/// §6.1). A file's rows are found from its `SECTIONS` anchors
+/// keeper is not stored: it is the copy whose file has the least
+/// `FILES.rank` ([`keeper`], resolve.md §6.1; never the least row
+/// number: `FILES` is append-only and an appended file's rank is not
+/// last). A file's rows are found from its `SECTIONS` anchors
 /// (`anchor_kind` 1: the anchor is the signature). Written by capture and
 /// U-2 (from `ResolveDelta`); read by U-3 (re-election, IN-72 item 2a),
 /// U-8 (a changed keeper is ODR-affected, IN-71d).
@@ -281,13 +284,40 @@ pub struct GroupRow {
     pub tomb: bool,
 }
 
-/// The keeper of a group (resolve.md §6.1: the least `FileId` among the
-/// live files with a copy) from its `GROUPS` rows: the row of least
-/// `file` that is not a tombstone, or `None` when no live file has a copy.
-/// The one function every package uses for it (WP-215 D2).
-#[must_use]
-pub fn keeper(rows: &[GroupRow]) -> Option<GroupRow> {
-    rows.iter().filter(|r| !r.tomb).min_by_key(|r| r.file).copied()
+/// The keeper of a group (resolve.md §6.1: the least file in load order
+/// among the live files with a copy) from its `GROUPS` rows: the row,
+/// not a tombstone, whose file has the least `rank(file)`, or `None` when
+/// no live file has a copy. `rank` gives a `FILES` row's **current**
+/// rank: the caller composes the stored `FILES.rank` with the update's
+/// own new ranks of changed, appeared and drawn-in files (a stored rank
+/// the update replaces is never the one compared); it fails as the row
+/// read fails. The one function every package uses for it (WP-215 D2).
+///
+/// # Errors
+/// `rank`'s.
+pub fn keeper(
+    rows: &[GroupRow],
+    rank: impl Fn(u32) -> Result<u64, IncrReason>,
+) -> Result<Option<GroupRow>, IncrReason> {
+    least(rows.iter().filter(|r| !r.tomb).copied(), |r| r.file, rank)
+}
+
+/// The item whose file has the least rank (ties, which distinct files
+/// never have, by row number).
+fn least<T>(
+    items: impl Iterator<Item = T>,
+    file: impl Fn(&T) -> u32,
+    rank: impl Fn(u32) -> Result<u64, IncrReason>,
+) -> Result<Option<T>, IncrReason> {
+    let mut best: Option<((u64, u32), T)> = None;
+    for item in items {
+        let f = file(&item);
+        let key = (rank(f)?, f);
+        if best.as_ref().is_none_or(|(k, _)| key < *k) {
+            best = Some((key, item));
+        }
+    }
+    Ok(best.map(|(_, item)| item))
 }
 
 /// `KEY_REFS.flags` bits (IN-18e: the attributes resolution reads besides
@@ -380,23 +410,29 @@ pub struct CommonRow {
 }
 
 /// A key's common as resolve.md §3.3 computes it from its `COMMONS` rows
-/// (the live common mentions): the file of the least mention by `≺`
-/// (the least `file`: one row per file), the maximum size and the maximum
-/// alignment over the rows that are not tombstones; `None` when there is
-/// none. Whether the common is the key's definition (a `Strong`
+/// (the live common mentions): the file of the least mention by `≺` (the
+/// row whose file has the least `rank(file)`: one row per file; `rank`
+/// as [`keeper`]'s, the **current** rank), the maximum size and the
+/// maximum alignment over the rows that are not tombstones; `None` when
+/// there is none. Whether the common is the key's definition (a `Strong`
 /// definition wins over commons) is `RESOLVED`'s kind, not this. The one
 /// function every package uses for it (WP-215 D6).
-#[must_use]
-pub fn winning_common(rows: &[CommonRow]) -> Option<CommonRow> {
+///
+/// # Errors
+/// `rank`'s.
+pub fn winning_common(
+    rows: &[CommonRow],
+    rank: impl Fn(u32) -> Result<u64, IncrReason>,
+) -> Result<Option<CommonRow>, IncrReason> {
     let live = || rows.iter().filter(|r| !r.tomb);
-    let first = live().min_by_key(|r| r.file)?;
-    Some(CommonRow {
+    let Some(first) = least(live().copied(), |r| r.file, rank)? else { return Ok(None) };
+    Ok(Some(CommonRow {
         key: first.key,
         file: first.file,
         size: live().map(|r| r.size).max().unwrap_or(0),
         align: live().map(|r| r.align).max().unwrap_or(1),
         tomb: false,
-    })
+    }))
 }
 
 /// `ODR_CLASSES` (kind 47, key-keyed by ODR key; IN-71d): one row per
@@ -602,17 +638,31 @@ mod tests {
         let CommonRow { key: _, file: _, size: _, align: _, tomb: _ } = CommonRow::default();
     }
 
-    // spec: resolve.md §6.1 (the keeper is the least live file), §3.3
-    // (the winning common: least file, maximum size and alignment)
+    // spec: resolve.md §6.1 (the keeper is the live copy whose file has
+    // the least `FILES.rank`), §3.3 (the winning common: least rank,
+    // maximum size and alignment); incr.md IN-18e (`FILES` is
+    // append-only: an appended member's row number is last, its rank is
+    // not)
     #[test]
-    fn keeper_and_winning_common_from_rows() {
+    fn keeper_and_winning_common_by_rank() {
+        // Rows 0..=5 in load order, then row 6 appended by an update with
+        // a rank between rows 1 and 2: it is before rows 2..=5.
+        let rank = |f: u32| -> Result<u64, IncrReason> {
+            match f {
+                0..=5 => Ok(u64::from(f) << 20),
+                6 => Ok((1 << 20) + (1 << 19)),
+                _ => Err(IncrReason::StateCorrupt("FILES".into())),
+            }
+        };
         let g = |file, tomb| GroupRow { signature: Str::default(), file, tomb };
-        assert_eq!(keeper(&[g(7, false), g(3, true), g(5, false)]).map(|r| r.file), Some(5));
-        assert_eq!(keeper(&[g(3, true)]), None);
+        let k = keeper(&[g(5, false), g(3, true), g(6, false), g(4, false)], rank);
+        assert_eq!(k.unwrap().map(|r| r.file), Some(6));
+        assert_eq!(keeper(&[g(3, true)], rank), Ok(None));
+        assert!(keeper(&[g(9, false)], rank).is_err());
         let c = |file, size, align, tomb| CommonRow { key: 9, file, size, align, tomb };
-        let w = winning_common(&[c(4, 8, 16, false), c(2, 4, 4, false), c(1, 64, 64, true)]);
-        assert_eq!(w, Some(c(2, 8, 16, false)));
-        assert_eq!(winning_common(&[c(1, 8, 8, true)]), None);
+        let w = winning_common(&[c(4, 8, 16, false), c(6, 4, 4, false), c(1, 64, 64, true)], rank);
+        assert_eq!(w, Ok(Some(c(6, 8, 16, false))));
+        assert_eq!(winning_common(&[c(1, 8, 8, true)], rank), Ok(None));
     }
 
     // spec: incr.md IN-18e (`NAMES`' hash: name, a zero byte, version)
