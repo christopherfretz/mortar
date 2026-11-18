@@ -308,10 +308,18 @@ fn symbols(dir: &Path, file: &str) -> Vec<(String, String, String)> {
 #[test]
 fn r_sizes_agree() {
     let Some((gcc, ar)) = host() else { return };
-    let store = support::store();
     let mut report = Vec::new();
     for case in CASES {
         let s = build(case, &gcc, &ar);
+        // One store per case, as one per link in the product: the store
+        // reads a (device, inode) once for its lifetime (`spec/input.md`
+        // §9.3), and the previous case's scratch is gone, so its inodes
+        // are free for this case's files (an ext4 or overlay build
+        // directory reuses them at once: hosted run 44248824680 read
+        // `libb.a` as the previous case's `user.o`). A store made after
+        // this case's files exist and dropped before they are removed
+        // sees only live files, whose identities are distinct.
+        let store = support::store();
         let args: Vec<OsString> = line(case, "out.o").into_iter().map(OsString::from).collect();
         let parsed = mortar_cli::parse(&args);
         assert!(!parsed.failed(), "{}: {:?}", case.name, parsed.diagnostics);
