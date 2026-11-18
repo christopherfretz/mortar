@@ -21,8 +21,8 @@ use mortar_core::{ChunkId, FileId, OutSecId, SectionId, SymbolId};
 
 use super::diags::DiagRow;
 use super::rows::{
-    CommonRow, CopyRow, EdgeRow, FileIndexRow, FileRow, FragRow, FragUseRow, GroupRow, HoleRow,
-    IndexRow, KeyRefRow, LocalRange, MentionRow, MetaRow, NameRow, OdrClassRow, OdrRefRow,
+    CommonRow, CopyRow, DebugStrRow, EdgeRow, FileIndexRow, FileRow, FragRow, FragUseRow, GroupRow,
+    HoleRow, IndexRow, KeyRefRow, LocalRange, MentionRow, MetaRow, NameRow, OdrClassRow, OdrRefRow,
     RegionRow, ResolvedRow, SlotRow, SymbolRow, SymtabKeyRow, SymtabRow,
 };
 use crate::format::{
@@ -670,6 +670,14 @@ pub struct StatePatch {
     /// `NAMES` (kind 52): one row put per new key (`ResolveDelta::new_keys`);
     /// never deleted (a `GONE` key keeps its row).
     pub names: KeyEdits<NameRow>,
+    /// `DEBUG_STRS` (kind 57; WP-228 seam 8a): one row put per debug
+    /// string an update appends to `.debug_str` or `.debug_line_str`
+    /// (`debug::DebugPlan`'s appended strings). An update only ever PUTS
+    /// rows (strings never move and are never removed before a
+    /// compaction); a row in `delete` is an internal error of the writer
+    /// (`state-corrupt` class), never a deletion. Applied to the state by
+    /// WP-247; nothing reads it before then.
+    pub debug_strs: KeyEdits<DebugStrRow>,
     // key-parallel
     /// `SYMBOLS`: a set never changes a row's `option` bit (U-2 keeps the
     /// stored one; seam 6, ruling 2); an appended row's is `false` (every
