@@ -2837,3 +2837,90 @@ fn eh_frame_untouched_is_none() {
     assert_eq!(d.eh, None);
     assert!(d.hole_chunks.binary_search(&eh).is_err());
 }
+
+// ---- chunk-END `DEFINED` rows (WP-245 step 4) --------------------------------
+
+// spec: layout.md §13.1 (`_end`, `_edata`, `etext`: the end of a chunk,
+// `At { chunk, offset: size }`), incr.md IN-71c, IN-70 U7 (WP-242 G,
+// WP-245 step 4: an update that grows a chunk past its stored size, by
+// an overflow region at its tail, moves every `DEFINED` row at that
+// chunk's old end to its new end, as a full link of the new inputs puts
+// it; U-3's `recompute` compares rows and chunk addresses only, so a row
+// the layout left at the old end would be reported unchanged)
+#[test]
+fn end_rows_follow_a_grown_chunk() {
+    const PROVIDE: mortar_core::resolution::Def =
+        mortar_core::resolution::Def::Internal(mortar_core::resolution::InternalDef::Provide {
+            conditional: false,
+        });
+    let names: [&'static [u8]; 4] = [b"_end", b"_edata", b"etext", b"__bss_start"];
+    let syms = names.map(|n| (n, PROVIDE));
+    for m in [Machine::X86_64, Machine::AArch64] {
+        let v = |bss1: u64, data1: u64| {
+            vec![
+                vec![text(b".text.a", 100), data(b".data", data1), bss(b".bss", bss1)],
+                vec![text(b".text.c", 200), data(b".data", 16), bss(b".bss", 64)],
+            ]
+        };
+        let row = |defined: &[Defined], k: usize| {
+            *defined.iter().find(|d| d.symbol == mortar_core::id::SymbolId(k as u32)).unwrap()
+        };
+        let at = |d: Defined| match d.value {
+            mortar_core::layout::DefValue::At { chunk, offset } => (chunk, offset),
+            mortar_core::layout::DefValue::Absolute(_) => panic!("{d:?}"),
+        };
+        let mut w0 = World::new(m, &v(64, 16), &syms);
+        w0.options.slack = Slack::INCREMENTAL;
+        let s0 = first_with(w0, no_anchors(&v(64, 16)));
+        // The rule in every full link: an END row is its chunk's size.
+        for (k, name) in names.iter().enumerate().take(3) {
+            let (c, o) = at(row(&s0.mem.defined, k));
+            assert_eq!(o, s0.mem.chunks[c.0 as usize].size, "{m:?} {}", text_of(name));
+        }
+        // File 1's `.bss` (64 -> 64 KiB) or `.data` (16 -> 1 KiB) grows
+        // past its region: an overflow region at the tail of the last
+        // `.bss` (`_end`) or `.data` (`_edata`) chunk. (`.text`'s tail is
+        // a patch island here: `reserve-exhausted`, WP-216 F-3.)
+        for (bss1, data1, moved) in [(1 << 16, 16, 0), (64, 1024, 1)] {
+            let edit = Edit::new(v(bss1, data1)).changed(&[1]);
+            let (changes, _) = changes_of(&s0, &edit);
+            let stored = StoredLayout::new(&s0.mem);
+            let d = layout(&stored, &input(&changes), &s0.world.target).unwrap();
+            let (c, o) = at(row(&d.placement.defined, moved));
+            let old = s0.mem.chunks[c.0 as usize].size;
+            let new = d.placement.chunks[c].size;
+            assert!(new > old, "{m:?}: the chunk grew ({old} -> {new})");
+            assert_eq!(o, new, "{m:?} {}: at the grown chunk's end", text_of(names[moved]));
+            // The full link of the new inputs: the same rule.
+            let mut w1 = World::new(m, &v(bss1, data1), &syms);
+            w1.options.slack = Slack::INCREMENTAL;
+            let s1 = first_with(w1, no_anchors(&v(bss1, data1)));
+            let (c1, o1) = at(row(&s1.mem.defined, moved));
+            assert_eq!(o1, s1.mem.chunks[c1.0 as usize].size);
+            // Every other row: unchanged or following its chunk.
+            for (k, name) in names.iter().enumerate() {
+                let (c, o) = at(row(&d.placement.defined, k));
+                let (c0, o0) = at(row(&s0.mem.defined, k));
+                assert_eq!(c, c0);
+                let end0 = s0.mem.chunks[c0.0 as usize].size;
+                if o0 == end0 && end0 != d.placement.chunks[c].size {
+                    assert_eq!(o, d.placement.chunks[c].size, "{}", text_of(name));
+                } else {
+                    assert_eq!(o, o0, "{}", text_of(name));
+                }
+            }
+            // A row past the old end (a `--defsym x=_end+8`): no rule
+            // places it, refused by name.
+            let mut m1 = s0.mem.clone();
+            let (c, o) = at(row(&m1.defined, moved));
+            let past = mortar_core::layout::DefValue::At { chunk: c, offset: o + 8 };
+            m1.defined.iter_mut().find(|d| d.symbol.0 == 3).unwrap().value = past;
+            let e = layout(&StoredLayout::new(&m1), &input(&changes), &s0.world.target);
+            assert_eq!(e.err(), Some(not_implemented()), "{m:?}");
+        }
+    }
+}
+
+fn text_of(b: &[u8]) -> String {
+    String::from_utf8_lossy(b).into_owned()
+}

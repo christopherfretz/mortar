@@ -27,7 +27,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use mortar_core::column::Column;
 use mortar_core::id::{ChunkId, FileId, OutSecId, SectionId};
 use mortar_core::incr::{IncrReason, LayoutInput, SectionChange, StoredFrag, Unimplemented};
-use mortar_core::layout::{Chunk, ChunkKind, DefValue, Hole, HoleKind};
+use mortar_core::layout::{Chunk, ChunkKind, Hole, HoleKind};
 
 use super::{Base, admit, corrupt, not_implemented, round_up, text};
 
@@ -190,14 +190,6 @@ pub(super) fn item_6(
         let size = u32::try_from(p.size).map_err(|_| not_implemented())?;
         out.rows.push(StoredFrag { out: key.0, class: key.1, hash: key.2, offset, size, refs });
         out.rose.insert(key.0);
-        if base
-            .rest
-            .defined
-            .iter()
-            .any(|d| d.value == DefValue::At { chunk, offset: base.chunks[chunk].size })
-        {
-            return Err(end_symbol_refused());
-        }
     }
     out.rows.sort_by_key(|r| (r.out, r.class, r.hash));
     Ok(out)
@@ -250,13 +242,6 @@ fn net_change(
         }
     }
     Ok((net, first))
-}
-
-/// A linker-defined symbol at the end of a merged chunk an append grows
-/// (`DEFINED` is passed through whole and unchanged: an end symbol would
-/// keep the old end; WP-242's answer on `placement.defined`).
-fn end_symbol_refused() -> IncrReason {
-    not_implemented()
 }
 
 /// A string fragment whose count falls to 0 and whose stored `size` is 0:

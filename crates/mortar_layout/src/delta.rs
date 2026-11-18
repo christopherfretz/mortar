@@ -47,8 +47,8 @@ use mortar_core::incr::{
     StoredSection, Unimplemented,
 };
 use mortar_core::layout::{
-    Chunk, ChunkKind, Hole, HoleKind, LoadClass, Place, Placement, PlacementKind, Segment,
-    SegmentRules, derive_segments,
+    Chunk, ChunkKind, DefValue, Defined, Hole, HoleKind, LoadClass, Place, Placement,
+    PlacementKind, Segment, SegmentRules, derive_segments,
 };
 use mortar_elf::Machine;
 use mortar_elf::consts::{
@@ -232,7 +232,7 @@ struct Base {
 /// The whole tables `layout` passes through.
 struct Rest {
     sym_place: Vec<mortar_core::layout::SymPlace>,
-    defined: Vec<mortar_core::layout::Defined>,
+    defined: Vec<Defined>,
     patches: Vec<mortar_core::layout::Patch>,
     redirects: Vec<mortar_core::layout::Redirect>,
     tls: Option<mortar_core::layout::Tls>,
@@ -428,6 +428,44 @@ impl Base {
             slack::Class::Packed | slack::Class::None => Fate::Fixed { out, why: Why::Packed },
         }
     }
+}
+
+/// `DEFINED` after the update (WP-245 step 4): a row's chunk-relative
+/// value follows its chunk; a row at the END of a chunk whose size the
+/// update changes (an overflow region or a merged append at its tail, a
+/// whole `.eh_frame` or a resized `.eh_frame_hdr`) moves to the new end,
+/// as every full link puts an end row (layout.md §13.1: `_end`,
+/// `_edata`, `etext`, `__stop_*`, `*_array_end` are `At { chunk, offset:
+/// size }`). A row the update cannot place by that rule is refused,
+/// never kept: at or past the smaller of the two sizes and not the old
+/// end (a `--defsym` offset past an end symbol), or at 0 of a chunk that
+/// was empty (a start and an end are the same row).
+fn end_rows(
+    stored: &[Defined],
+    old: &Column<ChunkId, Chunk>,
+    new: &Column<ChunkId, Chunk>,
+) -> Result<Vec<Defined>, IncrReason> {
+    let mut out = stored.to_vec();
+    for d in &mut out {
+        let DefValue::At { chunk, offset } = d.value else { continue };
+        let (Some(o), Some(n)) = (old.get(chunk), new.get(chunk)) else {
+            return Err(corrupt("a DEFINED row of no chunk"));
+        };
+        if o.size == n.size || offset < o.size.min(n.size) {
+            continue;
+        }
+        if offset != o.size || o.size == 0 {
+            return Err(end_row_refused());
+        }
+        d.value = DefValue::At { chunk, offset: n.size };
+    }
+    Ok(out)
+}
+
+/// A `DEFINED` row in a resized chunk that is neither inside both sizes
+/// nor at the old end (`end_rows`).
+fn end_row_refused() -> IncrReason {
+    not_implemented()
 }
 
 /// L-36's large output section by flags and type, or `None` where the full
@@ -1445,6 +1483,7 @@ impl<'b, 'c> Update<'b, 'c> {
         holes.sort_by_key(|h| (h.chunk, h.offset));
         let mut made = self.made;
         made.sort_by_key(|h| (h.chunk, h.offset));
+        let defined = end_rows(&base.rest.defined, &base.chunks, &self.chunks)?;
         Ok(LayoutDelta {
             placement: Placement {
                 kind: PlacementKind::Loadable,
@@ -1453,7 +1492,7 @@ impl<'b, 'c> Update<'b, 'c> {
                 segments: Column::from_vec(segments).map_err(|_| not_implemented())?,
                 place,
                 sym_place: base.rest.sym_place.clone().into_boxed_slice(),
-                defined: base.rest.defined.clone().into_boxed_slice(),
+                defined: defined.into_boxed_slice(),
                 patches: base.rest.patches.clone().into_boxed_slice(),
                 redirects: base.rest.redirects.clone().into_boxed_slice(),
                 sized: Box::default(),
