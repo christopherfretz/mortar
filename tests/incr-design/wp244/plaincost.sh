@@ -10,6 +10,8 @@
 #   plaincost.sh BINDIR WORKLOADS_DIR NAME SCRATCH [RUNS] [incr]
 #
 # `incr` as the sixth word: the incremental-mode pair only.
+# COST_LOAD (default 6): the load each run waits to be below (the
+# coordinator's rule on a shared host: 12, more runs, loads reported).
 set -u
 ulimit -c 0
 bin=$1; wl=$2/$3; name=$3; out=$4/$3-cost; runs=${5:-5}; parts=${6:-all}
@@ -20,14 +22,14 @@ deadline=$(( $(date +%s) + 3600 ))
 quiet() {
 	while :; do
 		l=$(cut -d' ' -f1 /proc/loadavg)
-		awk -v l="$l" 'BEGIN{exit !(l<6)}' && return 0
+		awk -v l="$l" -v t="${COST_LOAD:-6}" 'BEGIN{exit !(l<t)}' && return 0
 		[ "$(date +%s)" -gt "$deadline" ] && return 1
 		sleep 15
 	done
 }
 one() { # tag binary extra...
 	tag=$1; b=$2; shift 2
-	quiet || echo "LOAD NOT BELOW 6" >> "$out/runs.tsv"
+	quiet || echo "LOAD NOT BELOW ${COST_LOAD:-6}" >> "$out/runs.tsv"
 	l=$(cut -d' ' -f1 /proc/loadavg)
 	( cd "$cwd" && /usr/bin/time -f "%e %M" -o "$out/t.txt" "$b" @"$out/response.txt" "$@" ) > "$out/$tag.log" 2>&1
 	printf '%s\t%s\t%s\n' "$tag" "$(cat "$out/t.txt")" "$l" >> "$out/runs.tsv"
@@ -49,7 +51,8 @@ for l in open(sys.argv[1]):
     if len(p) == 4:
         rows.setdefault(p[0], []).append((float(p[1]), int(p[2]), float(p[3])))
 for k, v in rows.items():
-    print(f"{k}: wall median {st.median(x[0] for x in v):.3f} s, peak RSS median {st.median(x[1] for x in v)/1024:.1f} MiB, loads {[x[2] for x in v]}")
+    w = [x[0] for x in v]; m = [x[1] / 1024 for x in v]
+    print(f"{k}: {len(v)} runs, wall median {st.median(w):.3f} s (range {min(w):.3f}-{max(w):.3f}), peak RSS median {st.median(m):.1f} MiB (range {min(m):.1f}-{max(m):.1f}), loads {[x[2] for x in v]}")
 P
 cat "$out/medians.txt"
 echo "plaincost done $name"
