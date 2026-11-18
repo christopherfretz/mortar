@@ -18,6 +18,9 @@
 //! sources (C and C++, DWARF 4 and 5) and on WP-249's probe of GNU ld's
 //! condition (`gnu/k.s`, `gnu/d.s`), AArch64 and x86-64.
 
+// The rule's own names (K, D, A, w, v) and the cases' tables of tuples.
+#![allow(clippy::many_single_char_names, clippy::type_complexity)]
+
 use std::path::{Path, PathBuf};
 
 use mortar_elf::consts::SHF_ALLOC;
