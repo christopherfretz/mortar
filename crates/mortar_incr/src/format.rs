@@ -163,6 +163,11 @@ pub mod kind {
     /// Key-keyed: the by-name index of `SYMBOLS`, `(hash, row)` (WP-213
     /// F-2).
     pub const NAMES: u32 = 52;
+    /// Key-keyed: each COMDAT copy's global definition, `(key, file,
+    /// symbol index)` → `st_size`, `st_type`: W1 and W2 in an update
+    /// (IN-71d; WP-220). Kinds 53 and 54 are reserved for WP-236 (the
+    /// record families' `ODR_KEYS`, `ODR_FILE_KEYS`; not written).
+    pub const COPIES: u32 = 55;
     /// The number of tables of versions 3 and 4.
     pub const COUNT: u32 = 28;
 
@@ -212,6 +217,7 @@ pub mod kind {
             SYMTAB_KEYS => "SYMTAB_KEYS",
             REGIONS => "REGIONS",
             NAMES => "NAMES",
+            COPIES => "COPIES",
             _ => kind.checked_sub(1).and_then(|i| FIRST.get(i as usize)).copied().unwrap_or("?"),
         }
     }
