@@ -35,15 +35,15 @@ SPEC = os.path.join(HERE, '..', '..', 'spec', 'incr.md')
 # IN-18e's tables by kind (the class table of spec/incr.md §5.3).
 KINDS = {
     'META': 1, 'STAT': 2, 'FILES': 3, 'PROBES': 4, 'OUTSECS': 5, 'SYMBOLS': 6, 'SECTIONS': 7, 'CHUNKS': 8,
-    'ORDER': 9, 'SEGMENTS': 10, 'FRAGS': 11, 'SLOTS': 12, 'EH_RECORDS': 13, 'SIZES': 15, 'SYM_PLACE': 16,
+    'ORDER': 9, 'SEGMENTS': 10, 'FRAGS': 11, 'SLOTS': 12, 'SIZES': 15, 'SYM_PLACE': 16,
     'DEFINED': 17, 'PATCHES': 18, 'REDIRECTS': 19, 'SIZED': 20, 'LAYOUT': 21, 'LEAVES': 22, 'STRINGS': 23,
-    'MENTIONS': 32, 'RESOLVED': 33, 'INDEX': 34, 'HOLES': 39, 'FRAG_AT': 40, 'FILE_INDEX': 41, 'EDGES': 42,
+    'MENTIONS': 32, 'RESOLVED': 33, 'INDEX': 34, 'HOLES': 39, 'FILE_INDEX': 41, 'EDGES': 42,
     'SYMTAB': 43, 'GROUPS': 44, 'KEY_REFS': 45, 'COMMONS': 46, 'ODR_CLASSES': 47, 'ODR_REFS': 48, 'DIAGS': 49,
-    'SYMTAB_KEYS': 50, 'REGIONS': 51, 'NAMES': 52, 'COPIES': 55,
+    'SYMTAB_KEYS': 50, 'REGIONS': 51, 'NAMES': 52, 'COPIES': 55, 'FRAG_USE': 56,
 }
 NAMES = {k: n for n, k in KINDS.items()}
 FLAGS = {'POSITIONAL': 'FILES', 'LAZY': 'FILES'}      # FILES flags the cells name
-FILE_KEYED = ('SECTIONS', 'MENTIONS', 'INDEX', 'EDGES', 'FRAG_AT', 'EH_RECORDS', 'SYMTAB', 'REGIONS')
+FILE_KEYED = ('SECTIONS', 'MENTIONS', 'INDEX', 'EDGES', 'FRAG_USE', 'SYMTAB', 'REGIONS')
 # the key-keyed tables with a file in their key or row (a gone file's rows;
 # ODR_REFS is PROVISIONAL, not written until WP-236)
 FILE_KEY_ROWS = ('KEY_REFS', 'GROUPS', 'COMMONS', 'COPIES', 'DIAGS')
@@ -61,9 +61,9 @@ WORDS = {
 
 DUTY = (
     ('changed', 'a changed, appeared, drawn-in or newly extracted file',
-     ('FILES', 'POSITIONAL', 'STAT', 'SECTIONS', 'MENTIONS', 'INDEX', 'EDGES', 'FRAG_AT', 'EH_RECORDS', 'SYMTAB',
+     ('FILES', 'POSITIONAL', 'STAT', 'SECTIONS', 'MENTIONS', 'INDEX', 'EDGES', 'FRAG_USE', 'SYMTAB',
       'FILE_INDEX', 'KEY_REFS', 'GROUPS', 'COMMONS', 'COPIES', 'DIAGS'),
-     ('FILES', 'STAT', 'SECTIONS', 'MENTIONS', 'INDEX', 'EDGES', 'FRAG_AT', 'EH_RECORDS', 'SYMTAB', 'FILE_INDEX',
+     ('FILES', 'STAT', 'SECTIONS', 'MENTIONS', 'INDEX', 'EDGES', 'FRAG_USE', 'SYMTAB', 'FILE_INDEX',
       'KEY_REFS', 'GROUPS', 'COMMONS', 'COPIES', 'DIAGS')),
     ('gone', 'a gone or no longer extracted file',
      ('LAZY',),
@@ -92,6 +92,11 @@ DUTY = (
     ('slack', 'holes, slots, thunks, fragments',
      ('HOLES', 'SLOTS', 'PATCHES', 'REDIRECTS', 'FRAGS'),
      ('HOLES', 'SLOTS', 'PATCHES', 'REDIRECTS', 'FRAGS')),
+    # seam 5 (WP-239): the kept records are FILES columns; format 5 has no
+    # EH_RECORDS table and FRAG_USE (kind 56) in FRAG_AT's place.
+    ('eh', 'an `.eh_frame` range moved or the section rewritten whole (IN-34a)',
+     ('FILES',),
+     ('FILES',)),
     ('symtab', "a `.symtab` entry moved or a `.strtab` name moved (IN-49a's last global taking a removed one's "
                "place, names appended)",
      ('SYMTAB_KEYS', 'SYMTAB'),
