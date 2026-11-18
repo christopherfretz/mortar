@@ -300,6 +300,7 @@ fn edit(base: &MemoryState, grow: u32) -> StatePatch {
         frag_uses: Some(frag_uses),
         symtab: None,
         regions: None,
+        locals: None,
         gone: false,
     });
     p.key_refs.put.push(KeyRefRow { key: 1, file: 0, ..KeyRefRow::default() });
@@ -413,6 +414,7 @@ fn remove_file_1(m: &MemoryState) -> StatePatch {
         frag_uses: None,
         symtab: None,
         regions: None,
+        locals: None,
         gone: true,
     });
     for (i, r) in m.symbols.iter().enumerate() {
@@ -691,6 +693,7 @@ fn update_reuses_stored_strings() {
         frag_uses: None,
         symtab: None,
         regions: None,
+        locals: None,
         gone: false,
     };
     // the same new bytes named twice: one place
@@ -841,7 +844,7 @@ fn seam5_rows_round_trip_and_patch() {
     m.outsecs.push(mortar_incr::format::OutSecRow { name, ordinal: 0 });
     let name = add(&mut m.strings, b".rodata");
     m.outsecs.insert(0, mortar_incr::format::OutSecRow { name, ordinal: 0 });
-    m.frags.push(FragRow { out: 1, class: CLASS, hash: [5; 16], offset: 0, refs: 3, tomb: false });
+    m.frags.push(FragRow { out: 1, class: CLASS, hash: [5; 16], offset: 0, size: 0, refs: 3, tomb: false });
     for f in 0..3 {
         let row = FragUseRow { file: f, out: 1, class: CLASS, hash: [5; 16] };
         m.frag_uses.push((FileId(f), row));
@@ -893,6 +896,7 @@ fn seam5_rows_round_trip_and_patch() {
         frag_uses: Some(vec![FragUseRow { file: 1, out: 0, class: CLASS, hash: [7; 16] }]),
         symtab: None,
         regions: None,
+        locals: None,
         gone: false,
     });
     p.frags.put.push(FragRow {
@@ -900,6 +904,7 @@ fn seam5_rows_round_trip_and_patch() {
         class: CLASS,
         hash: [7; 16],
         offset: 99,
+        size: 0,
         refs: 1,
         tomb: false,
     });
@@ -994,6 +999,7 @@ fn dead_key_dropped_by_compaction() {
         frag_uses: None,
         symtab: None,
         regions: None,
+        locals: None,
         gone: false,
     });
     p.key_refs.delete.push(*m.key_refs.iter().find(|r| r.key == g1.0).expect("its row"));

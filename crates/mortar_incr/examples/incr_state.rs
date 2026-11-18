@@ -175,6 +175,7 @@ fn strings_growth(path4: &str, version: &str, suffixes: &[&str]) -> Result<(), S
             frag_uses: None,
             symtab: None,
             regions: None,
+            locals: None,
             gone: false,
         });
         let view = read::open_bytes(bytes.clone()).map_err(|e| e.to_string())?;

@@ -477,6 +477,7 @@ impl Defs {
                 version: empty,
                 at_file: 0,
                 at_index: 0,
+                option: false,
             });
             m.resolved.push(ResolvedRow { kind: def_kind::INTERNAL, ..ResolvedRow::default() });
         }

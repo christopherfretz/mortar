@@ -1117,6 +1117,8 @@ impl<'c, 'a, 's> Res<'c, 'a, 's> {
                     version: Str::default(),
                     at_file: n.file,
                     at_index: n.index,
+                    // A new key never has the option bit (seam 6).
+                    option: false,
                 }
             } else {
                 let (at_file, at_index) = at.get(&id).copied().unwrap_or((NONE, 0));
@@ -1128,6 +1130,7 @@ impl<'c, 'a, 's> Res<'c, 'a, 's> {
                     version: Str::default(),
                     at_file,
                     at_index,
+                    option: false,
                 }
             };
             self.out.new_keys.push(NewKey {
