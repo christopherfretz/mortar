@@ -21,9 +21,9 @@ use mortar_core::{ChunkId, FileId, OutSecId, SectionId, SymbolId};
 
 use super::diags::DiagRow;
 use super::rows::{
-    CommonRow, EdgeRow, FileIndexRow, FileRow, FragRow, GroupRow, HoleRow, IndexRow, KeyRefRow,
-    MentionRow, MetaRow, NameRow, OdrClassRow, OdrRefRow, RegionRow, ResolvedRow, SymbolRow,
-    SymtabKeyRow, SymtabRow,
+    CommonRow, CopyRow, EdgeRow, FileIndexRow, FileRow, FragRow, GroupRow, HoleRow, IndexRow,
+    KeyRefRow, MentionRow, MetaRow, NameRow, OdrClassRow, OdrRefRow, RegionRow, ResolvedRow,
+    SymbolRow, SymtabKeyRow, SymtabRow,
 };
 use crate::format::{
     ChunkRow, DefinedRow, EhRow, FragAtRow, LayoutRow, OutSecRow, PatchRow, ProbeRow, RedirectRow,
@@ -230,6 +230,14 @@ pub trait StateRows: Sync {
     /// # Errors
     /// `state-corrupt`.
     fn commons(&self, key: SymbolId) -> Rows<Vec<CommonRow>>;
+    /// A key's `COPIES` rows (kind 55; key: one per global definition of
+    /// it in a live COMDAT copy, `(file, index)`), in **no promised
+    /// order**, no tombstone: W1 and W2 order them by the files'
+    /// **current** `FILES.rank` (WP-220).
+    ///
+    /// # Errors
+    /// `state-corrupt`.
+    fn copies(&self, key: SymbolId) -> Rows<Vec<CopyRow>>;
     /// A key's **stored** common as resolve.md §3.3 gives it (kind 46;
     /// key, plus one `FILES` row per common mention):
     /// [`super::rows::winning_common`] of [`Self::commons`] ranked by this
@@ -407,6 +415,20 @@ pub struct ChangedFile {
     /// (versioned)` when it is not 0). 0 for a gone or no longer
     /// extracted file.
     pub versioned: u32,
+    /// Its new version's ODR rows (IN-71d; WP-220); empty for a gone or
+    /// no longer extracted file.
+    pub odr: OdrRows,
+}
+
+/// A changed file's ODR rows (IN-71d; WP-220), made by the capture's own
+/// function (`mortar_odr::foreign::definitions_in`, one producer for a
+/// full link and an update). The record families' rows come with WP-236.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct OdrRows {
+    /// Its COMDAT copies' global definitions (`COPIES`' rows), in
+    /// symbol-table order; `key` is the position in
+    /// [`ChangedFile::keys`] (as [`ChangedFile::mentions`]).
+    pub copies: Vec<CopyRow>,
 }
 
 /// U2-U4's result (WP-211 §C `ChangedFiles`). Written by the join; read by
@@ -519,6 +541,8 @@ pub struct StatePatch {
     pub frags: KeyEdits<FragRow>,
     pub holes: KeyEdits<HoleRow>,
     pub commons: KeyEdits<CommonRow>,
+    /// `COPIES` (kind 55; WP-220).
+    pub copies: KeyEdits<CopyRow>,
     pub odr_classes: KeyEdits<OdrClassRow>,
     pub odr_refs: KeyEdits<OdrRefRow>,
     pub diags: KeyEdits<DiagRow>,
