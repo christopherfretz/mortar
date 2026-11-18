@@ -42,7 +42,7 @@ pub mod item {
     /// An enumerator: `name`, `value`.
     pub const ENUMERATOR: u32 = 4;
     /// An enumeration's underlying type: `type`, and in `value` (from kiln's
-    /// `kiln-odr-1.d5`; 0 before) [`SCOPED`] and [`FIXED`], the bits O-18
+    /// `kiln-odr-1.d5` on, frozen as `kiln-odr-1`; 0 before) [`SCOPED`] and [`FIXED`], the bits O-18
     /// already hashes; a reader ignores the others (WP-204).
     pub const UNDERLYING: u32 = 5;
     /// An underlying-type item's `value`: the enumeration is scoped.

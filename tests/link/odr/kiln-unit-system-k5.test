@@ -1,5 +1,6 @@
 # The implementation's own definition (spec/odr.md O-35; meta.md MT-26
-# unit.system; WP-204): lib.cc, compiled by kiln 19428a411 with
+# unit.system; WP-204): lib.cc, compiled by kiln (de347b847, scheme
+# kiln-odr-1; the option exists from .d5 on) with
 # -fmason-metadata-system-unit as libc++'s own sources are, defines `obj`
 # as a Stream (derived from Base, 8 bytes); the user's header declares it
 # a Base (4 bytes), the way libc++ defines std::cout as a stream<ostream>

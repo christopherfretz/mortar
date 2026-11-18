@@ -1,5 +1,6 @@
 # An enumeration fixed to int in one unit and scoped in the other (kiln
-# 19428a411, scheme kiln-odr-1.d5; spec/odr.md O-18, O-19; WP-204): the
+# de347b847, scheme kiln-odr-1, the frozen .d5; spec/odr.md O-18, O-19;
+# WP-204): the
 # layout hash differs by O-18's byte (bit 0 scoped, bit 1 fixed), and from
 # .d5 on the kind 4 underlying-type item carries the same bits, so the
 # note names the difference (before, the items were equal and the note

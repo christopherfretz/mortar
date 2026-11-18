@@ -467,10 +467,10 @@ a row without it is information. Names defined now [kiln]:
 | `abi.struct-return` | `reg`/`mem` (i386 only) | yes | K16e |
 | `abi.char` | `signed`/`unsigned` | yes | |
 | `abi.wchar` | size in bytes | yes | |
-| `abi.wchar-sign` [kiln, from scheme `kiln-odr-1.d5` on; ruling of 2026-11-17] | `signed`/`unsigned` | yes, as `abi.char` | `wchar_t`'s signedness, which `abi.wchar` (the size) does not say: signed on x86-64 and i386, unsigned on AArch64 Linux. A unit without the row (kiln before `.d5`, other producers) is never a party to an O-30 mismatch on it |
+| `abi.wchar-sign` [kiln, from scheme `kiln-odr-1.d5` on, frozen as `kiln-odr-1`; ruling of 2026-11-17] | `signed`/`unsigned` | yes, as `abi.char` | `wchar_t`'s signedness, which `abi.wchar` (the size) does not say: signed on x86-64 and i386, unsigned on AArch64 Linux. A unit without the row (kiln before `.d5`, other producers) is never a party to an O-30 mismatch on it |
 | `abi.long-double` | size in bits | yes | |
 | `isa` | the target feature string the TU was compiled for | no | K16d: `odr.md` O-31 |
-| `unit.system` [kiln, `-fmason-metadata-system-unit`, from `.d5`; WP-204] | `yes` | no | the unit is part of the implementation (a standard library built from its own sources, which are not in a system header for it): every row of the unit is `SYSTEM` wherever a rule reads the bit (kinds 2 and 3: O-16, O-32), and its kind 5 definitions are the implementation's own (O-35). Hashes, keys and every other row are those of the same unit without the option (measured, WP-204) |
+| `unit.system` [kiln, `-fmason-metadata-system-unit`, from `.d5` on (`kiln-odr-1`); WP-204] | `yes` | no | the unit is part of the implementation (a standard library built from its own sources, which are not in a system header for it): every row of the unit is `SYSTEM` wherever a rule reads the bit (kinds 2 and 3: O-16, O-32), and its kind 5 definitions are the implementation's own (O-35). Hashes, keys and every other row are those of the same unit without the option (measured, WP-204) |
 | `reloc-model` [hod; M4; landed: hod H-3, mortar's reader WP-129; request R-MT11] | `static`, `pie` or `pic`: the relocation model hod's code generation used (`-fno-pic` and `dynamic-no-pic`; `-fPIE`; `-fPIC`) | no | `dyn.md` D-117: exact refusal of non-PIC code in a shared object (`static` or `pie` in an object defining an exported preemptible datum refuses it, `non-pic-in-shared-object`; `pic` never exempts) |
 
 *Keys and values outside the table* (WP-204). A row whose name the

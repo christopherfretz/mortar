@@ -54,7 +54,7 @@
 //! vptr offset=N
 //! slot name=S index=N              # a vtable slot: the final overrider's declaration
 //! enumerator name=S value=N      # N may be negative: two's complement (O-19)
-//! underlying type=S [scoped=1] [fixed=1]   # O-18's bits in the value (kiln .d5, WP-204)
+//! underlying type=S [scoped=1] [fixed=1]   # O-18's bits in the value (kiln-odr-1, from .d5; WP-204)
 //! item flags=N name=S type=S value=N width=N   # any item, as given (kind in bits 0-3)
 //! ```
 //!

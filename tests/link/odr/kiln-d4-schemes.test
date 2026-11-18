@@ -1,12 +1,15 @@
-# A unit of kiln's .d5 beside a unit of .d4 in one link (spec/odr.md O-11,
+# kiln's frozen scheme beside a unit of .d4 in one link (spec/odr.md O-11,
 # O-30; meta.md MT-26; WP-204), under --odr=strict: one inline function
 # shared_fn with two bodies (N=1, 2), in
-# - k.o: kiln 19428a411 (scheme kiln-odr-1.d5), -funsigned-char;
+# - k.o: kiln de347b847 (scheme kiln-odr-1, the .d5 serialization
+#   frozen), -funsigned-char;
 # - h.o: a GCC object with a hand-written unit as kiln 3b77b13c7 (scheme
 #   kiln-odr-1.d4) wrote it for -fsigned-char: no abi.wchar-sign row
 #   (written from .d5 on), abi.char signed.
 # The two schemes' rows are never compared, only counted (`schemes 2,
-# pairs not compared 1`); the ENFORCE keys are compared across schemes:
+# pairs not compared 1`): kiln-odr-1.d0 to .d5 are other schemes than
+# kiln-odr-1 (a .d5 unit beside a kiln-odr-1 unit counts the same way,
+# measured by WP-204). The ENFORCE keys are compared across schemes:
 # abi.char differs (odr-abi-mismatch, a warning), abi.wchar-sign is in
 # one unit only and no party. The one record finding is the ABI
 # mismatch. The program runs k.o's copy (the first).

@@ -685,6 +685,21 @@ arguments", "`USES_INTERNAL`"; WP-199):
    under strict (6 warnings in the 14-unit program on libc++; a kiln
    finding, WP-199 §7).
 
+**kiln `.d5` and the frozen scheme, measured** (WP-204;
+`spec/landed/meta/WP-204.md`). kiln 19428a411 (`kiln-odr-1.d5`) fixed
+the three findings above (the `[[noreturn]]` spellings, `USES_INTERNAL`
+on closures, align-order), added `unit.system` and `abi.wchar-sign`
+(`meta.md` MT-26) and O-18's bits in kind 4's underlying-type item
+(O-19). kiln de347b847 froze it as **`kiln-odr-1`**, the scheme kiln
+writes now: measured on the same sources, every kind 2, 3, 4 and 5 row
+is `.d5`'s (keys, hashes, flags, layouts, entries); only the
+`odr.scheme` value moved, and at `-fmason-metadata=all` every `VAGUE`
+row carries its symbol as `name` (O-15's "Rows of definitions inlined
+away"; strong rows keep 0, `INLINED_ONLY` stays clear). Units of
+`kiln-odr-1.d0` to `.d5` are other schemes beside `kiln-odr-1`
+(O-11: counted, `schemes N, pairs not compared M`; kind 1's ENFORCE
+keys still compared). Mortar names no scheme in code.
+
 **O-11 (schemes).** Kind 1's `odr.scheme` names the serialization, the
 attribute list of O-10, the provenance form (per-piece or whole-literal
 placeholders) and the hash function. **Two rows** (ruling of
@@ -938,7 +953,8 @@ no part in the check; the finding needs two files whose USER rows set
 `USES_INTERNAL`. Its places follow §9.1 by hash: rows of equal hashes
 are each `defined in` (the usual case: equal tokens, two entities), and
 `defined differently in` only where a hash differs. Measured with kiln
-`.d5` on the libc++ sample (WP-204, `spec/landed/meta/WP-204.md`).
+`.d5` and its frozen form `kiln-odr-1` on the libc++ sample (WP-204,
+`spec/landed/meta/WP-204.md`).
 
 ## 6. Layout records
 
@@ -1115,7 +1131,7 @@ the slot's index over the whole group); 4 an enumerator (`name`,
 `value`: the enumerator's value as a 64-bit two's complement number,
 sign-extended when the underlying type is signed, zero-extended
 otherwise; ruling of 2026-11-17); 5 an enumeration's underlying type
-(`type`; `value`: from kiln's `.d5` on, O-18's byte, bit 0 scoped and
+(`type`; `value`: from kiln's `.d5` on (`kiln-odr-1`), O-18's byte, bit 0 scoped and
 bit 1 a fixed underlying type, the other bits reserved and ignored by
 a reader; 0 from older producers, WP-204). **A member of
 unnamed class type** (K-4b: a kind 0 item with `name` 0 and `type` 0,

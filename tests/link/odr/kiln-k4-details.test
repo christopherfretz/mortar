@@ -10,7 +10,8 @@
 # differences. kiln numbers a vtable slot by its component in the vtable
 # group, RTTI left out: g, the second virtual function, is slot 2
 # (offset-to-top is 0). kiln-k4-default is the same link at the level default.
-# From kiln 19428a411 (scheme kiln-odr-1.d5, WP-204) the underlying-type
+# From kiln 19428a411 (scheme kiln-odr-1.d5, frozen as kiln-odr-1 by
+# de347b847; WP-204) the underlying-type
 # item carries O-18's scoped/fixed bits, printed where set: `enum F : int`
 # and `enum G : int` read `(unscoped, fixed)`, the unfixed G nothing.
 #@ spec: odr.md O-17, O-19, §9.1
