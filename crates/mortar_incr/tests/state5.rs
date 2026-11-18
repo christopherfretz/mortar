@@ -1739,3 +1739,64 @@ fn debug_strs_canon_and_compaction_sort() {
         vec![dstr(0, 1, 3), dstr(0, 8, 2), dstr(1, 3, 1)]
     );
 }
+
+// spec: WP-228 seam 8a (an update only PUTS `DEBUG_STRS` rows: in place
+// they go to the sorted append area, found by the reader's search of the
+// body and the area; a put of a stored key replaces its row; a delete is
+// refused, in place and by the compaction) and R-2.3 (the compaction
+// rewrites the table whole, sorted)
+#[test]
+fn debug_strs_patch_puts_rows() {
+    let mut m = sample(&[0, 1, 2], 2);
+    m.debug_strs = vec![dstr(0, 10, 0), dstr(0, 30, 8), dstr(1, 10, 0)];
+    let bytes = full(&m);
+    let view = read::open_bytes(bytes.clone()).expect("open");
+    let mut p = StatePatch::default();
+    p.debug_strs.put = vec![dstr(0, 20, 40), dstr(0, 30, 50), dstr(1, 5, 9)];
+    let plan = state5::plan_patch(&view, &p).expect("plan");
+    assert!(!plan.compacts(), "{}", plan.reason());
+    let patched = write::patched_bytes(&bytes, &plan, &output_of(&bytes)).expect("in place");
+    let view = read::open_bytes(patched.clone()).expect("open");
+    for (out, hash, want) in [
+        (0, 10, Some(0)),
+        (0, 20, Some(40)),
+        (0, 30, Some(50)),
+        (1, 5, Some(9)),
+        (1, 10, Some(0)),
+        (1, 20, None),
+    ] {
+        assert_eq!(view.debug_str(out, hash).expect("read"), want, "({out}, {hash})");
+    }
+    let back = read::decode(&patched).expect("decode");
+    assert_eq!(
+        compact::normalize(&back).expect("normalize").debug_strs,
+        vec![dstr(0, 10, 0), dstr(0, 20, 40), dstr(0, 30, 50), dstr(1, 5, 9), dstr(1, 10, 0)]
+    );
+    // a delete is refused, in place and in memory
+    let mut d = StatePatch::default();
+    d.debug_strs.delete = vec![dstr(0, 10, 0)];
+    let view = read::open_bytes(patched.clone()).expect("open");
+    assert!(matches!(reason(state5::plan_patch(&view, &d)), IncrReason::StateCorrupt(_)));
+    let mut mm = back.clone();
+    assert!(compact::apply(&mut mm, &d, 0).is_err());
+    // with a compaction: the rows put, sorted and whole
+    let mut c = remove_file_1(&back);
+    c.debug_strs.put = vec![dstr(0, 1, 77)];
+    let plan = state5::plan_patch(&view, &c).expect("plan");
+    assert!(plan.compacts(), "{}", plan.reason());
+    let got = compact::plan_bytes(&plan, &output_of(&patched)).expect("compacted");
+    let got = read::decode(&got).expect("decode");
+    assert_eq!(
+        got.debug_strs,
+        vec![
+            dstr(0, 1, 77),
+            dstr(0, 10, 0),
+            dstr(0, 20, 40),
+            dstr(0, 30, 50),
+            dstr(1, 5, 9),
+            dstr(1, 10, 0)
+        ]
+    );
+    c.debug_strs.delete = vec![dstr(0, 10, 0)];
+    assert!(matches!(reason(state5::plan_patch(&view, &c)), IncrReason::StateCorrupt(_)));
+}

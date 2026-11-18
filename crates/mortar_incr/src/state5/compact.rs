@@ -86,6 +86,10 @@ pub fn apply(m: &mut MemoryState, p: &StatePatch, frags_aux: usize) -> Rows<()> 
     keyed(&mut m.commons, &p.commons, s, 0, |_| {})?;
     keyed(&mut m.copies, &p.copies, s, 0, |_| {})?;
     keyed(&mut m.names, &p.names, s, 0, |_| {})?;
+    if !p.debug_strs.delete.is_empty() {
+        return Err(corrupt("DEBUG_STRS: the patch deletes a row (an update only puts them)"));
+    }
+    keyed(&mut m.debug_strs, &p.debug_strs, s, 0, |_| {})?;
     if !(p.odr_classes.put.is_empty()
         && p.odr_classes.delete.is_empty()
         && p.odr_refs.put.is_empty()

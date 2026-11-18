@@ -10,6 +10,6 @@ Brief: /Volumes/AgentWork/mortar-helper/briefs/wp-247.md. Scratch: .build/target
   `debug_strs_check` + selftest `debug-strs-*`.
 
 ## Next
-- Item 1: seam 8a cherry-pick (hash from the supervisor) -> plan_in_place `ed.keyed(DEBUG_STRS)`
-  and compact::apply keyed, deletes refused; area lookup test. Measurement on protoc -g.
+- Item 1: seam 8a cherry-picked (d148c1e0) and applied (plan_in_place, compact::apply; deletes refused;
+  test debug_strs_patch_puts_rows). LEFT: measurement on protoc -g (cxx-medium-g-static).
 - Items 2..10 per the brief.

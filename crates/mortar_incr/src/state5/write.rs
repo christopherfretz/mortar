@@ -970,6 +970,14 @@ fn plan_in_place(core: &Arc<Core>, p: &StatePatch) -> Plan<InPlace> {
         )));
     }
     ed.keyed(kind::NAMES, &p.names, false)?;
+    // DEBUG_STRS (WP-228 seam 8a): an update only puts rows (a put of a
+    // stored key replaces its row: the stored offset was a mismatch)
+    if !p.debug_strs.delete.is_empty() {
+        return Err(PlanError::Fail(corrupt(
+            "DEBUG_STRS: the patch deletes a row (an update only puts them)",
+        )));
+    }
+    ed.keyed(kind::DEBUG_STRS, &p.debug_strs, false)?;
     if !p.diags.put.is_empty() || !p.diags.delete.is_empty() {
         let mut raw = KeyEdits::<DiagRaw>::default();
         for d in &p.diags.put {
