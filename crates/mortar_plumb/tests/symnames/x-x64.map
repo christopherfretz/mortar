@@ -55,7 +55,7 @@ hole .bss 4 40
 dead .debug_abbrev a2 e neutral
 dead .debug_abbrev 16c 4 neutral
 dead .debug_abbrev 216 a neutral
-dead .debug_abbrev 220 9 neutral
+dead .debug_abbrev 220 26 neutral
 dead .debug_info 9e 12 neutral
 dead .debug_info 18e 12 neutral
 dead .debug_info 223 1d neutral

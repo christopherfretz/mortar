@@ -144,7 +144,7 @@ fn tombstone(name: &str, class: Class, width: usize) -> u64 {
 pub(crate) fn check(
     image: &Image<'_>,
     _objs: &[Obj<'_>],
-    _map: &Map,
+    map: &Map,
     set: &DeadSet,
     out: &mut Vec<Finding>,
 ) {
@@ -163,7 +163,6 @@ pub(crate) fn check(
         let hi = lo + (r.end - r.start) as usize;
         let Some(bytes) = data.get(lo..hi) else { continue };
         let res = match r.kind {
-            Some(DeadKind::Neutral) => neutral(image, set, name, bytes, lo),
             Some(DeadKind::Contribution) => contribution(image, name, bytes, lo),
             Some(DeadKind::Strings) if bytes.last() != Some(&0) => {
                 Err("the range does not end with a string's NUL".into())
@@ -174,6 +173,7 @@ pub(crate) fn check(
             out.push(finding(6, format!("{}: {m}", r.describe(image))).at(r.start));
         }
     }
+    neutral_ranges(image, map, &debug_ranges, out);
     // `.strtab`'s dead names (IN-49a) are judged above (their NUL) and
     // in `crate::symfill`; they name nothing the DWARF walk reads.
     let dwarf = debug_ranges.iter().any(|r| image.sections[r.sec].name != ".strtab");
@@ -192,233 +192,60 @@ fn dead_at<'s>(dbg: &Debug<'_>, set: &'s DeadSet, name: &str, off: u64) -> Optio
 // ---------------------------------------------------------------------
 // Check 2: the forms of a dead range.
 
-/// A `neutral` range: one or more of IN-51b's forms of `name`, tiling it.
-fn neutral(
-    image: &Image<'_>,
-    set: &DeadSet,
-    name: &str,
-    b: &[u8],
-    base: usize,
-) -> Result<(), String> {
-    match name {
-        ".debug_abbrev" => neutral_abbrev(b, base),
-        ".debug_ranges" => match b.iter().position(|&x| x != 0) {
-            None if b.len() >= 16 => Ok(()),
-            None => Err(format!(
-                "a neutral .debug_ranges range is at least 16 zero bytes, not {}",
-                b.len()
-            )),
-            Some(i) => Err(format!(
-                "a neutral .debug_ranges range is zero bytes: byte at offset {:#x}",
-                base + i
-            )),
-        },
-        ".debug_info" | ".debug_line" | ".debug_rnglists" | ".debug_loclists"
-        | ".debug_str_offsets" | ".debug_addr" | ".debug_frame" => {
-            let mut p = 0usize;
-            while p < b.len() {
-                let n = neutral_unit(image, set, name, &b[p..], base + p)
-                    .map_err(|m| format!("at offset {:#x}: {m}", base + p))?;
-                p += n;
-            }
-            Ok(())
-        }
-        _ => Err(format!("'{name}' has no neutral form (incr.md IN-51b)")),
-    }
-}
-
-/// `.debug_abbrev`: zero bytes (empty tables) and IN-51's two tables.
-fn neutral_abbrev(b: &[u8], base: usize) -> Result<(), String> {
-    const PLAIN: &[u8] = &[1, 0x11, 0, 0x80, 0x40, 9, 0, 0];
-    const ADDR: &[u8] = &[1, 0x11, 0, 0x73, 0x17, 0x80, 0x40, 9, 0, 0];
-    let mut p = 0;
-    while p < b.len() {
-        if b[p] == 0 {
-            p += 1;
-        } else if b[p..].starts_with(PLAIN) {
-            p += PLAIN.len();
-        } else if b[p..].starts_with(ADDR) {
-            p += ADDR.len();
-        } else {
-            return Err(format!(
-                "a neutral .debug_abbrev range is zero bytes and IN-51's tables: byte {:#04x} at offset {:#x}",
-                b[p],
-                base + p
-            ));
+/// The `neutral` ranges of the debug sections, judged together
+/// ([`crate::neutral`]: the forms, the one abbreviation table, the address
+/// bases): P-I6.
+fn neutral_ranges(image: &Image<'_>, map: &Map, ranges: &[&Range], out: &mut Vec<Finding>) {
+    let dbg = Debug { image };
+    let mut data = std::collections::BTreeMap::new();
+    for name in crate::neutral::SECTIONS {
+        if let Some((_, d)) = dbg.data(name) {
+            data.insert(*name, d);
         }
     }
-    Ok(())
-}
-
-/// One neutral unit at the start of `b`: its size.
-#[allow(clippy::too_many_lines)] // one block per section, IN-51b's table
-fn neutral_unit(
-    image: &Image<'_>,
-    set: &DeadSet,
-    name: &str,
-    b: &[u8],
-    off: usize,
-) -> Result<usize, String> {
-    let mut r = Rd::new(b, 0);
-    let len = match r.u32() {
-        Some(v) if v < 0xffff_fff0 => v as usize,
-        Some(_) => return Err("a neutral form has a 32-bit initial length (incr.md IN-51b)".into()),
-        None => return Err("a unit header runs past the range".into()),
+    let nranges: Vec<crate::neutral::NRange<'_>> = ranges
+        .iter()
+        .enumerate()
+        .filter(|(_, r)| r.kind == Some(DeadKind::Neutral))
+        .filter(|(_, r)| crate::neutral::SECTIONS.contains(&image.sections[r.sec].name.as_str()))
+        .filter_map(|(k, r)| {
+            let s = &image.sections[r.sec];
+            let lo = usize::try_from(r.start - s.shdr.sh_addr).ok()?;
+            let hi = lo.checked_add(usize::try_from(r.end - r.start).ok()?)?;
+            (hi <= image.section_data(r.sec)?.len()).then_some(crate::neutral::NRange {
+                sec: s.name.as_str(),
+                lo,
+                hi,
+                id: k,
+            })
+        })
+        .collect();
+    // A `neutral` line in a section with no form: P-I2 (dead.rs) and here.
+    for r in ranges.iter().filter(|r| r.kind == Some(DeadKind::Neutral)) {
+        let name = image.sections[r.sec].name.as_str();
+        if !crate::neutral::SECTIONS.contains(&name) {
+            out.push(
+                finding(
+                    6,
+                    format!("{}: '{name}' has no neutral form (incr.md IN-51b)", r.describe(image)),
+                )
+                .at(r.start),
+            );
+        }
+    }
+    let view = crate::neutral::View {
+        asz: if image.class() == Class::Elf64 { 8 } else { 4 },
+        data,
+        ranges: nranges,
+        incremental: map.incremental,
     };
-    let end = len.checked_add(4).filter(|&e| e <= b.len()).ok_or_else(|| {
-        format!("unit_length {len:#x} runs past the range ({:#x} bytes left)", b.len())
-    })?;
-    let body = &b[..end];
-    let mut r = Rd::new(body, 4);
-    let short = || "the unit is shorter than its header".to_string();
-    match name {
-        ".debug_info" => {
-            let v = r.u16().ok_or_else(short)?;
-            let abbrev = match v {
-                5 => {
-                    let ut = r.u8().ok_or_else(short)?;
-                    if ut != 1 {
-                        return Err(format!(
-                            "a neutral unit is DW_UT_compile (1), not unit type {ut}"
-                        ));
-                    }
-                    let _asz = r.u8().ok_or_else(short)?;
-                    r.u32().ok_or_else(short)?
-                }
-                2..=4 => {
-                    let a = r.u32().ok_or_else(short)?;
-                    let _asz = r.u8().ok_or_else(short)?;
-                    a
-                }
-                _ => return Err(format!("unit version {v}")),
-            };
-            let code = r.uleb().ok_or_else(short)?;
-            if code != 1 {
-                return Err(format!("a neutral unit's DIE has abbreviation code 1, not {code}"));
-            }
-            // The table the unit names: IN-51's, with or without
-            // `DW_AT_addr_base`.
-            let dbg = Debug { image };
-            let table = dbg.data(".debug_abbrev").and_then(|(_, d)| d.get(abbrev as usize..));
-            let with_base = match table {
-                Some([1, 0x11, 0, 0x80, 0x40, 9, 0, 0, ..]) => false,
-                Some([1, 0x11, 0, 0x73, 0x17, 0x80, 0x40, 9, 0, 0, ..]) => true,
-                _ => {
-                    return Err(format!(
-                        "a neutral unit's abbreviation table (.debug_abbrev+{abbrev:#x}) is IN-51's"
-                    ));
-                }
-            };
-            if with_base {
-                let a = r.u32().ok_or_else(short)?;
-                if dead_at(&dbg, set, ".debug_addr", u64::from(a)).is_none() {
-                    return Err(format!(
-                        "a neutral unit's DW_AT_addr_base ({a:#x}) names the file's dead .debug_addr table (incr.md IN-51), not a dead range"
-                    ));
-                }
-            }
-            let blen = r.uleb().ok_or_else(short)?;
-            if blen == 0 {
-                return Err("a neutral unit's block holds at least one byte (incr.md IN-51)".into());
-            }
-            if r.p as u64 + blen != end as u64 {
-                return Err(format!(
-                    "the block ({blen:#x} bytes from unit offset {:#x}) ends at the unit's end ({end:#x}), with nothing after it",
-                    r.p
-                ));
-            }
-        }
-        ".debug_line" => {
-            let v = r.u16().ok_or_else(short)?;
-            if v == 5 {
-                r.skip(2).ok_or_else(short)?;
-            } else if !(2..=4).contains(&v) {
-                return Err(format!("line table version {v}"));
-            }
-            let hl = r.u32().ok_or_else(short)? as usize;
-            let prog = r.p.checked_add(hl).filter(|&e| e <= end).ok_or_else(short)?;
-            r.skip(if v >= 4 { 5 } else { 4 }).ok_or_else(short)?;
-            let ob = r.u8().ok_or_else(short)?;
-            if ob != 7 {
-                return Err(format!("a neutral line table has opcode_base 7, not {ob}"));
-            }
-            r.skip(6).ok_or_else(short)?;
-            let lists: &[u8] = if v == 5 { &[1, 1, 8, 0, 1, 1, 8, 0] } else { &[0, 0] };
-            if body.get(r.p..r.p + lists.len()) != Some(lists) {
-                return Err(
-                    "a neutral line table's directory and file lists are empty (incr.md IN-51b)"
-                        .into(),
-                );
-            }
-            if r.p + lists.len() != prog {
-                return Err("a neutral line table's header_length is exact".into());
-            }
-            if let Some(i) = body[prog..].iter().position(|&x| x != 6) {
-                return Err(format!(
-                    "a neutral line table's program is DW_LNS_negate_stmt (0x06): byte {:#04x} at offset {:#x}",
-                    body[prog + i],
-                    off + prog + i
-                ));
-            }
-        }
-        ".debug_rnglists" | ".debug_loclists" => {
-            let v = r.u16().ok_or_else(short)?;
-            let _asz = r.u8().ok_or_else(short)?;
-            let _seg = r.u8().ok_or_else(short)?;
-            let cnt = r.u32().ok_or_else(short)?;
-            if v != 5 || cnt != 0 {
-                return Err(format!(
-                    "a neutral list table is version 5 with offset_entry_count 0, not {v} and {cnt}"
-                ));
-            }
-            zeros(body, r.p, off)?;
-        }
-        ".debug_str_offsets" => {
-            let v = r.u16().ok_or_else(short)?;
-            let _pad = r.u16().ok_or_else(short)?;
-            if v != 5 || !(end - 8).is_multiple_of(4) {
-                return Err(format!(
-                    "a neutral .debug_str_offsets table is version 5 with 4-byte entries, not version {v}"
-                ));
-            }
-            zeros(body, r.p, off)?;
-        }
-        ".debug_addr" => {
-            let v = r.u16().ok_or_else(short)?;
-            let asz = r.u8().ok_or_else(short)?;
-            let _seg = r.u8().ok_or_else(short)?;
-            if v != 5 || asz != 8 || !(end - 8).is_multiple_of(8) {
-                return Err(format!(
-                    "a neutral .debug_addr table is version 5 with 8-byte addresses, not version {v}, size {asz}"
-                ));
-            }
-            zeros(body, r.p, off)?;
-        }
-        ".debug_frame" => {
-            let id = r.u32().ok_or_else(short)?;
-            let v = r.u8().ok_or_else(short)?;
-            let aug = r.u8().ok_or_else(short)?;
-            if id != 0xffff_ffff || v != 1 || aug != 0 {
-                return Err("a neutral .debug_frame record is a CIE of version 1 with an empty augmentation".into());
-            }
-            r.uleb().ok_or_else(short)?;
-            r.sleb().ok_or_else(short)?;
-            r.u8().ok_or_else(short)?;
-            zeros(body, r.p, off)?;
-        }
-        _ => return Err(format!("'{name}' has no neutral form")),
-    }
-    Ok(end)
-}
-
-fn zeros(b: &[u8], from: usize, off: usize) -> Result<(), String> {
-    match b.get(from..).and_then(|t| t.iter().position(|&x| x != 0)) {
-        None => Ok(()),
-        Some(i) => Err(format!(
-            "the body is zero: byte {:#04x} at offset {:#x}",
-            b[from + i],
-            off + from + i
-        )),
+    for b in crate::neutral::judge(&view) {
+        let msg = match b.id {
+            Some(k) => format!("{}: at offset {:#x}: {}", ranges[k].describe(image), b.off, b.msg),
+            None => format!(".debug_abbrev: {}", b.msg),
+        };
+        let at = b.id.map_or(0, |k| ranges[k].start);
+        out.push(finding(6, msg).at(at));
     }
 }
 

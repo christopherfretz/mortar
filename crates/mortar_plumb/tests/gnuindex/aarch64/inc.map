@@ -62,7 +62,7 @@ dead .debug_info ff 1d neutral
 dead .debug_abbrev 15 b neutral
 dead .debug_abbrev 3a 6 neutral
 dead .debug_abbrev b2 6 neutral
-dead .debug_abbrev b8 9 neutral
+dead .debug_abbrev b8 26 neutral
 dead .debug_line 59 27 neutral
 dead .debug_line c7 21 neutral
 dead .debug_line 137 21 neutral

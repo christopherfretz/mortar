@@ -624,15 +624,15 @@ fn uleb_fixed(v: u64, w: usize) -> Option<Vec<u8>> {
 
 /// IN-51's block unit of `len` bytes (its `unit_length` + 4), naming
 /// the abbreviation table at `abbrev`.
-fn neutral_unit(version: u16, len: usize, abbrev: u32) -> Vec<u8> {
+fn neutral_unit(version: u16, len: usize, abbrev: u32, asz: u8) -> Vec<u8> {
     let mut v = ((len - 4) as u32).to_le_bytes().to_vec();
     v.extend_from_slice(&version.to_le_bytes());
     if version >= 5 {
-        v.extend_from_slice(&[1, 8]);
+        v.extend_from_slice(&[1, asz]);
         v.extend_from_slice(&abbrev.to_le_bytes());
     } else {
         v.extend_from_slice(&abbrev.to_le_bytes());
-        v.push(8);
+        v.push(asz);
     }
     v.push(1);
     let rest = len - v.len();
@@ -644,7 +644,7 @@ fn neutral_unit(version: u16, len: usize, abbrev: u32) -> Vec<u8> {
 }
 
 /// IN-51b's neutral line table of `len` bytes.
-fn neutral_line(version: u16, len: usize) -> Vec<u8> {
+fn neutral_line(version: u16, len: usize, asz: u8) -> Vec<u8> {
     let mut v = ((len - 4) as u32).to_le_bytes().to_vec();
     v.extend_from_slice(&version.to_le_bytes());
     let header: &[u8] = if version >= 5 {
@@ -653,13 +653,48 @@ fn neutral_line(version: u16, len: usize) -> Vec<u8> {
         &[1, 1, 1, 0xfb, 14, 7, 0, 1, 1, 1, 1, 0, 0, 0]
     };
     if version >= 5 {
-        v.extend_from_slice(&[8, 0]);
+        v.extend_from_slice(&[asz, 0]);
     }
     v.extend_from_slice(&(header.len() as u32).to_le_bytes());
     v.extend_from_slice(header);
     assert!(v.len() <= len, "a neutral line table of {len} bytes");
     v.resize(len, 6);
     v
+}
+
+/// IN-51's neutral abbreviation table (`spec/incr.md` IN-51, 38 bytes).
+const TABLE: [u8; 38] = [
+    0x01, 0x11, 0x00, 0x80, 0x40, 0x09, 0x00, 0x00, 0x02, 0x41, 0x00, 0x80, 0x40, 0x09, 0x00, 0x00,
+    0x03, 0x11, 0x00, 0x73, 0x17, 0x80, 0x40, 0x09, 0x00, 0x00, 0x04, 0x11, 0x00, 0xb3, 0x42, 0x17,
+    0x80, 0x40, 0x09, 0x00, 0x00, 0x00,
+];
+
+/// `tbl.o`: a `.debug_abbrev` of IN-51's table alone. Linked last, it is
+/// the table hole at the end of the output's `.debug_abbrev` that every
+/// incremental-mode output with debug information holds (IN-51).
+fn table_object(dir: &Path, arch: Arch) -> Option<()> {
+    let asm = tool(arch, "as")?;
+    let bytes: Vec<String> = TABLE.iter().map(|b| format!("{b:#04x}")).collect();
+    let sec = if arch == Arch::Aarch64 { "%progbits" } else { "@progbits" };
+    std::fs::write(
+        dir.join("tbl.s"),
+        format!("\t.section .debug_abbrev,\"\",{sec}\n\t.byte {}\n", bytes.join(",")),
+    )
+    .unwrap();
+    run(dir, &asm, &["tbl.s", "-o", "tbl.o"]);
+    Some(())
+}
+
+/// The table hole as the map names it: a `neutral` line of the last 38
+/// bytes of `.debug_abbrev`; `tbl.o` leaves the map. The table's offset.
+fn table_line(b: &mut Built) -> u64 {
+    drop_file(&mut b.map, "tbl.o");
+    let size = b.sec(".debug_abbrev").size;
+    let o = b.sec(".debug_abbrev").offset as usize;
+    let t = size - TABLE.len() as u64;
+    assert_eq!(b.output[o + t as usize..o + size as usize], TABLE);
+    b.dead(".debug_abbrev", t, TABLE.len() as u64, DeadKind::Neutral);
+    t
 }
 
 /// A debug program: `main.c` live, `dead.c` the dead file, linked by GNU
@@ -678,6 +713,7 @@ struct Debug {
     main_line: u64,
 }
 
+#[allow(clippy::too_many_lines)] // one model, built in one place
 fn build_debug(arch: Arch, dwarf: u16) -> Option<(Scratch, Debug)> {
     let gcc = tool(arch, "gcc")?;
     let ld = tool(arch, "ld.bfd")?;
@@ -711,10 +747,23 @@ fn build_debug(arch: Arch, dwarf: u16) -> Option<(Scratch, Debug)> {
     // The dead file's arange set would name its unit (IN-54: rewritten
     // whole by an update); the model leaves it out.
     run(dir.path(), &objcopy, &["--remove-section=.debug_aranges", "dead.o"]);
+    table_object(dir.path(), arch)?;
     run(
         dir.path(),
         &ld,
-        &["-x", "-e", "main", "-o", "out", "-Map=out.map", "-z", "noexecstack", "main.o", "dead.o"],
+        &[
+            "-x",
+            "-e",
+            "main",
+            "-o",
+            "out",
+            "-Map=out.map",
+            "-z",
+            "noexecstack",
+            "main.o",
+            "dead.o",
+            "tbl.o",
+        ],
     );
     let output = std::fs::read(dir.join("out")).unwrap();
     let text = std::fs::read_to_string(dir.join("out.map")).unwrap();
@@ -728,6 +777,7 @@ fn build_debug(arch: Arch, dwarf: u16) -> Option<(Scratch, Debug)> {
     let secs = sections(&output);
     let raw = output.clone();
     let mut b = Built { arch, output, map, files, secs };
+    let t = table_line(&mut b);
     for p in gone.iter().filter(|p| p.size > 0 && p.addr != 0) {
         let Some(owner) = b.owner(p.addr, p.size).map(|s| s.name.clone()) else { continue };
         b.patch(&owner, p.addr, &vec![code_fill(arch); p.size as usize]);
@@ -741,7 +791,8 @@ fn build_debug(arch: Arch, dwarf: u16) -> Option<(Scratch, Debug)> {
         let (Some(i), Some(o)) = (size_of(&in_sizes, name), size_of(&out_sizes, name)) else {
             continue;
         };
-        dead.push((name.to_string(), o - i, i));
+        let end = if name == ".debug_abbrev" { o - TABLE.len() as u64 } else { o };
+        dead.push((name.to_string(), end - i, i));
     }
     let main_line = size_of(&section_sizes(&main_o), ".debug_line").unwrap();
     let mut d = Debug { b, dead, raw, main_line };
@@ -749,11 +800,17 @@ fn build_debug(arch: Arch, dwarf: u16) -> Option<(Scratch, Debug)> {
     let (_, ab, ab_size) = get(&d, ".debug_abbrev");
     let (_, info, info_size) = get(&d, ".debug_info");
     let (_, line, line_size) = get(&d, ".debug_line");
-    let mut abbrev = vec![1u8, 0x11, 0, 0x80, 0x40, 9, 0, 0];
-    abbrev.resize(ab_size as usize, 0);
-    d.patch_nonalloc(".debug_abbrev", ab, &abbrev);
-    d.patch_nonalloc(".debug_info", info, &neutral_unit(dwarf, info_size as usize, ab as u32));
-    d.patch_nonalloc(".debug_line", line, &neutral_line(dwarf, line_size as usize));
+    d.patch_nonalloc(".debug_abbrev", ab, &vec![0; ab_size as usize]);
+    d.patch_nonalloc(
+        ".debug_info",
+        info,
+        &neutral_unit(dwarf, info_size as usize, t as u32, d.b.word() as u8),
+    );
+    d.patch_nonalloc(
+        ".debug_line",
+        line,
+        &neutral_line(dwarf, line_size as usize, d.b.word() as u8),
+    );
     d.b.dead(".debug_abbrev", ab, ab_size, DeadKind::Neutral);
     d.b.dead(".debug_info", info, info_size, DeadKind::Neutral);
     d.b.dead(".debug_line", line, line_size, DeadKind::Neutral);
@@ -827,7 +884,7 @@ fn in3a_debug_mutations_are_rejected() {
                 main_line: d.main_line,
             };
             let n = m.main_line;
-            m.patch_nonalloc(".debug_line", 0, &neutral_line(dwarf, n as usize));
+            m.patch_nonalloc(".debug_line", 0, &neutral_line(dwarf, n as usize, m.b.word() as u8));
             m.b.dead(".debug_line", 0, n, DeadKind::Neutral);
             expect(arch, &case("stmt_list"), &base, &m.b, "P-I4", "attribute 0x10");
             // The dead unit not neutralized.
@@ -842,6 +899,30 @@ fn in3a_debug_mutations_are_rejected() {
             let o = d.file_offset(".debug_abbrev", ab + size - 1);
             m.output[o] = 0x2e;
             expect(arch, &case("abbrev"), &base, &m, "P-I6", "neutral .debug_abbrev");
+            // A per-file table in the dead range (WP-228 part A: none is
+            // written any more): the old `01 11 00 80 40 09 00 00`.
+            let mut m = d.b.clone();
+            let o = d.file_offset(".debug_abbrev", ab);
+            if size >= 8 {
+                m.output[o..o + 8].copy_from_slice(&TABLE[..8]);
+                expect(arch, &case("per-file table"), &base, &m, "P-I6", "neutral .debug_abbrev");
+            }
+            // The table hole's last byte changed; the hole's line gone.
+            let mut m = d.b.clone();
+            let size_ab = m.sec(".debug_abbrev").size;
+            let o = d.file_offset(".debug_abbrev", size_ab - 2);
+            m.output[o] ^= 0x40;
+            expect(arch, &case("table byte"), &base, &m, "P-I6", "neutral abbreviation table");
+            let mut m = d.b.clone();
+            m.map.dead.retain(|x| x.section != ".debug_abbrev" || x.offset + x.size != size_ab);
+            expect(
+                arch,
+                &case("table line"),
+                &base,
+                &m,
+                "P-I6",
+                "38-byte neutral abbreviation table",
+            );
             // A neutral line table with a program byte other than 0x06.
             let mut m = d.b.clone();
             let (_, line, size) = d.dead.iter().find(|x| x.0 == ".debug_line").cloned().unwrap();
@@ -1209,10 +1290,11 @@ fn build_clang5(arch: Arch) -> Option<(Scratch, Built)> {
     let mut flags = vec![target.as_str(), "-c", "-O0", "-g", "-gdwarf-5", "-fno-pic"];
     flags.extend(["-fno-asynchronous-unwind-tables", "main.c", "-o", "main.o"]);
     run(dir.path(), &clang, &flags);
+    table_object(dir.path(), arch)?;
     run(
         dir.path(),
         &ld,
-        &["-x", "-e", "main", "-o", "out", "-Map=out.map", "-z", "noexecstack", "main.o"],
+        &["-x", "-e", "main", "-o", "out", "-Map=out.map", "-z", "noexecstack", "main.o", "tbl.o"],
     );
     let output = std::fs::read(dir.join("out")).unwrap();
     let text = std::fs::read_to_string(dir.join("out.map")).unwrap();
@@ -1221,7 +1303,9 @@ fn build_clang5(arch: Arch) -> Option<(Scratch, Built)> {
     map.incremental = true;
     let files = vec![("main.o".to_string(), std::fs::read(dir.join("main.o")).unwrap())];
     let secs = sections(&output);
-    Some((dir, Built { arch, output, map, files, secs }))
+    let mut b = Built { arch, output, map, files, secs };
+    table_line(&mut b);
+    Some((dir, b))
 }
 
 /// The offset of string `s` (with its NUL) in non-allocated section
