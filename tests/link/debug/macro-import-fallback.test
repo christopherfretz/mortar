@@ -10,13 +10,17 @@
 #@ spec: image.md I-47
 #@ arch: aarch64 x86_64
 
+as p.S -o p.o
 as k.S -o k.o
 as d.S -o d.o
-link ld -static -e _start k.o d.o -o prog
+link ld -static -e _start p.o k.o d.o -o prog
 check objdump -s -j .debug_wp249 prog
   has(mortar): 0000 ffffffff
   has(bfd,lld,mold): 0000 00000000
 
+#--- p.S
+  .section .debug_macro,"",@progbits
+  .ascii "PADPADPADPADPAD."
 #--- k.S
   .text
   .globl _start
@@ -28,8 +32,6 @@ _start:
   movl $60, %eax
   syscall
 #endif
-  .section .debug_macro,"",@progbits
-  .ascii "PADPADPADPADPAD."
   .section .debug_macro,"G",@progbits,g,comdat
 .Lk:
   .ascii "SIZEkeep"

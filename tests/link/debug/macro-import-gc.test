@@ -2,13 +2,12 @@
 # every shared `.debug_macro` group, and its only function is collected.
 # A group without an alloc member is a root by its type: the keeper's
 # macro copies stay, and the imports of a.o, b.o and c.o are filled
-# against them; gdb answers as without `--gc-sections`. lld writes 0 into
-# the imports: skipped. gdb runs host programs only. The verifier's §5.8
+# against them (gdb's answers: macro-import-debuggers.test). lld writes 0
+# into the imports: skipped. The verifier's §5.8
 # still demands the tombstone in the imports (R1) until WP-250.
 #@ spec: image.md I-47a
 #@ spec: image.md I-7
 #@ arch: aarch64 x86_64
-#@ requires: gdb
 #@ skip(lld): writes 0: gdb reads u.c's macros in b.c (WP-249 §2.3)
 
 cc -O0 -g3 -ffunction-sections -fdata-sections u.c -o u.o
@@ -24,11 +23,6 @@ check nm prog
 check readelf --debug-dump=macro prog
   has: DW_MACRO_import - offset : 0x
   not: DW_MACRO_import - offset : 0xffffffff
-check gdb prog "break b_f" run "info macro WP249_ANSWER" "info macro WP249_A_ONLY" "info macro WP249_U_ONLY" kill
-  has: ^#define WP249_ANSWER 42$
-  has: The symbol `WP249_A_ONLY' has no definition
-  has: The symbol `WP249_U_ONLY' has no definition
-  not: This is a bug
 
 #--- h.h
 #ifndef WP249_H

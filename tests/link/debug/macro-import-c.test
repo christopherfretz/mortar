@@ -9,13 +9,12 @@
 # WP249_A_ONLY (a.c's own macro) in b.c: lld is skipped. The import fields
 # are stated without layout: no import is all ones and readelf decodes
 # every unit; that each names the unit GNU ld's names is
-# crates/mortar/tests/macro_import.rs (by the units' contents). gdb and
-# lldb run host programs only: on x86-64 (qemu) those steps are skipped by
-# name; x86-64's gdb answers are macro_import.rs's `gdb_x86_64_macros`.
+# crates/mortar/tests/macro_import.rs (by the units' contents). The
+# debuggers' answers are macro-import-debuggers.test (AArch64: gdb and
+# lldb run host programs only) and macro_import.rs's `gdb_x86_64_macros`.
 # The verifier's §5.8 still demands the tombstone there (R1) until WP-250.
 #@ spec: image.md I-47a
 #@ arch: aarch64 x86_64
-#@ requires: gdb lldb
 #@ skip(lld): writes 0: gdb and lldb read a.c's macros in b.c (WP-249 §2.3)
 
 cc -O0 -g3 -gdwarf-4 a.c -o a4.o
@@ -38,24 +37,6 @@ check readelf --debug-dump=macro p4
 check readelf --debug-dump=macro p5
   has: DW_MACRO_import - offset : 0x
   not: DW_MACRO_import - offset : 0xffffffff
-check gdb p4 "break b_f" run "info macro WP249_ANSWER" "macro expand WP249_TWICE(WP249_ANSWER)" "info macro WP249_A_ONLY" "info macro __GNUC__" kill
-  has: ^#define WP249_ANSWER 42$
-  has: ^expands to: ((42) \* 2)$
-  has: The symbol `WP249_A_ONLY' has no definition
-  has: ^-D__GNUC__=
-  not: This is a bug
-check gdb p5 "break b_f" run "info macro WP249_ANSWER" "macro expand WP249_TWICE(WP249_ANSWER)" "info macro WP249_A_ONLY" "info macro __GNUC__" kill
-  has: ^#define WP249_ANSWER 42$
-  has: ^expands to: ((42) \* 2)$
-  has: The symbol `WP249_A_ONLY' has no definition
-  has: ^-D__GNUC__=
-  not: This is a bug
-check lldb p5 "b b_f" run "expr WP249_TWICE(WP249_ANSWER)" kill
-  has: stop reason = breakpoint 1.1
-  has: (int) $0 = 84
-check lldb p4 "b b_f" run "expr WP249_TWICE(WP249_ANSWER)" kill
-  has: stop reason = breakpoint 1.1
-  has: (int) $0 = 84
 
 #--- h.h
 #ifndef WP249_H
