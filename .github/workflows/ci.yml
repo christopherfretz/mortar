@@ -1,8 +1,9 @@
 name: ci
 # The gate on both architectures (spec/harness.md "Hosted CI";
 # docs/VALIDATION.md "Gates"), after hod's and kiln's ci.yml: each
-# architecture is one call of the reusable workflow ci-lane.yml, whose job
-# shows up as `arm / gate` and `x86_64 / gate`. On `ubuntu-24.04-arm` the
+# architecture is one call of the reusable workflow ci-lane.yml, whose two
+# jobs show up as `arm / tests`, `arm / links`, `x86_64 / tests` and
+# `x86_64 / links`. On `ubuntu-24.04-arm` the
 # AArch64 programs under test run natively and the x86-64 and i386 ones
 # under qemu-user; on `ubuntu-24.04` the x86-64 ones natively and the
 # AArch64 and i386 ones under qemu-user. The two fan-in jobs keep stable
@@ -41,9 +42,17 @@ jobs:
   x86_64:
     uses: ./.github/workflows/ci-lane.yml
     with: { runner: ubuntu-24.04, cache-key: ci-x86_64, no-fail-fast: "${{ inputs.no_fail_fast == true }}" }
-  # Fan-in: passes only if every job of the lane succeeded. `always()` so
+  # Fan-in: passes only if both jobs of the lane succeeded. `always()` so
   # a failed, cancelled or skipped lane makes this job FAIL (a skipped
-  # required check would otherwise count as passing).
+  # required check would otherwise count as passing). GitHub documents
+  # needs.<job_id>.result as "The result of a job that the current job
+  # depends on. Possible values are success, failure, cancelled, or
+  # skipped." ("Contexts reference", needs context), and says nothing of
+  # how the jobs of a called workflow add up to that one result. So the
+  # check does not rest on it alone: the lane also passes out each job's
+  # own result (its `outputs`, from the documented jobs.<job_id>.result
+  # of the jobs context), and all three must be success. An output a
+  # lane never set (a lane that did not run) is empty, and fails too.
   check:
     needs: [arm]
     if: always()
@@ -51,8 +60,10 @@ jobs:
     steps:
       - name: every arm job succeeded
         run: |
-          echo "arm lane: ${{ needs.arm.result }}"
+          echo "arm lane: ${{ needs.arm.result }}, tests: ${{ needs.arm.outputs.tests }}, links: ${{ needs.arm.outputs.links }}"
           test "${{ needs.arm.result }}" = success
+          test "${{ needs.arm.outputs.tests }}" = success
+          test "${{ needs.arm.outputs.links }}" = success
   # The x86-64 lane's own check, so that each lane can be required on
   # its own (spec/harness.md "Hosted CI", rule 9).
   check-x86_64:
@@ -62,5 +73,7 @@ jobs:
     steps:
       - name: every x86_64 job succeeded
         run: |
-          echo "x86_64 lane: ${{ needs.x86_64.result }}"
+          echo "x86_64 lane: ${{ needs.x86_64.result }}, tests: ${{ needs.x86_64.outputs.tests }}, links: ${{ needs.x86_64.outputs.links }}"
           test "${{ needs.x86_64.result }}" = success
+          test "${{ needs.x86_64.outputs.tests }}" = success
+          test "${{ needs.x86_64.outputs.links }}" = success

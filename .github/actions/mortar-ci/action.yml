@@ -11,7 +11,7 @@ description: >
   so the job checks out first.
 inputs:
   cache-key:
-    description: rust-cache's shared-key; one per architecture.
+    description: rust-cache's shared-key; one per architecture and job.
     required: true
   save-cache:
     description: '"true" in the job that saves the cache.'
@@ -43,7 +43,7 @@ runs:
       with: { toolchain: "1.95.0", components: "rustfmt, clippy" }
       env: { RUSTUP_INIT_SKIP_SUDO_CHECK: "yes" }
     # ~/.cargo and the dependency builds (signal-hook, xtask's one
-    # dependency, and what it pulls in), keyed per architecture; the
+    # dependency, and what it pulls in), keyed per architecture and job; the
     # workspace crates are left out, as in kiln and hod: a fresh checkout
     # gives every source a new mtime, so cargo rebuilds them anyway.
     - uses: Swatinem/rust-cache@v2

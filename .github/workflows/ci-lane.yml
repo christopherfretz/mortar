@@ -1,7 +1,7 @@
 name: ci-lane
 # One architecture's half of the gate (spec/harness.md "Hosted CI";
 # docs/VALIDATION.md "Gates"), called by ci.yml once per runner, after
-# hod's and kiln's ci-lane.yml. The job runs in a Debian 13 container, as
+# hod's and kiln's ci-lane.yml. Each job runs in a Debian 13 container, as
 # the development container: buildpack-deps:trixie-scm is debian:trixie
 # with curl, git and procps and none of the -dev libraries of the full
 # buildpack-deps image (the script corpus test reads every text library
@@ -11,10 +11,18 @@ on:
   workflow_call:
     inputs:
       runner: { type: string, required: true }
-      # rust-cache's shared-key: one cache per architecture.
+      # rust-cache's shared-key, one per architecture; each job adds its
+      # own name to it (below).
       cache-key: { type: string, required: true }
       # "true": `cargo xtask ci --no-fail-fast` (ci.yml's by-hand input).
       no-fail-fast: { type: string, required: false, default: "false" }
+    # Each job's result (success, failure, cancelled or skipped), for
+    # ci.yml's fan-in, which requires both to be success: the `jobs`
+    # context's jobs.<job_id>.result is "the result of a job in the
+    # reusable workflow" (GitHub, "Contexts reference", jobs context).
+    outputs:
+      tests: { value: "${{ jobs.tests.result }}" }
+      links: { value: "${{ jobs.links.result }}" }
 permissions:
   contents: read
 # A missing tool (a reference linker, a compiler, the other architectures'
@@ -26,26 +34,67 @@ env:
 defaults:
   run: { shell: bash }
 jobs:
-  # The whole gate in one job: `cargo xtask ci` (fmt, clippy, the tests,
-  # the link tests on all three architectures; the runner's natively, the
-  # others under qemu-user). It is not split by `--step`: a job of its
-  # own per step would pay the set-up (2 to 3 minutes) again for each.
-  # Measured 2026-11-18: 38 minutes on the arm runner, about 50 on the
-  # x86-64 one (the tests 21, the link tests 15), which the limit of 45
-  # cancelled (run 44300379924); the limit is 60 until the lane is split
-  # or made faster.
-  gate:
-    name: gate
+  # The gate in two jobs that run side by side on the lane's runner, each
+  # with the whole set-up: `tests` runs `cargo xtask ci --step fmt --step
+  # clippy --step test`, `links` every other step of xtask/src/ci.rs
+  # (xtask/tests/hosted_ci.rs checks that each step of ci.rs is run by
+  # exactly one of them). One job ran out of time: run 44308473975 took
+  # 37 minutes on the arm runner and 41.5 on the x86-64 one, and the
+  # limit of 45 cancelled run 44300379924 during the sweep. Its steps on
+  # x86-64: fmt and clippy 1 minute, test 21, linktest 15, census 1,
+  # mason under 1, sweep about 4, static-identical about 3, the set-up
+  # about 2. So `tests` is about 24 minutes and `links` about 26 with
+  # their set-up: a limit of 40 each is half as much again, and the lane
+  # takes as long as its longer job.
+  #
+  # The cargo cache: a key per job (`<cache-key>-tests`,
+  # `<cache-key>-links`), each job saving its own. An Actions cache entry
+  # is never overwritten, so of two jobs saving one key only the first
+  # to finish writes it, and which one that is changes from run to run.
+  # With one saver, the entry holds the dependency builds that job made
+  # (rust-cache keeps the target directory's dependency artifacts):
+  # `tests` makes clippy's check builds and the dev builds of `cargo
+  # test --workspace`, `links` only xtask's dev build, so `links` saving
+  # would leave `tests` rebuilding clippy's every run, and `tests` saving
+  # serves `links` only while its builds happen to include every unit
+  # `links` needs. A key each restores exactly what that job built,
+  # whatever either comes to build, for one more entry of some tens of
+  # MB per architecture.
+  tests:
+    name: tests
     runs-on: ${{ inputs.runner }}
     container: buildpack-deps:trixie-scm
-    timeout-minutes: 60
+    timeout-minutes: 40
     steps:
       - uses: actions/checkout@v4
       - uses: ./.github/actions/mortar-ci
         with:
-          cache-key: "${{ inputs.cache-key }}"
+          cache-key: "${{ inputs.cache-key }}-tests"
           save-cache: "true"
-      - name: cargo xtask ci
+      - name: cargo xtask ci, the cargo steps
+        run: |
+          # The pool the set-up started is still there: a fifo whose
+          # holder is gone has no tokens, and every build would run one
+          # job at a time without saying so.
+          scripts/jobserver.sh status
+          source scripts/env.sh
+          set --
+          if [ "$NO_FAIL_FAST" = true ]; then set -- --no-fail-fast; fi
+          cargo xtask ci --step fmt --step clippy --step test "$@"
+        env:
+          NO_FAIL_FAST: ${{ inputs.no-fail-fast }}
+  links:
+    name: links
+    runs-on: ${{ inputs.runner }}
+    container: buildpack-deps:trixie-scm
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@v4
+      - uses: ./.github/actions/mortar-ci
+        with:
+          cache-key: "${{ inputs.cache-key }}-links"
+          save-cache: "true"
+      - name: cargo xtask ci, the link steps
         run: |
           # No results of an earlier run (a restored cache) in this run's
           # summary.
@@ -57,7 +106,7 @@ jobs:
           source scripts/env.sh
           set --
           if [ "$NO_FAIL_FAST" = true ]; then set -- --no-fail-fast; fi
-          cargo xtask ci "$@"
+          cargo xtask ci --step linktest --step census --step mason --step sweep --step static-identical "$@"
         env:
           NO_FAIL_FAST: ${{ inputs.no-fail-fast }}
       # The link tests' table of outcomes in the job summary, and the
