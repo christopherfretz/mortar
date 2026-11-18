@@ -72,6 +72,17 @@ fn corrupt(what: impl std::fmt::Display) -> IncrReason {
     IncrReason::StateCorrupt(what.to_string())
 }
 
+/// An option's operand as its key's name and version
+/// (`mortar_core::incr::OptionKey::name`, as `key_of` splits it): `foo@V`
+/// is `(foo, V)`, `foo@@V` is `foo` with no version.
+fn split_version(name: &[u8]) -> (&[u8], &[u8]) {
+    match name.iter().position(|&b| b == b'@') {
+        None => (name, b""),
+        Some(i) if name.get(i + 1) == Some(&b'@') => (&name[..i], b""),
+        Some(i) => (&name[..i], &name[i + 1..]),
+    }
+}
+
 fn to_u32(n: usize) -> u32 {
     u32::try_from(n).unwrap_or(u32::MAX)
 }
@@ -243,7 +254,8 @@ impl<'a, 's> Ctx<'a, 's> {
             }
         }
         for (name, arg) in options.roots() {
-            if let Some(k) = cx.global(name, b"", false)? {
+            let (name, version) = split_version(name);
+            if let Some(k) = cx.global(name, version, false)? {
                 cx.roots.push((k, arg));
             }
         }

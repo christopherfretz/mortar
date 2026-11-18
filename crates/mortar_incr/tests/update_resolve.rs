@@ -4,415 +4,15 @@
 //! resolve.md §4.1 and the update checked against the same rule on the
 //! new inputs.
 
-use std::collections::{BTreeMap, BTreeSet};
+include!("support/resolve_model.rs");
 
-use mortar_core::incr::{IncrReason, LayoutDelta, OptionKey, OptionKeys, Unimplemented};
-use mortar_core::{FileId, SectionId};
-use mortar_incr::format::{NONE, Str, def_kind};
-use mortar_incr::update::rows::{
-    FileRow, KeyRefRow, MentionRow, SymbolRow, file_flags, key_ref_flags, sym_kind,
-};
-use mortar_incr::update::testing::MemoryState;
-use mortar_incr::update::view::{
-    Change, ChangedFile, ChangedFiles, KeyName, MentionValue, OdrRows,
-};
-use mortar_incr::update::{defined, extract, live, refill, resolve};
+use mortar_core::incr::{LayoutDelta, StoredSlot};
+use mortar_core::layout::{Chunk, ChunkKind, DefValue, Defined, Place, SlotKind};
+use mortar_core::{ChunkId, Column, SymEntry, SymKey, SymbolId};
+use mortar_incr::format::{ChunkRow, DefinedRow, IndexRow};
+use mortar_incr::format::index_kind;
+use mortar_incr::update::{defined, live, refill};
 
-const WEAK: u8 = 2;
-const GLOBAL: u8 = 1;
-const OBJECT: u8 = 1;
-
-/// A mention in the model: key name, kind (`def_kind`), binding.
-#[derive(Debug, Clone, PartialEq, Eq)]
-struct M {
-    key: String,
-    kind: u8,
-    bind: u8,
-}
-
-fn def(k: &str) -> M {
-    M { key: k.into(), kind: def_kind::SECTION, bind: GLOBAL }
-}
-fn weak_def(k: &str) -> M {
-    M { key: k.into(), kind: def_kind::SECTION, bind: WEAK }
-}
-fn undef(k: &str) -> M {
-    M { key: k.into(), kind: def_kind::UNDEFINED, bind: GLOBAL }
-}
-fn common(k: &str) -> M {
-    M { key: k.into(), kind: def_kind::COMMON, bind: GLOBAL }
-}
-
-/// A file of the model link.
-#[derive(Debug, Clone)]
-struct F {
-    rank: u64,
-    /// An archive member (not `--whole-archive`).
-    member: bool,
-    ments: Vec<M>,
-}
-
-/// A link of the model: files by `FILES` row (row 0 is file 0, the
-/// internal file), and the root names.
-#[derive(Debug, Clone, Default)]
-struct Link {
-    files: Vec<Option<F>>,
-    roots: Vec<String>,
-}
-
-impl Link {
-    fn new() -> Self {
-        Self {
-            files: vec![Some(F { rank: 0, member: false, ments: Vec::new() })],
-            roots: Vec::new(),
-        }
-    }
-    fn add(&mut self, rank: u64, member: bool, ments: Vec<M>) -> u32 {
-        self.files.push(Some(F { rank, member, ments }));
-        (self.files.len() - 1) as u32
-    }
-    fn file(&self, f: u32) -> Option<&F> {
-        self.files.get(f as usize).and_then(Option::as_ref)
-    }
-
-    /// resolve.md §4.1 from scratch: the live files and a round (the
-    /// shortest path from a named file or a root).
-    fn closure(&self) -> BTreeMap<u32, u32> {
-        let mut first: BTreeMap<&str, (u64, u32)> = BTreeMap::new();
-        let mut cfirst: BTreeMap<&str, (u64, u32)> = BTreeMap::new();
-        for (i, f) in self.files.iter().enumerate().skip(1) {
-            let Some(f) = f else { continue };
-            let at = (f.rank, i as u32);
-            for m in &f.ments {
-                let defined = m.kind == def_kind::SECTION || m.kind == def_kind::ABSOLUTE;
-                if defined || m.kind == def_kind::COMMON {
-                    let e = first.entry(&m.key).or_insert(at);
-                    *e = (*e).min(at);
-                }
-                if defined && m.bind != WEAK {
-                    let e = cfirst.entry(&m.key).or_insert(at);
-                    *e = (*e).min(at);
-                }
-            }
-        }
-        let mut live: BTreeMap<u32, u32> = BTreeMap::new();
-        let mut queue: BTreeSet<(u32, u32)> = BTreeSet::new();
-        live.insert(0, 0);
-        for (i, f) in self.files.iter().enumerate().skip(1) {
-            if let Some(f) = f
-                && !f.member
-            {
-                queue.insert((0, i as u32));
-            }
-        }
-        for r in &self.roots {
-            if let Some(&(_, t)) = first.get(r.as_str()) {
-                queue.insert((1, t));
-            }
-        }
-        while let Some((r, f)) = queue.pop_first() {
-            if live.contains_key(&f) {
-                continue;
-            }
-            live.insert(f, r);
-            for m in &self.file(f).unwrap().ments {
-                let t = if m.kind == def_kind::UNDEFINED && m.bind != WEAK {
-                    first.get(m.key.as_str())
-                } else if m.kind == def_kind::COMMON {
-                    cfirst.get(m.key.as_str())
-                } else {
-                    None
-                };
-                if let Some(&(_, t)) = t
-                    && self.file(t).unwrap().member
-                    && !live.contains_key(&t)
-                {
-                    queue.insert((r + 1, t));
-                }
-            }
-        }
-        live
-    }
-
-    fn options(&self) -> OptionKeys {
-        OptionKeys {
-            undefined: self
-                .roots
-                .iter()
-                .map(|r| OptionKey { name: r.as_bytes().into(), arg: 1 })
-                .collect(),
-            ..OptionKeys::default()
-        }
-    }
-
-    /// The state a full link of this link stores (the rows U-3 reads).
-    fn state(&self, keys: &mut Vec<String>) -> MemoryState {
-        let live = self.closure();
-        let mut m = MemoryState::default();
-        m.meta.iterations = 1;
-        for k in self.files.iter().flatten().flat_map(|f| f.ments.iter().map(|m| m.key.clone())) {
-            if !keys.contains(&k) {
-                keys.push(k);
-            }
-        }
-        for r in &self.roots {
-            if !keys.contains(r) {
-                keys.push(r.clone());
-            }
-        }
-        let empty = m.intern(b"");
-        for k in keys.iter() {
-            let name = m.intern(k.as_bytes());
-            m.symbols.push(SymbolRow {
-                kind: sym_kind::GLOBAL,
-                file: NONE,
-                ordinal: 0,
-                name,
-                version: empty,
-                at_file: NONE,
-                at_index: 0,
-            });
-        }
-        m.resolved = vec![Default::default(); keys.len()];
-        let id = |k: &str| keys.iter().position(|x| x == k).unwrap() as u32;
-        for (i, f) in self.files.iter().enumerate() {
-            let file = i as u32;
-            let Some(f) = f else {
-                m.files.push(FileRow { flags: file_flags::GONE, ..FileRow::default() });
-                continue;
-            };
-            let lazy = !live.contains_key(&file);
-            let mut flags = 0;
-            if lazy {
-                flags |= file_flags::LAZY;
-            }
-            m.files.push(FileRow {
-                kind: u8::from(i != 0),
-                member: u8::from(f.member),
-                flags,
-                rank: f.rank,
-                round: if lazy { 0 } else { live[&file] },
-                ..FileRow::default()
-            });
-            for x in &f.ments {
-                let k = id(&x.key);
-                if !lazy {
-                    m.mentions.push((FileId(file), mention(k, x)));
-                }
-                if !lazy || x.kind != def_kind::UNDEFINED {
-                    m.key_refs.push(key_ref(k, file, x, lazy));
-                }
-            }
-        }
-        for r in &self.roots {
-            let k = id(r);
-            if !m.key_refs.iter().any(|x| x.key == k && x.file == 0) {
-                m.key_refs.push(KeyRefRow {
-                    key: k,
-                    file: 0,
-                    def: def_kind::UNDEFINED,
-                    bind: GLOBAL,
-                    ..KeyRefRow::default()
-                });
-            }
-        }
-        m.name_rows();
-        m
-    }
-}
-
-fn mention(k: u32, x: &M) -> MentionRow {
-    MentionRow { symbol: k, kind: x.kind, bind: x.bind, typ: OBJECT, other: 0, section: NONE }
-}
-
-fn key_ref(k: u32, file: u32, x: &M, lazy: bool) -> KeyRefRow {
-    let mut flags = 0;
-    if lazy {
-        flags |= key_ref_flags::LAZY;
-    }
-    if x.kind == def_kind::SECTION {
-        flags |= key_ref_flags::IN_SECTION;
-    }
-    KeyRefRow { key: k, file, def: x.kind, bind: x.bind, typ: OBJECT, flags, tomb: false }
-}
-
-/// A changed file's rows as the join gives them.
-fn changed_file(file: u32, change: Change, f: Option<&F>) -> ChangedFile {
-    let mut keys: Vec<KeyName> = Vec::new();
-    let mut mentions = Vec::new();
-    let mut values = Vec::new();
-    let mut row = FileRow::default();
-    if let Some(f) = f
-        && !matches!(change, Change::Gone | Change::NoLongerExtracted)
-    {
-        for x in &f.ments {
-            let name = x.key.as_bytes().to_vec();
-            let k = match keys.iter().position(|n| n.name == name) {
-                Some(p) => p,
-                None => {
-                    keys.push(KeyName {
-                        name,
-                        version: Vec::new(),
-                        kind: sym_kind::GLOBAL,
-                        index: 0,
-                    });
-                    keys.len() - 1
-                }
-            };
-            mentions.push(mention(k as u32, x));
-            values.push(MentionValue::default());
-        }
-        row = FileRow {
-            kind: 1,
-            member: u8::from(f.member),
-            flags: if f.member { file_flags::LAZY } else { 0 },
-            rank: f.rank,
-            ..FileRow::default()
-        };
-    }
-    ChangedFile {
-        file: FileId(file),
-        change,
-        row,
-        first_section: SectionId(0),
-        sections: Vec::new(),
-        keys,
-        first_global: 0,
-        mentions,
-        values,
-        index: Vec::new(),
-        edges: Vec::new(),
-        eh_records: Vec::new(),
-        meta_units: 0,
-        debug: false,
-        versioned: 0,
-        odr: OdrRows::default(),
-    }
-}
-
-/// What the join does: the changed files between `old` and `new` (same
-/// rows; a row past `old`'s is appeared), then `extract` called again with
-/// every newly extracted member read (`Extracted`) until it adds none.
-/// The update's live set.
-fn update(old: &Link, new: &Link) -> Result<(BTreeMap<u32, u32>, extract::Extraction), IncrReason> {
-    let mut keys = Vec::new();
-    let state = old.state(&mut keys);
-    let view = state.view();
-    let mut files: BTreeMap<u32, ChangedFile> = BTreeMap::new();
-    let mut appeared = Vec::new();
-    for i in 1..new.files.len().max(old.files.len()) {
-        let f = i as u32;
-        let (o, n) = (old.file(f), new.file(f));
-        let c = match (o, n) {
-            (None, None) => continue,
-            (Some(_), None) => changed_file(f, Change::Gone, None),
-            (None, Some(n)) => {
-                appeared.push(FileId(f));
-                changed_file(f, Change::Appeared, Some(n))
-            }
-            (Some(o), Some(n)) if o.ments != n.ments => changed_file(f, Change::Changed, Some(n)),
-            _ => continue,
-        };
-        files.insert(f, c);
-    }
-    let options = new.options();
-    loop {
-        let changed = ChangedFiles {
-            files: files.values().cloned().collect(),
-            appeared: appeared.clone(),
-            positional: Vec::new(),
-        };
-        let x = extract::extract(&view, &changed, &options)?;
-        let mut more = false;
-        for &(m, _) in &x.extracted {
-            if let std::collections::btree_map::Entry::Vacant(e) = files.entry(m.0) {
-                e.insert(changed_file(m.0, Change::Extracted, new.file(m.0)));
-                more = true;
-            }
-        }
-        if more {
-            continue;
-        }
-        // The update's live set.
-        let mut live: BTreeMap<u32, u32> = BTreeMap::new();
-        for (i, f) in state.files.iter().enumerate() {
-            let gone = new.file(i as u32).is_none();
-            if f.flags & (file_flags::LAZY | file_flags::GONE) == 0 && !gone {
-                live.insert(i as u32, f.round);
-            }
-        }
-        for &f in &appeared {
-            if !new.file(f.0).unwrap().member {
-                live.insert(f.0, 0);
-            }
-        }
-        for f in &x.unextracted {
-            live.remove(&f.0);
-        }
-        for &(f, r) in x.extracted.iter().chain(&x.rounds) {
-            live.insert(f.0, r);
-        }
-        return Ok((live, x));
-    }
-}
-
-/// The update's live set equals §4.1's on the new inputs, and its rounds
-/// are supporting values (IN-71b).
-fn check(old: &Link, new: &Link) -> extract::Extraction {
-    let (live, x) = update(old, new).unwrap_or_else(|e| panic!("update failed: {e:?}"));
-    let want = new.closure();
-    let a: BTreeSet<u32> = live.keys().copied().collect();
-    let b: BTreeSet<u32> = want.keys().copied().collect();
-    assert_eq!(a, b, "live files: update vs full link\nold {old:#?}\nnew {new:#?}\n{x:?}");
-    supported(new, &live);
-    x
-}
-
-/// Every live member has an edge from a live file (or a root) of smaller
-/// round.
-fn supported(link: &Link, live: &BTreeMap<u32, u32>) {
-    let mut first: BTreeMap<&str, (u64, u32)> = BTreeMap::new();
-    let mut cfirst: BTreeMap<&str, (u64, u32)> = BTreeMap::new();
-    for (i, f) in link.files.iter().enumerate().skip(1) {
-        let Some(f) = f else { continue };
-        for m in &f.ments {
-            let d = m.kind == def_kind::SECTION;
-            let at = (f.rank, i as u32);
-            if d || m.kind == def_kind::COMMON {
-                let e = first.entry(&m.key).or_insert(at);
-                *e = (*e).min(at);
-            }
-            if d && m.bind != WEAK {
-                let e = cfirst.entry(&m.key).or_insert(at);
-                *e = (*e).min(at);
-            }
-        }
-    }
-    for (&f, &r) in live {
-        if f == 0 || !link.file(f).unwrap().member {
-            continue;
-        }
-        let mut ok = link.roots.iter().any(|k| first.get(k.as_str()).map(|x| x.1) == Some(f));
-        for (&s, &sr) in live {
-            if sr >= r || s == 0 {
-                continue;
-            }
-            for m in &link.file(s).unwrap().ments {
-                let t = if m.kind == def_kind::UNDEFINED && m.bind != WEAK {
-                    first.get(m.key.as_str())
-                } else if m.kind == def_kind::COMMON {
-                    cfirst.get(m.key.as_str())
-                } else {
-                    None
-                };
-                ok |= t.map(|x| x.1) == Some(f);
-            }
-        }
-        assert!(ok, "member {f} at round {r} has no supporting edge: {live:?}");
-    }
-}
-
-const R: u64 = 1 << 20;
 
 // ---- extraction (IN-71b) ------------------------------------------------------
 
@@ -643,35 +243,26 @@ fn versioned_old_or_new_is_fallback() {
         assert_eq!(
             r.err(),
             Some(IncrReason::UpdateNotImplemented(Some(
-                mortar_core::incr::Unimplemented::Versioned
+                Unimplemented::Versioned
             )))
         );
     }
     state.meta.versioned = 0;
     let view = state.view();
     let mut c =
-        changed_file(1, Change::Appeared, Some(&F { rank: R, member: false, ments: vec![] }));
+        changed_file(1, Change::Appeared, Some(&F { rank: R, member: false, ments: vec![] }), 0, &mut Vec::new(), 0);
     c.versioned = 1;
-    let changed = ChangedFiles { files: vec![c], appeared: vec![FileId(1)], positional: vec![] };
+    let changed = ChangedFiles {
+        files: vec![c],
+        appeared: vec![FileId(1)],
+        positional: vec![],
+        strings: vec![],
+    };
     let r = extract::extract(&view, &changed, &OptionKeys::default());
     assert_eq!(
         r.err(),
-        Some(IncrReason::UpdateNotImplemented(Some(mortar_core::incr::Unimplemented::Versioned)))
+        Some(IncrReason::UpdateNotImplemented(Some(Unimplemented::Versioned)))
     );
-}
-
-/// xorshift64*.
-struct Rng(u64);
-impl Rng {
-    fn next(&mut self) -> u64 {
-        self.0 ^= self.0 >> 12;
-        self.0 ^= self.0 << 25;
-        self.0 ^= self.0 >> 27;
-        self.0.wrapping_mul(0x2545_F491_4F6C_DD1D)
-    }
-    fn below(&mut self, n: u64) -> u64 {
-        self.next() % n
-    }
 }
 
 fn random_ments(rng: &mut Rng, keys: u64) -> Vec<M> {
@@ -683,7 +274,7 @@ fn random_ments(rng: &mut Rng, keys: u64) -> Vec<M> {
         }
         v.push(match rng.below(8) {
             0..=2 => undef(&k),
-            3 => M { key: k, kind: def_kind::UNDEFINED, bind: WEAK },
+            3 => weak_undef(&k),
             4 => weak_def(&k),
             5 => common(&k),
             _ => def(&k),
@@ -784,4 +375,730 @@ fn empty_update_recompute_and_refill_set() {
     let resolved = resolve::ResolveDelta::default();
     let set = refill::refill_set(&view, &ChangedFiles::default(), &resolved, &layout, &[]).unwrap();
     assert!(set.units.is_empty());
+}
+
+// spec: incr.md IN-71, IN-72 2a (WP-215 condition 1(b)): random small
+// links with COMDAT groups of mismatched symbol sets, weak definitions
+// behind strong ones, commons and appended middle-rank files; an edit; the
+// stored rows from the first link. `resolve` is called at most twice and
+// its delta equals the full link of the new inputs (definers, kinds,
+// values, sizes, keepers, winning commons, `at`, KEY_REFS); every
+// fall-back has a reason in the full links.
+#[test]
+fn resolve_random_series() {
+    let mut rng = Rng(0x2545_F491_4F6C_DD1D);
+    let (mut ok, mut drawn, mut two, mut falls) = (0, 0, 0, BTreeMap::<String, u32>::new());
+    let total = 4000;
+    for _ in 0..total {
+        let keys = 2 + rng.below(5);
+        let mut old = Link::new();
+        let n = 2 + rng.below(6);
+        for i in 0..n {
+            let member = rng.below(3) == 0;
+            let ments = random_resolve_ments(&mut rng, keys);
+            old.add((i + 1) * R, member, ments);
+        }
+        if rng.below(4) == 0 {
+            old.roots.push(format!("k{}", rng.below(keys)));
+        }
+        let mut new = old.clone();
+        for _ in 0..1 + rng.below(2) {
+            random_edit(&mut rng, &mut new, n, keys);
+        }
+        let j = join(&old, &new);
+        assert!(j.calls <= 2);
+        if new.full().iterated {
+            assert!(j.result.is_err(), "the new link iterates: old {old:#?}\nnew {new:#?}");
+        }
+        match &j.result {
+            Ok(d) => {
+                same_as_full(&j, d, &new, &format!("old {old:#?}\nnew {new:#?}\ndelta {d:#?}"));
+                ok += 1;
+                drawn += usize::from(!j.drawn.is_empty());
+                two += usize::from(j.calls == 2);
+            }
+            Err(e) => {
+                assert!(
+                    may_fall_back(&old, &new, e),
+                    "an unexplained fall-back {e:?}\nold {old:#?}\nnew {new:#?}\nOLDFULL {:?}\nNEWFULL {:?}",
+                    old.full(),
+                    new.full()
+                );
+                let mut why = format!("{e:?}").split('(').next().unwrap_or_default().to_owned();
+                if matches!(e, IncrReason::UpdateNotImplemented(_)) {
+                    why += if new.full().clash.is_empty() { " (undefined)" } else { " (clash)" };
+                } else if matches!(e, IncrReason::ClosureIterated(_)) {
+                    why += if old.full().iterated { " (stored)" } else { " (feed-back)" };
+                }
+                *falls.entry(why).or_default() += 1;
+            }
+        }
+    }
+    eprintln!("resolve_random_series: {ok} ok, {drawn} drew in, {two} two calls, {falls:?}");
+    assert!(ok * 2 > total, "{ok} of {total} updated");
+    assert!(drawn > 50, "{drawn} drew in");
+}
+
+// ---- linker-defined keys (IN-71c) -------------------------------------------
+
+/// A link's linker-defined keys as `recompute` and `refill_set` see them:
+/// the chunks `(addr, size)`, the `DEFINED` values by key name, and the
+/// referrers: file `f` (1-based) has one allocated unit (section `f-1`)
+/// naming the keys listed for it (`INDEX` kind `GLOBAL`, `KEY_REFS`).
+#[derive(Debug, Clone)]
+struct Defs {
+    keys: Vec<&'static str>,
+    chunks: Vec<(u64, u64)>,
+    values: BTreeMap<&'static str, DefValue>,
+    referrers: Vec<Vec<&'static str>>,
+}
+
+const fn at(chunk: u32, offset: u64) -> DefValue {
+    DefValue::At { chunk: ChunkId(chunk), offset }
+}
+
+impl Defs {
+    fn id(&self, k: &str) -> u32 {
+        self.keys.iter().position(|x| *x == k).unwrap() as u32
+    }
+
+    fn state(&self) -> MemoryState {
+        let mut m = MemoryState::default();
+        let empty = m.intern(b"");
+        for k in &self.keys {
+            let name = m.intern(k.as_bytes());
+            m.symbols.push(SymbolRow {
+                kind: sym_kind::GLOBAL,
+                file: NONE,
+                ordinal: 0,
+                name,
+                version: empty,
+                at_file: 0,
+                at_index: 0,
+            });
+            m.resolved.push(ResolvedRow { kind: def_kind::INTERNAL, ..ResolvedRow::default() });
+        }
+        for &(addr, size) in &self.chunks {
+            m.chunks.push(ChunkRow {
+                sh_flags: u64::from(mortar_elf::consts::SHF_ALLOC),
+                size,
+                capacity: size,
+                addr,
+                ..ChunkRow::default()
+            });
+        }
+        for (k, v) in &self.values {
+            let symbol = self.id(k);
+            m.defined.push(match *v {
+                DefValue::Absolute(value) => DefinedRow { symbol, kind: 0, chunk: 0, value },
+                DefValue::At { chunk, offset } => {
+                    DefinedRow { symbol, kind: 1, chunk: chunk.0, value: offset }
+                }
+            });
+        }
+        m.files.push(FileRow::default());
+        for (i, keys) in self.referrers.iter().enumerate() {
+            let file = i as u32 + 1;
+            m.files.push(FileRow { kind: 1, rank: u64::from(file) * R, ..FileRow::default() });
+            m.sections.push(SectionRow {
+                file,
+                sh_flags: u64::from(mortar_elf::consts::SHF_ALLOC),
+                size: 8,
+                ..SectionRow::default()
+            });
+            for k in keys {
+                let key = self.id(k);
+                m.index.push((FileId(file), IndexRow { unit: i as u32, kind: index_kind::GLOBAL, target: key }));
+                m.key_refs.push(KeyRefRow { key, file, ..KeyRefRow::default() });
+            }
+        }
+        m.key_refs.sort_by_key(|r| (r.key, r.file));
+        m
+    }
+
+    /// The update to `next`: the keys `recompute` says changed and the
+    /// units `refill_set` refills; `slots`: the IPLT slots appended and
+    /// dead (IN-28b).
+    fn hop(&self, next: &Defs, slots: (Vec<StoredSlot>, Vec<StoredSlot>)) -> (BTreeSet<&'static str>, BTreeSet<u32>) {
+        let state = self.state();
+        let view = state.view();
+        let chunks: Vec<Chunk> = next
+            .chunks
+            .iter()
+            .map(|&(addr, size)| Chunk {
+                kind: ChunkKind::FileHeader,
+                sh_type: mortar_elf::consts::SHT_PROGBITS,
+                flags: u64::from(mortar_elf::consts::SHF_ALLOC),
+                align: 3,
+                size,
+                capacity: size,
+                addr: Some(addr),
+                offset: addr,
+                shndx: Some(1),
+                relro: false,
+            })
+            .collect();
+        let mut layout = LayoutDelta::default();
+        layout.placement.chunks = Column::from_vec(chunks).unwrap();
+        // Each referrer's unit: 8 bytes into chunk 0 (unchanged).
+        layout.placement.place =
+            Column::from_vec(vec![Place::at(ChunkId(0), 0); self.referrers.len()]).unwrap();
+        layout.placement.defined = next
+            .values
+            .iter()
+            .map(|(k, v)| Defined { symbol: SymbolId(self.id(k)), value: *v })
+            .collect::<Vec<_>>()
+            .into_boxed_slice();
+        layout.placement.defined.sort_by_key(|d| d.symbol);
+        (layout.slots_appended, layout.slots_dead) = slots;
+        let changes = defined::recompute(&view, &layout);
+        let resolved = resolve::ResolveDelta::default();
+        let set =
+            refill::refill_set(&view, &ChangedFiles::default(), &resolved, &layout, &changes)
+                .unwrap();
+        let keys = changes.iter().map(|c| self.keys[c.key.0 as usize]).collect();
+        (keys, set.units.iter().map(|u| u.section.0).collect())
+    }
+}
+
+/// Every hop of `links` (a first update, then each one from the previous
+/// update's result: the third hop included) refills exactly the
+/// referrers of the keys named for it.
+fn hops(links: &[Defs], want: &[&[&'static str]]) {
+    for (i, w) in want.iter().enumerate() {
+        let (keys, units) = links[i].hop(&links[i + 1], (Vec::new(), Vec::new()));
+        let w: BTreeSet<&'static str> = w.iter().copied().collect();
+        assert_eq!(keys, w, "hop {}: the keys recompute changes", i + 1);
+        let refs: BTreeSet<u32> = links[i]
+            .referrers
+            .iter()
+            .enumerate()
+            .filter(|(_, ks)| ks.iter().any(|k| w.contains(k)))
+            .map(|(u, _)| u as u32)
+            .collect();
+        assert_eq!(units, refs, "hop {}: the units refilled", i + 1);
+    }
+}
+
+/// `.text` (0), `.init_array` (1), `.data` (2), `.bss` (3) with
+/// `init_array` and `bss` bytes; the start-up symbols at their ends.
+fn startup(init_array: u64, bss: u64) -> Defs {
+    let text = (0x1000, 0x100);
+    let ia = (0x2000, init_array);
+    let data = (0x2000 + init_array.max(16), 32);
+    let b = (data.0 + 32, bss);
+    Defs {
+        keys: vec!["_etext", "__init_array_start", "__init_array_end", "_edata", "__bss_start", "_end", "x"],
+        chunks: vec![text, ia, data, b],
+        values: [
+            ("_etext", at(0, 0x100)),
+            ("__init_array_start", at(1, 0)),
+            ("__init_array_end", at(1, init_array)),
+            ("_edata", at(2, 32)),
+            ("__bss_start", at(3, 0)),
+            ("_end", at(3, bss)),
+        ]
+        .into_iter()
+        .collect(),
+        // libc-start.o, dl-minimal-malloc.o, a reader of `_etext`.
+        referrers: vec![
+            vec!["__init_array_start", "__init_array_end"],
+            vec!["_end"],
+            vec!["_etext", "_edata"],
+        ],
+    }
+}
+
+// spec: incr.md IN-71c (`init_array_grows`): `.init_array` grows past its
+// capacity's slack (16 -> 24 bytes: `.data` and `.bss` move), a first
+// update and a third hop.
+#[test]
+fn init_array_grows() {
+    hops(
+        &[startup(16, 64), startup(24, 64), startup(32, 64), startup(40, 64)],
+        &[
+            &["__init_array_end", "_edata", "__bss_start", "_end"],
+            &["__init_array_end", "_edata", "__bss_start", "_end"],
+            &["__init_array_end", "_edata", "__bss_start", "_end"],
+        ],
+    );
+}
+
+// spec: incr.md IN-71c (`init_array_shrinks`): in place (the chunks after
+// it stay: `startup` keeps `.data` at 16 bytes past it).
+#[test]
+fn init_array_shrinks() {
+    hops(
+        &[startup(16, 64), startup(8, 64), startup(16, 64), startup(8, 64)],
+        &[&["__init_array_end"], &["__init_array_end"], &["__init_array_end"]],
+    );
+}
+
+// spec: incr.md IN-71c (`init_array_grows_then_shrinks`): back to the
+// first link's values on the third hop, each hop against its own stored
+// rows.
+#[test]
+fn init_array_grows_then_shrinks() {
+    let moved: &[&str] = &["__init_array_end", "_edata", "__bss_start", "_end"];
+    hops(&[startup(16, 64), startup(24, 64), startup(16, 64), startup(16, 64)], &[moved, moved, &[]]);
+}
+
+// spec: incr.md IN-71c (`bss_grows_moves_end`): `_end` moves, nothing
+// else; its referrer (`dl-minimal-malloc.o`) is refilled.
+#[test]
+fn bss_grows_moves_end() {
+    hops(
+        &[startup(16, 64), startup(16, 96), startup(16, 96), startup(16, 128)],
+        &[&["_end"], &[], &["_end"]],
+    );
+}
+
+// spec: incr.md IN-71c (`defsym_follows_moved_symbol`, review-wp207 M-6):
+// `--defsym x=_etext+4`; an edit that grows `.text` moves `_etext`, and
+// `x` with it: `x`'s referrers are refilled.
+#[test]
+fn defsym_follows_moved_symbol() {
+    let link = |text: u64| {
+        let mut d = startup(16, 64);
+        d.chunks[0].1 = text;
+        d.values.insert("_etext", at(0, text));
+        d.values.insert("x", at(0, text + 4));
+        d.referrers.push(vec!["x"]);
+        d
+    };
+    hops(
+        &[link(0x100), link(0x110), link(0x110), link(0x120)],
+        &[&["_etext", "x"], &[], &["_etext", "x"]],
+    );
+}
+
+/// A registry section `reg` (chunk 4) with `__start_reg`/`__stop_reg`.
+fn registry(size: u64) -> Defs {
+    let mut d = startup(16, 64);
+    d.keys.extend(["__start_reg", "__stop_reg"]);
+    d.chunks.push((0x8000, size));
+    d.values.insert("__start_reg", at(4, 0));
+    d.values.insert("__stop_reg", at(4, size));
+    d.referrers.push(vec!["__start_reg", "__stop_reg"]);
+    d
+}
+
+// spec: incr.md IN-71c (`start_stop_registry_grows_then_shrinks`)
+#[test]
+fn start_stop_registry_grows_then_shrinks() {
+    hops(
+        &[registry(16), registry(32), registry(16), registry(16)],
+        &[&["__stop_reg"], &["__stop_reg"], &[]],
+    );
+}
+
+/// `.eh_frame_hdr` (chunk 4) at `addr` and `__GNU_EH_FRAME_HDR` at it.
+fn eh_frame(addr: u64) -> Defs {
+    let mut d = startup(16, 64);
+    d.keys.push("__GNU_EH_FRAME_HDR");
+    d.chunks.push((addr, 64));
+    d.values.insert("__GNU_EH_FRAME_HDR", at(4, 0));
+    d.referrers.push(vec!["__GNU_EH_FRAME_HDR"]);
+    d
+}
+
+// spec: incr.md IN-71c (`eh_frame_overflow_then_edit_unchanged_file`,
+// review-in77 B-3): the overflow moves `.eh_frame_hdr` (the key's chunk
+// address, its offset unchanged); then an edit of a file that changes no
+// linker-defined key; then the header moves again.
+#[test]
+fn eh_frame_overflow_then_edit_unchanged_file() {
+    hops(
+        &[eh_frame(0x6000), eh_frame(0x9000), eh_frame(0x9000), eh_frame(0xA000)],
+        &[&["__GNU_EH_FRAME_HDR"], &[], &["__GNU_EH_FRAME_HDR"]],
+    );
+}
+
+/// `.rela.iplt` (chunk 4) of `n` entries with `__rela_iplt_start/_end`.
+fn iplt(n: u64) -> Defs {
+    let mut d = startup(16, 64);
+    d.keys.extend(["__rela_iplt_start", "__rela_iplt_end", "resolver"]);
+    d.chunks.push((0x7000, 24 * n));
+    d.values.insert("__rela_iplt_start", at(4, 0));
+    d.values.insert("__rela_iplt_end", at(4, 24 * n));
+    d.referrers.push(vec!["__rela_iplt_start", "__rela_iplt_end"]);
+    d.referrers.push(vec!["resolver"]);
+    d
+}
+
+// spec: incr.md IN-71c (`ifunc_added_moves_rela_iplt_end`): an IFUNC
+// added (one more `.rela.iplt` entry) moves `__rela_iplt_end`.
+#[test]
+fn ifunc_added_moves_rela_iplt_end() {
+    hops(
+        &[iplt(1), iplt(2), iplt(2), iplt(3)],
+        &[&["__rela_iplt_end"], &[], &["__rela_iplt_end"]],
+    );
+}
+
+// spec: incr.md IN-71c, IN-28b (`local_ifunc_slot_dead_and_appended`,
+// review-in72 m-5): a local IFUNC's IPLT slot dies (written 0, its entry
+// stays) and another's is appended: `__rela_iplt_end` moves; a local
+// slot names no global, so only the start-up code's unit is refilled for
+// it; a global's appended slot refills that global's referrers.
+#[test]
+fn local_ifunc_slot_dead_and_appended() {
+    let (a, b) = (iplt(1), iplt(2));
+    let local = StoredSlot {
+        kind: SlotKind::Iplt,
+        key: SymKey::local(SymEntry { file: FileId(1), index: mortar_elf::SymbolIndex(3) }),
+        index: 0,
+    };
+    let (keys, units) = a.hop(&b, (vec![local], vec![local]));
+    assert_eq!(keys, ["__rela_iplt_end"].into_iter().collect());
+    assert_eq!(units, [3].into_iter().collect(), "the start-up code's unit only");
+    // Third hop: a global IFUNC's slot appended.
+    let c = iplt(3);
+    let global =
+        StoredSlot { kind: SlotKind::Iplt, key: SymKey::global(SymbolId(b.id("resolver"))), index: 1 };
+    let (keys, units) = b.hop(&c, (vec![global], Vec::new()));
+    assert_eq!(keys, ["__rela_iplt_end"].into_iter().collect());
+    assert_eq!(units, [3, 4].into_iter().collect(), "with the global's referrer");
+}
+
+// ---- resolution (IN-71, IN-72 item 2a) ---------------------------------------
+
+/// The update `old` -> `new` succeeds and equals the full link of `new`;
+/// the files it drew in.
+fn hop_ok(old: &Link, new: &Link) -> (resolve::ResolveDelta, Vec<u32>) {
+    let j = join(old, new);
+    let d = j
+        .result
+        .clone()
+        .unwrap_or_else(|e| panic!("update failed: {e:?}\nold {old:#?}\nnew {new:#?}"));
+    same_as_full(&j, &d, new, &format!("old {old:#?}\nnew {new:#?}\ndelta {d:#?}"));
+    assert!(j.calls <= 2);
+    (d, j.drawn)
+}
+
+/// The key named `k` in `link`'s stored state.
+fn key_of(link: &Link, k: &str) -> SymbolId {
+    let mut keys = Vec::new();
+    link.state(&mut keys);
+    SymbolId(keys.iter().position(|x| x == k).unwrap() as u32)
+}
+
+// spec: incr.md IN-71, IN-72 2a (a COMDAT keeper change both ways,
+// `comdat_keeper_flips_twice`): the first copy goes, the second file's
+// copy is kept (drawn in: its section takes a new id); the copy comes
+// back at a middle rank (appended, before the second file): it wins
+// again; the third hop removes it again.
+#[test]
+fn comdat_keeper_flips_twice() {
+    let mut a = Link::new();
+    let f1 = a.add(R, false, vec![weak_def("t").func().group("G").val(8, 4), undef("t")]);
+    let f2 = a.add(2 * R, false, vec![weak_def("t").func().group("G").val(16, 4), def("u")]);
+    let mut b = a.clone();
+    b.files[f1 as usize].as_mut().unwrap().ments = vec![undef("t")];
+    let (d, drawn) = hop_ok(&a, &b);
+    assert_eq!(drawn, vec![f2], "the new keeper is drawn in");
+    assert_eq!(d.reelected.len(), 1);
+    assert_eq!((d.reelected[0].1, d.reelected[0].2), (FileId(f1), FileId(f2)));
+    let mut c = b.clone();
+    let f3 = c.add(R + R / 2, false, vec![weak_def("t").func().group("G").val(24, 4)]);
+    let (d, drawn) = hop_ok(&b, &c);
+    assert_eq!(drawn, vec![f2], "the old keeper is drawn in");
+    assert_eq!((d.reelected[0].1, d.reelected[0].2), (FileId(f2), FileId(f3)));
+    let mut e = c.clone();
+    e.files[f3 as usize] = None;
+    let (d, _) = hop_ok(&c, &e);
+    assert_eq!((d.reelected[0].1, d.reelected[0].2), (FileId(f3), FileId(f2)));
+}
+
+// spec: incr.md IN-71 (`common_first_referenced_by_changed_file`,
+// review-in77 B-4): a changed file before the winning common's file
+// gains a common of the key (it wins: the first by rank, the largest
+// size) and, on the next hop, only a reference (the winner goes back,
+// `at` stays with the changed file).
+#[test]
+fn common_first_referenced_by_changed_file() {
+    let mut a = Link::new();
+    let f1 = a.add(R, false, vec![def("main")]);
+    a.add(2 * R, false, vec![M { value: 8, size: 8, ..common("c") }]);
+    let mut b = a.clone();
+    b.files[f1 as usize].as_mut().unwrap().ments =
+        vec![def("main"), M { value: 4, size: 32, ..common("c") }];
+    let (d, drawn) = hop_ok(&a, &b);
+    assert!(drawn.is_empty(), "a winning common is never drawn in: {drawn:?}");
+    let c = key_of(&a, "c");
+    let row = d.resolved.iter().find(|(k, _)| *k == c).unwrap().1;
+    assert_eq!((row.kind, row.size, row.value), (def_kind::COMMON, 32, 4));
+    let mut e = b.clone();
+    e.files[f1 as usize].as_mut().unwrap().ments = vec![def("main"), undef("c")];
+    let (d, drawn) = hop_ok(&b, &e);
+    assert!(drawn.is_empty(), "the common's value is its stored alignment: {drawn:?}");
+    let row = d.resolved.iter().find(|(k, _)| *k == c).unwrap().1;
+    assert_eq!((row.kind, row.size, row.value), (def_kind::COMMON, 8, 8));
+}
+
+// spec: incr.md IN-71 (`first_mentioner_drops_then_readds_key`, three
+// hops, review-in77 B-4): `at` follows the first live mentioner by rank.
+#[test]
+fn first_mentioner_drops_then_readds_key() {
+    let mut a = Link::new();
+    let f1 = a.add(R, false, vec![undef("k"), def("x")]);
+    a.add(2 * R, false, vec![def("k")]);
+    let mut b = a.clone();
+    b.files[f1 as usize].as_mut().unwrap().ments = vec![def("x")];
+    hop_ok(&a, &b);
+    hop_ok(&b, &a);
+    hop_ok(&a, &b);
+}
+
+// spec: incr.md IN-71 (`key_refs_single_mentioner`): the one file that
+// mentions a key drops it (the key is gone, its KEY_REFS row deleted),
+// then mentions it again (a new key).
+#[test]
+fn key_refs_single_mentioner() {
+    let mut a = Link::new();
+    let f1 = a.add(R, false, vec![def("only"), def("x")]);
+    let mut b = a.clone();
+    b.files[f1 as usize].as_mut().unwrap().ments = vec![def("x")];
+    let (d, _) = hop_ok(&a, &b);
+    assert_eq!(d.gone, vec![key_of(&a, "only")]);
+    let (d, _) = hop_ok(&b, &a);
+    assert_eq!(d.new_keys.len(), 1);
+    assert_eq!(d.new_keys[0].name, b"only".to_vec());
+}
+
+// spec: incr.md IN-71 ("first", "least" by CURRENT rank; WP-215 rulings):
+// an appended file at a middle rank defines a strong `k` and wins over
+// the later stored definer; a weak one loses to the stored strong one.
+#[test]
+fn appended_middle_rank_definer_wins() {
+    let mut a = Link::new();
+    a.add(R, false, vec![undef("k")]);
+    a.add(3 * R, false, vec![def("k").val(8, 8)]);
+    let mut b = a.clone();
+    let f = b.add(2 * R, false, vec![def("w").val(0, 0)]);
+    hop_ok(&a, &b);
+    let mut c = a.clone();
+    c.add(2 * R, false, vec![weak_def("k").val(4, 4)]);
+    hop_ok(&a, &c);
+    // A strong definition at the middle rank and another at rank 3R
+    // clash: the full link reports it; the update falls back by name.
+    b.files[f as usize].as_mut().unwrap().ments = vec![def("k").val(4, 4)];
+    assert_eq!(
+        join(&a, &b).result.err(),
+        Some(IncrReason::UpdateNotImplemented(Some(Unimplemented::Resolve)))
+    );
+}
+
+// spec: incr.md IN-71, IN-72 2a: the defining file changes to an
+// unchanged file (its value and size are not stored): it is drawn in,
+// once; the second call asks for nothing.
+#[test]
+fn unchanged_new_definer_is_drawn_in() {
+    let mut a = Link::new();
+    let f1 = a.add(R, false, vec![def("k").val(8, 8), undef("u")]);
+    let f2 = a.add(2 * R, false, vec![weak_def("k").val(16, 4), def("u")]);
+    let mut b = a.clone();
+    b.files[f1 as usize].as_mut().unwrap().ments = vec![undef("k"), undef("u")];
+    let (_, drawn) = hop_ok(&a, &b);
+    assert_eq!(drawn, vec![f2]);
+}
+
+// spec: incr.md IN-71, S-74 (IN-72 item 2a): a hidden reference added by
+// a changed file makes an unchanged definer's global hidden (a local of
+// its block): the definer is drawn in.
+#[test]
+fn hidden_reference_draws_in_definer() {
+    let mut a = Link::new();
+    let f1 = a.add(R, false, vec![undef("k")]);
+    let f2 = a.add(2 * R, false, vec![def("k").val(8, 8)]);
+    let mut b = a.clone();
+    b.files[f1 as usize].as_mut().unwrap().ments = vec![undef("k").hidden()];
+    let (_, drawn) = hop_ok(&a, &b);
+    assert_eq!(drawn, vec![f2]);
+    let (_, drawn) = hop_ok(&b, &a);
+    assert_eq!(drawn, vec![f2], "and back");
+}
+
+// spec: incr.md IN-71b, §7.1 (`wrap_of_member_symbol`, WP-211): with
+// `--wrap=foo` a reference to `foo` extracts the member defining
+// `__wrap_foo`, not the one defining `foo`; an edit to `__real_foo`
+// extracts the latter and drops the former.
+#[test]
+fn wrap_of_member_symbol() {
+    let mut a = Link::new();
+    a.wrap.push("foo".into());
+    let f1 = a.add(R, false, vec![undef("foo")]);
+    let real = a.add(2 * R, true, vec![def("foo")]);
+    let wrap = a.add(3 * R, true, vec![def("__wrap_foo")]);
+    let full = a.full();
+    assert!(full.live.contains_key(&wrap) && !full.live.contains_key(&real));
+    let mut b = a.clone();
+    b.files[f1 as usize].as_mut().unwrap().ments = vec![undef("__real_foo")];
+    let x = check(&a, &b);
+    assert_eq!(x.extracted.iter().map(|e| e.0.0).collect::<Vec<_>>(), vec![real]);
+    assert_eq!(x.unextracted.iter().map(|f| f.0).collect::<Vec<_>>(), vec![wrap]);
+    hop_ok(&a, &b);
+    hop_ok(&b, &a);
+}
+
+// spec: incr.md IN-71b, §4.1 step 1, §7.2 (`assign_candidate_vs_member`,
+// WP-211: script assignments are refused under incremental mode (`-T`),
+// so the candidate the update meets is `--defsym`'s): a `--defsym` key
+// is not a target, so a reference added to it extracts no member; its
+// row stays INTERNAL.
+#[test]
+fn assign_candidate_vs_member() {
+    let mut a = Link::new();
+    a.defsym.push("x".into());
+    let f1 = a.add(R, false, vec![def("main")]);
+    let m = a.add(2 * R, true, vec![def("x")]);
+    let mut b = a.clone();
+    b.files[f1 as usize].as_mut().unwrap().ments = vec![def("main"), undef("x")];
+    let x = check(&a, &b);
+    assert!(x.extracted.is_empty(), "{x:?}");
+    assert!(!b.full().live.contains_key(&m));
+    let (d, _) = hop_ok(&a, &b);
+    let row = d.resolved.iter().find(|(k, _)| *k == key_of(&a, "x")).unwrap().1;
+    assert_eq!(row.kind, def_kind::INTERNAL);
+}
+
+// spec: incr.md IN-71b (`extraction_bound_is_extraction_changed`): more
+// members than `FLIP_BOUND` flipping is `extraction-changed`; exactly
+// the bound is an update.
+#[test]
+fn extraction_bound_is_extraction_changed() {
+    for (n, falls) in [(extract::FLIP_BOUND, false), (extract::FLIP_BOUND + 1, true)] {
+        let mut a = Link::new();
+        let f1 = a.add(R, false, vec![]);
+        for i in 0..n {
+            a.add(2 * R + i as u64, true, vec![def(&format!("m{i}"))]);
+        }
+        let mut b = a.clone();
+        b.files[f1 as usize].as_mut().unwrap().ments =
+            (0..n).map(|i| undef(&format!("m{i}"))).collect();
+        let r = update(&a, &b);
+        if falls {
+            assert!(matches!(r, Err(IncrReason::ExtractionChanged(_))), "{n}: {:?}", r.err());
+        } else {
+            assert_eq!(r.unwrap().0.len(), n + 2, "{n}: every member extracted");
+        }
+    }
+}
+
+// spec: incr.md IN-71, WP-215 §Q.2 (`affected_key_feeds_back_is_fallback`):
+// an edit makes a live file's definition of an affected key, its
+// `first`, a dropped COMDAT copy (the WP-200 shape: wb.o's `hx` in its
+// copy of G, which wa.o now keeps): the full link iterates, the update
+// is `closure-iterated`.
+#[test]
+fn affected_key_feeds_back_is_fallback() {
+    let mut a = Link::new();
+    a.add(R, false, vec![undef("Y"), undef("g"), undef("hx")]);
+    let wa = a.add(2 * R, false, vec![def("z")]);
+    a.add(3 * R, false, vec![weak_def("g").func().group("G"), weak_def("hx").func().group("G"), def("Y")]);
+    a.add(4 * R, true, vec![def("hx")]);
+    assert!(!a.full().iterated);
+    let mut b = a.clone();
+    b.files[wa as usize].as_mut().unwrap().ments = vec![weak_def("g").func().group("G")];
+    assert!(b.full().iterated, "the WP-200 shape");
+    assert!(matches!(join(&a, &b).result, Err(IncrReason::ClosureIterated(_))));
+}
+
+// spec: incr.md IN-71 (WP-215 D8, condition 3 of seam 3's review):
+// `-u foo@V` names the key `(foo, V)`, never `foo`. Static only: no
+// shared object defines it, so it is an undefined key the root refers to;
+// an edit of `foo`'s definer updates `foo` and leaves `(foo, V)`
+// unaffected. With a shared object's `foo@V` (the stored row SHARED, the
+// file of kind 2: a dynamic link, which incremental mode refuses; the
+// rows are forced here), an edit that makes the key affected is
+// `update-not-implemented (resolve)` by name.
+#[test]
+fn undefined_versioned_root() {
+    let mut a = Link::new();
+    a.roots.push("foo@V".into());
+    let f1 = a.add(R, false, vec![def("foo").val(0, 4), def("x")]);
+    let mut b = a.clone();
+    b.files[f1 as usize].as_mut().unwrap().ments = vec![def("foo").val(4, 4), def("x")];
+    let (d, _) = hop_ok(&a, &b);
+    let root = key_of(&a, "foo@V");
+    assert!(d.resolved.iter().all(|(k, _)| *k != root), "the root's key is not affected");
+    let foo = key_of(&a, "foo");
+    assert_eq!(d.resolved.iter().find(|(k, _)| *k == foo).unwrap().1.value, 4);
+    // A shared object (file 2) defines `foo@V`; file 1 now mentions it.
+    let mut a = a.clone();
+    let so = a.add(2 * R, false, vec![]);
+    let shared = |m: &mut MemoryState, keys: &[String]| {
+        let k = keys.iter().position(|x| x == "foo@V").unwrap() as u32;
+        m.files[so as usize].kind = 2;
+        m.mentions.push((FileId(so), MentionRow { symbol: k, kind: def_kind::SHARED, bind: GLOBAL, typ: FUNC, other: 0, section: NONE }));
+        m.key_refs.push(KeyRefRow { key: k, file: so, def: def_kind::SHARED, bind: GLOBAL, typ: FUNC, flags: 0, tomb: false });
+        m.key_refs.sort_by_key(|r| (r.key, r.file));
+        m.resolved[k as usize] = ResolvedRow { kind: def_kind::SHARED, value: 0, section: NONE, ..ResolvedRow::default() };
+    };
+    let mut b = a.clone();
+    b.files[f1 as usize].as_mut().unwrap().ments = vec![def("foo").val(4, 4), def("x")];
+    assert!(join_patched(&a, &b, shared).result.is_ok(), "an edit not naming it updates");
+    // The shared object itself changes: its key is affected.
+    let mut b = a.clone();
+    b.files[so as usize].as_mut().unwrap().ments = vec![def("y")];
+    assert_eq!(
+        join_patched(&a, &b, shared).result.err(),
+        Some(IncrReason::UpdateNotImplemented(Some(Unimplemented::Resolve))),
+        "a shared definer's key affected"
+    );
+}
+
+// spec: incr.md IN-71 (WP-215 condition 1(c), the U-10 line): a key whose
+// definer becomes a shared object (`Def::Shared`, a stored SHARED row or
+// a kind-2 mention) is `update-not-implemented (resolve)`: the update
+// does not run the dynamic stage (spec/dyn.md D-11); static only today.
+#[test]
+fn shared_definer_is_not_implemented() {
+    let mut a = Link::new();
+    let f1 = a.add(R, false, vec![def("k"), undef("u")]);
+    let so = a.add(2 * R, false, vec![def("u")]);
+    let shared = |m: &mut MemoryState, keys: &[String]| {
+        let k = keys.iter().position(|x| x == "k").unwrap() as u32;
+        m.files[so as usize].kind = 2;
+        m.mentions.push((FileId(so), MentionRow { symbol: k, kind: def_kind::SHARED, bind: GLOBAL, typ: FUNC, other: 0, section: NONE }));
+        m.key_refs.push(KeyRefRow { key: k, file: so, def: def_kind::SHARED, bind: GLOBAL, typ: FUNC, flags: 0, tomb: false });
+        m.key_refs.sort_by_key(|r| (r.key, r.file));
+    };
+    let mut b = a.clone();
+    b.files[f1 as usize].as_mut().unwrap().ments = vec![undef("k"), undef("u")];
+    assert_eq!(
+        join_patched(&a, &b, shared).result.err(),
+        Some(IncrReason::UpdateNotImplemented(Some(Unimplemented::Resolve)))
+    );
+}
+
+// spec: incr.md IN-71 (`at`: the U-2 finding): `at` is the FIRST LIVE
+// mentioner by rank (IN-71's words), not the first of all inputs (the
+// capture's `first_mentions`): a lazy member mentioning `k` before the
+// live file does not hold it. Under the other reading this test fails:
+// `at` would be the member's.
+#[test]
+fn at_is_first_live_mentioner() {
+    let mut a = Link::new();
+    let m = a.add(R, true, vec![def("k"), def("other")]);
+    let f2 = a.add(2 * R, false, vec![weak_undef("k"), def("x")]);
+    let mut b = a.clone();
+    b.files[f2 as usize].as_mut().unwrap().ments = vec![def("x"), weak_undef("k")];
+    let (d, _) = hop_ok(&a, &b);
+    let k = key_of(&a, "k");
+    let at: Vec<(u32, u32)> = d.at.iter().filter(|x| x.0 == k).map(|x| (x.1, x.2)).collect();
+    assert_eq!(at, vec![(f2, 1)], "the live file's entry, not member {m}'s");
+}
+
+// spec: incr.md IN-71 (`symbol-kind-changed`): a definition that turns
+// from a section's into an absolute one while an unchanged file refers to
+// the key is `symbol-kind-changed`.
+#[test]
+fn section_to_absolute_is_symbol_kind_changed() {
+    let mut a = Link::new();
+    let f1 = a.add(R, false, vec![def("k").val(8, 4)]);
+    a.add(2 * R, false, vec![undef("k")]);
+    let mut b = a.clone();
+    b.files[f1 as usize].as_mut().unwrap().ments = vec![abs("k", 0x1234)];
+    assert!(matches!(join(&a, &b).result, Err(IncrReason::SymbolKindChanged(_))));
 }
