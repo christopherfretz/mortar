@@ -1069,6 +1069,43 @@ impl Overlay {
 mod tests {
     use super::*;
 
+    // spec: incr.md IN-72 item 3 (a growth step: every later section of
+    // its PT_LOAD moves in address, and in file offset unless NOBITS; the
+    // later non-allocated sections move in the file), IN-75 (the grown
+    // tail and every moved section dirty): hand-made section tables, the
+    // linked half in `crates/mortar/tests/update_image.rs`.
+    #[test]
+    fn growth_step_rewrites_headers_hand_made() {
+        let row = |in_file, alloc, addr, offset, size| Row { name: 0, in_file, alloc, addr, offset, size };
+        let old = Table {
+            class64: true,
+            shstrndx: 0,
+            rows: vec![
+                Row::default(),
+                row(true, true, 0x1000, 0x1000, 0x100),
+                row(true, true, 0x2100, 0x1100, 0x10),
+                row(false, true, 0x2110, 0x1110, 0x20),
+                row(true, false, 0, 0x1110, 0x48),
+            ],
+        };
+        let mut new = old.clone();
+        new.rows[1].size += 0x80;
+        new.rows[2].addr += 0x80;
+        new.rows[2].offset += 0x80;
+        new.rows[3].addr += 0x80;
+        new.rows[3].offset += 0x80;
+        new.rows[4].offset += 0x80;
+        let s = Shift::new(&old, &new);
+        assert_eq!(s.moved, [2, 3, 4]);
+        assert_eq!(s.map(0x1050), 0x1050, "the grown section's own code stays");
+        assert_eq!(s.map(0x2104), 0x2184);
+        assert_eq!(s.map(0x2120), 0x21a0, "NOBITS moves in address");
+        assert_eq!(s.map(0x3000), 0x3000, "past every section");
+        assert_eq!(Shift::grown_tails(&old, &new), [0x1100..0x1180]);
+        // No byte of padding between the moved sections: no gap to fill.
+        assert!(s.gaps(&new).is_empty(), "{:?}", s.gaps(&new));
+    }
+
     // spec: incr.md IN-75 (a later write over an earlier one; the ranges
     // sorted and disjoint).
     #[test]

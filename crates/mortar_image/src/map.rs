@@ -903,7 +903,9 @@ pub fn update_map(
             .and_then(|(_, c)| c.shndx)
     };
     let t = &symtab.tables;
-    if shndx_of(b".symtab").is_some() {
+    // A plan with no `.symtab` size is no plan (a default `SymtabPlan`):
+    // the full link's lines stand.
+    if t.symtab_size > 0 && shndx_of(b".symtab").is_some() {
         let symtab_dead =
             |out: &[u8], offset, size| DeadLine { out: out.to_vec(), offset, size, kind: None };
         m.dead.retain(|d| d.out != b".symtab" && d.out != b".strtab");
