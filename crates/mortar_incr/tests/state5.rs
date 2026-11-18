@@ -844,7 +844,15 @@ fn seam5_rows_round_trip_and_patch() {
     m.outsecs.push(mortar_incr::format::OutSecRow { name, ordinal: 0 });
     let name = add(&mut m.strings, b".rodata");
     m.outsecs.insert(0, mortar_incr::format::OutSecRow { name, ordinal: 0 });
-    m.frags.push(FragRow { out: 1, class: CLASS, hash: [5; 16], offset: 0, size: 0, refs: 3, tomb: false });
+    m.frags.push(FragRow {
+        out: 1,
+        class: CLASS,
+        hash: [5; 16],
+        offset: 0,
+        size: 0,
+        refs: 3,
+        tomb: false,
+    });
     for f in 0..3 {
         let row = FragUseRow { file: f, out: 1, class: CLASS, hash: [5; 16] };
         m.frag_uses.push((FileId(f), row));
