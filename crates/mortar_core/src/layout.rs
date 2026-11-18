@@ -993,9 +993,9 @@ pub enum HoleKind {
     /// A debug contribution's allotment beyond its size (IN-50): the
     /// section's neutral form (IN-51b).
     Debug,
-    /// The neutral abbreviation table (`01 11 00 80 40 09 00 00`, then
-    /// zeros) in `.debug_abbrev` that the neutral `.debug_info` units
-    /// name (IN-51b).
+    /// The one neutral abbreviation table (IN-51: four abbreviations
+    /// and the table's end, 38 bytes) at the end of `.debug_abbrev`,
+    /// which every neutral `.debug_info` and `.debug_types` unit names.
     AbbrevTable,
     /// A dead range an earlier link's debug contribution held (IN-3a):
     /// the section's neutral form.

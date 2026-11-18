@@ -764,17 +764,7 @@ fn end_labels(objs: &[Obj<'_>]) -> BTreeSet<String> {
 }
 
 /// The sections with a neutral form (incr.md IN-51, IN-51b).
-const NEUTRAL: &[&str] = &[
-    ".debug_info",
-    ".debug_abbrev",
-    ".debug_line",
-    ".debug_rnglists",
-    ".debug_loclists",
-    ".debug_str_offsets",
-    ".debug_addr",
-    ".debug_ranges",
-    ".debug_frame",
-];
+const NEUTRAL: &[&str] = crate::neutral::SECTIONS;
 
 /// The sections where a whole dead contribution may keep its bytes
 /// (incr.md IN-53).

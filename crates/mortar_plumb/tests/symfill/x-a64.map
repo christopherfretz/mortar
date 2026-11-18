@@ -46,7 +46,7 @@ hole .text c8 40
 dead .debug_abbrev 73 5 neutral
 dead .debug_abbrev 13a e neutral
 dead .debug_abbrev 20f 9 neutral
-dead .debug_abbrev 218 9 neutral
+dead .debug_abbrev 218 26 neutral
 dead .debug_info ff 11 neutral
 dead .debug_info 1b3 1d neutral
 dead .debug_line 62 2e neutral

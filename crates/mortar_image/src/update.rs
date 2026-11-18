@@ -27,7 +27,6 @@ use std::collections::BTreeMap;
 use std::fs::File;
 use std::ops::Range;
 use std::os::unix::fs::FileExt as _;
-use std::path::Path;
 
 use mortar_core::incr::{
     DirtyRange, IncrReason, LayoutDelta, RefillSet, StoredLayout, SymtabPlan, Unimplemented,
@@ -55,7 +54,11 @@ pub enum RefillError {
 /// What one refill did (WP-218: the O(change) counts the tests assert).
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct Counts {
-    /// Windows asked of the image, the jobs it filled and their bytes.
+    /// The 1 MiB blocks the ranges the image fills touch (I-95: the unit
+    /// of the leaf hash, not of the fill), the pieces it filled (each
+    /// range cut at the plan's jobs, I-31) and their bytes: the bytes
+    /// wanted, a whole synthetic chunk a range touches widened to the
+    /// chunk (I-104).
     pub windows: u64,
     pub jobs: u64,
     pub filled: u64,
@@ -70,9 +73,11 @@ pub struct Counts {
     pub symtab_entries: u64,
     /// Inputs rechecked (twice each: before the fill and after it).
     pub rechecked: u64,
-    /// Bytes hashed again for the leaves (IN-75, I-76): the blocks a
-    /// dirty range or the note touches, and those whose length the new
-    /// size changes; every other leaf is the stored one.
+    /// Bytes of the previous output read for the leaves (IN-75, I-76),
+    /// each block once: the blocks a dirty range or the note touches, and
+    /// those whose length the new size changes; every other leaf is the
+    /// stored one. The read serves both the check of the stored leaf
+    /// (ruling F8) and the new leaf.
     pub build_id_read: u64,
     /// Leaves recomputed.
     pub leaves_hashed: u64,
@@ -312,10 +317,10 @@ pub fn refill(
     }
     want.extend(headers.iter().cloned());
     let want = normalize(want);
-    let windows = windows_of(&want);
-    counts.windows = windows.len() as u64;
-    let refilled =
-        crate::link::refill(link, Path::new(""), &windows).map_err(RefillError::Failed)?;
+    // I-95 (WP-255a): the image fills the ranges themselves; the 1 MiB
+    // block is the unit of the leaf hash, not of the fill.
+    counts.windows = windows_of(&want).len() as u64;
+    let refilled = crate::link::refill_ranges(link, &want).map_err(RefillError::Failed)?;
     counts.jobs = refilled.jobs.len() as u64;
     counts.filled = refilled.jobs.iter().map(|j| j.1.len() as u64).sum();
     recheck(link, &mut counts)?;
@@ -409,14 +414,38 @@ pub fn refill(
     }
     let mut new_leaves: Vec<[u8; 32]> =
         (0..new_n).map(|k| leaves.get(k as usize).copied().unwrap_or([0; 32])).collect();
+    // The previous output's note, where its stored leaves zeroed it
+    // (I-72): the new one's place, moved with its section if a growth
+    // step moved it.
+    let old_sealed = sealed.as_ref().map(|s| {
+        let i = names.iter().position(|n| n == b".note.gnu.build-id");
+        match i.and_then(|i| Some((old.rows.get(i)?, new.rows.get(i)?))) {
+            Some((o, n)) if n.offset <= s.start && s.end <= n.offset + n.size => {
+                s.start - n.offset + o.offset..s.end - n.offset + o.offset
+            }
+            _ => s.clone(),
+        }
+    });
     for &k in &blocks {
         let r = mortar_digest::leaf_range(file_size, k);
-        let mut win = prev.read(r.clone())?;
+        // ONE read of the block (WP-255a): the previous bytes, as long as
+        // the longer of its old and new lengths.
+        let old_r = (k < old_n).then(|| mortar_digest::leaf_range(prev.len, k));
+        let end = old_r.as_ref().map_or(r.end, |o| o.end.max(r.end));
+        let mut win = prev.read(r.start..end)?;
+        counts.build_id_read += win.len() as u64;
+        // Ruling F8 (IN-75): before its first write, a block the update
+        // dirties is the block its stored leaf hashes (the note zeroed as
+        // the leaf rule says, I-72/I-76); else the previous output is not
+        // the one the state describes: `output-changed`.
+        if let Some(o) = &old_r {
+            check_leaf(&mut win, o, old_sealed.as_ref(), f, &leaves[k as usize], k)?;
+        }
+        win.truncate((r.end - r.start) as usize);
         now.read_over(r.start, &mut win);
         if let Some(s) = &sealed {
             zero(&mut win, r.start, s);
         }
-        counts.build_id_read += win.len() as u64;
         counts.leaves_hashed += 1;
         let mut d = [0u8; 32];
         let l = mortar_digest::leaf(f, &win);
@@ -1193,17 +1222,63 @@ fn windows_of(ranges: &[Range<u64>]) -> Vec<u64> {
     out
 }
 
-/// The bytes of `r` from the filled jobs (each `(range, bytes)`).
+/// The bytes of `r` from the filled jobs (each `(range, bytes)`, sorted
+/// and disjoint).
 fn slice_of(jobs: &[(Range<u64>, Vec<u8>)], r: &Range<u64>) -> Option<Vec<u8>> {
     let mut out = Vec::with_capacity((r.end - r.start) as usize);
     let mut at = r.start;
     while at < r.end {
-        let (j, b) = jobs.iter().find(|(j, _)| j.start <= at && at < j.end)?;
+        let (j, b) = jobs.get(jobs.partition_point(|(j, _)| j.end <= at))?;
+        if j.start > at {
+            return None;
+        }
         let end = r.end.min(j.end);
         out.extend_from_slice(&b[(at - j.start) as usize..(end - j.start) as usize]);
         at = end;
     }
     Some(out)
+}
+
+/// Ruling F8 (WP-255a; IN-75): block `k` of the previous output, whose
+/// bytes `win` starts with (its old range `old`), hashes to the stored
+/// leaf `stored`, with the note's descriptor `sealed` zeroed as the leaf
+/// rule says (I-72, I-76: the function that made the stored leaf). `win`
+/// is given back as it was read. A difference is `output-changed`.
+fn check_leaf(
+    win: &mut [u8],
+    old: &Range<u64>,
+    sealed: Option<&Range<u64>>,
+    f: mortar_digest::TreeFn,
+    stored: &[u8; 32],
+    k: u64,
+) -> Result<(), RefillError> {
+    let n = (old.end - old.start) as usize;
+    let Some(bytes) = win.get_mut(..n) else {
+        return Err(not_implemented(Unimplemented::Image));
+    };
+    // The note's bytes in this block, kept to be put back.
+    let note =
+        sealed.map(|s| s.start.max(old.start)..s.end.min(old.end)).filter(|z| z.start < z.end);
+    let kept = note.as_ref().map(|z| {
+        let at = (z.start - old.start) as usize..(z.end - old.start) as usize;
+        let kept = bytes[at.clone()].to_vec();
+        bytes[at].fill(0);
+        kept
+    });
+    let leaf = mortar_digest::leaf(f, bytes);
+    if let (Some(z), Some(kept)) = (&note, kept) {
+        bytes[(z.start - old.start) as usize..(z.end - old.start) as usize].copy_from_slice(&kept);
+    }
+    let mut d = [0u8; 32];
+    d[..leaf.as_bytes().len()].copy_from_slice(leaf.as_bytes());
+    if &d != stored {
+        return Err(RefillError::Fallback(IncrReason::OutputChanged(format!(
+            "block {k} of the previous output (file bytes [{:#x}, {:#x})) is not the block its \
+             stored leaf hashes",
+            old.start, old.end
+        ))));
+    }
+    Ok(())
 }
 
 fn zero(win: &mut [u8], base: u64, r: &Range<u64>) {

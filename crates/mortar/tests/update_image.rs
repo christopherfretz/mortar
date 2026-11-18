@@ -29,7 +29,7 @@ use mortar_core::par::Pool;
 use mortar_core::{FileId, SectionId};
 use mortar_diag::{Collector, Policy};
 use mortar_image::update::{
-    Counts, RefillError, Shift, move_eh_range, output_size, patch_eh, refill, walk_eh,
+    Counts, Refill, RefillError, Shift, move_eh_range, output_size, patch_eh, refill, walk_eh,
 };
 use mortar_input::store::{Store, StorePolicy};
 use mortar_testutil::target::Arch;
@@ -279,10 +279,75 @@ fn run_refill_with(
     let rows = MemoryLayout::default();
     let stored = StoredLayout::new(&rows);
     mortar::image::with_link(f, store, &|_| {}, |l| {
-        refill(l, delta, plan, set, &stored, &file, leaves)
-            .map(|u| (u.ranges, u.bytes, u.counts, output_size(l), u.leaves))
+        refill(l, delta, plan, set, &stored, &file, leaves).map(|u| {
+            clips_equal_windows(l, delta, &u);
+            (u.ranges, u.bytes, u.counts, output_size(l), u.leaves)
+        })
     })
     .unwrap()
+}
+
+std::thread_local! {
+    /// The refills [`clips_equal_windows`] compared on this thread.
+    static WINDOW_CHECKS: std::cell::Cell<u32> = const { std::cell::Cell::new(0) };
+}
+
+/// WP-255a (`refill_clips_equal_windows`): the bytes of every range the
+/// refill returns, which the image filled range by range (I-95), equal
+/// those of the whole 1 MiB windows that hold them, as the image phase's
+/// window path fills them (`mortar_image::link::refill`, the WP-061
+/// floor's own, unchanged: not a second writer, the fill of the same
+/// plan by the same `fill_range` over whole jobs). Aside: the build id's
+/// descriptor (zeros in a fill, the update's id in the range) and a
+/// retired slot's words (zeros the update writes over the fill, IN-72
+/// item 7, asserted by its test).
+fn clips_equal_windows(l: &mortar_image::link::Link<'_, '_>, delta: &LayoutDelta, u: &Refill) {
+    let w = mortar_digest::IMAGE_BLOCK;
+    let mut windows: Vec<u64> =
+        u.ranges.iter().flat_map(|r| r.offset / w..(r.offset + r.len).div_ceil(w)).collect();
+    windows.sort_unstable();
+    windows.dedup();
+    let whole = mortar_image::link::refill(l, Path::new(""), &windows)
+        .unwrap_or_else(|e| panic!("the window fill: {:?}", e.diagnostics));
+    let pl = &l.layout.placement;
+    let mut aside: Vec<std::ops::Range<u64>> = whole.sealed.iter().cloned().collect();
+    for h in delta.holes.iter().filter(|h| h.kind == mortar_core::layout::HoleKind::DeadSlot) {
+        let c = pl.chunks[h.chunk];
+        aside.push(c.offset + h.offset..c.offset + h.offset + h.size);
+    }
+    // The window fill laid out at its file offsets.
+    let mut image = vec![None; whole.file_size as usize];
+    for (j, b) in &whole.jobs {
+        for (i, &x) in b.iter().enumerate() {
+            image[j.start as usize + i] = Some(x);
+        }
+    }
+    let mut at = 0usize;
+    for r in &u.ranges {
+        for i in 0..r.len {
+            let o = r.offset + i;
+            let got = u.bytes[at + i as usize];
+            if aside.iter().any(|a| a.contains(&o)) || o >= whole.file_size {
+                continue;
+            }
+            assert_eq!(
+                Some(got),
+                image[o as usize],
+                "the range fill and the window fill differ at {o:#x} (range {r:x?})"
+            );
+        }
+        at += r.len as usize;
+    }
+    // The fill is O(range), not O(window): never more than the windows
+    // (an empty delta's header ranges are filled, and then dropped).
+    let windows_filled: u64 = whole.jobs.iter().map(|j| j.1.len() as u64).sum();
+    assert!(
+        u.ranges.is_empty() || u.counts.filled <= windows_filled,
+        "{:?} vs {windows_filled}",
+        u.counts
+    );
+    eprintln!("[u6-clips] filled {} bytes, the windows {windows_filled}", u.counts.filled);
+    WINDOW_CHECKS.with(|c| c.set(c.get() + 1));
 }
 
 const ARCHES: [Arch; 2] = [Arch::Aarch64, Arch::X86_64];
@@ -1047,6 +1112,313 @@ fn a_retired_slot_is_zero_and_a_hole() {
                     std::fs::copy(fx.path(i), d.join(i)).unwrap();
                 }
             }
+        });
+    }
+}
+
+// spec: image.md I-95 (WP-255a: the update fills its dirty ranges; the
+// 1 MiB block is the unit of the leaf hash, not of the fill). Every U-6
+// fixture that refills, both targets: each refill's ranges and bytes are
+// compared with the whole windows that hold them (`clips_equal_windows`,
+// run by `run_refill_with` on every refill of this file).
+#[test]
+fn refill_clips_equal_windows() {
+    let before = WINDOW_CHECKS.with(std::cell::Cell::get);
+    dirty_ranges_cover_every_differing_byte();
+    symtab_shrink_zeroes_its_own_tail_only();
+    growth_step_rewrites_headers();
+    build_id_is_the_tree_over_the_whole_new_output();
+    a_retired_slot_is_zero_and_a_hole();
+    let n = WINDOW_CHECKS.with(std::cell::Cell::get) - before;
+    eprintln!("[u6-clips] {n} refills compared with their windows");
+    if ARCHES.iter().all(|a| a.tool("gcc").is_some()) {
+        // Per arch: 2 (same-size), 1 (shrink, when it has a reserve),
+        // 1 (growth), 1 (build id), 1 (dead slot, when not relaxed).
+        assert!(n >= 2 * 4, "{n} refills compared");
+    }
+}
+
+/// The file ranges of `f`'s exec chunks no placed input section covers,
+/// each with whether it is the chunk's tail after its last section (the
+/// reserve, IN-33's slack) rather than a gap between sections (I-41).
+fn exec_gaps(f: &Front<'_>) -> Vec<(std::ops::Range<u64>, bool)> {
+    let pl = &f.layout.placement;
+    let mut out = Vec::new();
+    for (id, c) in pl.chunks.iter() {
+        if c.flags & mortar_elf::consts::SHF_EXECINSTR == 0 || !c.in_file() {
+            continue;
+        }
+        let mut covered: Vec<std::ops::Range<u64>> = Vec::new();
+        for (s, p) in pl.place.iter() {
+            let Some((pc, at)) = p.get() else { continue };
+            if pc != id {
+                continue;
+            }
+            let Some((file, index)) = f.resolution.sh_index(s) else { continue };
+            let Some(mortar_core::inputs::Reader::Object(o)) =
+                f.inputs.files.get(file).map(|x| &x.reader)
+            else {
+                continue;
+            };
+            let size = o.section(index).unwrap().size();
+            covered.push(c.offset + at..c.offset + at + size);
+        }
+        covered.sort_by_key(|r| r.start);
+        let mut at = c.offset;
+        for r in covered {
+            if r.start > at {
+                out.push((at..r.start, false));
+            }
+            at = at.max(r.end);
+        }
+        let end = c.offset + c.size.max(c.capacity);
+        if end > at {
+            out.push((at..end, true));
+        }
+    }
+    out
+}
+
+/// The bytes of `gaps` (`exec_gaps`) inside `ranges`: each the arch's
+/// pad in the full link `want` (I-41: the trap pattern by address, every
+/// byte 0xCC on x86-64; AArch64's is 4 zero bytes) and the update's
+/// `got`; the counts of gap and tail bytes.
+fn pads_in(
+    arch: Arch,
+    gaps: &[(std::ops::Range<u64>, bool)],
+    ranges: &[DirtyRange],
+    got: &[u8],
+    want: &[u8],
+) -> (u64, u64) {
+    let pad = if arch == Arch::X86_64 { 0xcc } else { 0 };
+    let in_range = |at: u64| ranges.iter().any(|x| x.offset <= at && at < x.offset + x.len);
+    let (mut gap, mut tail) = (0u64, 0u64);
+    for (g, is_tail) in gaps {
+        for at in g.clone().filter(|&at| in_range(at)) {
+            assert_eq!(want[at as usize], pad, "{arch:?}: the full link's pad at {at:#x}");
+            assert_eq!(got[at as usize], want[at as usize], "{arch:?}: the update at {at:#x}");
+            if *is_tail {
+                tail += 1;
+            } else {
+                gap += 1;
+            }
+        }
+    }
+    (gap, tail)
+}
+
+// spec: image.md I-41 (a gap's bytes: the trap pattern inside exec chunks,
+// 0xCC on x86-64, 4 zero bytes on AArch64), I-95 (WP-255a; review F1): the
+// range fill writes every byte of a range from the whole plan's rows,
+// pads included. Two U-6 shapes, both targets: the growth fixture, whose
+// ranges cover the `.text` tail after c.o's grown function (the review's
+// 1,537 bytes on x86-64), and a same-size edit with the `.text` chunk
+// rewritten whole (a `RefillSet` chunk, IN-72 item 4's shape), whose range
+// covers the gaps between a.o's and c.o's functions. There the update's
+// bytes are the full link's, and they are the arch's pad.
+#[test]
+fn clip_fill_writes_pad_bytes() {
+    for arch in ARCHES {
+        let Some(fx) = Fixture::new(arch, "u6-pad") else { continue };
+        let l0 = fx.write("prev", None);
+        let prev = std::fs::read(fx.path("prev")).unwrap();
+        // A: the growth step.
+        let [_, _, c] = sources(arch, 42, 0x3000);
+        fx.assemble("c", &c);
+        fx.write("grown", None);
+        let grown = std::fs::read(fx.path("grown")).unwrap();
+        let (gap_a, tail_a) = fx.with_front("grown", None, |f, store| {
+            let gaps = exec_gaps(f);
+            let c_o = file_of(f, "c.o");
+            let eh_chunk = f
+                .layout
+                .placement
+                .chunks
+                .iter()
+                .find(|(_, c)| c.name(&f.assignment) == Some(&b".eh_frame"[..]))
+                .unwrap()
+                .0;
+            let text = f.assignment.outsecs.iter().find(|(_, o)| o.name == b".text").unwrap().0;
+            let delta = LayoutDelta {
+                files: vec![c_o],
+                growth_steps: vec![GrowthStep { out: text, step: 0x3000 }],
+                eh: Some(EhLayout { chunk: eh_chunk, whole: true, ranges: Vec::new() }),
+                ..LayoutDelta::default()
+            };
+            let set = RefillSet { units: units(f, &["a.o", "c.o"]), ..RefillSet::default() };
+            let plan = whole_symtab_plan(&grown);
+            let (r, b, _, _, _) = run_refill(f, store, &delta, &plan, &set, &fx, "prev").unwrap();
+            judge(&format!("{arch:?} pad growth"), &prev, &grown, &r, &b);
+            let got = patched(&prev, &r, &b, grown.len() as u64);
+            pads_in(arch, &gaps, &r, &got, &grown)
+        });
+        // B: a same-size edit, `.text` rewritten whole.
+        let [_, _, c] = sources(arch, 43, 0);
+        fx.assemble("c", &c);
+        fx.write("want", Some(&l0));
+        let want = std::fs::read(fx.path("want")).unwrap();
+        let (gap_b, tail_b) = fx.with_front("want", Some(&l0), |f, store| {
+            let gaps = exec_gaps(f);
+            let text = f
+                .layout
+                .placement
+                .chunks
+                .iter()
+                .find(|(_, c)| c.name(&f.assignment) == Some(&b".text"[..]))
+                .unwrap()
+                .0;
+            let delta = LayoutDelta { files: vec![file_of(f, "c.o")], ..LayoutDelta::default() };
+            let set = RefillSet {
+                units: units(f, &["c.o"]),
+                chunks: vec![mortar_core::incr::RefillChunk { chunk: text, reasons: 1 }],
+                ..RefillSet::default()
+            };
+            let (r, b, _, _, _) =
+                run_refill(f, store, &delta, &SymtabPlan::default(), &set, &fx, "prev").unwrap();
+            judge(&format!("{arch:?} pad chunk"), &prev, &want, &r, &b);
+            let got = patched(&prev, &r, &b, want.len() as u64);
+            pads_in(arch, &gaps, &r, &got, &want)
+        });
+        eprintln!(
+            "[u6-pad] {arch:?}: growth {gap_a} gap and {tail_a} tail bytes in the ranges; \
+             .text whole {gap_b} gap and {tail_b} tail bytes"
+        );
+        assert!(tail_a > 0, "{arch:?}: the growth's ranges hold no tail");
+        assert!(gap_b > 0, "{arch:?}: the whole .text's range holds no gap between functions");
+    }
+}
+
+// spec: incr.md IN-75 and ruling F8 (WP-255a; the review's m3): a byte of
+// the previous output flipped inside a block the update dirties, outside
+// every dirty range, is `output-changed` before any byte is written (the
+// block's stored leaf does not hash it). m2's counterpart: a byte flipped
+// in a block the update leaves clean is NOT seen here; that block is not
+// read, and only IN-21's stat binding (and judgement (b)) stands for it:
+// the refill succeeds and the patched output keeps the flipped byte.
+#[test]
+fn dirty_block_flipped_is_output_changed() {
+    for arch in ARCHES {
+        let Some(fx) = Fixture::big(arch, "u6-m3") else { continue };
+        let l0 = fx.write("prev", None);
+        let prev = std::fs::read(fx.path("prev")).unwrap();
+        let [_, _, c] = sources(arch, 43, 0);
+        fx.assemble("c", &c);
+        fx.write("want", Some(&l0));
+        let want = std::fs::read(fx.path("want")).unwrap();
+        fx.with_front("want", Some(&l0), |f, store| {
+            let delta = LayoutDelta { files: vec![file_of(f, "c.o")], ..LayoutDelta::default() };
+            let set = RefillSet { units: units(f, &["c.o"]), ..RefillSet::default() };
+            let none = SymtabPlan::default();
+            let (r, _, counts, _, _) =
+                run_refill(f, store, &delta, &none, &set, &fx, "prev").unwrap();
+            // The dirty block: block 0 only (the text and the note).
+            assert_eq!(counts.leaves_hashed, 1, "{arch:?}: {counts:?}");
+            assert!(r.iter().all(|x| x.offset + x.len <= mortar_digest::IMAGE_BLOCK));
+            let leaves = fx.leaves_of("prev");
+            let flip = |at: usize, name: &str| {
+                assert!(
+                    !r.iter().any(|x| x.offset <= at as u64 && (at as u64) < x.offset + x.len),
+                    "{arch:?}: {at:#x} is in a range"
+                );
+                let mut p = prev.clone();
+                p[at] ^= 0x40;
+                std::fs::write(fx.path(name), &p).unwrap();
+                p
+            };
+            // m3: inside block 0, outside every range.
+            let at = 0x80000;
+            let before = flip(at, "prev-m3");
+            let m3 = run_refill_with(f, store, &delta, &none, &set, &fx, "prev-m3", &leaves);
+            match m3 {
+                Err(RefillError::Fallback(IncrReason::OutputChanged(d))) => {
+                    assert!(d.contains("block 0"), "{arch:?}: {d}");
+                }
+                other => panic!("{arch:?}: m3 want output-changed, got {:?}", other.map(|x| x.2)),
+            }
+            // Nothing written: the refill writes nothing, and the file is
+            // as it was.
+            assert_eq!(std::fs::read(fx.path("prev-m3")).unwrap(), before);
+            // m2: inside block 3, which no range touches (IN-21's case).
+            let at = 3 * (1 << 20) + 0x80000;
+            let p2 = flip(at, "prev-m2");
+            let (r2, b2, c2, _, _) =
+                run_refill_with(f, store, &delta, &none, &set, &fx, "prev-m2", &leaves).unwrap();
+            assert_eq!(c2.leaves_hashed, 1, "{arch:?}: block 3 is not read");
+            let got = patched(&p2, &r2, &b2, want.len() as u64);
+            let differ: Vec<usize> = (0..want.len()).filter(|&i| got[i] != want[i]).collect();
+            assert_eq!(differ, vec![at], "{arch:?}: m2 keeps the flipped byte (IN-21)");
+        });
+    }
+}
+
+/// The file range of input section `s` in `f`'s output, if placed.
+fn placed_range(f: &Front<'_>, s: SectionId) -> Option<std::ops::Range<u64>> {
+    let pl = &f.layout.placement;
+    let (c, at) = pl.place.get(s)?.get()?;
+    let c = pl.chunks.get(c)?;
+    let (file, index) = f.resolution.sh_index(s)?;
+    let mortar_core::inputs::Reader::Object(o) = &f.inputs.files.get(file)?.reader else {
+        return None;
+    };
+    let size = o.section(index).ok()?.size();
+    Some(c.offset + at..c.offset + at + size)
+}
+
+// spec: ruling F8 (WP-255a): the leaf check and the new leaf share one
+// read of each block; a block no range touches is not read. A same-size
+// edit of c.o (block 0) and of a small data section of b.o in block 2
+// (b.o's other sections, 4 MiB of data around it, not refilled): two
+// blocks read, each once, the bytes read the two blocks' length, and the
+// check passed.
+#[test]
+fn leaf_check_reads_each_dirty_block_once() {
+    let b_with = |arch: Arch, v: u32| {
+        let [_, b, _] = sources(arch, 42, 0);
+        b + &format!(
+            "\t.data\n\t.skip 0x200000, 1\n\t.section .data.y,\"aw\"\n\t.quad {v}\n\
+             \t.section .data.z,\"aw\"\n\t.skip 0x1ffff8, 1\n"
+        )
+    };
+    for arch in ARCHES {
+        let Some(fx) = Fixture::new(arch, "u6-once") else { continue };
+        fx.assemble("b", &b_with(arch, 5));
+        let l0 = fx.write("prev", None);
+        let prev = std::fs::read(fx.path("prev")).unwrap();
+        let [_, _, c_s] = sources(arch, 43, 0);
+        fx.assemble("c", &c_s);
+        fx.assemble("b", &b_with(arch, 6));
+        fx.write("want", Some(&l0));
+        let want = std::fs::read(fx.path("want")).unwrap();
+        let w = mortar_digest::IMAGE_BLOCK;
+        let differ: Vec<u64> =
+            (0..want.len()).filter(|&i| prev[i] != want[i]).map(|i| i as u64).collect();
+        let blocks: std::collections::BTreeSet<u64> = differ.iter().map(|i| i / w).collect();
+        assert_eq!(blocks.len(), 2, "{arch:?}: the edits' blocks: {blocks:?}");
+        assert!(blocks.contains(&0), "{arch:?}: {blocks:?}");
+        let data_at = *differ.iter().find(|&&i| i >= w).unwrap();
+        fx.with_front("want", Some(&l0), |f, store| {
+            let delta = LayoutDelta { files: vec![file_of(f, "c.o")], ..LayoutDelta::default() };
+            // c.o's units and b.o's section that holds the changed word.
+            let y = f.resolution.section_base[file_of(f, "b.o")]
+                .iter()
+                .find(|&s| placed_range(f, s).is_some_and(|r| r.contains(&data_at)))
+                .unwrap();
+            let mut units = units(f, &["c.o"]);
+            units.push(RefillUnit { section: y, reasons: 1 });
+            units.sort();
+            let set = RefillSet { units, ..RefillSet::default() };
+            let (r, b, counts, _, leaves) =
+                run_refill(f, store, &delta, &SymtabPlan::default(), &set, &fx, "prev").unwrap();
+            judge(&format!("{arch:?} two blocks"), &prev, &want, &r, &b);
+            assert_eq!(leaves, fx.leaves_of("want"), "{arch:?}: the new leaves");
+            eprintln!("[u6-once] {arch:?}: {counts:?}");
+            assert_eq!(counts.leaves_hashed, 2, "{arch:?}: {counts:?}");
+            let len: u64 = blocks
+                .iter()
+                .map(|&k| mortar_digest::leaf_range(want.len() as u64, k))
+                .map(|x| x.end - x.start)
+                .sum();
+            assert_eq!(counts.build_id_read, len, "{arch:?}: each dirty block read once");
         });
     }
 }

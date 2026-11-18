@@ -32,13 +32,28 @@ pub mod file_flags {
     pub const POSITIONAL: u8 = 1;
     pub const LAZY: u8 = 2;
     pub const GONE: u8 = 4;
-    /// The file's `.eh_frame` range holds a CIE whose FDE, LSDA or
-    /// personality encoding is not one an update moves by a delta
-    /// (`0x1b`, `0x1b`, `0x9b`): an update that writes the range answers
-    /// `update-not-implemented (eh)` (WP-244; PROPOSED, needs the
-    /// supervisor's word).
+    /// A CIE of the file's `.eh_frame` gives an FDE, LSDA or personality
+    /// pointer encoding other than `0x1b` (FDE, LSDA) / `0x9b`
+    /// (personality) (IN-34a's sentence; ruled for WP-247 item d): an
+    /// update that would move the file's range answers
+    /// `update-not-implemented (eh)`, decided by the plan before W1
+    /// (`state5::read::eh_fixed_check`). A function of the file's bytes
+    /// (`capture::object_flags`): written by the capture for every
+    /// object and by an update for a changed file. A record the walk
+    /// cannot read (a 64-bit length, a length past the section, an
+    /// augmentation it does not know) counts as such a CIE: an update
+    /// never moves bytes it cannot read.
     pub const EH_FIXED: u8 = 8;
-    pub const ALL: u8 = 15;
+    /// The file defines a GLOBAL, WEAK or `GNU_UNIQUE` symbol in a
+    /// non-allocated `.debug_*` (or `.zdebug_*`) section: another file
+    /// may refer into this file's debug bytes (WP-229 ruling 3; WP-247
+    /// item k). The join does not call such a file's change "handled"
+    /// by the debug packages (G-3). A function of the file's bytes
+    /// (`capture::object_flags`). WP-229 named it "bit 2" against
+    /// format 4's flags (only `POSITIONAL` used); in format 5 bits 1..3
+    /// are `LAZY`, `GONE`, `EH_FIXED`, so it is bit 4.
+    pub const DEBUG_EXPORTS: u8 = 16;
+    pub const ALL: u8 = 31;
 }
 
 /// `FILES` (kind 3, append-only; IN-18e): one row per file of the link,

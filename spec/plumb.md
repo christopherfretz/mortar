@@ -3595,8 +3595,11 @@ Then a range must be one its section admits:
   in a thread-local section only at its end (L-143); `.eh_frame` holes
   are padding CIEs (below);
 - `neutral` only in the sections IN-51b gives a form: `.debug_info`,
-  `.debug_abbrev`, `.debug_line`, `.debug_rnglists`, `.debug_loclists`,
-  `.debug_str_offsets`, `.debug_addr`, `.debug_ranges`, `.debug_frame`;
+  `.debug_types`, `.debug_abbrev`, `.debug_line`, `.debug_rnglists`,
+  `.debug_loclists`, `.debug_str_offsets`, `.debug_addr`,
+  `.debug_ranges`, `.debug_loc`, `.debug_frame`, `.debug_macro`,
+  `.debug_macinfo` (WP-253; not `.debug_aranges`, `.debug_str`,
+  `.debug_line_str`, which have none);
 - `contribution` only in IN-53's list: `.debug_line`,
   `.debug_str_offsets`, `.debug_addr`, `.debug_rnglists`,
   `.debug_loclists`, `.debug_ranges`, `.debug_loc`, `.debug_macro`,
@@ -3742,20 +3745,75 @@ after it, `R_*_NONE` with symbol 0 (or such a `RELATIVE`).
 NUL. A `cie` range is whole CIEs (`CIE_id` 0, version 1 or 3), nothing
 else. In the debug sections:
 
-- `neutral`, a sequence of the section's forms tiling the range:
-  `.debug_info`, IN-51's block units (32-bit length; `DW_UT_compile`
-  in v5; abbreviation code 1; the unit's table at its offset in
-  `.debug_abbrev` is `01 11 00 80 40 09 00 00` or `01 11 00 73 17 80 40
-  09 00 00`, the latter with a `DW_AT_addr_base` that lies in a dead
-  `.debug_addr` range; a `DW_FORM_block` of at least one byte ending
-  exactly at the unit's end); `.debug_abbrev`, zero bytes and those two
-  tables; `.debug_line`, IN-51b's table (opcode base 7, empty lists,
-  `header_length` exact, the rest `0x06`); `.debug_rnglists` and
-  `.debug_loclists`, a v5 header with no offsets and a zero body;
-  `.debug_str_offsets`, a v5 header and zero entries; `.debug_addr`, a
-  v5 header of 8-byte addresses and zeros; `.debug_ranges`, at least 16
-  zero bytes; `.debug_frame`, a version-1 CIE with an empty augmentation
-  and `DW_CFA_nop`;
+- `neutral`, a sequence of the section's forms tiling the range, each
+  **exactly IN-51b's bytes** (WP-253; `src/neutral.rs`, written from
+  the spec's table, never from the linker's writer), in its notation
+  (`L` the form's size, `A` the output's address size, `T`, `B`):
+  - **The one table** (IN-51). In a map that says `incremental`, or
+    that has a `neutral` line in `.debug_info` or `.debug_types`, an
+    output with a `.debug_abbrev` holds IN-51's 38-byte table as the
+    section's **last 38 bytes**, inside one `neutral` line that ends at
+    the section's end (mortar writes the `ABBREV_TABLE` hole as its own
+    line, `dead .debug_abbrev <size - 0x26> 26 neutral`); `T` is that
+    offset. No such line, a table byte that differs, or a table
+    elsewhere (any byte of a `neutral` `.debug_abbrev` range before
+    `T` that is not zero) is P-I6. Every other neutral
+    `.debug_abbrev` byte is zero: the per-file tables accepted until
+    WP-253 (`01 11 00 80 40 09 00 00`, `01 11 00 73 17 …` in a dead
+    range) are findings now.
+  - `.debug_info`: units of either version in any range, `L` at least
+    14: `u32(L−4) 05 00 01 A u32(T)` (DWARF 5, `DW_UT_compile`, a type
+    unit's range included) or `u32(L−4) V 00 u32(T) A` (`V` 2 to 4,
+    IN-51's "same version"), then abbreviation code 1, or code 3 and
+    `u32(D+8)` in a version-5 unit only, or code 4 and `u32(D)` in a
+    version 2–4 unit only, then `B`: the ULEB length in the smallest
+    width `k` that ends the block at the unit's end with at least one
+    byte, padded with `0x80` continuation bytes, and the block's zeros.
+    A code-3 unit's `D` is the start of a v5-header form of a `neutral`
+    `.debug_addr` range; a code-4 unit's `D` the start of a headerless
+    one (below); a base naming anything else is P-I6.
+  - `.debug_types`: `u32(L−4) 04 00 u32(T) A u64(S) u32(23) 02 B`, `S`
+    = `0xdead << 48` | the unit's offset in `.debug_types`, `L` at
+    least 26.
+  - `.debug_line`: `u32(L−4) 05 00 A 00 u32(20) 01 01 01 fb 0e 07 00 01
+    01 01 01 00 01 01 08 00 01 01 08 00` and `0x06` to the end (`L` at
+    least 32), or `u32(L−4) 04 00 u32(14) 01 01 01 fb 0e 07 00 01 01 01
+    01 00 00 00` and `0x06` (`L` at least 24), either in any range.
+  - `.debug_rnglists`, `.debug_loclists`: `u32(L−4) 05 00 A 00 u32(0)`
+    and zeros (`L` at least 12); `.debug_str_offsets`: `u32(L−4) 05 00
+    00 00` and zeros, `L` a multiple of 4.
+  - `.debug_addr`: at a point a code-4 unit's base names, a
+    **headerless** table: zero bytes up to the next point a base names
+    (code 4's `D`, code 3's `D`) or the range's end, a multiple of `A`
+    and at least `A`; elsewhere `u32(L−4) 05 00 A 00` and zero entries,
+    `L − 8` a multiple of `A`. So a zero range no code-4 unit names
+    reads as a v5 header of length 0: P-I6 (IN-51: a dead table stays
+    named). A v5 table no code-3 unit names is accepted (IN-51b does
+    not say that a v5 form must be named; readelf's "Corrupt
+    .debug_addr" is the cost, WP-228 §A.3).
+  - `.debug_ranges`, `.debug_loc`: zero bytes, at least `2·A`;
+    `.debug_macinfo`: zero bytes.
+  - `.debug_frame`: `u32(L−4) ff ff ff ff 01 00 01 7c 1e` and zeros
+    (`DW_CFA_nop`), `L` at least 13: column 30 on every machine.
+  - `.debug_macro`: `u16(V) 00 02 00`, `x` bytes, `00 00`, `V` 4 or 5
+    in any range.
+
+  Before WP-253 these were accepted and are findings now: a
+  `.debug_line` header with other values in its fixed fields (the
+  minimum instruction length, `maximum_operations_per_instruction`,
+  `default_is_stmt`, `line_base`, `line_range`, the standard opcode
+  lengths and the v5 address size were not read), a v2 or v3 line
+  table (IN-51b's v2–v4 row is the version-4 header), a `.debug_frame`
+  CIE with other alignment factors or another return-address column, a
+  `.debug_info` unit whose address size is not the output's, list
+  headers with another address size, a `DW_FORM_block` length in a
+  width other than the smallest, and a unit naming any table but the
+  one at `T`. Before WP-253 these were findings and are accepted now:
+  a v5 `.debug_addr` table of 4-byte addresses in ELFCLASS32 (8 was
+  required in every output) and a `.debug_ranges` range of 8 to 15
+  zero bytes in ELFCLASS32 (16 was required; IN-51b says `2·A`).
+  No finding is a P-I6 offset alone: each names the map line's range
+  and the section offset of the first byte that differs;
 - `contribution`, a chain of whole units (records) of the section, with
   every address operand image.md I-47's tombstone: `DW_LNE_set_address`
   (all ones in ELFCLASS64, 0 in ELFCLASS32); `.debug_addr` entries,
@@ -3798,7 +3856,20 @@ else. In the debug sections:
    I-78a still says "region judged" only: a sentence there is the
    supervisor's (WP-222's record, F-2).
 
-Tests: `tests/dead.rs` (§9.2 (p)), `map::mortar::tests::s3_2_dead_*`.
+Tests: `tests/dead.rs` (§9.2 (p)), `map::mortar::tests::s3_2_dead_*`;
+the neutral forms both ways, table-driven (WP-253, `src/neutral.rs`):
+`neutral::tests::in51b_every_form_is_accepted` (20 forms, one per row
+of IN-51b's table with a form, at the minimum, minimum + 1 or + the
+granule, an odd and a long length, `A` 4 and 8: 160 outputs),
+`in51b_every_mutation_is_a_finding` (1,916 rows: every header byte,
+the length ± 1, a byte in the body's run, the block one byte short with
+a null entry after it, codes 3 and 4 in the wrong version, bases naming
+no table of their form, a signature off the scheme, ranges below their
+minimum or off their granule; it fails when a form has fewer than 8
+rows or a section the judgement knows has no form in the table),
+`in51b_versions_mix_in_one_range`, `in51_the_one_table` (each of its
+38 bytes, an abbreviation missing, not at the end, no line, a second
+table, a unit naming another), `in51b_block_widths`.
 Cost (WP-091, measured; release `xtask plumb`, 3 runs each, host load
 about 12; mortar's static AArch64 protoc, 11.7 MB, and protoc `-g`,
 50.3 MB): a map that claims nothing runs none of this (protoc 0.27–0.33 s

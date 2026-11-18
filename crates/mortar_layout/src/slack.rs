@@ -26,13 +26,13 @@ pub const PACKED_DIV: u64 = 8;
 pub const DEBUG_TAIL_DIV: u64 = 32;
 /// The smallest debug size class (`at least 32 B`).
 pub const CLASS_MIN: u64 = 32;
-/// The neutral abbreviation table's hole (IN-51b): its 8 bytes and the
-/// 0 code that ends the table. IN-51's 8 bytes end the abbreviation's
-/// attribute list only; in a dead contribution the zeros after them end
-/// the table, but a table at the end of `.debug_abbrev` needs its own
-/// (readelf: "section not zero terminated", and the units' abbreviation
-/// 1 is not found).
-pub const ABBREV_TABLE: u64 = 9;
+/// The neutral abbreviation table's hole (IN-51b): the one table of its
+/// four abbreviations (37 bytes, `mortar_image::neutral::ABBREV_TABLE`)
+/// and the 0 code that ends it (a table at the end of `.debug_abbrev`
+/// needs its own: readelf "section not zero terminated"). In every
+/// incremental-mode output with debug information, whatever the inputs,
+/// so an update never grows it.
+pub const ABBREV_TABLE: u64 = 38;
 /// A file's `.eh_frame` range: the smallest pad past its records (IN-34a:
 /// a padding CIE is 16 bytes at least).
 pub const EH_PAD_MIN: u64 = 16;

@@ -9,6 +9,9 @@
 #   sh gen.sh <mortar>
 # Run from this directory. First made with the mortar of WP-246's base
 # (a828a3de).
+# WP-253: the incremental-mode outputs checked in were made before IN-51's
+# one 38-byte table (WP-228 part A) and converted in place by
+# ../retable.py; a regeneration with a later mortar has the table already.
 set -e
 mortar=$1
 for a in a64 x64; do

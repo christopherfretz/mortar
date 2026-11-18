@@ -10,9 +10,9 @@ use mortar_incr::format::{SectionRow, StatRow, StateError, Str, kind, stat_tag};
 use mortar_incr::ops::{StdOps, WriteFailure};
 use mortar_incr::state5::{self, compact, read, write};
 use mortar_incr::update::rows::{
-    CommonRow, CopyRow, EdgeRow, FileIndexRow, FileRow, FragRow, FragUseRow, GroupRow, KeyRefRow,
-    LocalRange, MentionRow, NameRow, ResolvedRow, SymbolRow, SymtabKeyRow, edge_kind, file_flags,
-    sym_kind,
+    CommonRow, CopyRow, DebugStrRow, EdgeRow, FileIndexRow, FileRow, FragRow, FragUseRow, GroupRow,
+    KeyRefRow, LocalRange, MentionRow, NameRow, ResolvedRow, SymbolRow, SymtabKeyRow,
+    debug_str_class, edge_kind, file_flags, sym_kind,
 };
 use mortar_incr::update::testing::MemoryState;
 use mortar_incr::update::view::{FileRanges, KeyEdits, StatePatch};
@@ -1629,4 +1629,296 @@ fn every_flipped_byte_with_edges_is_state_corrupt() {
         check(at);
     }
     assert!(flipped > 16 + 15 * 13 / 5, "{flipped}");
+}
+
+// ---- DEBUG_STRS (WP-247 item 1; WP-228 R-2, seam 8) -------------------------
+
+fn dstr(out: u8, hash: u64, offset: u32) -> DebugStrRow {
+    DebugStrRow { out, hash, offset }
+}
+
+// spec: WP-228 R-2.1 (kind 57, KeyKeyed, 13 bytes: `u8 out`, `u64 hash`,
+// `u32 offset`, sorted by `(out, hash)`, no tomb), R-2.2 (equal keys keep
+// the lower offset), the reader's one binary search
+#[test]
+fn debug_strs_round_trip_and_lookup() {
+    let t = state5::TABLES.iter().find(|t| t.0 == kind::DEBUG_STRS).expect("listed");
+    assert_eq!((t.1, t.2), (state5::Class::KeyKeyed, 13));
+    let mut m = sample(&[0, 1], 3);
+    let str_ = debug_str_class::STR;
+    let line = debug_str_class::LINE_STR;
+    m.debug_strs = vec![
+        dstr(line, 5, 40),
+        dstr(str_, 9, 30),
+        dstr(str_, 2, 0),
+        dstr(str_, 9, 12),
+        dstr(line, 2, 7),
+    ];
+    let bytes = full(&m);
+    let back = read::decode(&bytes).expect("decode");
+    assert_eq!(
+        back.debug_strs,
+        vec![dstr(str_, 2, 0), dstr(str_, 9, 12), dstr(line, 2, 7), dstr(line, 5, 40)],
+        "sorted by (out, hash), the lower offset kept"
+    );
+    assert_eq!(full(&back), bytes, "a fixpoint");
+    let view = read::open_bytes(bytes).expect("open");
+    assert_eq!(view.debug_str(str_, 9).expect("read"), Some(12));
+    assert_eq!(view.debug_str(str_, 2).expect("read"), Some(0));
+    assert_eq!(view.debug_str(line, 2).expect("read"), Some(7));
+    assert_eq!(view.debug_str(line, 9).expect("read"), None, "the class is part of the key");
+    assert_eq!(view.debug_str(str_, 3).expect("read"), None);
+    assert_eq!(view.debug_str(7, 2).expect("read"), None, "an unknown class asked: a miss");
+    // the memory view answers alike (the tests' StateView)
+    let mv = mortar_incr::update::view::StateView::new(Box::new(&back));
+    assert_eq!(mv.debug_str(str_, 9).expect("read"), Some(12));
+    // an empty table: every string a miss
+    let view = read::open_bytes(full(&sample(&[0, 1], 3))).expect("open");
+    assert_eq!(view.debug_str(str_, 2).expect("read"), None);
+}
+
+// spec: WP-228 R-2.1 (`out` other than 0 or 1 is `state-corrupt`; the
+// reader never trusts the rest: a duplicate key, an offset past the
+// section or into a string's middle are not errors, the caller checks a
+// hit against the output's bytes)
+#[test]
+fn debug_strs_what_the_reader_refuses() {
+    for out in [2u8, 0xff] {
+        let mut n = compact::normalize(&sample(&[0, 1], 3)).expect("normalize");
+        n.debug_strs = vec![dstr(0, 1, 0), dstr(out, 1, 0)];
+        let bytes = write::encode(&n).expect("the writer does not judge `out`");
+        match read::decode(&bytes) {
+            Err(StateError::Corrupt(why)) => assert!(why.contains("DEBUG_STRS"), "{why}"),
+            other => panic!("out {out}: {other:?}"),
+        }
+        let view = read::open_bytes(bytes).expect("open: rows are read on demand");
+        assert!(matches!(reason(view.debug_str(out, 1)), IncrReason::StateCorrupt(_)), "out {out}");
+    }
+    // a duplicate key (written past normalize): not an error, the lower
+    // offset answers
+    let mut n = compact::normalize(&sample(&[0, 1], 3)).expect("normalize");
+    n.debug_strs = vec![dstr(0, 4, 90), dstr(0, 4, 3), dstr(0, 4, 50)];
+    let bytes = write::encode(&n).expect("encode");
+    assert_eq!(read::decode(&bytes).expect("duplicates decode").debug_strs.len(), 3);
+    let view = read::open_bytes(bytes).expect("open");
+    assert_eq!(view.debug_str(0, 4).expect("read"), Some(3));
+    // an offset past any section, an offset into a string's middle: not
+    // judged here (the sample has no output section at all)
+    let mut m = sample(&[0, 1], 3);
+    m.debug_strs = vec![dstr(0, 6, u32::MAX), dstr(1, 6, 3)];
+    let view = read::open_bytes(full(&m)).expect("open");
+    assert_eq!(view.debug_str(0, 6).expect("read"), Some(u32::MAX));
+    assert_eq!(view.debug_str(1, 6).expect("read"), Some(3));
+}
+
+// spec: WP-228 R-2.3 (canon and compaction sort by key; compaction
+// rewrites the table whole)
+#[test]
+fn debug_strs_canon_and_compaction_sort() {
+    let mut a = sample(&[0, 1], 3);
+    a.debug_strs = vec![dstr(1, 3, 1), dstr(0, 8, 2), dstr(0, 1, 3)];
+    let mut b = a.clone();
+    b.debug_strs.reverse();
+    assert_eq!(state5::canon_of(&a).expect("canon"), state5::canon_of(&b).expect("canon"));
+    assert_eq!(full(&a), full(&b));
+    assert_eq!(
+        compact::debug_strs_whole(&[dstr(1, 3, 9), dstr(0, 8, 2), dstr(1, 3, 1)]),
+        vec![dstr(0, 8, 2), dstr(1, 3, 1)]
+    );
+    // a compaction keeps the rows (no update edits them here)
+    let mut c = sample(&[0, 1, 2], 2);
+    c.debug_strs = b.debug_strs.clone();
+    let bytes = full(&c);
+    let view = read::open_bytes(bytes.clone()).expect("open");
+    let plan = state5::plan_patch(&view, &remove_file_1(&read::decode(&bytes).expect("decode")))
+        .expect("plan");
+    assert!(plan.compacts(), "{}", plan.reason());
+    let got = compact::plan_bytes(&plan, &output_of(&bytes)).expect("compacted");
+    assert_eq!(
+        read::decode(&got).expect("decode").debug_strs,
+        vec![dstr(0, 1, 3), dstr(0, 8, 2), dstr(1, 3, 1)]
+    );
+}
+
+// spec: WP-228 seam 8a (an update only PUTS `DEBUG_STRS` rows: in place
+// they go to the sorted append area, found by the reader's search of the
+// body and the area; a put of a stored key replaces its row; a delete is
+// refused, in place and by the compaction) and R-2.3 (the compaction
+// rewrites the table whole, sorted)
+#[test]
+fn debug_strs_patch_puts_rows() {
+    let mut m = sample(&[0, 1, 2], 2);
+    m.debug_strs = vec![dstr(0, 10, 0), dstr(0, 30, 8), dstr(1, 10, 0)];
+    let bytes = full(&m);
+    let view = read::open_bytes(bytes.clone()).expect("open");
+    let mut p = StatePatch::default();
+    p.debug_strs.put = vec![dstr(0, 20, 40), dstr(0, 30, 50), dstr(1, 5, 9)];
+    let plan = state5::plan_patch(&view, &p).expect("plan");
+    assert!(!plan.compacts(), "{}", plan.reason());
+    let patched = write::patched_bytes(&bytes, &plan, &output_of(&bytes)).expect("in place");
+    let view = read::open_bytes(patched.clone()).expect("open");
+    for (out, hash, want) in [
+        (0, 10, Some(0)),
+        (0, 20, Some(40)),
+        (0, 30, Some(50)),
+        (1, 5, Some(9)),
+        (1, 10, Some(0)),
+        (1, 20, None),
+    ] {
+        assert_eq!(view.debug_str(out, hash).expect("read"), want, "({out}, {hash})");
+    }
+    let back = read::decode(&patched).expect("decode");
+    assert_eq!(
+        compact::normalize(&back).expect("normalize").debug_strs,
+        vec![dstr(0, 10, 0), dstr(0, 20, 40), dstr(0, 30, 50), dstr(1, 5, 9), dstr(1, 10, 0)]
+    );
+    // a delete is refused, in place and in memory
+    let mut d = StatePatch::default();
+    d.debug_strs.delete = vec![dstr(0, 10, 0)];
+    let view = read::open_bytes(patched.clone()).expect("open");
+    assert!(matches!(reason(state5::plan_patch(&view, &d)), IncrReason::StateCorrupt(_)));
+    let mut mm = back.clone();
+    assert!(compact::apply(&mut mm, &d, 0).is_err());
+    // with a compaction: the rows put, sorted and whole
+    let mut c = remove_file_1(&back);
+    c.debug_strs.put = vec![dstr(0, 1, 77)];
+    let plan = state5::plan_patch(&view, &c).expect("plan");
+    assert!(plan.compacts(), "{}", plan.reason());
+    let got = compact::plan_bytes(&plan, &output_of(&patched)).expect("compacted");
+    let got = read::decode(&got).expect("decode");
+    assert_eq!(
+        got.debug_strs,
+        vec![
+            dstr(0, 1, 77),
+            dstr(0, 10, 0),
+            dstr(0, 20, 40),
+            dstr(0, 30, 50),
+            dstr(1, 5, 9),
+            dstr(1, 10, 0)
+        ]
+    );
+    c.debug_strs.delete = vec![dstr(0, 10, 0)];
+    assert!(matches!(reason(state5::plan_patch(&view, &c)), IncrReason::StateCorrupt(_)));
+}
+
+// spec: WP-247 item d (`EH_FIXED` read by the plan's check before W1: a
+// file whose range moves with the bit is `update-not-implemented (eh)`)
+// and item k (`DEBUG_EXPORTS` and `EH_FIXED` are FILES flags of format
+// 5: stored and read back)
+#[test]
+fn eh_fixed_check_reads_the_bit() {
+    let mut m = sample(&[0, 1, 2], 2);
+    m.files[1].flags |= file_flags::EH_FIXED;
+    m.files[2].flags |= file_flags::DEBUG_EXPORTS;
+    let bytes = full(&m);
+    let back = read::decode(&bytes).expect("decode");
+    assert_eq!(back.files[1].flags, file_flags::EH_FIXED);
+    assert_eq!(back.files[2].flags, file_flags::DEBUG_EXPORTS);
+    let view = read::open_bytes(bytes).expect("open");
+    assert!(read::eh_fixed_check(&view, &[FileId(0), FileId(2)]).is_ok());
+    assert_eq!(
+        read::eh_fixed_check(&view, &[FileId(0), FileId(1)]),
+        Err(IncrReason::UpdateNotImplemented(Some(mortar_core::incr::Unimplemented::Eh)))
+    );
+    assert!(matches!(read::eh_fixed_check(&view, &[FileId(9)]), Err(IncrReason::StateCorrupt(_))));
+    // a flag past ALL is refused
+    let mut m = sample(&[0, 1], 2);
+    m.files[0].flags = file_flags::ALL + 1;
+    assert!(matches!(read::decode(&full(&m)), Err(StateError::Corrupt(_))));
+}
+
+// spec: WP-247 item 3 (U-10 notes items a, j; WP-244 F-2): decode,
+// normalize, encode of a capture is BYTE-EQUAL, with `DIAGS` rows (their
+// strings in the pool once), 24-byte property strings (one shared by two
+// files), `EDGES` of every kind, `META.live_hash` and `DEBUG_STRS` rows
+#[test]
+fn decode_normalize_encode_is_byte_equal() {
+    let mut m = sample(&[0, 1, 2], 3);
+    m.diags = vec![
+        diag_with_refs(vec![(0, 1 << 32, 0x10), (1, 3 << 32, 0x1c)], 2),
+        diag_with_refs(Vec::new(), 0),
+    ];
+    m.diags[1].key.seq = 7;
+    let mut pool = std::mem::take(&mut m.strings);
+    let p = add(&mut pool, &[1; 24]);
+    let q = add(&mut pool, &[2; 24]);
+    m.strings = pool;
+    m.files[0].properties = p;
+    m.files[1].properties = p;
+    m.files[2].properties = q;
+    add_edges(&mut m, 1, 1);
+    m.meta.live_hash = LIVE_HASH;
+    m.debug_strs = vec![dstr(1, 4, 0), dstr(0, 9, 3)];
+    let bytes = full(&m);
+    let back = read::decode(&bytes).expect("decode");
+    assert_eq!(s(&back, back.files[1].properties), vec![1; 24]);
+    assert_eq!(back.diags.len(), 2);
+    let again = write::encode(&compact::normalize(&back).expect("normalize")).expect("encode");
+    assert_eq!(again.len(), bytes.len());
+    assert!(
+        again == bytes,
+        "decode, normalize, encode is not byte-equal: {}",
+        where_differ(&bytes, &again)
+    );
+    // and once more (a fixpoint, not a coincidence of one pass)
+    let third = full(&read::decode(&again).expect("decode"));
+    assert!(third == bytes);
+}
+
+/// Where two states of one shape first differ: the table and the offset.
+fn where_differ(a: &[u8], b: &[u8]) -> String {
+    let skip = state5::HEADER;
+    let Some(at) = a.iter().zip(b).skip(skip).position(|(x, y)| x != y).map(|i| i + skip) else {
+        return "equal past the header".into();
+    };
+    let h = state5::Header::parse(a).expect("h");
+    let dir_end = state5::HEADER + state5::TABLES.len() * state5::ENTRY;
+    let dir = state5::parse_directory(&h, &a[state5::HEADER..dir_end]).expect("dir");
+    for e in &dir {
+        let (body, len) = (
+            usize::try_from(e.body).expect("small"),
+            usize::try_from(e.body_len()).expect("small"),
+        );
+        if (body..body + len).contains(&at) {
+            let w = e.width as usize;
+            return format!(
+                "byte {at}: {} row {} byte {}",
+                state5::name(e.kind),
+                (at - body) / w,
+                (at - body) % w
+            );
+        }
+        let list = usize::try_from(e.list).expect("small");
+        if (list..list + usize::try_from(e.list_len()).expect("small")).contains(&at) {
+            return format!("byte {at}: {} block list", state5::name(e.kind));
+        }
+    }
+    let entry = (at - state5::HEADER) / state5::ENTRY;
+    format!(
+        "byte {at}: directory entry {} ({}) byte {}",
+        entry,
+        state5::name(dir[entry].kind),
+        (at - state5::HEADER) % state5::ENTRY
+    )
+}
+
+// spec: WP-247 item 3 on real states: `MORTAR_WP247_STATES=<path>[:<path>]`
+// names format-5 states written by real links (protoc, clang `-g`:
+// `MORTAR_INCR_STATE5` in a testhooks build); each decodes, normalizes
+// and encodes to the same bytes. Without the variable: nothing.
+#[test]
+fn real_states_round_trip_byte_equal() {
+    let Some(list) = std::env::var_os("MORTAR_WP247_STATES") else { return };
+    for path in std::env::split_paths(&list) {
+        let bytes = std::fs::read(&path).expect("a state");
+        let back = read::decode(&bytes).unwrap_or_else(|e| panic!("{}: {e}", path.display()));
+        let again = full(&back);
+        assert!(
+            again == bytes,
+            "{}: not byte-equal: {}",
+            path.display(),
+            where_differ(&bytes, &again)
+        );
+        eprintln!("{}: {} bytes, byte-equal", path.display(), bytes.len());
+    }
 }

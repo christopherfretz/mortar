@@ -2543,6 +2543,101 @@ pub fn refill(link: &Link<'_, '_>, path: &Path, windows: &[u64]) -> Result<Refil
     })
 }
 
+/// The update's image phase (`spec/image.md` I-95; WP-255a): the file
+/// ranges `ranges` (sorted, disjoint) of `link`'s output, filled into
+/// memory by [`fill::fill_range`] from the WHOLE plan, as [`write`] fills
+/// them; the 1 MiB block is the unit of the leaf hash, not of the fill.
+/// Each range is cut at the plan's job boundaries (I-31: the parallel
+/// unit), and a piece that touches a whole synthetic chunk (I-104) is
+/// widened to the chunk, so that one call writes it; pieces of one job
+/// that then touch are merged. [`Refilled::jobs`] are the pieces, sorted
+/// and disjoint, and cover every range; [`Refilled::leaves`] is empty
+/// (the caller hashes its blocks). Nothing is written (IN-13).
+///
+/// # Errors
+///
+/// Every diagnostic of the fill; a fault in a section deferred to fill
+/// (I-14) is an internal error here.
+pub(crate) fn refill_ranges(
+    link: &Link<'_, '_>,
+    ranges: &[std::ops::Range<u64>],
+) -> Result<Refilled, Failed> {
+    with_image(link, Path::new(""), |img, plan, sealed, steps| {
+        let jobs = clip_jobs(plan, ranges);
+        let leaf_fn = img.build_id.map_or(mortar_digest::TreeFn::L128, TreeStyle::tree_fn);
+        let filled = link.pool.map(jobs.len(), |k| {
+            let j = jobs[k].clone();
+            let mut buf = vec![0u8; (j.end - j.start) as usize];
+            let mut errs = Vec::new();
+            let r = fill::fill_range(img, j.start, &mut buf, &mut errs);
+            (buf, errs, r)
+        });
+        let mut diagnostics = Vec::new();
+        let mut out = Vec::with_capacity(jobs.len());
+        for (j, (buf, errs, r)) in jobs.into_iter().zip(filled) {
+            diagnostics.extend(errs);
+            if let Err(kd) = r {
+                diagnostics.push(kd);
+            }
+            out.push((j, buf));
+        }
+        steps.step("refill", out.iter().map(|j| j.1.len() as u64).sum(), "byte");
+        if !diagnostics.is_empty() {
+            return Err(Failed { diagnostics });
+        }
+        Ok(Refilled {
+            jobs: out,
+            leaves: Vec::new(),
+            leaf_fn,
+            build_id: img.build_id,
+            sealed,
+            file_size: plan.file_size,
+            rows: plan.rows.len(),
+            total_jobs: plan.jobs.len(),
+        })
+    })
+}
+
+/// The fill pieces of [`refill_ranges`]: each of `ranges` (sorted,
+/// disjoint) cut at the plan's job boundaries, widened over a whole
+/// synthetic chunk it touches (I-104; such a chunk lies inside one job,
+/// I-31), the pieces of one job merged where they then touch. Sorted,
+/// disjoint, clipped to the file.
+fn clip_jobs(
+    plan: &crate::plan::Plan,
+    ranges: &[std::ops::Range<u64>],
+) -> Vec<std::ops::Range<u64>> {
+    let whole_row = |at: u64| -> Option<std::ops::Range<u64>> {
+        let row = plan.rows.get(plan.first_row(at))?;
+        let crate::plan::Unit::Synth(i) = row.unit else { return None };
+        let whole = plan.synth.get(i as usize).is_some_and(|s| s.whole);
+        (whole && row.offset <= at).then(|| row.offset..row.end())
+    };
+    let mut out: Vec<std::ops::Range<u64>> = Vec::new();
+    for r in ranges {
+        let r = r.start..r.end.min(plan.file_size);
+        if r.start >= r.end {
+            continue;
+        }
+        let first = plan.jobs.partition_point(|j| j.end <= r.start);
+        for j in plan.jobs[first..].iter().take_while(|j| j.start < r.end) {
+            let (mut lo, mut hi) = (r.start.max(j.start), r.end.min(j.end));
+            if let Some(w) = whole_row(lo) {
+                lo = lo.min(w.start).max(j.start);
+            }
+            if let Some(w) = whole_row(hi - 1) {
+                hi = hi.max(w.end).min(j.end);
+            }
+            match out.last_mut() {
+                // The same job (a job's pieces come in order): merge.
+                Some(l) if lo <= l.end && l.start >= j.start => l.end = l.end.max(hi),
+                _ => out.push(lo..hi),
+            }
+        }
+    }
+    out
+}
+
 // ---- the map (§9.2) --------------------------------------------------------
 
 /// The map of a link (I-77, I-78; `spec/plumb.md` §3.2), from the tables
