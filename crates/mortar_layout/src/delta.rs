@@ -123,6 +123,34 @@ fn category(name: &[u8], flags: u64) -> u8 {
     if flags & SHF_EXECINSTR != 0 { text_category(name) } else { 0 }
 }
 
+/// Item 10: a section aligned past its chunk's alignment is admitted when
+/// the chunk's stored address (and file offset) is already a multiple of
+/// it, up to the page (the `PT_LOAD`'s alignment stays); the chunk's
+/// alignment rises. Otherwise "an output section's alignment growing past
+/// its stored address's": `reserve-exhausted`.
+fn admit(
+    chunks: &mut Column<ChunkId, Chunk>,
+    c: ChunkId,
+    align: u64,
+    page: u64,
+    name: &[u8],
+) -> Result<(), IncrReason> {
+    let ch = &mut chunks[c];
+    if align <= 1u64 << ch.align.min(63) {
+        return Ok(());
+    }
+    let at_addr = ch.addr.is_none_or(|a| a % align == 0);
+    let at_offset = !ch.in_file() || ch.offset % align == 0;
+    if at_addr && at_offset && align <= page {
+        ch.align = align.trailing_zeros() as u8;
+        return Ok(());
+    }
+    Err(IncrReason::ReserveExhausted(format!(
+        "{}: alignment {align} past its output section's address",
+        text(name)
+    )))
+}
+
 // ---- the stored whole tables -------------------------------------------------
 
 /// The whole tables, read once, and what is derived from them.
@@ -677,12 +705,15 @@ impl<'b, 'c> Update<'b, 'c> {
                         let chunk = base.chunks.get(ch)?;
                         let same = chunk.kind.out() == Some(out)
                             && p.size == c.size
-                            && align_bytes(c.align)? <= 1u64 << chunk.align.min(63)
                             && chunk.addr.unwrap_or(0).checked_add(off)? % align_bytes(c.align)? == 0;
                         same.then_some((ch, off))
                     });
                     match keep {
-                        Some(at) => self.place[i] = Some(at),
+                        Some(at) => {
+                            let align = align_bytes(c.align).unwrap_or(1);
+                            admit(&mut self.chunks, at.0, align, base.rules.max_page, c.key.name)?;
+                            self.place[i] = Some(at);
+                        }
                         None => return Err(why.reason(c.key.name, "changed size or place")),
                     }
                 }
@@ -692,6 +723,7 @@ impl<'b, 'c> Update<'b, 'c> {
         }
 
         // Item 2, per (O, c): keep, then place.
+        let page = base.rules.max_page;
         for ((out, cat), mut list) in by_group {
             list.sort_by_key(|&i| self.changes[i].index);
             let g = self.groups.entry((file, out, cat)).or_default();
@@ -727,6 +759,7 @@ impl<'b, 'c> Update<'b, 'c> {
                         }
                         g.take(a, e);
                         let reg = &g.regions[r];
+                        admit(&mut self.chunks, reg.row.chunk, align, page, c.key.name)?;
                         self.place[i] = Some((reg.row.chunk, reg.row.offset + (a - reg.start)));
                     }
                     _ => rest.push(k),
@@ -759,13 +792,7 @@ impl<'b, 'c> Update<'b, 'c> {
                 match got {
                     Some((a, r)) => {
                         let reg = &g.regions[r];
-                        let chunk = base.chunk(reg.row.chunk)?;
-                        if align > 1u64 << chunk.align.min(63) {
-                            return Err(IncrReason::ReserveExhausted(format!(
-                                "{}: alignment {align} past its output section's",
-                                text(c.key.name)
-                            )));
-                        }
+                        admit(&mut self.chunks, reg.row.chunk, align, page, c.key.name)?;
                         let at = (reg.row.chunk, reg.row.offset + (a - reg.start));
                         g.take(a, a + c.size);
                         self.place[i] = Some(at);
@@ -874,11 +901,7 @@ impl<'b, 'c> Update<'b, 'c> {
             let list = std::mem::take(&mut g.overflow);
             let max_align =
                 list.iter().map(|&i| align_bytes(self.changes[i].align).unwrap_or(1)).max().unwrap_or(1);
-            if max_align > 1u64 << chunk.align.min(63) {
-                return Err(IncrReason::ReserveExhausted(format!(
-                    "{name}: alignment {max_align} past its output section's"
-                )));
-            }
+            admit(&mut self.chunks, last, max_align, base.rules.max_page, name.as_bytes())?;
             let caddr = chunk.addr.ok_or_else(|| corrupt("a body chunk without an address"))?;
             let size = self.chunks[last].size;
             let tail = caddr.checked_add(size).ok_or_else(not_implemented)?;
