@@ -1056,8 +1056,17 @@ pub fn front<'s>(
         diag.emit(Key::new(90, 0, 0), d);
         return None;
     }
+    // A layout warning without a chunk is keyed by its code, not by its
+    // position in the list (WP-221 F-3): an incremental update orders a
+    // stored `entry-not-found` and a fresh `executable-stack` as the full
+    // link does, whichever of them it raised. The order is the list's.
     for (seq, w) in (0u64..).zip(placed.warnings.iter().cloned()) {
-        let (k, d) = layout_diag(&inputs, &resolution, w, Key::new(90, 0, u64::MAX - 1000 + seq));
+        let slot = match w.diagnostic().id() {
+            "executable-stack" => 0,
+            "entry-not-found" => 1,
+            _ => 2 + seq,
+        };
+        let (k, d) = layout_diag(&inputs, &resolution, w, Key::new(90, 0, u64::MAX - 1000 + slot));
         if entry_warned && d.id() == "entry-not-found" {
             continue;
         }
