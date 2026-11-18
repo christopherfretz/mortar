@@ -32,16 +32,16 @@ use crate::capture::{Link, Positional, Translation, header_fields};
 use crate::format::{MentionRow, NONE, ResolvedRow, State};
 use crate::tables::{file_mentions, resolved_fields, section_of};
 
-/// Why the changed file's contribution differs: `(reason, detail)`, the
-/// reason a §7 name.
-pub type Changed = (&'static str, String);
+/// Why the changed file's contribution differs: `layout-changed` or
+/// `resolution-changed` with its detail (WP-213: the one reason type).
+pub type Changed = mortar_core::incr::IncrReason;
 
 fn layout(detail: String) -> Changed {
-    ("layout-changed", detail)
+    Changed::LayoutChanged(detail)
 }
 
 fn resolution(detail: String) -> Changed {
-    ("resolution-changed", detail)
+    Changed::ResolutionChanged(detail)
 }
 
 /// Compares what `file` (`FILES` row `row`) contributes in the new link

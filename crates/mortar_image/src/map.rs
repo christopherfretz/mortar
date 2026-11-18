@@ -379,6 +379,25 @@ pub fn token(s: &[u8], out: &mut String) {
     }
 }
 
+/// The map of an update (WP-211 §C; `spec/image.md` I-78a as WP-212
+/// writes it: the decision records `region`, `symblock`, `common` of an
+/// incremental-mode map, WP-211 §R.12): the update's `Placement` and
+/// `.symtab` plan as records, for H-1's `P_U` (IN-78). WP-213 (U-1): the
+/// entry point; **filled by U-6** (U-6 owns `update_map`; the rest of this
+/// file is not the update's).
+///
+/// Until U-6 lands: the full link's `Map` of `link`
+/// (`crate::link::map_of`).
+#[must_use]
+pub fn update_map(
+    link: &crate::link::Link<'_, '_>,
+    layout: &mortar_core::incr::LayoutDelta,
+    symtab: &mortar_core::incr::SymtabPlan,
+) -> Map {
+    let _ = (layout, symtab);
+    crate::link::map_of(link)
+}
+
 /// The text of `map` (I-79): groups formatted in parallel per file and
 /// concatenated in the format's group order.
 ///

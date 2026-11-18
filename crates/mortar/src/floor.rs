@@ -68,12 +68,14 @@ use std::os::unix::ffi::OsStrExt as _;
 use std::os::unix::fs::{FileExt as _, MetadataExt as _};
 use std::path::{Path, PathBuf};
 
+use mortar_core::incr::IncrReason;
 use mortar_core::layout::ChunkKind;
 use mortar_diag::Collector;
 use mortar_digest::{Leaf, LeafColumn, TreeFn};
 use mortar_incr::capture::{Keys, Positional, Translation};
 use mortar_incr::format::{self, State, Str, stat_tag};
 use mortar_incr::stamp::{self, Cleanliness, Tuple};
+use mortar_incr::testhook::crash_point;
 use mortar_input::store::{Store, StoreConfig, StorePolicy};
 
 use crate::incremental;
@@ -144,6 +146,12 @@ pub fn update_by(args: &[OsString], cwd: &Path, write: WritePath, by_position: b
     Update { outcome, report, phases: timer.finish() }
 }
 
+/// A reason as the floor's error string has always printed it, `name:
+/// detail` (WP-213: the reasons are `IncrReason`; the words are today's).
+fn said(r: &IncrReason) -> String {
+    format!("{}: {}", r.name(), r.detail())
+}
+
 fn ms(d: std::time::Duration) -> f64 {
     d.as_secs_f64() * 1000.0
 }
@@ -185,13 +193,14 @@ fn run(
     let state_path = incremental::state_path(&parsed, cwd, &out_path);
 
     // 1. The state, read and validated, against the plan and the output.
-    let bytes = std::fs::read(&state_path).map_err(|e| format!("no-state: {e}"))?;
+    let bytes =
+        std::fs::read(&state_path).map_err(|e| said(&IncrReason::NoState(e.to_string())))?;
     let mut state = format::decode(&bytes, crate::VERSION.as_bytes())
-        .map_err(|e| format!("{}: {}", e.reason(), e.detail()))?;
+        .map_err(|e| said(&IncrReason::from(e)))?;
     drop(bytes);
     let reason = incremental::check_state(&state, incremental::plan_hash(&parsed, cwd), &out_path);
-    if reason != "update-not-implemented" {
-        return Err(reason);
+    if reason != IncrReason::UpdateNotImplemented(None) {
+        return Err(reason.report());
     }
     timer.phase(15, "state");
 
@@ -343,8 +352,10 @@ fn run(
             // cannot translate is a changed layout (IN-28's "a replay
             // that does not fit").
             Some(e) if e.starts_with("state-corrupt") => e,
-            Some(e) => format!("layout-changed: the replay: {e}"),
-            None => "layout-changed: the replayed layout does not fit this link".to_owned(),
+            Some(e) => said(&IncrReason::LayoutChanged(format!("the replay: {e}"))),
+            None => said(&IncrReason::LayoutChanged(
+                "the replayed layout does not fit this link".to_owned(),
+            )),
         });
     };
     f.keep_leaves = true;
@@ -416,7 +427,7 @@ fn run(
     // on must be as the state stored it, decided before anything is
     // written.
     mortar_incr::contribution::compare(&link, &state, &pos, &tr, &f.layout, file, row)
-        .map_err(|(reason, detail)| format!("{reason}: {detail}"))?;
+        .map_err(|r| said(&r))?;
     timer.phase(95, "changed file compared");
 
     // 5. The dirty windows, filled into memory.
@@ -568,6 +579,7 @@ fn run(
 
     // 6. The writes (IN-46, IN-47), after everything was filled (IN-13).
     set_updating(&state_path).map_err(|e| format!("cannot set the updating flag: {e}"))?;
+    crash_point("F-flag");
     // WP-094 (b): only the dirty ranges are written (the windows are
     // filled whole for their leaves), unless MORTAR_FLOOR_WRITE_WINDOWS.
     let writes: Vec<(Range<u64>, Vec<u8>)> = if std::env::var_os("MORTAR_FLOOR_WRITE_WINDOWS")
@@ -821,6 +833,7 @@ fn in_place(
         .ok_or_else(|| std::io::Error::other("the ELF header's window was not refilled"))?;
     f.write_all_at(&[0; IDENT], 0)?;
     f.sync_data()?;
+    crash_point("F-ident");
     for (r, b) in jobs {
         if r.start == 0 {
             f.write_all_at(&b[IDENT..], IDENT as u64)?;
@@ -831,9 +844,13 @@ fn in_place(
     if meta.len() != size {
         f.set_len(size)?;
     }
+    crash_point("F-written");
     f.sync_data()?;
+    crash_point("F-synced");
     f.write_all_at(&head[..IDENT], 0)?;
+    crash_point("F-header-written");
     f.sync_data()?;
+    crash_point("F-header");
     Ok((meta.dev(), meta.ino()))
 }
 
@@ -862,10 +879,14 @@ fn by_copy(
             t.set_len(size)?;
         }
         t.flush()?;
+        crash_point("F-copy-written");
         t.sync_data()?;
+        crash_point("F-copy-synced");
         let m = t.metadata()?;
         std::fs::rename(&tmp, out_path)?;
+        crash_point("F-copy-renamed");
         sync_dir(out_path)?;
+        crash_point("F-copy-dir");
         Ok((m.dev(), m.ino()))
     })();
     if result.is_err() {

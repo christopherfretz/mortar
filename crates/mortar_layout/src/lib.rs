@@ -17,9 +17,11 @@
 pub mod address;
 pub mod assign;
 pub mod chunk;
+pub mod delta;
 pub mod diag;
 pub mod fixed;
 pub mod headers;
+pub mod incr_discard;
 pub mod order;
 pub mod rank;
 pub mod relocatable;

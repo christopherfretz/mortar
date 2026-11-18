@@ -68,6 +68,18 @@ impl fmt::Display for StateError {
     }
 }
 
+/// WP-213: the state's error as the one reason type (`state-corrupt` or
+/// `state-version` with the detail; `report()` prints what the floor
+/// printed, `"{reason}: {detail}"`).
+impl From<StateError> for mortar_core::incr::IncrReason {
+    fn from(e: StateError) -> Self {
+        match e {
+            StateError::Corrupt(d) => Self::StateCorrupt(d),
+            StateError::Version(d) => Self::StateVersion(d),
+        }
+    }
+}
+
 fn corrupt(detail: impl Into<String>) -> StateError {
     StateError::Corrupt(detail.into())
 }
@@ -120,13 +132,44 @@ pub mod kind {
     /// WP-094 prototype (format version 3): the live fragments by position
     /// (`SECTIONS` row, offset in the section), after `HOLES`.
     pub const FRAG_AT: u32 = 40;
+    /// Format version 5's tables (`spec/incr.md` IN-18d, IN-18e; WP-213:
+    /// constants only, no version 4 state has them and the reader of
+    /// version 4 refuses them; U-2 writes and reads them). Their row
+    /// structs are `crate::update::rows`.
+    /// The per-file index (IN-18d), append-only, parallel to `FILES`.
+    pub const FILE_INDEX: u32 = 41;
+    /// File-keyed: per file its `--gc-sections` edges (IN-29, IN-71a).
+    pub const EDGES: u32 = 42;
+    /// File-keyed: per file its `.symtab` block and `.strtab` region;
+    /// file 0's range holds the global area's row (IN-49a).
+    pub const SYMTAB: u32 = 43;
+    /// Key-keyed: COMDAT signature, keeper (IN-71).
+    pub const GROUPS: u32 = 44;
+    /// Key-keyed: one row per (key, mentioning file) (IN-18e, IN-71).
+    pub const KEY_REFS: u32 = 45;
+    /// Key-keyed: key, file, size, alignment of each common (IN-72 item 11).
+    pub const COMMONS: u32 = 46;
+    /// Key-keyed: ODR key, class hash and layout (IN-71d).
+    pub const ODR_CLASSES: u32 = 47;
+    /// Key-keyed: ODR key, file, row kind, class (IN-71d).
+    pub const ODR_REFS: u32 = 48;
+    /// Key-keyed: the stored warnings: subjects, code, text, order (IN-75a).
+    pub const DIAGS: u32 = 49;
+    /// Key-parallel: a global's `.symtab` index and `.strtab` offset
+    /// (IN-49a).
+    pub const SYMTAB_KEYS: u32 = 50;
+    /// File-keyed: per file its regions (IN-72 item 2; WP-213 F-1).
+    pub const REGIONS: u32 = 51;
+    /// Key-keyed: the by-name index of `SYMBOLS`, `(hash, row)` (WP-213
+    /// F-2).
+    pub const NAMES: u32 = 52;
     /// The number of tables of versions 3 and 4.
     pub const COUNT: u32 = 28;
 
     /// The name of a kind, for diagnostics.
     #[must_use]
     pub fn name(kind: u32) -> &'static str {
-        const NAMES: [&str; 23] = [
+        const FIRST: [&str; 23] = [
             "META",
             "STAT",
             "FILES",
@@ -157,7 +200,19 @@ pub mod kind {
             INDEX => "INDEX",
             HOLES => "HOLES",
             FRAG_AT => "FRAG_AT",
-            _ => kind.checked_sub(1).and_then(|i| NAMES.get(i as usize)).copied().unwrap_or("?"),
+            FILE_INDEX => "FILE_INDEX",
+            EDGES => "EDGES",
+            SYMTAB => "SYMTAB",
+            GROUPS => "GROUPS",
+            KEY_REFS => "KEY_REFS",
+            COMMONS => "COMMONS",
+            ODR_CLASSES => "ODR_CLASSES",
+            ODR_REFS => "ODR_REFS",
+            DIAGS => "DIAGS",
+            SYMTAB_KEYS => "SYMTAB_KEYS",
+            REGIONS => "REGIONS",
+            NAMES => "NAMES",
+            _ => kind.checked_sub(1).and_then(|i| FIRST.get(i as usize)).copied().unwrap_or("?"),
         }
     }
 }

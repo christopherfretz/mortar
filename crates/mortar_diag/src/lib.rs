@@ -41,6 +41,7 @@ mod model;
 pub mod relocatable;
 mod render;
 pub mod stream;
+pub mod subject;
 
 pub use collect::{Collector, DEFAULT_ERROR_LIMIT, Key, Policy, Report};
 pub use model::{

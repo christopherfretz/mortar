@@ -17,6 +17,7 @@
 //! fall-back (§7), never "unchanged".
 
 use mortar_core::hash::{HashMap, HashSet};
+use mortar_core::incr::IncrReason;
 
 use crate::detect::{Changes, FileState};
 use crate::format::{
@@ -232,8 +233,8 @@ pub struct ChunkLine {
 /// A named fall-back (§7) and what triggered it.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Fallback {
-    pub reason: &'static str,
-    pub detail: String,
+    /// The reason, with its detail (WP-213: the one reason type).
+    pub reason: IncrReason,
 }
 
 /// The symbol part of the delta.
@@ -637,9 +638,10 @@ pub fn compute(
     let unchanged_new = |row: u32| nfile(row) == FileState::Unchanged;
     let ofile = |row: u32| changes.old_files.get(row as usize).map_or(FileState::Dead, |f| f.1);
     let old_to_new_file = |row: u32| changes.old_files.get(row as usize).and_then(|f| f.0);
-    let fallback = |d: &mut Delta, reason: &'static str, detail: String| {
-        if !drop.fallbacks.contains(&reason) && !d.fallbacks.iter().any(|f| f.reason == reason) {
-            d.fallbacks.push(Fallback { reason, detail });
+    let fallback = |d: &mut Delta, reason: IncrReason| {
+        let name = reason.name();
+        if !drop.fallbacks.contains(&name) && !d.fallbacks.iter().any(|f| f.reason.name() == name) {
+            d.fallbacks.push(Fallback { reason });
         }
     };
     // ---- sections by identity -------------------------------------------
@@ -692,17 +694,22 @@ pub fn compute(
         } else {
             diff.join(" ")
         };
-        fallback(&mut d, "new-output-section", detail);
+        fallback(&mut d, IncrReason::NewOutputSection(detail));
     }
     let prop = |s: &Side<'_>| s.chunk_by_name(b".note.gnu.property").map(|c| c.size);
     if prop(&a) != prop(&b) {
-        fallback(&mut d, "property-changed", format!("{:?} -> {:?} bytes", prop(&a), prop(&b)));
+        fallback(
+            &mut d,
+            IncrReason::PropertyChanged(format!("{:?} -> {:?} bytes", prop(&a), prop(&b))),
+        );
     }
     if let Some(p) = &changes.script_changed {
         fallback(
             &mut d,
-            "options-changed",
-            format!("{} changed and is not an object or archive", String::from_utf8_lossy(p)),
+            IncrReason::OptionsChanged(format!(
+                "{} changed and is not an object or archive",
+                String::from_utf8_lossy(p)
+            )),
         );
     }
     // inputs-reordered: two unchanged inputs' relative order changed.
@@ -717,8 +724,11 @@ pub fn compute(
                 |s: &State, r: usize| String::from_utf8_lossy(s.str(s.files[r].path)).into_owned();
             fallback(
                 &mut d,
-                "inputs-reordered",
-                format!("{} moved before {}", name(old, o), name(new, n as usize)),
+                IncrReason::InputsReordered(format!(
+                    "{} moved before {}",
+                    name(old, o),
+                    name(new, n as usize)
+                )),
             );
             break;
         }
@@ -739,8 +749,7 @@ pub fn compute(
                     String::from_utf8_lossy(old.str(old.files[x.file as usize].path)).into_owned();
                 fallback(
                     &mut d,
-                    "tls-layout-changed",
-                    format!("{file}:{name} {tp_a:#x} -> {tp_b:#x}"),
+                    IncrReason::TlsLayoutChanged(format!("{file}:{name} {tp_a:#x} -> {tp_b:#x}")),
                 );
             }
         }
@@ -1184,7 +1193,7 @@ pub fn compute(
             d.symbol_lines.push(("attrs", key_name(&k)));
             // An unchanged file's mentions are the same in both links.
             if files_mentioning.get(nsym).any(&unchanged_new) {
-                fallback(&mut d, "symbol-kind-changed", key_name(&k));
+                fallback(&mut d, IncrReason::SymbolKindChanged(key_name(&k)));
             }
         }
         // The definition (IN-27 row 3).
@@ -1403,7 +1412,7 @@ pub fn compute(
         let same = o != NONE && a.pos(o).is_some() && a.pos(o) == b.pos(x.target);
         if !same {
             let name = String::from_utf8_lossy(new.str(new.sections[t].name)).into_owned();
-            fallback(&mut d, "link-order-moved", name);
+            fallback(&mut d, IncrReason::LinkOrderMoved(name));
         }
     }
     // ---- holes -----------------------------------------------------------
@@ -1710,7 +1719,8 @@ pub fn report(old: &State, new: &State, changes: &Changes, d: &Delta, extra: &Ex
     bound.close(&mut s, Kind::Symbol);
     for f in &d.fallbacks {
         if bound.take() {
-            let _ = writeln!(s, "delta fallback {} {}", f.reason, field(f.detail.as_bytes()));
+            let (name, detail) = (f.reason.name(), f.reason.detail());
+            let _ = writeln!(s, "delta fallback {name} {}", field(detail.as_bytes()));
         }
     }
     bound.close(&mut s, Kind::Fallback);

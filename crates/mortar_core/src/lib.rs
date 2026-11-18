@@ -30,6 +30,7 @@ pub mod hash;
 pub mod id;
 pub mod identity;
 pub mod idset;
+pub mod incr;
 pub mod inputs;
 pub mod intern;
 pub mod layout;

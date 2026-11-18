@@ -18,5 +18,11 @@ mortar_elf.workspace = true
 [dev-dependencies]
 mortar_testutil.workspace = true
 
+[features]
+# The crash protocol's test hooks (`spec/incr.md` IN-77 "Crash hooks";
+# `mortar_incr::testhook`): off by default; without it no environment
+# variable is read.
+testhooks = []
+
 [lints]
 workspace = true
