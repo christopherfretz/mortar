@@ -717,8 +717,13 @@ fn file_rows(m: &MemoryState, file: usize) -> Vec<(&'static str, String)> {
     for s in m.sections.iter().filter(|s| s.file == file as u32) {
         let mut s = s.clone();
         let anchor = string(m, s.anchor);
-        s.anchor = mortar_incr::format::Str::default();
-        out.push(("SECTIONS", format!("{anchor:?} {s:?}")));
+        // where the full link placed it: moved by an earlier file's
+        // growth, by design (the layout of a full link; PLACED)
+        out.push(("PLACED", format!("{anchor:?} {} {}", s.place_chunk, s.place_offset)));
+        let name = string(m, s.name);
+        (s.anchor, s.name, s.file, s.place_chunk, s.place_offset) =
+            (mortar_incr::format::Str::default(), mortar_incr::format::Str::default(), 0, 0, 0);
+        out.push(("SECTIONS", format!("{anchor:?} {name:?} {s:?}")));
     }
     // A section by its position in its file (a global row number moves
     // when an earlier file's sections change).
@@ -728,6 +733,8 @@ fn file_rows(m: &MemoryState, file: usize) -> Vec<(&'static str, String)> {
         out.push(("MENTIONS", format!("{:?} {:?} {sec:?}", key(r.symbol), MentionKey(r))));
     }
     for (_, r) in m.frag_uses.iter().filter(|r| r.0.0 == file as u32) {
+        // its file is the range's (a row number: moves when a file appears)
+        let r = mortar_incr::update::rows::FragUseRow { file: 0, ..*r };
         out.push(("FRAG_USE", format!("{r:?}")));
     }
     let mut refs: Vec<String> = m
@@ -788,6 +795,9 @@ fn experiment_unchanged_files_rows_are_stable() {
             }
             same += 1;
             let (ra, rb) = (file_rows(a, fa), file_rows(b, fb));
+            let unplaced = |v: &[(&'static str, String)]| -> Vec<(&'static str, String)> {
+                v.iter().filter(|r| r.0 != "PLACED").cloned().collect()
+            };
             if ra != rb {
                 let tables: std::collections::BTreeSet<&str> = ra
                     .iter()
@@ -798,8 +808,12 @@ fn experiment_unchanged_files_rows_are_stable() {
                 for t in tables {
                     *differ.entry(t).or_default() += 1;
                 }
+                if unplaced(&ra) == unplaced(&rb) {
+                    continue;
+                }
                 if bad < 5 {
-                    let first = ra.iter().zip(&rb).find(|(x, y)| x != y);
+                    let (ua, ub) = (unplaced(&ra), unplaced(&rb));
+                    let first = ua.iter().zip(&ub).find(|(x, y)| x != y);
                     eprintln!(
                         "hop {n}->{}: {:?}: {first:?}",
                         n + 1,
@@ -811,7 +825,7 @@ fn experiment_unchanged_files_rows_are_stable() {
         }
         eprintln!("hop {n}->{}: {same} unchanged files, differing per table {differ:?}", n + 1);
     }
-    assert_eq!(bad, 0, "unchanged files whose stored rows differ");
+    assert_eq!(bad, 0, "unchanged files whose stored rows (less PLACED) differ");
 }
 
 /// A state's rows by name, comparable across two states whose numbering
