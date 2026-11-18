@@ -7589,6 +7589,48 @@ are the text of each finding (`{…}` a field).
      P-P3 matched to it. "P-P1 {file}:({section})+{offset} {type}
      resolves to {target} in the direct link and to {target'} through
      -r".
+     **A mergeable target is judged by content** (the supervisor's
+     ruling, WP-232). When the record's symbol is defined in an
+     `SHF_MERGE` input section and the field holds its whole place
+     (`full`: an absolute or PC-relative field of the full width), the
+     target is the field's place `S + A` (in a merged section `S + A` is
+     the piece that holds offset `A`, not `S` moved by `A`: the addend's
+     effect is judged with it), and the field matches when `V`'s place
+     lies in a piece of an `SHF_MERGE` input section of `V` with the
+     same `sh_flags` and `sh_entsize` as one of `D`'s pieces at the
+     target, in an output section of the same name and `sh_flags`, and
+     holds the same content from the place on: for `SHF_STRINGS`, the
+     bytes from the place through the string's terminator (the first
+     entry of zeros, inside the piece), so a place inside a string
+     compares the suffix and the place's offset inside its entry is
+     equal; for fixed-size entries, the entry's bytes and the place's
+     offset inside it. "P-P1 {file}:({section})+{offset} {type} resolves
+     to {target} ({piece}: {content}) in the direct link and to {target'}
+     ({content'} or "no mergeable piece") through -r, not equal content".
+     Every other field stays exact (`φ` of `S`, above). *Why this loses
+     nothing:* the gABI makes equal entries of `SHF_MERGE` sections of
+     equal flags and entry size interchangeable (a linker keeps any one
+     copy, and no conforming program can tell which); to pass, a wrong
+     `V` would have to point at an equal string (or entry, at the same
+     offset in it) of the same kind of section, which is a correct link.
+     *What it does not excuse:* a target that is not in a mergeable piece
+     on both sides (a non-mergeable `D` symbol is judged by address; a
+     `V` place in a non-mergeable section, in the padding of something
+     that is not a string, or between pieces is "no mergeable piece");
+     unequal content (another string, the string plus one); a different
+     addend's effect (it moves the place, so the content from it
+     differs); a mergeable piece of other flags, entry size or output
+     section. *A piece the `-r` step made* (the byte of padding a `-r`
+     section of `sh_addralign` > `sh_entsize` holds between two strings,
+     which a final link reads as a string `""` of its own) has no `D`
+     counterpart: items 2 and 3 iterate `D`'s input pieces, so it is no
+     finding by itself; a field of `V` that points at it is judged by
+     the content its `D` field points at (a `""` in `D`: equal, clean;
+     anything else: unequal); a field whose `D` target is not mergeable
+     and whose `V` place is that padding is judged by address and is a
+     finding. Fields judged by content are counted
+     (`merged-by-content=<n>`); one whose `V` place is not also `φ` of
+     the place by its piece counts under (t5).
   4. **The globals.** For every global or weak name of `D`'s and `V`'s
      `.symtab` and `.dynsym`, `V`'s value is `φ` of `D`'s, and its
      size, type, binding and visibility are equal. "P-P1 symbol {name}:
@@ -7604,7 +7646,12 @@ are the text of each finding (`{…}` a field).
     compared;
   - **(t4)** the members of a COMDAT group that has a copy inside the
     component and one outside, with different bytes: item 2 and 3 accept
-    either copy as the kept one (the `-r` elects first).
+    either copy as the kept one (the `-r` elects first);
+  - **(t5)** a field whose target is mergeable (item 3): an equal entry
+    other than the one `φ` maps the piece to (WP-232). Measured 0 on
+    every composition with mortar's finals (mortar's map places each
+    piece, and its fields point at their own piece's place); the count
+    makes the tolerance visible where it is used.
   **Exclusions**: P-P1 is not applied, and the report says which (`not
   judged: relocatable composition ({letter})`), when:
   - **(a)** the `-r` line names an archive or a `--start-lib` group, and
@@ -7651,7 +7698,25 @@ are the text of each finding (`{…}` a field).
   - addends: an x86 field's addend is the record's (`D`'s on both
     sides); a REL field's is read from the input's field;
   - exclusion (a)'s closures are the maps' extracted members (the
-    `-r` map's and `D`'s), not a re-run of §3.8;
+    `-r` map's and `D`'s), not a re-run of §3.8. A thin archive's member
+    is named as the `-r` map names it, `(archive, member name)`, on
+    both final links (WP-232; measured with GNU ld 2.44, lld 19.1.7 and
+    mold 2.37.1, an archive `lib/libthin.a` of stored `../sub/m1.o`): GNU ld's
+    map names it by its own path alone (`lib/../sub/m1.o`, with and
+    without `--whole-archive`, in the preamble and the section lines),
+    lld's `lib/libthin.a(../sub/m1.o)` (the stored name), mold's
+    `lib/libthin.a(lib/../sub/m1.o)` (the path it opened). Without
+    guessing: the thin archives are those of the `-r` map's members
+    whose bytes (the `-r` link's input) begin `!<thin>\n`; each member's
+    own path is its stored path from the archive's directory (§2.2),
+    normalized lexically (§3.8). A bare path of `D` or `V` is that
+    member when exactly one member of those archives has it as its own
+    path and no word of that link's line is the same path (a file named
+    both as an object and through the thin archive is not told apart:
+    it keeps its bare name, and (a) applies if the closures then
+    differ); `archive(m)` with `m` not the stored name is that member
+    when `m` normalizes to its own path. An archive that cannot be read
+    renames nothing;
   - (t3) has no "just outside" case of its own: P-P1 compares no
     linker-made byte, so a change outside the descriptor (the note's
     flags) is caught by item 1;
@@ -7670,6 +7735,25 @@ are the text of each finding (`{…}` a field).
   (mortar's final link makes lld's input section `COMMON` an orphan:
   WP-203, a linker gap; the test expects it by name and fails when it
   flips).
+  Measured by WP-232 (`crates/mortar_plumb/tests/compose.rs`): RL-7's
+  `r-kernel-style-m` and `r-kernel-style` (static, mortar's final):
+  their 36 findings each were the verifier's, not the rule's: item 3
+  took `S` as the field less `A` for a section symbol of a merged
+  section (`.rodata.str1.8 + 0x30`), which is no place (merged pieces
+  are not contiguous). With the target `S + A` and by content they
+  compose clean (`merged-by-content=467`, (t5) 0: `φ` by piece already
+  maps each `""` of libc to the `-r` output's padding byte where `V`
+  merged it). `p_p1_merged_{aarch64,x86_64,i386}` (GNU ld's `-r` of two
+  string files, mortar's finals; on AArch64 `kc_tbl[0]` is the `-r`'s
+  padding `""` in `V` and `kc.o`'s own in `D`): clean, 5-6 fields by
+  content; the mutants of `V` "a field to a different string of the
+  section", "to the equal string plus one", "to equal bytes in
+  `.rodata` (not mergeable)" and "a `""` field to a zero byte of a
+  non-mergeable array" are each named "not equal content" on all three
+  targets (the last two with "no mergeable piece"). `p_p1_thin_aarch64`
+  (mortar's `-r` of a thin archive's members, GNU ld's and lld's finals,
+  with and without `--whole-archive`): judged, no finding (before WP-232
+  GNU ld's were "not judged (a)").
   *Catches:* mold's `-r` of the C component (COMMON→`SHN_ABS`: item 4
   and item 3, the field resolves to the absolute 4); the `.ctors.65335`
   order mold's `-r` moves (item 2); a `-r` output whose piece offsets are
@@ -8150,7 +8234,10 @@ foreign section: its place is not listed) or `options-unknown`. An input
 does not apply at `-r`: the record must be carried). The summary adds `relocatable:
 pieces {n}, merged {m}, framed {f}; groups {g}; FDEs {k} live, {r}
 removed; symbols {s}; sections {h}` and, under P-P1, `composition: {x}
-judged, {y} not judged ({letters})`.
+judged, {y} not judged ({letters})`, then `composition compared: pieces
+{p}, records {r} ({f} by form), bytes {b}, globals {g},
+merged-by-content={m}` (item 3's fields judged by content, WP-232) and
+`composition tolerances: ({t}) {n}, ...` ((t1)-(t5) as used).
 
 Measured by RL-5 (`s14_references_*`, the corpus of §14.9 summed per
 target and linker; records = verified + accepted + not checked +
@@ -8201,6 +8288,10 @@ name omitted) counts as a judged symbol, not a record.
 - A reference's `.llvm_addrsig` contents, and its and
   `.llvm.call-graph-profile`'s `sh_link` and `sh_entsize` (§14.3); the
   call-graph profile's bytes and records are judged.
+- P-P1 on two final links by mold: RL-7 saw "{file}:(.gnu.warning.*):
+  its bytes cannot be read on one side" (item 3) on such a composition;
+  the cause is not measured. Not asked (the lane's LT-R2 does not
+  compose mold's `D` and `V`): not judged.
 - `-T` at `-r`: not judged. RL-11 keeps `-T` refused at `-r` unless a
   verifier rule for placement by a script at `-r` is written first, in a
   verifier package before it (the supervisor's ruling on WP-180).
