@@ -162,6 +162,15 @@ pub struct Incr5 {
     /// Each file's `.eh_frame` range in the final plan
     /// (`EhPlan::file_runs`), or why there is none to store.
     pub eh: Result<Vec<mortar_synth::eh::EhRun>, String>,
+    /// Per live object with properties: its own, encoded
+    /// (`notes::object_properties`, `rows::encode_properties`; seam 6's
+    /// `FILES.properties`), by file.
+    pub properties: Vec<(FileId, Vec<u8>)>,
+    /// Per object file that takes part (L-84): its `.note.GNU-stack`
+    /// (`stack::file_note`, seam 6's `FILES.stack`), by file.
+    pub stack: Vec<(FileId, mortar_layout::stack::StackNote)>,
+    /// `Plan::option_keys` (seam 6's `SYMBOLS.option`).
+    pub option_keys: Vec<Vec<u8>>,
 }
 
 /// One output section of a [`Front`]'s layout, as its section header will
@@ -750,7 +759,8 @@ pub fn front<'s>(
     let hdr = HdrPlan::new(&merge_eh, &eh, eh_frame_hdr, &pool, diag).ok()?;
     steps.step("hdr plan", 0, "");
     let memory_seal = plan.z.memory_seal == Some(true);
-    let property = property_plan(&inputs, &resolution, &headers, arch, memory_seal, diag).ok()?;
+    let (property, properties5) =
+        property_plan(&inputs, &resolution, &headers, arch, memory_seal, state5, diag).ok()?;
     let feature_1_and = property.value_u32(link_arch.feature_1().0);
     // D-49: `-z now` binds every PLT entry at load (always `false` in a
     // static link).
@@ -1333,6 +1343,9 @@ pub fn front<'s>(
         eh: eh_runs.and_then(|()| {
             eh.file_runs(&merge_eh).map_err(|f| format!("file {} has two .eh_frame runs", f.0))
         }),
+        properties: properties5,
+        stack: mortar_layout::stack::file_notes(&inputs, &resolution),
+        option_keys: plan.option_keys(),
     });
     drop(merge_eh);
     Some(Front {
@@ -1464,15 +1477,20 @@ fn slots_of(d: &mortar_core::Demands, resolution: &Resolution) -> Slots {
 }
 
 /// S-94: the property notes of every live object (those without one take
-/// part as "every property absent", S-95).
+/// part as "every property absent", S-95). With `keep` (a format-5
+/// capture, WP-244), also each live object's own properties
+/// (`object_properties`, the merge's input: `FILES.properties`), encoded.
+#[allow(clippy::type_complexity)] // the plan, and the per-file values
 fn property_plan(
     inputs: &Inputs<'_>,
     resolution: &Resolution,
     headers: &Headers<'_>,
     arch: &dyn Arch,
     memory_seal: bool,
+    keep: bool,
     diag: &Collector,
-) -> Result<PropertyPlan, mortar_synth::Failed> {
+) -> Result<(PropertyPlan, Vec<(FileId, Vec<u8>)>), mortar_synth::Failed> {
+    let mut ids: Vec<FileId> = Vec::new();
     let mut paths: Vec<String> = Vec::new();
     let mut per: Vec<Vec<(SectionId, &[u8], u64)>> = Vec::new();
     for (file, row) in inputs.files.iter() {
@@ -1511,6 +1529,7 @@ fn property_plan(
             }
         }
         let f = row.display();
+        ids.push(file);
         paths.push(match f.member() {
             Some(m) => format!("{}({m})", f.path()),
             None => f.path().to_owned(),
@@ -1520,8 +1539,35 @@ fn property_plan(
     let objects: Vec<ObjectNotes<'_>> =
         paths.iter().zip(&per).map(|(p, s)| ObjectNotes { path: p, sections: s }).collect();
     let processor = |t: u32| arch.property_merge(t);
+    let class = arch.facts().class;
+    // S-94..S-96: each object's own properties, then the one merge
+    // (`PropertyPlan::new`'s two steps, kept apart for the capture).
+    let mut per_object = Vec::with_capacity(objects.len());
+    let mut failed = false;
+    for obj in &objects {
+        match mortar_synth::notes::object_properties(obj, class, &processor, diag) {
+            Ok(m) => per_object.push(m),
+            Err(mortar_synth::Failed) => failed = true,
+        }
+    }
+    if failed {
+        return Err(mortar_synth::Failed);
+    }
     // `-z memory-seal` (R-C3): the last of it and `-z nomemory-seal` wins.
-    PropertyPlan::new(&objects, arch.facts().class, &processor, memory_seal, diag)
+    let plan = PropertyPlan::merged(&per_object, class, &processor, memory_seal, diag)?;
+    let kept = if keep {
+        ids.iter()
+            .zip(&per_object)
+            .filter(|(_, m)| !m.is_empty())
+            .map(|(&f, m)| {
+                let props: Vec<(u32, &[u8])> = m.iter().map(|(t, v)| (*t, v.as_slice())).collect();
+                (f, mortar_incr::update::rows::encode_properties(&props))
+            })
+            .collect()
+    } else {
+        Vec::new()
+    };
+    Ok((plan, kept))
 }
 
 /// The output demands the GOT is planned from: the scan's, with

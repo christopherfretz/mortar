@@ -1071,6 +1071,7 @@ impl LayoutRows for LayoutOf<'_, '_> {
             class,
             hash,
             offset: f.offset,
+            size: f.size,
             refs: f.refs,
         }))
     }
@@ -1088,6 +1089,7 @@ impl LayoutRows for LayoutOf<'_, '_> {
             offset: f.eh_offset,
             capacity: f.eh_capacity,
             records: f.eh_records,
+            fdes: f.eh_fdes,
         }))
     }
     fn key_refs_of(&self, file: FileId) -> Result<Vec<StoredKeyRef>, IncrReason> {

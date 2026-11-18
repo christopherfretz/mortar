@@ -293,6 +293,7 @@ fn edit(base: &MemoryState, grow: u32) -> StatePatch {
     p.ranges.push(FileRanges {
         file: FileId(0),
         first_global: base.file_index[0].first_global,
+        locals: None,
         sections: Some(rows),
         mentions: Some(mentions),
         index: None,
@@ -406,6 +407,7 @@ fn remove_file_1(m: &MemoryState) -> StatePatch {
     p.ranges.push(FileRanges {
         file: FileId(1),
         first_global: 0,
+        locals: None,
         sections: None,
         mentions: None,
         index: None,
@@ -684,6 +686,7 @@ fn update_reuses_stored_strings() {
     let mut fr = FileRanges {
         file: FileId(0),
         first_global: m.file_index[0].first_global,
+        locals: None,
         sections: Some(rows),
         mentions: None,
         index: None,
@@ -841,7 +844,15 @@ fn seam5_rows_round_trip_and_patch() {
     m.outsecs.push(mortar_incr::format::OutSecRow { name, ordinal: 0 });
     let name = add(&mut m.strings, b".rodata");
     m.outsecs.insert(0, mortar_incr::format::OutSecRow { name, ordinal: 0 });
-    m.frags.push(FragRow { out: 1, class: CLASS, hash: [5; 16], offset: 0, refs: 3, tomb: false });
+    m.frags.push(FragRow {
+        out: 1,
+        class: CLASS,
+        hash: [5; 16],
+        offset: 0,
+        size: 0,
+        refs: 3,
+        tomb: false,
+    });
     for f in 0..3 {
         let row = FragUseRow { file: f, out: 1, class: CLASS, hash: [5; 16] };
         m.frag_uses.push((FileId(f), row));
@@ -886,6 +897,7 @@ fn seam5_rows_round_trip_and_patch() {
     p.ranges.push(FileRanges {
         file: FileId(1),
         first_global: 9,
+        locals: None,
         sections: None,
         mentions: None,
         index: None,
@@ -900,6 +912,7 @@ fn seam5_rows_round_trip_and_patch() {
         class: CLASS,
         hash: [7; 16],
         offset: 99,
+        size: 0,
         refs: 1,
         tomb: false,
     });
@@ -987,6 +1000,7 @@ fn dead_key_dropped_by_compaction() {
     p.ranges.push(FileRanges {
         file: FileId(1),
         first_global: m.file_index[1].first_global,
+        locals: None,
         sections: None,
         mentions: Some(Vec::new()),
         index: None,

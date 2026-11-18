@@ -415,6 +415,7 @@ pub fn normalize(m: &MemoryState) -> Result<MemoryState, StateError> {
         n.files.push(crate::update::rows::FileRow {
             path: intern(r.path)?,
             member_name: intern(r.member_name)?,
+            properties: intern(r.properties)?,
             rank: u64::from(new) << 20,
             ..r.clone()
         });
@@ -460,6 +461,21 @@ pub fn normalize(m: &MemoryState) -> Result<MemoryState, StateError> {
                 .copied()
                 .unwrap_or(crate::update::rows::SymtabKeyRow { index: NONE, strtab: 0 }),
         );
+    }
+    // FILE_INDEX.locals (seam 6): the locals are the sorted tail, each
+    // file's one run (by new file, then index).
+    for (row, r) in n.symbols.iter().enumerate() {
+        if r.kind != sym_kind::LOCAL {
+            continue;
+        }
+        let row = u32::try_from(row).map_err(|_| state_corrupt("SYMBOLS over 2^32"))?;
+        let Some(idx) = n.file_index.get_mut(r.file as usize) else {
+            return Err(bad(&format!("a local's file {}", r.file)));
+        };
+        if idx.locals.count == 0 {
+            idx.locals.first = row;
+        }
+        idx.locals.count += 1;
     }
     // SECTIONS: live files' rows by (new file, position); fillers dropped.
     let mut secs: Vec<(u32, usize)> = Vec::new();
@@ -677,8 +693,10 @@ pub fn normalize(m: &MemoryState) -> Result<MemoryState, StateError> {
 /// (U-3's series replaces its stand-in by it).
 ///
 /// `options` is never stored (`OptionKeys`): [`normalize`], so the
-/// compaction and the canon, pass the empty set, and a key that only an
-/// option names is dropped there (a finding of WP-214 §10).
+/// compaction and the canon, pass the empty set; a key that only an
+/// option names is kept there by its `SYMBOLS.option` bit (seam 6, set by
+/// the capture from `Plan::option_keys`: `--wrap` and `--defsym` names;
+/// WP-214 §10's finding, closed by WP-244 for those).
 ///
 /// # Errors
 /// `state-corrupt` for a string out of the pool.
@@ -738,6 +756,9 @@ pub fn live_keys(m: &MemoryState, options: &OptionKeys) -> Result<Vec<bool>, Sta
         match r.kind {
             sym_kind::GONE => live[k] = false,
             sym_kind::LOCAL => live[k] = !gone(r.file),
+            // `SYMBOLS.option` (seam 6): the command line names it, so the
+            // state does without `options` (never GONE, never dead).
+            _ if r.option => live[k] = true,
             _ if live[k] || named.is_empty() => {}
             _ => live[k] = named.contains(&(s(r.name)?, s(r.version)?)),
         }

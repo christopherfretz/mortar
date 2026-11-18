@@ -141,8 +141,11 @@ pub fn invoke_in(prog: &str, args: &[OsString], cwd: &Path) -> Invocation {
 /// WP-244's switch from the test hooks (`MORTAR_INCR_STATE5`, a
 /// `testhooks` build only; `None` otherwise).
 fn hooked_state5() -> Option<incremental::State5> {
-    mortar_incr::testhook::state5_path()
-        .map(|path| incremental::State5 { path, collide: mortar_incr::testhook::state5_collide() })
+    mortar_incr::testhook::state5_path().map(|path| incremental::State5 {
+        path,
+        collide: mortar_incr::testhook::state5_collide(),
+        rows: None,
+    })
 }
 
 /// [`invoke_in`] with WP-244's switch on (tests): an incremental-mode

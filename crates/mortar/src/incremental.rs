@@ -89,7 +89,15 @@ pub struct Session {
 pub struct State5 {
     pub path: PathBuf,
     pub collide: bool,
+    /// Where the state's rows also go, normalized, before encoding (tests:
+    /// seam 6's columns that format 5's bytes do not hold until U-2
+    /// encodes them). `None`: nowhere.
+    pub rows: Option<Rows5Sink>,
 }
+
+/// [`State5::rows`]: the last capture's normalized rows.
+pub type Rows5Sink =
+    std::sync::Arc<std::sync::Mutex<Option<mortar_incr::update::testing::MemoryState>>>;
 
 /// WP-094: timed parts (name, ms), shared with the caller.
 pub type Times = std::rc::Rc<std::cell::RefCell<Vec<(&'static str, f64)>>>;
@@ -693,7 +701,13 @@ impl Session {
                 for n in &rows.notes {
                     let _ = writeln!(stderr, "incremental: state5 {n}");
                 }
-                let bytes = mortar_incr::capture::state5_bytes(state, rows, s5.collide)?;
+                let m = mortar_incr::capture::state5_rows(state, rows, s5.collide)?;
+                let bytes = mortar_incr::capture::state5_encode(&m)?;
+                if let Some(sink) = &s5.rows
+                    && let Ok(mut g) = sink.lock()
+                {
+                    *g = Some(m);
+                }
                 lap(&self.times, t, "format 5: normalize and encode");
                 let _ = writeln!(stderr, "incremental: state5 bytes={}", bytes.len());
                 write_atomically(&s5.path, &bytes)
@@ -763,11 +777,29 @@ impl Session {
                                 offset: r.offset,
                                 capacity: r.capacity,
                                 records: r.records,
+                                fdes: r.fdes,
                                 movable: r.movable,
                             })
                             .collect()
                     });
+                let stack: Vec<(FileId, u8)> = i5
+                    .stack
+                    .iter()
+                    .map(|&(file, n)| {
+                        use mortar_incr::update::rows::file_stack;
+                        use mortar_layout::stack::StackNote;
+                        let b = match n {
+                            StackNote::Absent => file_stack::ABSENT,
+                            StackNote::NonExec => file_stack::NON_EXEC,
+                            StackNote::Exec => file_stack::EXEC,
+                        };
+                        (file, b)
+                    })
+                    .collect();
                 let five = mortar_incr::capture::Link5 {
+                    stack: &stack,
+                    properties: &i5.properties,
+                    option_keys: &i5.option_keys,
                     liveness: &f.liveness,
                     classes: &classes,
                     eh: eh.as_deref().map_err(|e| *e),

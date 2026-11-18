@@ -102,11 +102,32 @@ fn link5(line: &Line, out: &str, extra: &[&str], collide: bool) -> (String, Opti
         "mortar",
         &line.args(out, extra),
         &line.dir,
-        State5 { path: path.clone(), collide },
+        State5 { path: path.clone(), collide, rows: None },
     );
     let ok = matches!(inv.outcome, mortar::Outcome::Linked { .. });
     assert!(ok, "{}: the link failed: {:?}", line.label, inv.outcome);
     (inv.incremental, std::fs::read(&path).ok())
+}
+
+/// The link of `line` to `out` with the switch on: the state's rows,
+/// normalized, before encoding (seam 6's columns, which format 5's bytes
+/// do not hold until U-2 encodes them).
+fn rows5(line: &Line, out: &str, extra: &[&str]) -> MemoryState {
+    let sink: mortar::incremental::Rows5Sink = std::sync::Arc::default();
+    let inv = mortar::invoke_state5(
+        "mortar",
+        &line.args(out, extra),
+        &line.dir,
+        State5 {
+            path: line.dir.join(format!("{out}.state5")),
+            collide: false,
+            rows: Some(sink.clone()),
+        },
+    );
+    let ok = matches!(inv.outcome, mortar::Outcome::Linked { .. });
+    assert!(ok, "{}: the link failed: {:?}", line.label, inv.outcome);
+    let m = sink.lock().expect("the sink").take();
+    m.unwrap_or_else(|| panic!("{}: no rows: {}", line.label, inv.incremental))
 }
 
 /// The front of `line` as an incremental-mode link with the switch on.
@@ -445,4 +466,304 @@ fn outsecs_rows_are_stable_across_full_links() {
         assert_eq!(a, rows("o2"), "{}", line.label);
         assert_eq!(a, rows("o1"), "{}", line.label);
     }
+}
+
+/// The output's `.note.gnu.property` properties, ascending (ELF64 LE):
+/// `(pr_type, data)`; empty without the section.
+fn output_properties(path: &std::path::Path) -> Vec<(u32, Vec<u8>)> {
+    let b = std::fs::read(path).expect("the output");
+    let u16_at = |o: usize| u16::from_le_bytes(b[o..o + 2].try_into().unwrap()) as usize;
+    let u32_at = |o: usize| u32::from_le_bytes(b[o..o + 4].try_into().unwrap());
+    let u64_at = |o: usize| u64::from_le_bytes(b[o..o + 8].try_into().unwrap()) as usize;
+    assert_eq!(&b[..5], b"\x7fELF\x02", "an ELF64 output");
+    let (shoff, shentsize, shnum, shstrndx) =
+        (u64_at(0x28), u16_at(0x3a), u16_at(0x3c), u16_at(0x3e));
+    let sh = |i: usize| shoff + i * shentsize;
+    let strs = u64_at(sh(shstrndx) + 0x18);
+    let mut out = Vec::new();
+    for i in 0..shnum {
+        let name = strs + u32_at(sh(i)) as usize;
+        let end = b[name..].iter().position(|&c| c == 0).unwrap() + name;
+        if &b[name..end] != b".note.gnu.property" {
+            continue;
+        }
+        let (off, size) = (u64_at(sh(i) + 0x18), u64_at(sh(i) + 0x20));
+        let mut at = off;
+        while at < off + size {
+            let (namesz, descsz, typ) =
+                (u32_at(at) as usize, u32_at(at + 4) as usize, u32_at(at + 8));
+            let desc = at + 12 + namesz.next_multiple_of(4);
+            if typ == 5 && &b[at + 12..at + 12 + namesz] == b"GNU\0" {
+                let mut p = desc;
+                while p < desc + descsz {
+                    let (t, n) = (u32_at(p), u32_at(p + 4) as usize);
+                    out.push((t, b[p + 8..p + 8 + n].to_vec()));
+                    p += 8 + n.next_multiple_of(8);
+                }
+            }
+            at = desc + descsz.next_multiple_of(8);
+        }
+    }
+    out.sort();
+    out
+}
+
+// spec: incr.md IN-18e (`FILES.stack`, `FILES.properties`, `eh_fdes`;
+// WP-214 seam 6, ruling 3; IN-72 items 5 and 10): the join's merges over
+// the stored columns give the output's `PT_GNU_STACK` flags, its
+// `.note.gnu.property` bytes and its `.eh_frame_hdr` FDE count, read
+// from the output's bytes.
+#[test]
+fn seam6_file_columns_remake_the_outputs_notes() {
+    use mortar_incr::update::rows::{decode_properties, file_flags, file_stack};
+    use mortar_layout::stack::{StackNote, executable_stack};
+    for line in lines() {
+        let m = rows5(&line, "notes", &["--eh-frame-hdr"]);
+        let out = line.dir.join("notes");
+        let live_objects: Vec<&mortar_incr::update::rows::FileRow> =
+            m.files.iter().filter(|f| f.kind == 1 && f.flags & file_flags::LAZY == 0).collect();
+        // L-84 over the stored bytes, as the join runs it.
+        let notes: Vec<(String, StackNote)> = live_objects
+            .iter()
+            .map(|f| {
+                let n = match f.stack {
+                    file_stack::ABSENT => StackNote::Absent,
+                    file_stack::NON_EXEC => StackNote::NonExec,
+                    file_stack::EXEC => StackNote::Exec,
+                    b => panic!("FILES.stack {b}"),
+                };
+                (String::from_utf8_lossy(&string(&m, f.path)).into_owned(), n)
+            })
+            .collect();
+        assert!(notes.iter().any(|n| n.1 == StackNote::NonExec), "{}: no stack note", line.label);
+        let (exec, _) = executable_stack(&notes, None);
+        let summary = support::summarize_elf(&out);
+        let seg = summary.segments.iter().find(|g| g.p_type == "GNU_STACK").expect("PT_GNU_STACK");
+        assert_eq!(exec, seg.flags.contains('E'), "{}: PT_GNU_STACK {}", line.label, seg.flags);
+        // S-95/S-96 over the stored properties (every live object, those
+        // without as "every property absent").
+        let per_object: Vec<std::collections::BTreeMap<u32, Vec<u8>>> = live_objects
+            .iter()
+            .map(|f| {
+                decode_properties(&string(&m, f.properties)).expect("decodes").into_iter().collect()
+            })
+            .collect();
+        let with = per_object.iter().filter(|p| !p.is_empty()).count();
+        let store = store();
+        let f = front5(&line, &store);
+        let arch = f.arch.get();
+        let processor = |t: u32| arch.property_merge(t);
+        let diag = Collector::new(Policy::default());
+        let plan = mortar_synth::PropertyPlan::merged(
+            &per_object,
+            arch.facts().class,
+            &processor,
+            false,
+            &diag,
+        )
+        .expect("the merge");
+        let merged: Vec<(u32, Vec<u8>)> =
+            plan.properties().iter().map(|(t, v)| (*t, v.to_vec())).collect();
+        assert_eq!(merged, output_properties(&out), "{}: .note.gnu.property", line.label);
+        // IN-72 item 5: the stored FDE counts are `.eh_frame_hdr`'s table.
+        let fdes: u64 = m.files.iter().map(|f| u64::from(f.eh_fdes)).sum();
+        assert!(m.files.iter().all(|f| f.eh_fdes <= f.eh_records), "{}", line.label);
+        assert_eq!(Some(fdes), summary.hdr_fdes, "{}: .eh_frame_hdr's FDEs", line.label);
+        assert_eq!(fdes, summary.fdes, "{}: .eh_frame's FDEs", line.label);
+        eprintln!(
+            "{}: {} live objects, {with} with properties ({} merged), {fdes} FDEs, exec stack {exec}",
+            line.label,
+            live_objects.len(),
+            merged.len()
+        );
+    }
+}
+
+// spec: incr.md IN-18d, IN-18e (a file's locals are ONE run of `SYMBOLS`
+// rows, by index, named by `FILE_INDEX.locals`; WP-214 seam 6, ruling 1)
+#[test]
+fn seam6_file_locals_are_one_run() {
+    let mut total = 0;
+    for line in lines() {
+        let m = rows5(&line, "locals", &[]);
+        let mut covered = 0u32;
+        for (file, idx) in m.file_index.iter().enumerate() {
+            let r = idx.locals;
+            let run = &m.symbols[r.first as usize..(r.first + r.count) as usize];
+            assert!(run.iter().all(|s| s.kind == sym_kind::LOCAL && s.file == file as u32));
+            assert!(run.windows(2).all(|w| w[0].at_index < w[1].at_index), "{}", line.label);
+            covered += r.count;
+        }
+        let locals = m.symbols.iter().filter(|s| s.kind == sym_kind::LOCAL).count();
+        assert_eq!(covered as usize, locals, "{}: locals outside their runs", line.label);
+        // A state holds the local keys the link named (a relocation's
+        // symbol): x86-64 GCC's objects name sections instead.
+        eprintln!("{}: {locals} local keys", line.label);
+        total += locals;
+    }
+    assert!(total > 0, "no local key in any line");
+}
+
+// spec: incr.md IN-18e (`FRAGS.size`: the fragment's bytes, WP-242 C via
+// seam 6): each stored fragment's size is the full link's, at its offset.
+#[test]
+fn seam6_frag_sizes_are_the_links() {
+    for line in lines() {
+        let m = rows5(&line, "frags", &[]);
+        let store = store();
+        let f = front5(&line, &store);
+        let mut by_place: HashMap<(u32, u64), u32> = HashMap::new();
+        for (frag, &off) in f.layout.merge.frag_off.iter() {
+            if off == mortar_core::layout::MergeMap::NONE {
+                continue;
+            }
+            let fr = &f.merge.split.frags[frag];
+            let out = f.assignment.out(fr.section).expect("an output section");
+            by_place.insert((out.0, off), fr.size);
+        }
+        assert!(!m.frags.is_empty());
+        for r in &m.frags {
+            assert!(r.size > 0, "{}: an empty fragment", line.label);
+            assert_eq!(by_place.get(&(r.out, r.offset)), Some(&r.size), "{}: {r:?}", line.label);
+        }
+    }
+}
+
+// spec: incr.md IN-18e (`SYMBOLS.option`, WP-214 seam 6 ruling 2: set on
+// the rows `Plan::option_keys` names; such a key is never dead, IN-71b)
+#[test]
+fn seam6_option_bit_marks_the_option_keys() {
+    for line in lines() {
+        let m = rows5(&line, "opt", &["--defsym=wp244_alias=main", "--wrap=wp244_nowhere"]);
+        let named: Vec<&[u8]> = vec![
+            b"wp244_alias",
+            b"main",
+            b"wp244_nowhere",
+            b"__wrap_wp244_nowhere",
+            b"__real_wp244_nowhere",
+        ];
+        let mut seen = Vec::new();
+        for r in m.symbols.iter().filter(|r| r.option) {
+            assert!(matches!(r.kind, sym_kind::GLOBAL | sym_kind::VERSIONED));
+            seen.push(string(&m, r.name));
+        }
+        seen.sort();
+        let mut want: Vec<Vec<u8>> = named.iter().map(|n| n.to_vec()).collect();
+        want.sort();
+        assert_eq!(seen, want, "{}: the option rows", line.label);
+    }
+}
+
+/// One file's stored rows, keys and files by name (comparable across
+/// links): its `FILES` row less what moves with other files (rank, round,
+/// the eh offset), its `SECTIONS`, `MENTIONS`, `FRAG_USE` and `KEY_REFS`.
+fn file_rows(m: &MemoryState, file: usize) -> Vec<(&'static str, String)> {
+    let key = |k: u32| {
+        let r = &m.symbols[k as usize];
+        (r.kind, string(m, r.name), string(m, r.version))
+    };
+    let mut out = Vec::new();
+    let mut f = m.files[file].clone();
+    let path = (string(m, f.path), string(m, f.member_name));
+    (f.rank, f.round, f.eh_offset, f.path, f.member_name) =
+        (0, 0, 0, mortar_incr::format::Str::default(), mortar_incr::format::Str::default());
+    out.push(("FILES", format!("{path:?} {f:?}")));
+    for s in m.sections.iter().filter(|s| s.file == file as u32) {
+        let mut s = s.clone();
+        let anchor = string(m, s.anchor);
+        s.anchor = mortar_incr::format::Str::default();
+        out.push(("SECTIONS", format!("{anchor:?} {s:?}")));
+    }
+    // A section by its position in its file (a global row number moves
+    // when an earlier file's sections change).
+    let first = m.sections.iter().position(|s| s.file == file as u32).unwrap_or(0);
+    for (_, r) in m.mentions.iter().filter(|r| r.0.0 == file as u32) {
+        let sec = if r.section == u32::MAX { None } else { Some(r.section as usize - first) };
+        out.push(("MENTIONS", format!("{:?} {:?} {sec:?}", key(r.symbol), MentionKey(r))));
+    }
+    for (_, r) in m.frag_uses.iter().filter(|r| r.0.0 == file as u32) {
+        out.push(("FRAG_USE", format!("{r:?}")));
+    }
+    let mut refs: Vec<String> = m
+        .key_refs
+        .iter()
+        .filter(|r| r.file == file as u32)
+        .map(|r| {
+            format!("{:?} {} {} {} {} {}", key(r.key), r.def, r.bind, r.typ, r.flags, r.demand)
+        })
+        .collect();
+    refs.sort();
+    out.extend(refs.into_iter().map(|r| ("KEY_REFS", r)));
+    out
+}
+
+/// A `MENTIONS` row without its key and section (given beside it).
+struct MentionKey<'a>(&'a mortar_incr::update::rows::MentionRow);
+
+impl std::fmt::Debug for MentionKey<'_> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let r = self.0;
+        write!(f, "{} {} {} {}", r.kind, r.bind, r.typ, r.other)
+    }
+}
+
+// WP-244 experiment "M.1 series stability": across the hops of a series
+// (`MORTAR_WP244_HOPS=<dir>` holding h0.state5, h1.state5, ...), the
+// stored rows of every file whose content hash is unchanged are equal
+// (keys and files by name; a section's id is its file's position, so it
+// is compared as stored). Prints per hop the files compared and the
+// tables in which an unchanged file's rows differ.
+#[test]
+#[ignore = "an experiment over a series' states: MORTAR_WP244_HOPS"]
+fn experiment_unchanged_files_rows_are_stable() {
+    let Some(dir) = std::env::var_os("MORTAR_WP244_HOPS") else { return };
+    let dir = PathBuf::from(dir);
+    let mut hops = Vec::new();
+    for n in 0.. {
+        let Ok(b) = std::fs::read(dir.join(format!("h{n}.state5"))) else { break };
+        hops.push(decode(&b).expect("decodes"));
+    }
+    let mut bad = 0;
+    for (n, w) in hops.windows(2).enumerate() {
+        let (a, b) = (&w[0], &w[1]);
+        let by_id = |m: &MemoryState| -> HashMap<(Vec<u8>, Vec<u8>, u32), usize> {
+            m.files
+                .iter()
+                .enumerate()
+                .map(|(i, f)| ((string(m, f.path), string(m, f.member_name), f.member_ordinal), i))
+                .collect()
+        };
+        let (ia, ib) = (by_id(a), by_id(b));
+        let (mut same, mut differ) = (0, std::collections::BTreeMap::<&str, usize>::new());
+        for (id, &fa) in &ia {
+            let Some(&fb) = ib.get(id) else { continue };
+            if a.files[fa].hash != b.files[fb].hash {
+                continue;
+            }
+            same += 1;
+            let (ra, rb) = (file_rows(a, fa), file_rows(b, fb));
+            if ra != rb {
+                let tables: std::collections::BTreeSet<&str> = ra
+                    .iter()
+                    .filter(|r| !rb.contains(r))
+                    .chain(rb.iter().filter(|r| !ra.contains(r)))
+                    .map(|r| r.0)
+                    .collect();
+                for t in tables {
+                    *differ.entry(t).or_default() += 1;
+                }
+                if bad < 5 {
+                    let first = ra.iter().zip(&rb).find(|(x, y)| x != y);
+                    eprintln!(
+                        "hop {n}->{}: {:?}: {first:?}",
+                        n + 1,
+                        String::from_utf8_lossy(&id.0)
+                    );
+                }
+                bad += 1;
+            }
+        }
+        eprintln!("hop {n}->{}: {same} unchanged files, differing per table {differ:?}", n + 1);
+    }
+    assert_eq!(bad, 0, "unchanged files whose stored rows differ");
 }

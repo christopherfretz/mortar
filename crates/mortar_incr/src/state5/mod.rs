@@ -523,6 +523,11 @@ impl Rec for FileRow {
             eh_offset: r.u32(),
             eh_capacity: r.u32(),
             eh_records: r.u32(),
+            // Seam 6's columns: U-2 encodes them (WP-244 fills the rows;
+            // until then they do not survive the bytes).
+            eh_fdes: 0,
+            stack: 0,
+            properties: Str::default(),
         }
     }
     fn ok(&self) -> bool {
@@ -757,6 +762,8 @@ impl Rec for FragRow {
             class: r.u32(),
             hash: r.h(),
             offset: r.u64(),
+            // Seam 6's `size`: U-2 encodes it (as `FILES`' columns above).
+            size: 0,
             refs: r.u32(),
             tomb: tomb(r),
         }
