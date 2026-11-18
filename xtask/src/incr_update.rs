@@ -70,8 +70,11 @@ impl Args {
 
 /// The mortar the subject runs: the `mortar` crate built with
 /// `--features testhooks` (the feature is on `mortar`, not `mortar_cli`),
-/// in its own target directory so the default build is untouched.
-fn hooked_binary() -> Result<PathBuf, String> {
+/// in its own target directory so the default build is untouched. Also
+/// the subject of L10 and the IN-63a oracle lane until WP-225 M6 (their
+/// dry run is computed from the format-4 side state only such a build
+/// writes, under `MORTAR_INCR_STATE4=1`).
+pub(crate) fn hooked_binary() -> Result<PathBuf, String> {
     let dir = crate::linktest::build_dir().join("testhooks");
     let cargo = std::env::var_os("CARGO").unwrap_or_else(|| "cargo".into());
     let mut command = Command::new(cargo);

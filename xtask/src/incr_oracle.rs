@@ -3,6 +3,9 @@
 //! IN-63a, WP-063), `tests/incr-oracle/run.py`, over every scenario at O0
 //! and O2 with the mutation table (IN-63b). The nightly set; the gate
 //! runs the quick subset as `cargo test -p mortar --test incr_oracle`.
+//! Until WP-225 M6 the subject is the testhooks build
+//! (`crate::incr_update::hooked_binary`): the dry run is computed from the
+//! format-4 side state only it writes.
 
 use std::path::PathBuf;
 use std::process::{Command, ExitCode};
@@ -34,7 +37,9 @@ pub fn main(args: &[String]) -> ExitCode {
         }
         i += 1;
     }
-    let mortar = match crate::mason::mortar_binary(mortar.as_deref()) {
+    // WP-225 (rulings M1-1): until M6 the subject is the testhooks build,
+    // whose dry run run.py turns on (`MORTAR_INCR_STATE4=1`).
+    let mortar = match mortar.map_or_else(crate::incr_update::hooked_binary, Ok) {
         Ok(m) => m,
         Err(e) => {
             eprintln!("xtask incr-oracle: {e}");

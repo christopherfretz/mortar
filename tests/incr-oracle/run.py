@@ -1,6 +1,10 @@
 #!/usr/bin/env python3
 """run.py --mortar BIN --work DIR [--quick] [--mutations] [--only S,...] [-j N] [--keep] [--tool NAME=PATH]...
 
+BIN is a testhooks build of mortar (`--features testhooks`): until WP-225
+M6 the dry run judged here is computed from the format-4 side state such
+a build writes under MORTAR_INCR_STATE4=1, which run.py sets.
+
 The two-full-link oracle lane of spec/incr.md IN-63a for mortar's dry run
 (WP-063). For every scenario pair (old inputs -> new inputs):
 
@@ -316,6 +320,11 @@ def main():
         sys.exit(__doc__)
     if HOST is None:
         sys.exit('run.py: unknown host architecture %s' % platform.machine())
+    # WP-225 (rulings M1-1): until M6 the dry run is computed from the
+    # format-4 side state, which only a testhooks build writes, and only
+    # with this switch; --mortar must be such a build (a release build
+    # ignores the variable and the report has no `delta end`).
+    os.environ['MORTAR_INCR_STATE4'] = '1'
     work = os.path.abspath(work)
     mdir = os.path.join(work, 'bin')
     os.makedirs(mdir, exist_ok=True)
