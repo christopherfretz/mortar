@@ -23,8 +23,12 @@ check readelf -sW alone.bfd.o
   not: m1_value
 check elflint alone.o
 
-link gcc -static main.o alone.o libm12.a -o via
-run via
+# GNU ld's and lld's maps of a final link do not name an input that
+# contributes no section, and the verifier finds M11 on them (a finding on
+# the references' outputs, listed for the verifier's owner, WP-187); mortar
+# and mold final-link it here.
+link(mortar,mold) gcc -static main.o alone.o libm12.a -o via
+run(mortar,mold) via
   stdout: 11
 
 #--- m1.c

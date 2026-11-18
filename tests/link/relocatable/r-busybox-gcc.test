@@ -39,6 +39,13 @@ run via
   stdout: true
   stdout: hello
   stdout: 42
+link gcc main.o applets.o -o direct-pie
+run direct-pie
+  stdout: answer
+  stdout: hello
+  stdout: true
+  stdout: hello
+  stdout: 42
 link gcc main.o built-in.o -o via-pie
 run via-pie
   stdout: answer

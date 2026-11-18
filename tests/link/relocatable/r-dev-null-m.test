@@ -19,8 +19,12 @@ check readelf -hW empty.bfd.o
   has: Type: *REL (Relocatable file)
 check elflint empty.o
 
-link gcc -static main.o empty.o -o via
-run via
+# GNU ld's and lld's maps of a final link do not name an input that
+# contributes no section, and the verifier finds M11 on them (a finding on
+# the references' outputs, listed for the verifier's owner, WP-187); mortar
+# and mold final-link it here.
+link(mortar,mold) gcc -static main.o empty.o -o via
+run(mortar,mold) via
   stdout: 5
 
 #--- main.c

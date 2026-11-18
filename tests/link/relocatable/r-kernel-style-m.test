@@ -30,6 +30,9 @@ run direct
 link gcc -static main.o built-in.o -o via
 run via
   stdout: a=3 b=7 s=kernel
+link gcc main.o a.o b.o -o direct-pie
+run direct-pie
+  stdout: a=3 b=7 s=kernel
 link gcc main.o built-in.o -o via-pie
 run via-pie
   stdout: a=3 b=7 s=kernel

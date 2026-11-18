@@ -27,11 +27,14 @@ check nm comp.bfd.o
   not: m3_value
 check elflint comp.o
 
-link gcc -static main.o user.o m1.o m2.o -o direct
+link gcc -static main.o user.o libm.a -o direct
 run direct
   stdout: 33
 link gcc -static main.o comp.o -o via
 run via
+  stdout: 33
+link gcc main.o user.o libm.a -o direct-pie
+run direct-pie
   stdout: 33
 link gcc main.o comp.o -o via-pie
 run via-pie

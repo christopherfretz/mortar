@@ -1,7 +1,8 @@
 # RL-7 (WP-187): BusyBox's partial-link line as clang-22 passes it
 # (record spec/landed/layout/WP-154.md §A.1: `applets/applets.o` into
 # `applets/built-in.o`), with clang's objects: `--build-id` writes the
-# note over the -r output (I-R8). The applet table is a
+# note over the -r output (I-R8). GNU ld keeps clang's `.llvm_addrsig`
+# at -r (elflint does not know its type); mortar drops it (L-R1). The applet table is a
 # `.data.rel.ro` array of names and function pointers, as BusyBox's.
 # mortar's -r is judged by stage R, linked twice (LT-R4), and
 # final-linked by every linker of the matrix, static and PIE (LT-R1,
@@ -25,6 +26,7 @@ check nm built-in.o
   has: t hello_main$
 check elflint built-in.o
 check elflint built-in.bfd.o
+  allow: '.llvm_addrsig' has unsupported type
 
 link gcc -static main.o applets.o -o direct
 run direct
@@ -36,6 +38,13 @@ run direct
   exit: 0
 link gcc -static main.o built-in.o -o via
 run via
+  stdout: answer
+  stdout: hello
+  stdout: true
+  stdout: hello
+  stdout: 42
+link gcc main.o applets.o -o direct-pie
+run direct-pie
   stdout: answer
   stdout: hello
   stdout: true

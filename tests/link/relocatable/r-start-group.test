@@ -25,7 +25,7 @@ check nm comp.bfd.o
   has: T a2_value$
 check elflint comp.o
 
-link gcc -static main.o user.o a1.o b1.o a2.o -o direct
+link gcc -static main.o user.o -Wl,--start-group liba.a libb.a -Wl,--end-group -o direct
 run direct
   stdout: 6
 link gcc -static main.o comp.o -o via

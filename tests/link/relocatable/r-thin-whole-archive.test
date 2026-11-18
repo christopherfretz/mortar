@@ -21,7 +21,7 @@ check nm all.bfd.o
   has: T m2_value$
 check elflint all.o
 
-link gcc -static main.o m1.o m2.o -o direct
+link gcc -static main.o -Wl,--whole-archive libthin.a -Wl,--no-whole-archive -o direct
 run direct
   stdout: 33
 link gcc -static main.o all.o -o via

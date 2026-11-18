@@ -17,10 +17,6 @@ as x.s -o x.o
 as a.s -o a.o
 as a2.s -o a2.o
 cc -O2 main.c -o main.o
-check readelf -SW a.o
-  not: .note.GNU-stack
-check readelf -SW x.o
-  has: .note.GNU-stack * 00 X 0 0 1$
 partial mortar -o r-n.o n.o n2.o
 partial bfd -m %{emulation} -o r-n.bfd.o n.o n2.o
 partial mortar -z execstack -o r-n-exec.o n.o n2.o
@@ -51,6 +47,10 @@ partial mortar -z execstack -o r-a-exec.o a.o a2.o
 partial bfd -m %{emulation} -z execstack -o r-a-exec.bfd.o a.o a2.o
 partial mortar -z noexecstack -o r-a-noexec.o a.o a2.o
 partial bfd -m %{emulation} -z noexecstack -o r-a-noexec.bfd.o a.o a2.o
+check readelf -SW a.o
+  not: .note.GNU-stack
+check readelf -SW x.o
+  has: .note.GNU-stack * 00 X 0 0 1$
 check readelf -SW r-n.o
   has: .note.GNU-stack *PROGBITS * 000000 00 0 0 1$
 check readelf -SW r-n.bfd.o

@@ -21,7 +21,7 @@ check nm picked.bfd.o
   not: m1_value
 check elflint picked.o
 
-link gcc -static main.o m2.o -o direct
+link gcc -static main.o libm12.a -o direct
 run direct
   stdout: 22
 link gcc -static main.o picked.o -o via
