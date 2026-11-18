@@ -407,6 +407,46 @@ fn input_rewritten_after_u4_is_input_changed() {
     }
 }
 
+// spec: U-5's Q2-5, incr.md IN-49a (a shrinking global area: the entries
+// [new end, old end) are zeros; WP-218 resume ruling 2), and the guard of
+// that zeroing: c.o loses an absolute global. A replayed layout cannot
+// shrink `.symtab` on this base (the front: "a synthetic plan made from
+// the layout's tables is not its chunk's size"), and a fresh full link has
+// no slack after its table (`.strtab` follows it): the previous table's
+// tail is the update's `.strtab`, so zeroing it is refused by name, never
+// written over another section. The zeros themselves:
+// `symtab_move_inside_remap_is_remapped_and_shrink_zeroed` (hand-made).
+#[test]
+fn symtab_shrink_onto_another_section_is_refused() {
+    for arch in ARCHES {
+        let Some(fx) = Fixture::new(arch, "u6-shrink") else { continue };
+        let [_, _, c] = sources(arch, 42, 0);
+        fx.assemble("c", &(c.clone() + "\t.globl zz_gone\n\t.set zz_gone, 0x1234\n"));
+        fx.write("prev", None);
+        let prev = std::fs::read(fx.path("prev")).unwrap();
+        fx.assemble("c", &c);
+        fx.write("want", None);
+        let want = std::fs::read(fx.path("want")).unwrap();
+        let (o, n) = (section_range(&prev, b".symtab"), section_range(&want, b".symtab"));
+        assert_eq!(o.start, n.start, "{arch:?}: the table stays in place");
+        assert!(o.end > n.end, "{arch:?}: the table shrinks: {o:?} -> {n:?}");
+        let s = section_range(&want, b".strtab");
+        assert!(s.start < o.end, "{arch:?}: .strtab {s:?} in the old tail {:?}", n.end..o.end);
+        fx.with_front("want", None, |f, store| {
+            let c_o = file_of(f, "c.o");
+            let delta = LayoutDelta { files: vec![c_o], ..LayoutDelta::default() };
+            let set = RefillSet { units: units(f, &["c.o"]), ..RefillSet::default() };
+            let plan = whole_symtab_plan(&want);
+            match run_refill(f, store, &delta, &plan, &set, &fx, "prev") {
+                Err(RefillError::Fallback(IncrReason::StateCorrupt(d))) => {
+                    assert!(d.contains("reaches another section"), "{arch:?}: {d}");
+                }
+                other => panic!("{arch:?}: want state-corrupt, got {:?}", other.map(|x| x.2)),
+            }
+        });
+    }
+}
+
 /// The `.symtab` entries and `.strtab` of an ELF file, as a hand-made U-5
 /// plan that rewrites both whole (until U-5's plan lands, WP-218).
 fn whole_symtab_plan(elf: &[u8]) -> SymtabPlan {

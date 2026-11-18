@@ -1116,6 +1116,29 @@ fn write_symtab(
             entry(e.name, e.info, e.other, shndx, e.value, e.size),
         );
     }
+    // A shrinking table (a global area that lost entries; U-5's Q2-5: the
+    // plan has no field for it): the entries [new end, old end) are zeros,
+    // as the file slack after a full link's table is. The old end is the
+    // previous output's `.symtab` `sh_size` (its section header, read
+    // above); the range must not reach another section of the new output.
+    if o.size > n.size {
+        let zero = n.offset + n.size..n.offset + o.size;
+        let hit = new.rows.iter().enumerate().skip(1).any(|(i, r)| {
+            i != st
+                && r.in_file
+                && r.size > 0
+                && r.offset < zero.end
+                && zero.start < r.offset + r.size
+        });
+        if hit {
+            return Err(RefillError::Fallback(IncrReason::StateCorrupt(format!(
+                "SYMTAB: the previous .symtab's end {:#x} reaches another section of the update",
+                zero.end
+            ))));
+        }
+        counts.symtab_entries += (o.size - n.size) / es;
+        overlay.put(zero.start, vec![0; (zero.end - zero.start) as usize]);
+    }
     let s = new.rows[ss];
     for (off, bytes) in &plan.strtab {
         overlay.put(s.offset + off, bytes.clone());
@@ -1401,11 +1424,12 @@ mod tests {
             },
             ..SymtabPlan::default()
         };
-        let t = symtab_written(&c, &plan, 4).unwrap();
+        let t = symtab_written(&c, &plan, 5).unwrap();
         assert_eq!(entry_at(&t, 1), sym(L, 0x02, 1, 0x1004, 4), "L: .text did not move");
         assert_eq!(entry_at(&t, 2), sym(A, 0x12, 1, 0x1008, 4));
         assert_eq!(entry_at(&t, 3), sym(M, 0x11, 2, 0x2088, 8), "M moved, value mapped");
-        for i in 1..4 {
+        assert_eq!(entry_at(&t, 4), [0; ES as usize], "the old end zeroed");
+        for i in 1..5 {
             let name = u32::from_le_bytes(entry_at(&t, i)[..4].try_into().unwrap());
             assert_ne!(name, R, "the removed symbol's name at index {i}");
         }
