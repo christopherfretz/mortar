@@ -165,91 +165,112 @@ to `versioned-export`), one-definition rule (`meta-malformed` to
 to `incremental-file-clash`), refusals, internal. The wording column is the message of §5.2, complete: nothing
 is added before or after it.
 
-| id | variant | message | wording from |
-|---|---|---|---|
-| `conflicting-options` | `ConflictingOptions { first, second }` | `{first} and {second} cannot be used together` | own (GNU ld: `-r and -shared may not be used together`) |
-| `invalid-option-value` | `InvalidOptionValue { option, value }` | `{option}: invalid value '{value}'` | own (§8.2) |
-| `missing-argument` | `MissingArgument { option }` | `{option}: missing argument` | lld |
-| `no-input-files` | `NoInputFiles` | `no input files` | GNU ld, lld |
-| `response-file-limit` | `ResponseFileLimit { limit }` | `too many response files: more than {limit} expanded` | own (GNU ld: `too many @-files encountered`) |
-| `unbalanced-option` | `UnbalancedOption { option, counterpart }` | `{option} without a matching {counterpart}` | own (lld: `stray --end-group`, `unbalanced --push-state/--pop-state`) |
-| `unknown-option` | `UnknownOption { option }` | `unknown argument '{option}'` | lld |
-| `ambiguous-sysroot-path` | `AmbiguousSysrootPath { spelling }` | `ambiguous sysroot path '{spelling}'` | own |
-| `cannot-open-file` | `CannotOpenFile { path, reason }` | `cannot open {path}: {reason}` | lld, mold |
-| `cannot-open-output` | `CannotOpenOutput { path, reason }` | `cannot open output file {path}: {reason}` | GNU ld, lld |
-| `cannot-write-output` | `CannotWriteOutput { path, reason }` | `cannot write output file {path}: {reason}` | own |
-| `duplicate-soname` | `DuplicateSoname { soname }` | `DT_SONAME '{soname}' is already loaded; this file is not used` | own |
-| `ignored-member` | `IgnoredMember { what }` | `archive member is not a relocatable object: {what}` | own (lld: `archive member 'x' is neither ET_REL nor LLVM bitcode`) |
-| `incompatible-file` | `IncompatibleFile { expected, found }` | `incompatible file: {expected} is expected but got {found}` | mold |
-| `input-changed` | `InputChanged` | `file changed while it was read` | own |
-| `library-not-found` | `LibraryNotFound { name }` | `cannot find -l{name}: No such file or directory` | GNU ld (§8.3) |
-| `needed-not-found` | `NeededNotFound { name, needed_by }` | `{name}, needed by {needed_by}, not found (try using -rpath or -rpath-link)` | GNU ld (§8.3) |
-| `no-target` | `NoTarget` | `target emulation unknown: -m or at least one .o file required` | lld |
-| `script-cycle` | `ScriptCycle` | `linker script names itself` | own |
-| `skipped-incompatible` | `SkippedIncompatible { path, search }` | `skipping incompatible {path} when searching for {search}` | GNU ld (§8.3) |
-| `static-link-of-shared-object` | `StaticLinkOfSharedObject { path }` | `attempted static link of dynamic object {path}` | GNU ld, lld (§8.3) |
-| `written-file-clash` | `WrittenFileClash { written, what }` | `{written} names {what}; nothing is written to it` | own (`spec/cli.md` §3.14; GNU ld: `input file 'a.o' is the same as output file`) |
-| `cet-report` | `CetReport { path, property }` | `{path}: missing {property} property (-z cet-report)` | own (GNU ld: `an.o: error: missing IBT and SHSTK properties`); severity from `-z cet-report` (`spec/x64.md` X-43) |
-| `malformed-input` | `Malformed { what }` | `{what}` | lld's shape |
-| `unknown-file-type` | `UnknownFileType` | `file not recognized: file format not recognized` | GNU ld (§8.3) |
-| `unknown-property` | `UnknownProperty { path, pr_type }` | `{path}: unsupported GNU_PROPERTY_TYPE {pr_type:#x}; property dropped` | GNU ld's phrase; a warning (`spec/synth.md` S-95, R-D2) |
-| `version-script-syntax` | `VersionScriptSyntax { script, what }` | `syntax error in {script}: {what}` | GNU ld's phrase, with what is wrong (`spec/script.md` §9.2; M4, WP-125) |
-| `archive-backref` | `ArchiveBackref { name }` | `backward reference to an archive member: {name}` | own (lld: `backward reference detected: x in b refers to a`) |
-| `archive-choice` | `ArchiveChoice { name }` | `GNU ld would choose another definition of {name}` | own |
-| `comdat-mismatch` | `ComdatMismatch { name, signature }` | `symbol {name} is defined only in a discarded copy of COMDAT group {signature}` | own |
-| `common-alignment` | `CommonAlignment { name }` | `definition of {name} is less aligned than its common symbols` | own |
-| `common-larger-than-definition` | `CommonLargerThanDefinition { name }` | `common symbol {name} is larger than its definition` | own |
-| `common-overridden` | `CommonOverridden { name }` | `common symbol {name} is overridden by a definition` | own |
-| `copy-of-locally-bound-definition` | `CopyOfLocallyBoundDefinition { name, file }` | `copy relocation against {name}, which {file} binds to itself; the program and {file} would use two different objects` | own (`spec/dyn.md` D-43a; M4, WP-122) |
-| `discarded-section-reference` | `DiscardedSectionReference { name }` | `relocation refers to a symbol in a discarded section: {name}` | lld |
-| `duplicate-symbol` | `DuplicateSymbol { name }` | ``duplicate symbol: {name} (multiple definition of `{name}')`` | lld, with GNU ld's phrase (§8.3) |
-| `duplicate-version-pattern` | `DuplicateVersionPattern { pattern, first, second }` | `{pattern} is listed as global in version {first} and local in version {second}` | own (GNU ld: `duplicate expression`; `spec/dyn.md` D-114; M4, WP-125) |
-| `entry-not-found` | `EntryNotFound { name }` | `cannot find entry symbol {name}` | GNU ld, lld (their lines go on: `; defaulting to …`, `; not setting start address`) |
-| `gnu-warning` | `GnuWarning { text }` | `{text}` | GNU ld (the section's text) |
-| `linker-symbol-redefined` | `LinkerSymbolRedefined { name }` | `cannot redefine linker-defined symbol: {name}` | lld's (`cannot redefine linker defined symbol`) |
-| `multiple-common` | `MultipleCommon { name }` | `multiple common symbols: {name}` | own |
-| `non-exported-symbol` | `NonExportedSymbol { name }` | `non-exported symbol referenced by a shared object: {name}` | own |
-| `required-symbol` | `RequiredSymbol { name }` | `required symbol not defined: {name}` | own (GNU ld: ``required symbol `x' not defined``) |
-| `tls-mismatch` | `TlsMismatch { name }` | `TLS attribute mismatch: {name}` | lld |
-| `undefined-init-symbol` | `UndefinedInitSymbol { name }` | `-init/-fini symbol {name} is not defined` | own (`spec/dyn.md` D-102 rows 3-4: GNU ld, lld and mold omit the tag silently; M4, WP-128; record `spec/landed/dyn/WP-116.md`, Q26) |
-| `undefined-symbol` | `UndefinedSymbol { name }` | ``undefined symbol: {name} (undefined reference to `{name}')`` | lld, with GNU ld's phrase (§8.3) |
-| `undefined-version` | `UndefinedVersion { name, version }` | `version {version} of {name} is not defined` | own |
-| `version-reassigned` | `VersionReassigned { name, first, second }` | `{name} is assigned to version {first} and {second}; {first} is kept` | own |
-| `version-script-undefined-name` | `VersionScriptUndefinedName { name, version }` | `version script assigns {name} to {version}, but no file defines it` | own (`spec/dyn.md` D-114: GNU ld silent, lld refuses; M4, WP-125) |
-| `versioned-definition-hidden` | `VersionedDefinitionHidden { name, version }` | `{name}@{version} is made local by version {version}'s local: entries; executables linked against {name}@{version} will not load` | own (`spec/resolve.md` §9.7 rule 12; M4, WP-125) |
-| `versioned-export` | `VersionedExport { name, version }` | `versioned definition {name}{version} cannot be exported from an executable (mortar writes version definitions in a shared object only)` | own (`spec/dyn.md` D-27: GNU ld writes a verdef, lld and mold export it unversioned; `version` carries its `@` or `@@`, so a hidden `foo@V1` is not shown as `foo@@V1`; M4, WP-125) |
-| `meta-malformed` | `MetaMalformed { reason }` | `malformed Mason metadata: {reason}` | own |
-| `meta-version` | `MetaVersion { major }` | `Mason metadata version {major} is not supported; its records are ignored` | own |
-| `odr-abi-mismatch` | `OdrAbiMismatch { option, first, second }` | `translation units compiled with different {option}: {first} and {second}` | own (WP-073) |
-| `odr-archive-shadow` | `OdrArchiveShadow { name }` | `{name} in an archive member that is not linked is defined differently` | own (`spec/odr.md` O-23; WP-076) |
-| `odr-contents-mismatch` | `OdrContentsMismatch { name }` | `{name} has different contents in different files` | own (`spec/odr.md` §8.1 W4; WP-072) |
-| `odr-declaration-mismatch` | `OdrDeclarationMismatch { name }` | `{name} is declared with a type that does not match its definition` | own (WP-073) |
-| `odr-internal-reference` | `OdrInternalReference { name }` | `{name} refers to an entity with internal linkage, which differs in each translation unit` | own (WP-073) |
-| `odr-isa-mismatch` | `OdrIsaMismatch { name }` | `the kept copy of {name} was compiled for other target features than a translation unit that uses it` | own (WP-073) |
-| `odr-size-mismatch` | `OdrSizeMismatch { name }` | `{name} has different sizes in different files` | own |
-| `odr-strong-and-comdat` | `OdrStrongAndComdat { name }` | `{name} has a non-inline definition and an inline copy` | own |
-| `odr-symbol-type-mismatch` | `OdrSymbolTypeMismatch { name }` | `{name} is a function in one file and data in another` | own |
-| `odr-type-mismatch` | `OdrTypeMismatch { name }` | `type {name} violates the one-definition rule` | own (GCC `-Wodr`'s shape; WP-073) |
-| `odr-violation` | `OdrViolation { name }` | `{name} violates the one-definition rule` | own (GCC `-Wodr`'s shape; WP-073) |
-| `odr-vtable-rtti-mismatch` | `OdrVtableRttiMismatch { name }` | `the vtable of {name} is emitted by translation units compiled with and without RTTI` | own (WP-073) |
-| `canonical-plt-in-pie` | `CanonicalPltInPie { r_type, name }` | ``relocation {r_type} against symbol `{name}' cannot be used in a position-independent executable; recompile with -fPIE, or link with -no-pie`` | GNU ld (`spec/dyn.md` D-44) |
-| `copy-relocation-against-protected` | `CopyRelocationAgainstProtected { name, file }` | ``copy relocation against non-copyable protected symbol `{name}' in {file}`` | GNU ld (`spec/dyn.md` D-18) |
-| `copy-relocation-of-zero-size` | `CopyRelocationOfZeroSize { name }` | `cannot create a copy relocation for symbol {name}` | lld (`spec/dyn.md` D-42) |
-| `non-pic-in-shared-object` | `NonPicInSharedObject { r_type, name, file }` | ``relocation {r_type} against symbol `{name}' which may bind externally can not be used when making a shared object; recompile with -fPIC``; with no `r_type` (the `reloc-model` row, below): ``code not compiled as position-independent defines symbol `{name}' which may bind externally: it can not be used when making a shared object; recompile with -fPIC`` | GNU ld (`spec/dyn.md` D-117; M4, WP-117 the table and the address-level rule, WP-119 the analysis); the second form own, in GNU ld's words (WP-129) |
-| `relocation-incompatible` | `RelocationIncompatible { r_type, name, reason }` | `relocation {r_type} cannot be used against symbol '{name}'; {reason}` | lld's shape, with a reason (§3.2) |
-| `relocation-misaligned` | `RelocationMisaligned { r_type, value, align }` | `improper alignment for relocation {r_type}: {value} is not aligned to {align} bytes` | lld |
-| `relocation-out-of-range` | `RelocationOutOfRange { r_type, value, min, max, name }` | `relocation truncated to fit: {r_type} against '{name}': {value} is not in [{min}, {max}]` | lld's value and bounds; GNU ld's phrase |
-| `text-relocation` | `TextRelocation { r_type, name }` | ``relocation {r_type} against symbol `{name}' can not be used when making a PIE object; recompile with -fPIE`` | GNU ld (`spec/dyn.md` D-47) |
-| `weak-undefined-pc-in-pie` | `WeakUndefinedPcInPie { r_type, name }` | ``relocation {r_type} against undefined weak symbol `{name}' cannot be used in a position-independent executable; recompile with -fPIE`` | GNU ld (`spec/dyn.md` D-25; `Pie` only, once per key) |
-| `executable-stack` | `ExecutableStack { file }` | `{file}: requires executable stack (because the .note.GNU-stack section is executable)` | GNU ld |
-| `output-too-large` | `OutputTooLarge { what, limit }` | `output too large: {what} exceeds {limit}` | own (lld: `output file too large`) |
-| `section-conflict` | `SectionConflict { name, first, second }` | `section {name}: {first} and {second} inputs cannot be combined` | own (lld: `section type mismatch for {name}`) |
-| `incremental-not-reproducible` | `IncrementalNotReproducible` | `SOURCE_DATE_EPOCH is set, but an incremental link's output depends on its edit history` | own (`spec/incr.md` IN-7) |
-| `incremental-unsupported` | `IncrementalUnsupported { option }` | `--incremental is not supported with {option}; linking without a state` | own (`spec/incr.md` IN-12) |
-| `incremental-update-failed` | `IncrementalUpdateFailed { reason }` | `--incremental=update: cannot update: {reason}` | own (`spec/incr.md` IN-10) |
-| `incremental-file-clash` | `IncrementalFileClash { option, path, what }` | `{option}={path} names {what}; nothing is written to it` | own (`spec/incr.md` IN-17); no longer emitted since WP-087, which made `written-file-clash` cover the state and the report (the id stays, never reused) |
-| `refused` | `Refused { class, name, not_recognized }` | `unsupported {noun of class}: {name}` (§4), then `; file not recognized: file format not recognized` when `not_recognized` (§8.3) | own (§8.2) |
-| `internal-error` | `InternalError { what }` | `internal error in mortar: {what}` | own |
+The **subjects** column (`spec/incr.md` IN-75a; WP-211's §R.7, applied
+by WP-212) gives, for every kind that can be emitted as a **warning**
+(by default or under an option: §3.2 says which), every kind of subject
+the warning's text or its existence depends on, from the closed set
+`file`, `key`, `output section`, `link`, plural: `file` is every file
+the warning names or that decides whether it appears (a reference-site
+warning: each referring file; `gnu-warning`: the file holding the
+section and every referring file), `key` the symbol (or, for the
+one-definition rule's kinds, the ODR key) it is about, `output section`
+or `link` where it depends on the layout or on what an update does not
+track by file or key (the command line, a search of the file system, a
+version script): `link` means "recomputed by every update". An
+incremental update repeats a stored warning only when none of its
+subjects is touched, and stores its §6.1 `Key` with `unit` as the
+file's `FILES` row (IN-75a). A kind that is never a warning (an error
+only, `refused`, `internal-error`) has `—`. The table does not say
+which kinds can be warnings (severity is not part of a kind, §2.2):
+`crates/mortar_diag/tests/spec_tables.rs` holds that list
+(`WARNING_KINDS`) and fails on a listed kind whose subjects are `—`
+or a word outside the set.
+
+| id | variant | message | wording from | subjects |
+|---|---|---|---|---|
+| `conflicting-options` | `ConflictingOptions { first, second }` | `{first} and {second} cannot be used together` | own (GNU ld: `-r and -shared may not be used together`) | — |
+| `invalid-option-value` | `InvalidOptionValue { option, value }` | `{option}: invalid value '{value}'` | own (§8.2) | — |
+| `missing-argument` | `MissingArgument { option }` | `{option}: missing argument` | lld | — |
+| `no-input-files` | `NoInputFiles` | `no input files` | GNU ld, lld | — |
+| `response-file-limit` | `ResponseFileLimit { limit }` | `too many response files: more than {limit} expanded` | own (GNU ld: `too many @-files encountered`) | — |
+| `unbalanced-option` | `UnbalancedOption { option, counterpart }` | `{option} without a matching {counterpart}` | own (lld: `stray --end-group`, `unbalanced --push-state/--pop-state`) | — |
+| `unknown-option` | `UnknownOption { option }` | `unknown argument '{option}'` | lld | — |
+| `ambiguous-sysroot-path` | `AmbiguousSysrootPath { spelling }` | `ambiguous sysroot path '{spelling}'` | own | — |
+| `cannot-open-file` | `CannotOpenFile { path, reason }` | `cannot open {path}: {reason}` | lld, mold | — |
+| `cannot-open-output` | `CannotOpenOutput { path, reason }` | `cannot open output file {path}: {reason}` | GNU ld, lld | — |
+| `cannot-write-output` | `CannotWriteOutput { path, reason }` | `cannot write output file {path}: {reason}` | own | — |
+| `duplicate-soname` | `DuplicateSoname { soname }` | `DT_SONAME '{soname}' is already loaded; this file is not used` | own | file, link |
+| `ignored-member` | `IgnoredMember { what }` | `archive member is not a relocatable object: {what}` | own (lld: `archive member 'x' is neither ET_REL nor LLVM bitcode`) | file, link |
+| `incompatible-file` | `IncompatibleFile { expected, found }` | `incompatible file: {expected} is expected but got {found}` | mold | — |
+| `input-changed` | `InputChanged` | `file changed while it was read` | own | — |
+| `library-not-found` | `LibraryNotFound { name }` | `cannot find -l{name}: No such file or directory` | GNU ld (§8.3) | — |
+| `needed-not-found` | `NeededNotFound { name, needed_by }` | `{name}, needed by {needed_by}, not found (try using -rpath or -rpath-link)` | GNU ld (§8.3) | file, link |
+| `no-target` | `NoTarget` | `target emulation unknown: -m or at least one .o file required` | lld | — |
+| `script-cycle` | `ScriptCycle` | `linker script names itself` | own | — |
+| `skipped-incompatible` | `SkippedIncompatible { path, search }` | `skipping incompatible {path} when searching for {search}` | GNU ld (§8.3) | link |
+| `static-link-of-shared-object` | `StaticLinkOfSharedObject { path }` | `attempted static link of dynamic object {path}` | GNU ld, lld (§8.3) | — |
+| `written-file-clash` | `WrittenFileClash { written, what }` | `{written} names {what}; nothing is written to it` | own (`spec/cli.md` §3.14; GNU ld: `input file 'a.o' is the same as output file`) | — |
+| `cet-report` | `CetReport { path, property }` | `{path}: missing {property} property (-z cet-report)` | own (GNU ld: `an.o: error: missing IBT and SHSTK properties`); severity from `-z cet-report` (`spec/x64.md` X-43) | file |
+| `malformed-input` | `Malformed { what }` | `{what}` | lld's shape | file, link |
+| `unknown-file-type` | `UnknownFileType` | `file not recognized: file format not recognized` | GNU ld (§8.3) | — |
+| `unknown-property` | `UnknownProperty { path, pr_type }` | `{path}: unsupported GNU_PROPERTY_TYPE {pr_type:#x}; property dropped` | GNU ld's phrase; a warning (`spec/synth.md` S-95, R-D2) | file |
+| `version-script-syntax` | `VersionScriptSyntax { script, what }` | `syntax error in {script}: {what}` | GNU ld's phrase, with what is wrong (`spec/script.md` §9.2; M4, WP-125) | — |
+| `archive-backref` | `ArchiveBackref { name }` | `backward reference to an archive member: {name}` | own (lld: `backward reference detected: x in b refers to a`) | file, key, link |
+| `archive-choice` | `ArchiveChoice { name }` | `GNU ld would choose another definition of {name}` | own | file, key, link |
+| `comdat-mismatch` | `ComdatMismatch { name, signature }` | `symbol {name} is defined only in a discarded copy of COMDAT group {signature}` | own | — |
+| `common-alignment` | `CommonAlignment { name }` | `definition of {name} is less aligned than its common symbols` | own | file, key |
+| `common-larger-than-definition` | `CommonLargerThanDefinition { name }` | `common symbol {name} is larger than its definition` | own | file, key |
+| `common-overridden` | `CommonOverridden { name }` | `common symbol {name} is overridden by a definition` | own | file, key |
+| `copy-of-locally-bound-definition` | `CopyOfLocallyBoundDefinition { name, file }` | `copy relocation against {name}, which {file} binds to itself; the program and {file} would use two different objects` | own (`spec/dyn.md` D-43a; M4, WP-122) | file, key |
+| `discarded-section-reference` | `DiscardedSectionReference { name }` | `relocation refers to a symbol in a discarded section: {name}` | lld | — |
+| `duplicate-symbol` | `DuplicateSymbol { name }` | ``duplicate symbol: {name} (multiple definition of `{name}')`` | lld, with GNU ld's phrase (§8.3) | — |
+| `duplicate-version-pattern` | `DuplicateVersionPattern { pattern, first, second }` | `{pattern} is listed as global in version {first} and local in version {second}` | own (GNU ld: `duplicate expression`; `spec/dyn.md` D-114; M4, WP-125) | — |
+| `entry-not-found` | `EntryNotFound { name }` | `cannot find entry symbol {name}` | GNU ld, lld (their lines go on: `; defaulting to …`, `; not setting start address`) | key, link |
+| `gnu-warning` | `GnuWarning { text }` | `{text}` | GNU ld (the section's text) | file, key |
+| `linker-symbol-redefined` | `LinkerSymbolRedefined { name }` | `cannot redefine linker-defined symbol: {name}` | lld's (`cannot redefine linker defined symbol`) | — |
+| `multiple-common` | `MultipleCommon { name }` | `multiple common symbols: {name}` | own | file, key |
+| `non-exported-symbol` | `NonExportedSymbol { name }` | `non-exported symbol referenced by a shared object: {name}` | own | — |
+| `required-symbol` | `RequiredSymbol { name }` | `required symbol not defined: {name}` | own (GNU ld: ``required symbol `x' not defined``) | — |
+| `tls-mismatch` | `TlsMismatch { name }` | `TLS attribute mismatch: {name}` | lld | — |
+| `undefined-init-symbol` | `UndefinedInitSymbol { name }` | `-init/-fini symbol {name} is not defined` | own (`spec/dyn.md` D-102 rows 3-4: GNU ld, lld and mold omit the tag silently; M4, WP-128; record `spec/landed/dyn/WP-116.md`, Q26) | — |
+| `undefined-symbol` | `UndefinedSymbol { name }` | ``undefined symbol: {name} (undefined reference to `{name}')`` | lld, with GNU ld's phrase (§8.3) | file, key |
+| `undefined-version` | `UndefinedVersion { name, version }` | `version {version} of {name} is not defined` | own | — |
+| `version-reassigned` | `VersionReassigned { name, first, second }` | `{name} is assigned to version {first} and {second}; {first} is kept` | own | key, link |
+| `version-script-undefined-name` | `VersionScriptUndefinedName { name, version }` | `version script assigns {name} to {version}, but no file defines it` | own (`spec/dyn.md` D-114: GNU ld silent, lld refuses; M4, WP-125) | key, link |
+| `versioned-definition-hidden` | `VersionedDefinitionHidden { name, version }` | `{name}@{version} is made local by version {version}'s local: entries; executables linked against {name}@{version} will not load` | own (`spec/resolve.md` §9.7 rule 12; M4, WP-125) | file, key, link |
+| `versioned-export` | `VersionedExport { name, version }` | `versioned definition {name}{version} cannot be exported from an executable (mortar writes version definitions in a shared object only)` | own (`spec/dyn.md` D-27: GNU ld writes a verdef, lld and mold export it unversioned; `version` carries its `@` or `@@`, so a hidden `foo@V1` is not shown as `foo@@V1`; M4, WP-125) | — |
+| `meta-malformed` | `MetaMalformed { reason }` | `malformed Mason metadata: {reason}` | own | file |
+| `meta-version` | `MetaVersion { major }` | `Mason metadata version {major} is not supported; its records are ignored` | own | — |
+| `odr-abi-mismatch` | `OdrAbiMismatch { option, first, second }` | `translation units compiled with different {option}: {first} and {second}` | own (WP-073) | file |
+| `odr-archive-shadow` | `OdrArchiveShadow { name }` | `{name} in an archive member that is not linked is defined differently` | own (`spec/odr.md` O-23; WP-076) | file, key |
+| `odr-contents-mismatch` | `OdrContentsMismatch { name }` | `{name} has different contents in different files` | own (`spec/odr.md` §8.1 W4; WP-072) | file, key |
+| `odr-declaration-mismatch` | `OdrDeclarationMismatch { name }` | `{name} is declared with a type that does not match its definition` | own (WP-073) | file, key |
+| `odr-internal-reference` | `OdrInternalReference { name }` | `{name} refers to an entity with internal linkage, which differs in each translation unit` | own (WP-073) | file, key |
+| `odr-isa-mismatch` | `OdrIsaMismatch { name }` | `the kept copy of {name} was compiled for other target features than a translation unit that uses it` | own (WP-073) | file, key |
+| `odr-size-mismatch` | `OdrSizeMismatch { name }` | `{name} has different sizes in different files` | own | file, key |
+| `odr-strong-and-comdat` | `OdrStrongAndComdat { name }` | `{name} has a non-inline definition and an inline copy` | own | file, key |
+| `odr-symbol-type-mismatch` | `OdrSymbolTypeMismatch { name }` | `{name} is a function in one file and data in another` | own | file, key |
+| `odr-type-mismatch` | `OdrTypeMismatch { name }` | `type {name} violates the one-definition rule` | own (GCC `-Wodr`'s shape; WP-073) | file, key |
+| `odr-violation` | `OdrViolation { name }` | `{name} violates the one-definition rule` | own (GCC `-Wodr`'s shape; WP-073) | file, key |
+| `odr-vtable-rtti-mismatch` | `OdrVtableRttiMismatch { name }` | `the vtable of {name} is emitted by translation units compiled with and without RTTI` | own (WP-073) | file, key |
+| `canonical-plt-in-pie` | `CanonicalPltInPie { r_type, name }` | ``relocation {r_type} against symbol `{name}' cannot be used in a position-independent executable; recompile with -fPIE, or link with -no-pie`` | GNU ld (`spec/dyn.md` D-44) | — |
+| `copy-relocation-against-protected` | `CopyRelocationAgainstProtected { name, file }` | ``copy relocation against non-copyable protected symbol `{name}' in {file}`` | GNU ld (`spec/dyn.md` D-18) | — |
+| `copy-relocation-of-zero-size` | `CopyRelocationOfZeroSize { name }` | `cannot create a copy relocation for symbol {name}` | lld (`spec/dyn.md` D-42) | — |
+| `non-pic-in-shared-object` | `NonPicInSharedObject { r_type, name, file }` | ``relocation {r_type} against symbol `{name}' which may bind externally can not be used when making a shared object; recompile with -fPIC``; with no `r_type` (the `reloc-model` row, below): ``code not compiled as position-independent defines symbol `{name}' which may bind externally: it can not be used when making a shared object; recompile with -fPIC`` | GNU ld (`spec/dyn.md` D-117; M4, WP-117 the table and the address-level rule, WP-119 the analysis); the second form own, in GNU ld's words (WP-129) | — |
+| `relocation-incompatible` | `RelocationIncompatible { r_type, name, reason }` | `relocation {r_type} cannot be used against symbol '{name}'; {reason}` | lld's shape, with a reason (§3.2) | — |
+| `relocation-misaligned` | `RelocationMisaligned { r_type, value, align }` | `improper alignment for relocation {r_type}: {value} is not aligned to {align} bytes` | lld | — |
+| `relocation-out-of-range` | `RelocationOutOfRange { r_type, value, min, max, name }` | `relocation truncated to fit: {r_type} against '{name}': {value} is not in [{min}, {max}]` | lld's value and bounds; GNU ld's phrase | — |
+| `text-relocation` | `TextRelocation { r_type, name }` | ``relocation {r_type} against symbol `{name}' can not be used when making a PIE object; recompile with -fPIE`` | GNU ld (`spec/dyn.md` D-47) | — |
+| `weak-undefined-pc-in-pie` | `WeakUndefinedPcInPie { r_type, name }` | ``relocation {r_type} against undefined weak symbol `{name}' cannot be used in a position-independent executable; recompile with -fPIE`` | GNU ld (`spec/dyn.md` D-25; `Pie` only, once per key) | — |
+| `executable-stack` | `ExecutableStack { file }` | `{file}: requires executable stack (because the .note.GNU-stack section is executable)` | GNU ld | file |
+| `output-too-large` | `OutputTooLarge { what, limit }` | `output too large: {what} exceeds {limit}` | own (lld: `output file too large`) | — |
+| `section-conflict` | `SectionConflict { name, first, second }` | `section {name}: {first} and {second} inputs cannot be combined` | own (lld: `section type mismatch for {name}`) | — |
+| `incremental-not-reproducible` | `IncrementalNotReproducible` | `SOURCE_DATE_EPOCH is set, but an incremental link's output depends on its edit history` | own (`spec/incr.md` IN-7) | link |
+| `incremental-unsupported` | `IncrementalUnsupported { option }` | `--incremental is not supported with {option}; linking without a state` | own (`spec/incr.md` IN-12) | link |
+| `incremental-update-failed` | `IncrementalUpdateFailed { reason }` | `--incremental=update: cannot update: {reason}` | own (`spec/incr.md` IN-10) | — |
+| `incremental-file-clash` | `IncrementalFileClash { option, path, what }` | `{option}={path} names {what}; nothing is written to it` | own (`spec/incr.md` IN-17); no longer emitted since WP-087, which made `written-file-clash` cover the state and the report (the id stays, never reused) | — |
+| `refused` | `Refused { class, name, not_recognized }` | `unsupported {noun of class}: {name}` (§4), then `; file not recognized: file format not recognized` when `not_recognized` (§8.3) | own (§8.2) | — |
+| `internal-error` | `InternalError { what }` | `internal error in mortar: {what}` | own | — |
 
 ### 3.2 Notes on the kinds
 

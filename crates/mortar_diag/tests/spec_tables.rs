@@ -45,6 +45,90 @@ fn kind_ids_match_the_spec_table() {
     assert!(!is_kebab_case("Undefined-symbol") && !is_kebab_case("a--b") && !is_kebab_case("a_b"));
 }
 
+/// The kinds that can be emitted as a warning, by default or under an
+/// option (diag.md §3.2 says which in prose; the table has no severity
+/// column, since severity is not part of a kind, §2.2). WP-212 read each
+/// from where the linker raises it.
+const WARNING_KINDS: &[&str] = &[
+    "skipped-incompatible",
+    "ignored-member",
+    "duplicate-soname",
+    "needed-not-found",
+    "cet-report",
+    "malformed-input",
+    "unknown-property",
+    "archive-backref",
+    "archive-choice",
+    "common-alignment",
+    "common-larger-than-definition",
+    "common-overridden",
+    "copy-of-locally-bound-definition",
+    "entry-not-found",
+    "gnu-warning",
+    "multiple-common",
+    "undefined-symbol",
+    "version-reassigned",
+    "version-script-undefined-name",
+    "versioned-definition-hidden",
+    "meta-malformed",
+    "odr-abi-mismatch",
+    "odr-archive-shadow",
+    "odr-contents-mismatch",
+    "odr-declaration-mismatch",
+    "odr-internal-reference",
+    "odr-isa-mismatch",
+    "odr-size-mismatch",
+    "odr-strong-and-comdat",
+    "odr-symbol-type-mismatch",
+    "odr-type-mismatch",
+    "odr-violation",
+    "odr-vtable-rtti-mismatch",
+    "executable-stack",
+    "incremental-not-reproducible",
+    "incremental-unsupported",
+];
+
+/// The subjects of one row of §3.1's table: `None` for `—`, else its
+/// words, each of the closed set.
+fn subjects(cell: &str) -> Option<Vec<&str>> {
+    if cell == "—" {
+        return None;
+    }
+    Some(cell.split(',').map(str::trim).collect())
+}
+
+// spec: diag.md §3.1 (the subjects column), incr.md IN-75a: every kind
+// that can be a warning has subjects, each from {file, key, output
+// section, link}; a kind that is never one has `—`
+#[test]
+fn warning_kinds_have_subjects() {
+    const SET: [&str; 4] = ["file", "key", "output section", "link"];
+    let rows = table("### 3.1 ");
+    for id in WARNING_KINDS {
+        assert!(Kind::IDS.contains(id), "{id} is not a kind");
+    }
+    for row in &rows {
+        let (id, cell) = (row[0].as_str(), row.last().map(String::as_str).unwrap_or(""));
+        assert_eq!(row.len(), 5, "{id}: the subjects column is missing");
+        match subjects(cell) {
+            None => assert!(!WARNING_KINDS.contains(&id), "{id} can be a warning: it needs subjects"),
+            Some(words) => {
+                assert!(!words.is_empty(), "{id}: empty subjects");
+                for (i, word) in words.iter().enumerate() {
+                    assert!(SET.contains(word), "{id}: '{word}' is not a subject");
+                    assert!(!words[..i].contains(word), "{id}: '{word}' twice");
+                }
+                assert!(WARNING_KINDS.contains(&id), "{id} has subjects but is not a warning kind");
+            }
+        }
+    }
+    // The checker itself: `—`, a word outside the set, an empty cell.
+    assert_eq!(subjects("—"), None);
+    assert_eq!(subjects("file, key"), Some(vec!["file", "key"]));
+    assert!(subjects("section").is_some_and(|w| !w.iter().all(|w| SET.contains(w))));
+    assert!(subjects("").is_some_and(|w| !w.iter().all(|w| SET.contains(w))));
+}
+
 // spec: diag.md §4.1
 #[test]
 fn refusal_classes_match_the_spec_table() {

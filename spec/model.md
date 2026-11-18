@@ -473,7 +473,9 @@ the kept globals in `SymbolId` order, so that the output index of
 `(FileId, st_index)` is a prefix sum per file. Only the per-file `(first
 local, count)` ranges are stored; `count` includes the demoted globals.
 The ranges are held to that rule (`spec/synth.md` S-88: no other value is
-admitted yet); the `.eh_frame` list is a decision, and S-49 says which
+admitted in a plain link; in an incremental-mode output each range is
+`(first, count, capacity)`, the blocks with their fillers of
+`spec/incr.md` IN-49a, S-88 as amended by WP-212); the `.eh_frame` list is a decision, and S-49 says which
 lists are admitted and what the output is for each.
 
 Valid when every demand of §3.7 has exactly one slot of its kind (the
