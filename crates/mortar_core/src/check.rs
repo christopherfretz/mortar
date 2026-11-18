@@ -27,7 +27,7 @@ use crate::id::{
 use crate::inputs::{Inputs, Reader};
 use crate::layout::{
     AllocKey, ChunkKind, CopyAlloc, CopyPlace, DefValue, Layout, PatchKind, PlacementKind,
-    SegmentRules, ThunkTarget, derive_segments,
+    SegmentRules, SlotKind, ThunkTarget, derive_segments,
 };
 
 pub mod relocatable;
@@ -635,14 +635,7 @@ impl<'a, 't, 'n> Checker<'a, 't, 'n> {
         let r = Rule::Slots;
         let cx = self.cx;
         let slots = &self.layout.slots;
-        let flags = [
-            DemandFlags::GOT,
-            DemandFlags::PLT | DemandFlags::CANON_PLT,
-            DemandFlags::IPLT,
-            DemandFlags::TLS_DESC,
-            DemandFlags::TLS_GD,
-            DemandFlags::GOT_TPREL,
-        ];
+        let flags = SlotKind::ALL.map(SlotKind::demand);
         for ((name, list), want) in Self::slot_lists(self.layout).into_iter().zip(flags) {
             let mut have: Vec<(SymKey, u32)> =
                 list.iter().enumerate().map(|(i, &k)| (k, i as u32)).collect();

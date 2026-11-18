@@ -232,6 +232,24 @@ impl SlotKind {
     /// Every kind, in the order of the fields of [`Slots`].
     pub const ALL: [Self; 6] =
         [Self::Got, Self::Plt, Self::Iplt, Self::TlsDesc, Self::TlsGd, Self::TlsIe];
+
+    /// The demand flags that need a slot of this kind (`spec/synth.md`
+    /// S-63, S-64): a key is in the kind's list when its flags intersect
+    /// these. The one table: the full link's slot planning
+    /// (`mortar::front`), `Layout::check`'s §4.3 and the delta layout's
+    /// item 7 (`spec/incr.md` IN-72) read it.
+    #[must_use]
+    pub const fn demand(self) -> crate::demands::DemandFlags {
+        use crate::demands::DemandFlags as D;
+        match self {
+            Self::Got => D::GOT,
+            Self::Plt => D::PLT.union(D::CANON_PLT),
+            Self::Iplt => D::IPLT,
+            Self::TlsDesc => D::TLS_DESC,
+            Self::TlsGd => D::TLS_GD,
+            Self::TlsIe => D::GOT_TPREL,
+        }
+    }
 }
 
 impl Slots {
