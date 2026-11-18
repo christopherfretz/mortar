@@ -71,11 +71,15 @@ pub enum Unimplemented {
     /// A changed, appeared or newly extracted file with debug sections or
     /// a split-DWARF skeleton (IN-70; until G-3 joins G-1 and G-2).
     Debug,
+    /// A stored `link`-subject warning the update cannot raise again
+    /// within O(change) (IN-75a as amended by WP-212, F-13): it is never
+    /// repeated from the stored row; the update falls back.
+    Diags,
 }
 
 impl Unimplemented {
     /// Every word, in `spec/incr.md` §7's order.
-    pub const ALL: [Self; 9] = [
+    pub const ALL: [Self; 10] = [
         Self::State5,
         Self::Resolve,
         Self::Refill,
@@ -85,6 +89,7 @@ impl Unimplemented {
         Self::Write,
         Self::Meta,
         Self::Debug,
+        Self::Diags,
     ];
 
     /// The word (`spec/incr.md` §7).
@@ -100,6 +105,7 @@ impl Unimplemented {
             Self::Write => "write",
             Self::Meta => "meta",
             Self::Debug => "debug",
+            Self::Diags => "diags",
         }
     }
 }

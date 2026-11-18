@@ -158,13 +158,18 @@ pub mod kind {
     /// Key-parallel: a global's `.symtab` index and `.strtab` offset
     /// (IN-49a).
     pub const SYMTAB_KEYS: u32 = 50;
+    /// File-keyed: per file its regions (IN-72 item 2; WP-213 F-1).
+    pub const REGIONS: u32 = 51;
+    /// Key-keyed: the by-name index of `SYMBOLS`, `(hash, row)` (WP-213
+    /// F-2).
+    pub const NAMES: u32 = 52;
     /// The number of tables of versions 3 and 4.
     pub const COUNT: u32 = 28;
 
     /// The name of a kind, for diagnostics.
     #[must_use]
     pub fn name(kind: u32) -> &'static str {
-        const NAMES: [&str; 23] = [
+        const FIRST: [&str; 23] = [
             "META",
             "STAT",
             "FILES",
@@ -205,7 +210,9 @@ pub mod kind {
             ODR_REFS => "ODR_REFS",
             DIAGS => "DIAGS",
             SYMTAB_KEYS => "SYMTAB_KEYS",
-            _ => kind.checked_sub(1).and_then(|i| NAMES.get(i as usize)).copied().unwrap_or("?"),
+            REGIONS => "REGIONS",
+            NAMES => "NAMES",
+            _ => kind.checked_sub(1).and_then(|i| FIRST.get(i as usize)).copied().unwrap_or("?"),
         }
     }
 }

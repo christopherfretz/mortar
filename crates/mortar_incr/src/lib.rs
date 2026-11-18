@@ -70,6 +70,7 @@ pub mod ops;
 pub mod stamp;
 pub mod state5;
 mod tables;
+pub mod testhook;
 pub mod update;
 
 #[cfg(test)]

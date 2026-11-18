@@ -33,7 +33,9 @@ pub fn open(file: &File, plan_hash: [u8; 16]) -> Result<StateView<'_>, IncrReaso
 /// U-5 read through `StoredLayout::new(&LayoutOf { view })`. The rows to
 /// core types translation is the inverse of the capture (U-2's).
 ///
-/// Until U-2 lands every accessor is `update-not-implemented (state5)`.
+/// `regions_of` answers from `REGIONS` (kind 51) through the view (WP-213
+/// follow-up: no translation beyond the ids); until U-2 lands every other
+/// accessor is `update-not-implemented (state5)`.
 #[derive(Debug, Clone, Copy)]
 pub struct LayoutOf<'v, 's> {
     pub view: &'v StateView<'s>,
@@ -59,8 +61,21 @@ impl LayoutRows for LayoutOf<'_, '_> {
     fn sections_of(&self, _file: FileId) -> Result<Vec<StoredSection>, IncrReason> {
         not_yet()
     }
-    fn regions_of(&self, _file: FileId) -> Result<Vec<StoredRegion>, IncrReason> {
-        not_yet()
+    fn regions_of(&self, file: FileId) -> Result<Vec<StoredRegion>, IncrReason> {
+        Ok(self
+            .view
+            .regions_of(file)?
+            .into_iter()
+            .map(|r| StoredRegion {
+                file,
+                out: OutSecId(r.out),
+                category: r.category,
+                ordinal: r.ordinal,
+                chunk: ChunkId(r.chunk),
+                offset: r.offset,
+                capacity: r.capacity,
+            })
+            .collect())
     }
     fn holes_in(&self, _chunk: ChunkId) -> Result<Vec<Hole>, IncrReason> {
         not_yet()

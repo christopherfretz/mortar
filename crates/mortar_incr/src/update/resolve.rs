@@ -11,8 +11,11 @@ use super::extract::Extraction;
 use super::rows::{CommonRow, GroupRow, KeyRefRow, ResolvedRow, SymbolRow};
 use super::view::{ChangedFiles, KeyEdits, StateView};
 
-/// A key new to the state (no `SYMBOLS` row): its id is the state's
-/// `SYMBOLS` count plus its position in [`ResolveDelta::new_keys`].
+/// A key new to the state (no `SYMBOLS` row, so `StateRows::find_key`
+/// found none): its id is the state's `SYMBOLS` count plus its position in
+/// [`ResolveDelta::new_keys`], and the patch puts its `NAMES` row. A `GONE`
+/// key that comes back is not new: `find_key` returns its old row, which
+/// is affected and set again (IN-18e).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct NewKey {
     /// Its `SYMBOLS` row as appended (name and version as strings the

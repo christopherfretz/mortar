@@ -2,6 +2,7 @@
 //! (U-1): each entry point's "until it lands" value; U-2 replaces them.
 
 use mortar_core::incr::{IncrReason, MemoryLayout, StoredLayout, Unimplemented};
+use mortar_incr::format::StatRow;
 use mortar_incr::ops::{StdOps, WriteFailure};
 use mortar_incr::state5;
 use mortar_incr::update::testing::MemoryState;
@@ -16,15 +17,19 @@ fn open_until_it_lands() {
     assert_eq!(state5::open(&file, [0; 16]).err(), Some(STATE5));
 }
 
-// spec: incr.md IN-46b, IN-18f (until U-2: no patch, no compaction)
+// spec: incr.md IN-46b, IN-18f (until U-2: no plan, no patch, no compaction)
 #[test]
-fn patch_and_compact_until_they_land() {
+fn plan_patch_and_compact_until_they_land() {
     let m = MemoryState::default();
     let view = m.view();
-    let patch = StatePatch::default();
-    let r = state5::patch(&view, &patch, &mut StdOps);
+    assert_eq!(state5::plan_patch(&view, &StatePatch::default()).err(), Some(STATE5));
+    let plan = state5::PatchPlan::default();
+    assert!(!plan.compacts());
+    let output = StatRow::default();
+    let r = state5::patch(&view, &plan, &output, &mut StdOps);
     assert!(matches!(r, Err(WriteFailure::Fallback(ref e)) if *e == STATE5), "{r:?}");
-    let r = state5::compact(&view, &patch, &mut StdOps, std::path::Path::new("never-written"));
+    let never = std::path::Path::new("never-written");
+    let r = state5::compact(&view, &plan, &output, &mut StdOps, never);
     assert!(matches!(r, Err(WriteFailure::Fallback(ref e)) if *e == STATE5), "{r:?}");
 }
 

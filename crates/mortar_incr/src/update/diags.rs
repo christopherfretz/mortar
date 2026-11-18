@@ -6,6 +6,8 @@
 
 use mortar_core::{FileId, OutSecId, SymbolId};
 
+use crate::format::Str;
+
 use super::resolve::ResolveDelta;
 use super::view::{ChangedFiles, StateView};
 
@@ -18,10 +20,30 @@ pub enum Subject {
     File(FileId),
     /// A key, by its `SYMBOLS` row.
     Key(SymbolId),
+    /// An ODR key (odr.md O-4: name and class; WP-212 F-12), for a
+    /// finding whose subject is an entity rather than a symbol. Its kind
+    /// is `SubjectKind::Key`. **PROVISIONAL (U-8's design step, WP-213
+    /// follow-up F-5)**: carries the name's string in `STRINGS` and the
+    /// class until U-8's ruling numbers ODR keys; then it may carry that
+    /// number instead.
+    OdrKey {
+        /// The mangled name with its `.symver` version (O-4), in `STRINGS`.
+        name: Str,
+        /// [`odr_class`].
+        class: u8,
+    },
     /// An output section, by its `OUTSECS` row (recomputed every update).
     OutputSection(OutSecId),
     /// The link (recomputed every update).
     Link,
+}
+
+/// An ODR key's class (odr.md O-4: function, variable or type).
+/// **PROVISIONAL (U-8's design step)**, with [`Subject::OdrKey`].
+pub mod odr_class {
+    pub const FUNCTION: u8 = 0;
+    pub const VARIABLE: u8 = 1;
+    pub const TYPE: u8 = 2;
 }
 
 /// `DIAGS`' row (WP-211 §C; kind 49, key-keyed; IN-75a): one warning of

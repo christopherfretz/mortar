@@ -12,7 +12,8 @@ use mortar_core::{ChunkId, FileId, OutSecId, SectionId, SymbolId};
 use super::diags::DiagRow;
 use super::rows::{
     CommonRow, EdgeRow, FileIndexRow, FileRow, FragRow, GroupRow, HoleRow, IndexRow, KeyRefRow,
-    MentionRow, MetaRow, OdrClassRow, OdrRefRow, ResolvedRow, SymbolRow, SymtabKeyRow, SymtabRow,
+    MentionRow, MetaRow, NameRow, OdrClassRow, OdrRefRow, RegionRow, ResolvedRow, SymbolRow,
+    SymtabKeyRow, SymtabRow,
 };
 use super::view::{Rows, StateRows, StateView};
 use crate::format::{
@@ -53,6 +54,7 @@ pub struct MemoryState {
     pub frag_at: Vec<(FileId, FragAtRow)>,
     pub eh_records: Vec<(FileId, EhRow)>,
     pub symtab: Vec<(FileId, SymtabRow)>,
+    pub regions: Vec<(FileId, RegionRow)>,
     pub key_refs: Vec<KeyRefRow>,
     pub groups: Vec<GroupRow>,
     pub frags: Vec<FragRow>,
@@ -61,6 +63,10 @@ pub struct MemoryState {
     pub odr_classes: Vec<OdrClassRow>,
     pub odr_refs: Vec<OdrRefRow>,
     pub diags: Vec<DiagRow>,
+    /// `NAMES`: [`MemoryState::find_key`] goes through these rows only
+    /// (as U-2's reader), so a test that looks a key up adds its row
+    /// ([`MemoryState::name_rows`] makes them all).
+    pub names: Vec<NameRow>,
     pub symbols: Vec<SymbolRow>,
     pub resolved: Vec<ResolvedRow>,
     pub symtab_keys: Vec<SymtabKeyRow>,
@@ -146,6 +152,7 @@ impl MemoryState {
             })
             .collect();
         m.keyed_from_format4(s);
+        m.name_rows();
         m.file_index = (0..m.files.len()).map(|f| m.index_row(FileId(f as u32))).collect();
         m
     }
@@ -253,7 +260,27 @@ impl MemoryState {
         row.ranges[FileTable::EhRecords as usize] =
             range(self.eh_records.iter().map(|r| r.0 == file));
         row.ranges[FileTable::Symtab as usize] = range(self.symtab.iter().map(|r| r.0 == file));
+        row.ranges[FileTable::Regions as usize] = range(self.regions.iter().map(|r| r.0 == file));
         row
+    }
+
+    /// `NAMES` made afresh: one row per global (kinds 0 and 1) and `GONE`
+    /// `SYMBOLS` row, by [`super::rows::name_hash`].
+    pub fn name_rows(&mut self) {
+        use super::rows::{name_hash, sym_kind};
+        let mut names = Vec::new();
+        for (i, s) in self.symbols.iter().enumerate() {
+            if matches!(s.kind, sym_kind::GLOBAL | sym_kind::VERSIONED | sym_kind::GONE) {
+                let (Ok(name), Ok(version)) = ((&*self).string(s.name), (&*self).string(s.version))
+                else {
+                    continue;
+                };
+                let row = u32::try_from(i).unwrap_or(u32::MAX);
+                names.push(NameRow { hash: name_hash(&name, &version), row });
+            }
+        }
+        names.sort_unstable();
+        self.names = names;
     }
 
     /// Append `s` to `STRINGS` and give its `Str`.
@@ -289,6 +316,7 @@ impl StateRows for &MemoryState {
             kind::MENTIONS => self.mentions.len(),
             kind::KEY_REFS => self.key_refs.len(),
             kind::DIAGS => self.diags.len(),
+            kind::NAMES => self.names.len(),
             _ => 0,
         };
         n as u64
@@ -382,6 +410,11 @@ impl StateRows for &MemoryState {
     fn symtab_of(&self, file: FileId) -> Rows<Option<SymtabRow>> {
         Ok(of(&self.symtab, file).first().copied())
     }
+    fn regions_of(&self, file: FileId) -> Rows<Vec<RegionRow>> {
+        let mut v = of(&self.regions, file);
+        v.sort_by_key(|r| (r.out, r.category, r.ordinal));
+        Ok(v)
+    }
     fn key_refs(&self, key: SymbolId) -> Rows<Vec<KeyRefRow>> {
         let mut v: Vec<KeyRefRow> =
             self.key_refs.iter().filter(|r| r.key == key.0 && !r.tomb).copied().collect();
@@ -430,13 +463,11 @@ impl StateRows for &MemoryState {
         row(&self.symtab_keys, key.0, "SYMTAB_KEYS")
     }
     fn find_key(&self, name: &[u8], version: &[u8]) -> Rows<Option<SymbolId>> {
-        use super::rows::sym_kind;
-        for (i, s) in self.symbols.iter().enumerate() {
-            if matches!(s.kind, sym_kind::GLOBAL | sym_kind::VERSIONED)
-                && self.string(s.name)? == name
-                && self.string(s.version)? == version
-            {
-                return Ok(Some(SymbolId(u32::try_from(i).unwrap_or(u32::MAX))));
+        let hash = super::rows::name_hash(name, version);
+        for n in self.names.iter().filter(|n| n.hash == hash) {
+            let s = row(&self.symbols, n.row, "NAMES")?;
+            if self.string(s.name)? == name && self.string(s.version)? == version {
+                return Ok(Some(SymbolId(n.row)));
             }
         }
         Ok(None)
@@ -457,6 +488,7 @@ mod tests {
         m.key_refs.push(KeyRefRow { key: 0, file: 2, ..KeyRefRow::default() });
         m.key_refs.push(KeyRefRow { key: 0, file: 1, ..KeyRefRow::default() });
         m.key_refs.push(KeyRefRow { key: 0, file: 3, tomb: true, ..KeyRefRow::default() });
+        m.name_rows();
         let v = m.view();
         assert_eq!(v.find_key(b"main", b"").unwrap(), Some(SymbolId(0)));
         assert_eq!(v.find_key(b"other", b"").unwrap(), None);
@@ -501,5 +533,26 @@ mod tests {
             (1, 2 | super::super::rows::key_ref_flags::IN_SECTION)
         );
         assert_eq!(v.file_index(FileId(1)).unwrap().ranges[0].count, 1);
+    }
+
+    // spec: incr.md IN-18e (`NAMES`: a hash never identifies a key alone;
+    // a `GONE` key keeps its row)
+    #[test]
+    fn find_key_compares_bytes_and_finds_gone_keys() {
+        use super::super::rows::{name_hash, sym_kind};
+        let mut m = MemoryState::default();
+        let first = m.intern(b"a");
+        let gone = m.intern(b"b");
+        m.symbols.push(SymbolRow { name: first, ..SymbolRow::default() });
+        m.symbols.push(SymbolRow { name: gone, kind: sym_kind::GONE, ..SymbolRow::default() });
+        let hash = name_hash(b"b", b"");
+        // Row 0 filed under b's hash (a collision, made by hand): skipped.
+        m.names = vec![NameRow { hash, row: 0 }, NameRow { hash, row: 1 }];
+        let view = m.view();
+        assert_eq!(view.find_key(b"b", b"").unwrap(), Some(SymbolId(1)));
+        assert_eq!(view.find_key(b"a", b"").unwrap(), None);
+        drop(view);
+        m.name_rows();
+        assert_eq!(m.view().find_key(b"a", b"").unwrap(), Some(SymbolId(0)));
     }
 }

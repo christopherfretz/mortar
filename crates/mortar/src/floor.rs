@@ -75,6 +75,7 @@ use mortar_digest::{Leaf, LeafColumn, TreeFn};
 use mortar_incr::capture::{Keys, Positional, Translation};
 use mortar_incr::format::{self, State, Str, stat_tag};
 use mortar_incr::stamp::{self, Cleanliness, Tuple};
+use mortar_incr::testhook::crash_point;
 use mortar_input::store::{Store, StoreConfig, StorePolicy};
 
 use crate::incremental;
@@ -578,6 +579,7 @@ fn run(
 
     // 6. The writes (IN-46, IN-47), after everything was filled (IN-13).
     set_updating(&state_path).map_err(|e| format!("cannot set the updating flag: {e}"))?;
+    crash_point("F-flag");
     // WP-094 (b): only the dirty ranges are written (the windows are
     // filled whole for their leaves), unless MORTAR_FLOOR_WRITE_WINDOWS.
     let writes: Vec<(Range<u64>, Vec<u8>)> = if std::env::var_os("MORTAR_FLOOR_WRITE_WINDOWS")
@@ -831,6 +833,7 @@ fn in_place(
         .ok_or_else(|| std::io::Error::other("the ELF header's window was not refilled"))?;
     f.write_all_at(&[0; IDENT], 0)?;
     f.sync_data()?;
+    crash_point("F-ident");
     for (r, b) in jobs {
         if r.start == 0 {
             f.write_all_at(&b[IDENT..], IDENT as u64)?;
@@ -841,9 +844,13 @@ fn in_place(
     if meta.len() != size {
         f.set_len(size)?;
     }
+    crash_point("F-written");
     f.sync_data()?;
+    crash_point("F-synced");
     f.write_all_at(&head[..IDENT], 0)?;
+    crash_point("F-header-written");
     f.sync_data()?;
+    crash_point("F-header");
     Ok((meta.dev(), meta.ino()))
 }
 
@@ -872,10 +879,14 @@ fn by_copy(
             t.set_len(size)?;
         }
         t.flush()?;
+        crash_point("F-copy-written");
         t.sync_data()?;
+        crash_point("F-copy-synced");
         let m = t.metadata()?;
         std::fs::rename(&tmp, out_path)?;
+        crash_point("F-copy-renamed");
         sync_dir(out_path)?;
+        crash_point("F-copy-dir");
         Ok((m.dev(), m.ino()))
     })();
     if result.is_err() {

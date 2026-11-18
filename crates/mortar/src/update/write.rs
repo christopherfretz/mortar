@@ -10,7 +10,8 @@ use std::path::Path;
 use mortar_core::incr::{DirtyRange, IncrReason, Unimplemented};
 use mortar_incr::ops::{WriteFailure, WriteOps};
 use mortar_incr::stamp::Tuple;
-use mortar_incr::update::view::{StatePatch, StateView};
+use mortar_incr::state5::PatchPlan;
+use mortar_incr::update::view::StateView;
 use mortar_incr::{WritePath, WritePolicy};
 
 /// The output and the state as U1 opened them (IN-77a: one descriptor per
@@ -40,9 +41,13 @@ pub struct Written {
 }
 
 /// Write the update (WP-211 §C; IN-77's W1..W6 or C1..C5): `ranges` with
-/// their `bytes` (concatenated in range order) into the output, then
-/// `patch` into the state (`mortar_incr::state5::patch`, or `compact`),
-/// every call through `ops`. `policy` gives the default path (the join
+/// their `bytes` (concatenated in range order) into the output, then the
+/// state's patch the join planned before W1 (`plan`, from
+/// `mortar_incr::state5::plan_patch` in U9) at W5/C4:
+/// `mortar_incr::state5::patch`, or `compact` when `plan.compacts()`,
+/// with W4's or C3's binding; every call through `ops`. Before W3's first
+/// write it hands `ranges` to `mortar_incr::testhook::dirty_ranges`, and it
+/// calls `mortar_incr::testhook::crash_point` at each of IN-77's points. `policy` gives the default path (the join
 /// passes `mortar_incr::WRITE_PATH`, or a policy of `Copy` on both sides
 /// for `--incremental-write=copy`); IN-45's conditions are checked here.
 ///
@@ -54,10 +59,10 @@ pub fn write(
     view: &StateView<'_>,
     ranges: &[DirtyRange],
     bytes: &[u8],
-    patch: &StatePatch,
+    plan: &PatchPlan,
     ops: &mut dyn WriteOps,
     policy: WritePolicy,
 ) -> Result<Written, WriteFailure> {
-    let _ = (pair, view, ranges, bytes, patch, ops, policy);
+    let _ = (pair, view, ranges, bytes, plan, ops, policy);
     Err(WriteFailure::Fallback(IncrReason::UpdateNotImplemented(Some(Unimplemented::Write))))
 }

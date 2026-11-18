@@ -1,6 +1,6 @@
 //! The rows of the state's format version 5 (`spec/incr.md` IN-18c..IN-18e)
 //! as the update reads and patches them: the rows of the new tables
-//! (kinds 41-50) and of the tables format 5 changes (`META`, `FILES`,
+//! (kinds 41-52) and of the tables format 5 changes (`META`, `FILES`,
 //! `SYMBOLS`, `MENTIONS`, `RESOLVED`, `INDEX`, `FRAGS`, `HOLES`). WP-213
 //! (U-1) fixed them in this one place: U-2 encodes and decodes them
 //! (`crate::state5`), every other package reads them through
@@ -100,10 +100,11 @@ pub enum FileTable {
     FragAt = 4,
     EhRecords = 5,
     Symtab = 6,
+    Regions = 7,
 }
 
 impl FileTable {
-    pub const COUNT: usize = 7;
+    pub const COUNT: usize = 8;
     /// Every file-keyed table.
     pub const ALL: [Self; Self::COUNT] = [
         Self::Sections,
@@ -113,6 +114,7 @@ impl FileTable {
         Self::FragAt,
         Self::EhRecords,
         Self::Symtab,
+        Self::Regions,
     ];
     /// Its table kind (`format::kind`).
     #[must_use]
@@ -126,6 +128,7 @@ impl FileTable {
             Self::FragAt => kind::FRAG_AT,
             Self::EhRecords => kind::EH_RECORDS,
             Self::Symtab => kind::SYMTAB,
+            Self::Regions => kind::REGIONS,
         }
     }
 }
@@ -229,6 +232,31 @@ pub mod edge_kind {
 /// Written by capture and U-2 (from U-5's `SymtabPlan`); read by U-5.
 pub type SymtabRow = mortar_core::incr::SymtabBlock;
 
+/// `REGIONS` (kind 51, file-keyed; IN-18e, IN-72 item 2; WP-213 F-1): a
+/// file's regions, one row per `(output section, category, ordinal)`: the
+/// first link's region per `(O, c)`, then one per overflow, kept until the
+/// compaction. The file is the range's. A decision row of IN-78 (`P_U`'s
+/// `region` record, plumb.md §3.2). As `mortar_core::incr::StoredRegion`
+/// without `file`. Written by capture and U-2 (from U-4's
+/// `LayoutDelta::regions_opened` and its growth steps); read by U-4
+/// through `LayoutRows::regions_of`, U-6 (the map's `region` line).
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct RegionRow {
+    /// The `OUTSECS` row.
+    pub out: u32,
+    /// The `.text` category (layout.md L-53); 0 when not code.
+    pub category: u8,
+    /// 0 for the first link's region, then the overflow regions in the
+    /// order they were opened.
+    pub ordinal: u32,
+    /// The `CHUNKS` row of the body chunk it is in.
+    pub chunk: u32,
+    /// Bytes from the chunk's start.
+    pub offset: u64,
+    /// Bytes: its sections, their padding and its slack (IN-33).
+    pub capacity: u64,
+}
+
 /// `GROUPS` (kind 44, key-keyed by signature; IN-71): a COMDAT group's
 /// signature and its keeper. Written by capture and U-2 (from
 /// `ResolveDelta`); read by U-3 (re-election, IN-72 item 2a), U-8 (a
@@ -328,6 +356,12 @@ pub struct CommonRow {
 /// `ODR_CLASSES` (kind 47, key-keyed by ODR key; IN-71d): one row per
 /// (ODR key, class), 28 bytes. Written by capture and U-2 (from U-8);
 /// read by U-8.
+///
+/// **PROVISIONAL (U-8's design step, WP-213 follow-up F-5)**: how an ODR
+/// key is numbered, and whether a file-keyed table must find a changed
+/// file's OLD keys (IN-71d) without a scan, are U-8's opening question;
+/// this row and [`OdrRefRow`] may be reshaped or joined by another table
+/// (a row struct and a kind) after the ruling.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct OdrClassRow {
     /// The ODR key (odr.md O-20's key), numbered by U-8 (see WP-213's
@@ -343,6 +377,7 @@ pub struct OdrClassRow {
 /// `ODR_REFS` (kind 48, key-keyed by `(ODR key, file, row kind)`; IN-71d):
 /// one row per (ODR key, file, row kind), 12 bytes: the class the file's
 /// row falls in. Written by capture and U-2 (from U-8); read by U-8.
+/// **PROVISIONAL (U-8's design step)**, as [`OdrClassRow`].
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct OdrRefRow {
     pub key: u32,
@@ -369,6 +404,34 @@ pub struct SymtabKeyRow {
     pub index: u32,
     /// Its name's offset in `.strtab`.
     pub strtab: u32,
+}
+
+/// `NAMES` (kind 52, key-keyed by `(hash, row)`; IN-18e; WP-213 F-2): the
+/// by-name index of `SYMBOLS`' globals (kinds 0 and 1, and `GONE` keys,
+/// which keep their row), 12 bytes. Key: `(hash, row)`. A lookup finds
+/// every row of the hash and compares the name and version bytes through
+/// `SYMBOLS` and `STRINGS`: a hash alone never identifies a key
+/// (`StateRows::find_key`). Written by capture and U-2 (a row per new key
+/// of `ResolveDelta::new_keys`); read by U-3 through `find_key`.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct NameRow {
+    /// [`name_hash`] of the key's name and version.
+    pub hash: u64,
+    /// The `SYMBOLS` row.
+    pub row: u32,
+}
+
+/// `NAMES`' hash (IN-18e): `mortar_core::hash::hash_bytes` (model.md §6
+/// rule 5) of the bytes of `SYMBOLS.name`, one zero byte, and the bytes of
+/// `SYMBOLS.version` (empty for an unversioned key), exactly as `STRINGS`
+/// holds them. The one function U-2 (writing) and U-3 (looking up) call.
+#[must_use]
+pub fn name_hash(name: &[u8], version: &[u8]) -> u64 {
+    let mut bytes = Vec::with_capacity(name.len() + 1 + version.len());
+    bytes.extend_from_slice(name);
+    bytes.push(0);
+    bytes.extend_from_slice(version);
+    mortar_core::hash::hash_bytes(&bytes)
 }
 
 /// W-1's clone probe record in `META` (IN-76a): the output's device, its
@@ -458,6 +521,10 @@ mod tests {
         assert_eq!(odr_class, 28);
         let odr_ref = 4 + 4 + 1 + 1 + 2; // key, file, kind, tomb, class
         assert_eq!(odr_ref, 12);
+        let edge = 1 + 4 + 4 + 8;
+        assert_eq!(edge, 17);
+        let name = 8 + 4;
+        assert_eq!(name, 12);
         // The structs' fields are the ones counted (a field added fails
         // here first).
         let MentionRow { symbol: _, kind: _, bind: _, typ: _, other: _, section: _ } =
@@ -469,6 +536,16 @@ mod tests {
         let SymtabKeyRow { index: _, strtab: _ } = SymtabKeyRow::default();
         let OdrClassRow { key: _, hash: _, layout: _, tomb: _ } = OdrClassRow::default();
         let OdrRefRow { key: _, file: _, kind: _, class: _, tomb: _ } = OdrRefRow::default();
+        let EdgeRow { kind: _, source: _, target: _, offset: _ } = EdgeRow::default();
+        let NameRow { hash: _, row: _ } = NameRow::default();
         assert_eq!(FileTable::ALL.len(), FileTable::COUNT);
+    }
+
+    // spec: incr.md IN-18e (`NAMES`' hash: name, a zero byte, version)
+    #[test]
+    fn name_hash_separates_name_and_version() {
+        assert_ne!(name_hash(b"foo", b"V1"), name_hash(b"foo", b"V2"));
+        assert_ne!(name_hash(b"foo", b""), name_hash(b"fo", b"o"));
+        assert_eq!(name_hash(b"foo", b""), mortar_core::hash::hash_bytes(b"foo\0"));
     }
 }

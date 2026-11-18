@@ -22,7 +22,8 @@ use mortar_core::{ChunkId, FileId, OutSecId, SectionId, SymbolId};
 use super::diags::DiagRow;
 use super::rows::{
     CommonRow, EdgeRow, FileIndexRow, FileRow, FragRow, GroupRow, HoleRow, IndexRow, KeyRefRow,
-    MentionRow, MetaRow, OdrClassRow, OdrRefRow, ResolvedRow, SymbolRow, SymtabKeyRow, SymtabRow,
+    MentionRow, MetaRow, NameRow, OdrClassRow, OdrRefRow, RegionRow, ResolvedRow, SymbolRow,
+    SymtabKeyRow, SymtabRow,
 };
 use crate::format::{
     ChunkRow, DefinedRow, EhRow, FragAtRow, LayoutRow, OutSecRow, PatchRow, ProbeRow, RedirectRow,
@@ -191,6 +192,12 @@ pub trait StateRows: Sync {
     /// # Errors
     /// `state-corrupt`.
     fn symtab_of(&self, file: FileId) -> Rows<Option<SymtabRow>>;
+    /// A file's `REGIONS` rows (kind 51; range), in `(out, category,
+    /// ordinal)` order.
+    ///
+    /// # Errors
+    /// `state-corrupt`.
+    fn regions_of(&self, file: FileId) -> Rows<Vec<RegionRow>>;
 
     // ---- key-keyed: one key's rows ----
     /// A key's `KEY_REFS` rows, by file (kind 45; key).
@@ -218,12 +225,15 @@ pub trait StateRows: Sync {
     /// # Errors
     /// `state-corrupt`.
     fn common(&self, key: SymbolId) -> Rows<Option<CommonRow>>;
-    /// An ODR key's `ODR_CLASSES` rows (kind 47; key).
+    /// An ODR key's `ODR_CLASSES` rows (kind 47; key). **PROVISIONAL
+    /// (U-8's design step)**: the key's numbering and this accessor's
+    /// shape follow U-8's ruling (WP-213 follow-up F-5).
     ///
     /// # Errors
     /// `state-corrupt`.
     fn odr_classes(&self, odr_key: u32) -> Rows<Vec<OdrClassRow>>;
-    /// An ODR key's `ODR_REFS` rows (kind 48; key).
+    /// An ODR key's `ODR_REFS` rows (kind 48; key). **PROVISIONAL
+    /// (U-8's design step)**, as [`Self::odr_classes`].
     ///
     /// # Errors
     /// `state-corrupt`.
@@ -253,15 +263,20 @@ pub trait StateRows: Sync {
     /// `state-corrupt`.
     fn symtab_key(&self, key: SymbolId) -> Rows<SymtabKeyRow>;
     /// The global key named `(name, version)` (`version` empty for an
-    /// unversioned key), or `None`: U-3 maps a changed file's new
-    /// mentions to `SYMBOLS` rows with it. **Cost: not settled** — IN-18e
-    /// has no by-name index of `SYMBOLS` (WP-213 finding F-2: a
-    /// key-keyed name table is proposed); until one exists U-2's reader
-    /// may only answer for names it can find without a scan, and returns
-    /// `update-not-implemented (state5)` otherwise.
+    /// unversioned key; the bytes as `SYMBOLS.name` and `SYMBOLS.version`
+    /// name them in `STRINGS`), or `None`: U-3 maps a changed file's
+    /// mentions to `SYMBOLS` rows with it. Through `NAMES` (kind 52;
+    /// key): every row of [`super::rows::name_hash`]`(name, version)`,
+    /// each compared by its `SYMBOLS` row's name and version **bytes**: a
+    /// hash alone never identifies a key, and two keys of one hash are
+    /// told apart here. A `GONE` key (`SYMBOLS.kind` `sym_kind::GONE`)
+    /// keeps its `NAMES` row and is returned: a key that comes back takes
+    /// its old `SYMBOLS` row (IN-18e's key-parallel rule: a key's rows are
+    /// changed in place by its row; the tombstone is its kind), is not a
+    /// new key, and adds no `NAMES` row. Locals have no `NAMES` row.
     ///
     /// # Errors
-    /// `state-corrupt`; `update-not-implemented (state5)`.
+    /// `state-corrupt`.
     fn find_key(&self, name: &[u8], version: &[u8]) -> Rows<Option<SymbolId>>;
 }
 
@@ -428,6 +443,9 @@ pub struct FileRanges {
     pub frag_at: Option<Vec<FragAtRow>>,
     pub eh_records: Option<Vec<EhRow>>,
     pub symtab: Option<Option<SymtabRow>>,
+    /// `REGIONS` (kind 51): rewritten when a region of the file was opened,
+    /// grown or moved (IN-78's derived table).
+    pub regions: Option<Vec<RegionRow>>,
     /// The file is gone: its ranges are dead (`FILE_INDEX.gone`).
     pub gone: bool,
 }
@@ -479,6 +497,9 @@ pub struct StatePatch {
     pub odr_classes: KeyEdits<OdrClassRow>,
     pub odr_refs: KeyEdits<OdrRefRow>,
     pub diags: KeyEdits<DiagRow>,
+    /// `NAMES` (kind 52): one row put per new key (`ResolveDelta::new_keys`);
+    /// never deleted (a `GONE` key keeps its row).
+    pub names: KeyEdits<NameRow>,
     // key-parallel
     pub symbols: ParallelEdits<SymbolRow>,
     pub resolved: ParallelEdits<ResolvedRow>,

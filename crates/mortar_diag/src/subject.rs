@@ -9,6 +9,9 @@
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum SubjectKind {
     File,
+    /// A key: a symbol (`Subject::Key`) or an ODR key (`Subject::OdrKey`,
+    /// odr.md O-4; WP-212 F-12): one kind, since a code's subjects column
+    /// names "key" for both.
     Key,
     OutputSection,
     Link,

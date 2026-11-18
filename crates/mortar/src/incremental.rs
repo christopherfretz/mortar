@@ -27,6 +27,7 @@ use mortar_image::link::Written;
 use mortar_incr::capture::{Keys, Link};
 use mortar_incr::format::{self, Meta, StatRow, State, Strings, stat_tag};
 use mortar_incr::stamp::{self, DeviceStamp, Tuple};
+use mortar_incr::testhook::crash_point;
 use mortar_input::store::Store;
 
 use crate::front::Front;
@@ -851,10 +852,15 @@ pub(crate) fn write_atomically(path: &Path, bytes: &[u8]) -> std::io::Result<()>
     let result = (|| {
         let mut file = std::fs::File::create(&tmp)?;
         file.write_all(bytes)?;
+        crash_point("F-state-written");
         file.sync_data()?;
+        crash_point("F-state-synced");
         drop(file);
         std::fs::rename(&tmp, path)?;
-        std::fs::File::open(&dir)?.sync_all()
+        crash_point("F-state-renamed");
+        std::fs::File::open(&dir)?.sync_all()?;
+        crash_point("F-state-dir");
+        Ok(())
     })();
     if result.is_err() {
         let _ = std::fs::remove_file(&tmp);

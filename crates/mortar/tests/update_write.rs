@@ -5,8 +5,8 @@ use mortar::update::write::{Pair, write};
 use mortar_core::incr::{IncrReason, Unimplemented};
 use mortar_incr::WRITE_PATH;
 use mortar_incr::ops::{RecordingOps, WriteFailure};
+use mortar_incr::state5::PatchPlan;
 use mortar_incr::update::testing::MemoryState;
-use mortar_incr::update::view::StatePatch;
 
 // spec: incr.md IN-77 (until U-7: nothing is written)
 #[test]
@@ -17,7 +17,7 @@ fn write_until_it_lands() {
     let pair = Pair { out: &file, out_path: &manifest, state: &file, state_path: &manifest };
     let m = MemoryState::default();
     let mut ops = RecordingOps::default();
-    let r = write(&pair, &m.view(), &[], &[], &StatePatch::default(), &mut ops, WRITE_PATH);
+    let r = write(&pair, &m.view(), &[], &[], &PatchPlan::default(), &mut ops, WRITE_PATH);
     let want = IncrReason::UpdateNotImplemented(Some(Unimplemented::Write));
     assert!(matches!(r, Err(WriteFailure::Fallback(ref e)) if *e == want), "{r:?}");
     assert!(ops.log.is_empty());
