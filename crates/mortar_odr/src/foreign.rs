@@ -564,17 +564,22 @@ impl Cx<'_, '_> {
 
     /// The findings for one key, `defs` its COMDAT definitions sorted by
     /// (group, file); each with the index of its W.
-    fn key(&self, defs: &[Definition], checks: Checks) -> Vec<(usize, Finding)> {
-        let key = defs[0].key;
-        // The resolved definition takes part only when it is not one of
-        // the copies (a copy's is inside a group, so `resolved` would give
-        // nothing): test by id before reading any symbol table.
-        let outside = match self.resolution.def.get(key) {
+    /// Whether the key's resolved definition takes part beside `defs`: an
+    /// object's (defined or common) that is not one of the copies (a
+    /// copy's is inside a group, so `resolved` would give nothing). By id,
+    /// before any symbol table is read.
+    fn outside(&self, key: SymbolId, defs: &[Definition]) -> bool {
+        match self.resolution.def.get(key) {
             Some(Def::Defined(e) | Def::Common(e)) => {
                 !defs.iter().any(|d| d.file == e.file && d.index == e.index)
             }
             _ => false,
-        };
+        }
+    }
+
+    fn key(&self, defs: &[Definition], checks: Checks) -> Vec<(usize, Finding)> {
+        let key = defs[0].key;
+        let outside = self.outside(key, defs);
         // The default mode: W1 and W2 only, by the one comparator an
         // incremental update also calls (WP-220), its fast path inside.
         if !checks.w3 && !checks.w4 {
@@ -721,6 +726,34 @@ impl Cx<'_, '_> {
         self.inputs.copy_to(file, range.start as u64..range.end as u64, &mut buf).ok()?;
         Some(Cow::Owned(buf))
     }
+}
+
+/// What a full link gives [`compare_copies`] for `key` besides its
+/// copies `defs` (the key's [`copies`]): whether its resolved definition
+/// is outside them, and that definition as W2 reads it (`None` when it is
+/// not outside, or not an object's). WP-220: an update derives the same
+/// from its rows; this is the full link's side of that proof.
+#[must_use]
+pub fn resolved_of(
+    inputs: &Inputs<'_>,
+    resolution: &Resolution,
+    key: SymbolId,
+    defs: &[Definition],
+) -> (bool, Option<Resolved>) {
+    let cx = Cx { inputs, resolution, stds: &[] };
+    let outside = cx.outside(key, defs);
+    (outside, if outside { cx.resolved(key) } else { None })
+}
+
+/// The names and keepers a full link's W1 and W2 read ([`Names`] over its
+/// inputs and resolution), for a caller of [`compare_copies`] outside
+/// [`check`] (WP-220's proof that an update reads the same from rows).
+#[must_use]
+pub fn link_names<'a>(
+    inputs: &'a Inputs<'_>,
+    resolution: &'a Resolution,
+) -> impl Names<ComdatId> + 'a {
+    Cx { inputs, resolution, stds: &[] }
 }
 
 /// `a, b and c`.
