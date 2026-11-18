@@ -57,14 +57,24 @@ impl Line {
 /// The C++ program (exceptions, COMDAT, TLS, IFUNCs) on both 64-bit
 /// targets, GCC's objects.
 fn lines() -> Vec<Line> {
+    lines_by(&["-O1"])
+}
+
+/// [`lines`], compiled with `flags`.
+fn lines_by(flags: &[&str]) -> Vec<Line> {
+    lines_of(flags, support::CXX_PROGRAM)
+}
+
+/// [`lines`] of `sources`, compiled with `flags`.
+fn lines_of(flags: &[&str], sources: &[support::Source]) -> Vec<Line> {
     let mut v = Vec::new();
     let s = Scratch::new("wp244-a64");
-    match build(&s, Driver::Gxx, &["-O1"], support::CXX_PROGRAM) {
+    match build(&s, Driver::Gxx, flags, sources) {
         Some(b) => v.push(Line::of("aarch64 g++", s, b)),
         None => assert!(!tools_required(), "{} is required", Driver::Gxx.tool()),
     }
     let s = Scratch::new("wp244-x64");
-    match build_by(&s, "x86_64-linux-gnu-g++", &["-O1"], support::CXX_PROGRAM) {
+    match build_by(&s, "x86_64-linux-gnu-g++", flags, sources) {
         Some(b) => v.push(Line::of("x86-64 g++", s, b)),
         None => assert!(!tools_required(), "x86_64-linux-gnu-g++ is required"),
     }
@@ -687,6 +697,8 @@ fn seam6_option_bit_marks_the_option_keys() {
             b"wp244_nowhere",
             b"__wrap_wp244_nowhere",
             b"__real_wp244_nowhere",
+            // the entry: a `live_roots()` name (WP-247 item b)
+            b"_start",
         ];
         let mut seen = Vec::new();
         for r in m.symbols.iter().filter(|r| r.option) {
@@ -1222,5 +1234,224 @@ fn raw_table_diff(p: &str, a: &MemoryState, b: &MemoryState) {
             at(&a.strings),
             at(&b.strings)
         );
+    }
+}
+
+// ---- WP-247 --------------------------------------------------------------------
+
+/// The bytes of the ELF64 (little-endian) section `name` of `path`.
+fn section_bytes(path: &std::path::Path, name: &[u8]) -> Option<Vec<u8>> {
+    let b = std::fs::read(path).expect("the output");
+    let u16_at = |at: usize| usize::from(u16::from_le_bytes([b[at], b[at + 1]]));
+    let u32_at = |at: usize| u32::from_le_bytes(b[at..at + 4].try_into().expect("4"));
+    let u64_at = |at: usize| {
+        usize::try_from(u64::from_le_bytes(b[at..at + 8].try_into().expect("8"))).expect("small")
+    };
+    let (shoff, shentsize, shnum, shstrndx) =
+        (u64_at(0x28), u16_at(0x3a), u16_at(0x3c), u16_at(0x3e));
+    let header = |i: usize| shoff + i * shentsize;
+    let names = u64_at(header(shstrndx) + 0x18);
+    (1..shnum).find_map(|i| {
+        let h = header(i);
+        let at = names + u32_at(h) as usize;
+        let end = at + b[at..].iter().position(|&c| c == 0)?;
+        (&b[at..end] == name).then(|| {
+            let (off, size) = (u64_at(h + 0x18), u64_at(h + 0x20));
+            b[off..off + size].to_vec()
+        })
+    })
+}
+
+// spec: WP-228 R-2.2 (the capture: per distinct string of the output's
+// `.debug_str` and `.debug_line_str` its offset in the OUTPUT section;
+// R-2.3: judged against THIS output, every row names its string's bytes
+// and every string of the output is found); a link without `-g` has none
+#[test]
+fn debug_strs_name_the_output_strings() {
+    use mortar_incr::update::rows::{debug_str_class, name_hash};
+    for line in lines_by(&["-O1", "-g"]) {
+        let m = rows5(&line, "dbg", &[]);
+        let out = line.dir.join("dbg");
+        let mut seen = 0;
+        for (class, name) in [
+            (debug_str_class::STR, &b".debug_str"[..]),
+            (debug_str_class::LINE_STR, b".debug_line_str"),
+        ] {
+            let rows: Vec<_> = m.debug_strs.iter().filter(|r| r.out == class).collect();
+            let Some(sec) = section_bytes(&out, name) else {
+                assert!(rows.is_empty(), "{}: rows without {name:?}", line.label);
+                continue;
+            };
+            assert!(!rows.is_empty(), "{}: {name:?} without rows", line.label);
+            let string_at = |at: usize| {
+                let end = at + sec[at..].iter().position(|&c| c == 0).expect("a NUL");
+                &sec[at..end]
+            };
+            for r in &rows {
+                let s = string_at(r.offset as usize);
+                assert_eq!(name_hash(s, b""), r.hash, "{}: {name:?} row {r:?}", line.label);
+            }
+            assert!(rows.windows(2).all(|w| (w[0].out, w[0].hash) < (w[1].out, w[1].hash)));
+            let mut at = 0;
+            while at < sec.len() {
+                let s = string_at(at);
+                let h = name_hash(s, b"");
+                let i = rows.partition_point(|r| r.hash < h);
+                let hit = rows.get(i).filter(|r| r.hash == h);
+                assert!(
+                    hit.is_some_and(|r| string_at(r.offset as usize) == s),
+                    "{}: {name:?} string at {at} not found",
+                    line.label
+                );
+                at += s.len() + 1;
+                seen += 1;
+            }
+        }
+        assert!(seen > 10, "{}: {seen} strings", line.label);
+        // the rows reach the state's bytes and back
+        let (err, bytes) = link5(&line, "dbg", &[], false);
+        let bytes = bytes.unwrap_or_else(|| panic!("{}: no format-5 state: {err}", line.label));
+        assert_eq!(decode(&bytes).expect("decode").debug_strs, m.debug_strs, "{}", line.label);
+    }
+    for line in lines() {
+        assert!(
+            rows5(&line, "nodbg", &[]).debug_strs.is_empty(),
+            "{}: rows without -g",
+            line.label
+        );
+    }
+}
+
+/// A hand-made object (WP-247 items d and k): a global symbol in a debug
+/// section, and a CIE whose FDE encoding is `absptr` (no FDE uses it: the
+/// link drops it, the file's bytes still hold it).
+const HAND: support::Source = support::Source {
+    name: "hand.s",
+    text: "\t.section .debug_wp247,\"\",%progbits
+\t.globl wp247_debug_export
+wp247_debug_export:
+\t.byte 1, 2, 3, 4
+\t.section .eh_frame,\"a\",%progbits
+\t.long 16
+\t.long 0
+\t.byte 1
+\t.asciz \"zR\"
+\t.byte 4, 0x78, 30, 1, 0x00
+\t.byte 0, 0, 0
+\t.long 0
+",
+};
+
+// spec: WP-247 item k (`DEBUG_EXPORTS`: a file defining a global or weak
+// symbol in a debug section; WP-229 ruling 3) and item d (`EH_FIXED`: a
+// CIE of the file's `.eh_frame` with an encoding other than 0x1b/0x9b),
+// both from the file's bytes, on a real `-g` link: the hand-made object
+// has both, GCC's objects neither
+#[test]
+fn object_flags_on_a_real_link() {
+    use mortar_incr::update::rows::file_flags::{DEBUG_EXPORTS, EH_FIXED};
+    let sources = [support::CXX_PROGRAM, &[HAND]].concat();
+    for line in lines_of(&["-O1", "-g"], &sources) {
+        let m = rows5(&line, "flags", &[]);
+        let path = |i: usize| String::from_utf8_lossy(&string(&m, m.files[i].path)).into_owned();
+        let hand = (0..m.files.len()).find(|&i| path(i).ends_with("hand.s.o"));
+        let hand = hand.unwrap_or_else(|| panic!("{}: no hand.s.o row", line.label));
+        assert_eq!(
+            m.files[hand].flags & (DEBUG_EXPORTS | EH_FIXED),
+            DEBUG_EXPORTS | EH_FIXED,
+            "{}",
+            line.label
+        );
+        let exports: Vec<String> = (0..m.files.len())
+            .filter(|&i| m.files[i].flags & DEBUG_EXPORTS != 0)
+            .map(path)
+            .collect();
+        assert_eq!(exports.len(), 1, "{}: {exports:?}", line.label);
+        // GCC's own objects (the program's, the C++ runtime's) move by a delta
+        let own: Vec<String> = (0..m.files.len())
+            .filter(|&i| i != hand && m.files[i].flags & EH_FIXED != 0 && m.files[i].member == 0)
+            .map(path)
+            .collect();
+        assert!(own.is_empty(), "{}: {own:?}", line.label);
+        let members = (0..m.files.len()).filter(|&i| m.files[i].flags & EH_FIXED != 0).count() - 1;
+        eprintln!("{}: EH_FIXED on {members} archive members besides hand.s.o", line.label);
+    }
+}
+
+/// Whether `m` has a global `SYMBOLS` row named `name` with the option bit.
+fn option_row(m: &MemoryState, name: &[u8]) -> Option<bool> {
+    m.symbols
+        .iter()
+        .find(|r| {
+            r.kind == sym_kind::GLOBAL
+                && string(m, r.name) == name
+                && string(m, r.version).is_empty()
+        })
+        .map(|r| r.option)
+}
+
+// spec: WP-247 item b (WP-244 F-6; IN-71b "Live keys"): every name the
+// options root (`OptionKeys::live_roots`: the entry, `-u`, `--require-
+// defined`, `--defsym`, then `-init`, `-fini`) and `--wrap`'s three names
+// have their `SYMBOLS` row with the option bit, a row added when no file
+// mentions the name; one link per option
+#[test]
+fn option_names_have_their_rows() {
+    let cases: [(&[&str], &[&[u8]]); 7] = [
+        (&["-e", "wp247_entry"], &[b"wp247_entry"]),
+        (&["-u", "wp247_undef"], &[b"wp247_undef"]),
+        (&["--require-defined=main"], &[b"main"]),
+        (
+            &["--wrap=wp247_wrapped"],
+            &[b"wp247_wrapped", b"__wrap_wp247_wrapped", b"__real_wp247_wrapped"],
+        ),
+        (&["--defsym=wp247_alias=main"], &[b"wp247_alias", b"main"]),
+        (&["-init", "wp247_init"], &[b"wp247_init"]),
+        (&["-fini", "wp247_fini"], &[b"wp247_fini"]),
+    ];
+    for line in lines() {
+        let plain = rows5(&line, "opt0", &[]);
+        for (args, names) in cases {
+            // `main` is mentioned (a file defines it) and has no bit without
+            // an option naming it
+            for n in names {
+                let had = option_row(&plain, n);
+                assert!(had != Some(true), "{}: {:?} has the bit without {args:?}", line.label, n);
+            }
+            let m = rows5(&line, "opt", args);
+            for n in names {
+                assert_eq!(
+                    option_row(&m, n),
+                    Some(true),
+                    "{}: {args:?}: {}",
+                    line.label,
+                    String::from_utf8_lossy(n)
+                );
+            }
+            // the rows reach the state's bytes and back, and a compaction
+            // keeps them (the bit keeps an unmentioned key live)
+            let n = mortar_incr::state5::compact::normalize(&m).expect("normalize");
+            for name in names {
+                assert_eq!(option_row(&n, name), Some(true), "{}: {args:?} normalized", line.label);
+            }
+        }
+    }
+}
+
+// spec: WP-247 item 3 (U-10 notes items a, j): decode, normalize, encode
+// of a real capture is BYTE-EQUAL (`MORTAR_WP244_SERIES` adds real link
+// lines: protoc), with and without `-g`
+#[test]
+fn capture_round_trip_is_byte_equal() {
+    for line in lines_and_series().into_iter().chain(lines_by(&["-O1", "-g"])) {
+        let (err, bytes) = link5(&line, "rt2", &[], false);
+        let bytes = bytes.unwrap_or_else(|| panic!("{}: no format-5 state: {err}", line.label));
+        let m = decode(&bytes).unwrap_or_else(|e| panic!("{}: {e}", line.label));
+        let n = mortar_incr::state5::compact::normalize(&m)
+            .unwrap_or_else(|e| panic!("{}: normalize: {e}", line.label));
+        let again = mortar_incr::state5::write::encode(&n)
+            .unwrap_or_else(|e| panic!("{}: encode: {e}", line.label));
+        assert!(again == bytes, "{}: not byte-equal: {}", line.label, differing(&bytes, &again));
+        eprintln!("{}: {} bytes, byte-equal", line.label, bytes.len());
     }
 }

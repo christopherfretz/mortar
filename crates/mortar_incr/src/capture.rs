@@ -869,6 +869,11 @@ pub struct Link5<'a> {
     pub properties: &'a [(FileId, Vec<u8>)],
     /// `mortar_core::plan::Plan::option_keys` (seam 6's `SYMBOLS.option`).
     pub option_keys: &'a [Vec<u8>],
+    /// IN-29's rows (`mortar_live::stored_edges`), sorted by source;
+    /// `None` without `--gc-sections` (no `EDGES`, `META.live_hash`
+    /// zero). WP-238 seam 9: the field only; Part 2 writes the rows and
+    /// the hash.
+    pub edges: Option<&'a [mortar_core::incr::LiveEdge]>,
 }
 
 impl std::fmt::Debug for Link5<'_> {
@@ -914,6 +919,8 @@ pub struct Rows5 {
     commons: Vec<crate::update::rows::CommonRow>,
     copies: Vec<crate::update::rows::CopyRow>,
     versioned: u32,
+    /// `DEBUG_STRS` (WP-247, [`debug_str_rows`]).
+    debug_strs: Vec<crate::update::rows::DebugStrRow>,
     /// Counts for the experiments (`incremental: state5 ...` lines).
     pub notes: Vec<String>,
 }
@@ -924,10 +931,186 @@ pub struct Rows5 {
 /// (`update::rows::file_flags::EH_FIXED`).
 pub const EH_FIXED: u8 = crate::update::rows::file_flags::EH_FIXED;
 
+/// The `FILES.flags` bits that are a function of a file's bytes alone
+/// (WP-247 items d and k): `EH_FIXED` ([`eh_fixed`] over each of its
+/// `.eh_frame` sections) and `DEBUG_EXPORTS` ([`debug_exports`]); 0 for
+/// a file that is not an object. The capture writes them for every
+/// file, archive members not extracted included; an update writes them
+/// for a changed, appeared or newly extracted file's row (the join
+/// calls this on the new bytes: `StatePatch.files_set`/`files_append`
+/// take the row's flags from here and `LAZY`/`POSITIONAL`/`GONE` from
+/// the update's own decisions).
+#[must_use]
+pub fn object_flags(inputs: &Inputs<'_>, file: FileId) -> u8 {
+    use crate::update::rows::file_flags;
+    let Some(f) = inputs.files.get(file) else { return 0 };
+    let Reader::Object(object) = f.reader else { return 0 };
+    let mut flags = 0;
+    if object.symbols().ok().flatten().is_some_and(|t| debug_exports(&object, &t)) {
+        flags |= file_flags::DEBUG_EXPORTS;
+    }
+    let class64 = object.class() == mortar_elf::raw::Class::Elf64;
+    let mut buf = Vec::new();
+    for sec in object.sections() {
+        if sec.name().ok() != Some(&b".eh_frame"[..]) {
+            continue;
+        }
+        let Ok(Some(range)) = sec.file_range() else { continue }; // NOBITS: no records
+        let range = range.start as u64..range.end as u64;
+        let bytes = if let Some(b) = inputs.resident(file, range.clone()) {
+            b
+        } else {
+            buf.clear();
+            buf.resize((range.end - range.start) as usize, 0);
+            if inputs.copy_to(file, range, &mut buf).is_err() {
+                flags |= file_flags::EH_FIXED;
+                continue;
+            }
+            &buf[..]
+        };
+        if eh_fixed(bytes, class64) {
+            flags |= file_flags::EH_FIXED;
+        }
+    }
+    flags
+}
+
+/// Whether the `.eh_frame` bytes `eh` hold a CIE whose FDE (`R`), LSDA
+/// (`L`) or personality (`P`) pointer encoding is other than `0x1b`,
+/// `0x1b`, `0x9b` (`file_flags::EH_FIXED`): an absent `R` is `absptr`
+/// (other); an absent or `omit` `L`/`P` gives none. A record the walk
+/// cannot read is such a CIE (a 64-bit length, a length past the bytes, a
+/// CIE without a `z` augmentation but with letters, an unknown letter).
+/// Walks the records by their length words to a zero length or the end.
+#[must_use]
+pub fn eh_fixed(eh: &[u8], class64: bool) -> bool {
+    fn uleb(b: &[u8], at: &mut usize) -> Option<u64> {
+        let mut v = 0u64;
+        for shift in (0..64).step_by(7) {
+            let byte = *b.get(*at)?;
+            *at += 1;
+            v |= u64::from(byte & 0x7f) << shift;
+            if byte & 0x80 == 0 {
+                return Some(v);
+            }
+        }
+        None
+    }
+    // the pointer's size by its encoding's format (low 4 bits)
+    let size = |enc: u8| match enc & 0x0f {
+        0x0 => Some(if class64 { 8 } else { 4 }),
+        0x2 | 0xa => Some(2),
+        0x3 | 0xb => Some(4),
+        0x4 | 0xc => Some(8),
+        _ => None, // LEB pointers: not in a CIE's `P` that an update moves
+    };
+    // One CIE's body after its id: `Some(true)` fixed, `Some(false)` not.
+    let cie = |b: &[u8]| -> Option<bool> {
+        let mut at = 0;
+        let version = *b.get(at)?;
+        at += 1;
+        let aug_end = at + b.get(at..)?.iter().position(|&c| c == 0)?;
+        let aug = &b[at..aug_end];
+        at = aug_end + 1;
+        if version == 4 {
+            at += 2; // address and segment selector sizes
+        }
+        uleb(b, &mut at)?; // code alignment
+        uleb(b, &mut at)?; // data alignment (SLEB: the same bytes)
+        if version == 1 {
+            at += 1;
+        } else {
+            uleb(b, &mut at)?;
+        }
+        let (mut fde, mut lsda, mut personality) = (0u8, None, None);
+        if let Some((&b'z', letters)) = aug.split_first() {
+            let len = usize::try_from(uleb(b, &mut at)?).ok()?;
+            let end = at.checked_add(len)?;
+            for &c in letters {
+                match c {
+                    b'R' => {
+                        fde = *b.get(at)?;
+                        at += 1;
+                    }
+                    b'L' => {
+                        lsda = Some(*b.get(at)?).filter(|&e| e != 0xff);
+                        at += 1;
+                    }
+                    b'P' => {
+                        let enc = *b.get(at)?;
+                        at += 1;
+                        if enc != 0xff {
+                            personality = Some(enc);
+                            at += size(enc)?;
+                        }
+                    }
+                    b'S' | b'B' | b'G' => {}
+                    _ => return None,
+                }
+                if at > end {
+                    return None;
+                }
+            }
+        } else if !aug.is_empty() {
+            return None;
+        }
+        Some(
+            fde != 0x1b
+                || lsda.is_some_and(|e| e != 0x1b)
+                || personality.is_some_and(|e| e != 0x9b),
+        )
+    };
+    let mut at = 0usize;
+    while at + 4 <= eh.len() {
+        let len = u32::from_le_bytes([eh[at], eh[at + 1], eh[at + 2], eh[at + 3]]);
+        if len == 0 {
+            break;
+        }
+        if len == u32::MAX {
+            return true;
+        }
+        let Some(end) = (at + 4).checked_add(len as usize).filter(|&e| e <= eh.len() && len >= 4)
+        else {
+            return true;
+        };
+        let id = u32::from_le_bytes([eh[at + 4], eh[at + 5], eh[at + 6], eh[at + 7]]);
+        if id == 0 && cie(&eh[at + 8..end]) != Some(false) {
+            return true;
+        }
+        at = end;
+    }
+    false
+}
+
+/// Whether `object` defines a GLOBAL, WEAK or `GNU_UNIQUE` symbol in a
+/// non-allocated section named `.debug_*` or `.zdebug_*`
+/// (`file_flags::DEBUG_EXPORTS`; WP-229 ruling 3).
+#[must_use]
+pub fn debug_exports(
+    object: &mortar_elf::object::Object<'_>,
+    table: &mortar_elf::symbol::SymbolTable<'_>,
+) -> bool {
+    use mortar_elf::consts::{SHF_ALLOC, STB_GLOBAL, STB_GNU_UNIQUE, STB_WEAK};
+    (table.first_global().0..table.len()).any(|i| {
+        let i = mortar_elf::symbol::SymbolIndex(i);
+        let Ok(sym) = table.get(i) else { return false };
+        if !matches!(sym.binding(), STB_GLOBAL | STB_WEAK | STB_GNU_UNIQUE) {
+            return false;
+        }
+        let Ok(SymbolSection::Section(index)) = table.section_of(i, &sym) else { return false };
+        object.section(index).is_ok_and(|s| {
+            s.flags() & SHF_ALLOC == 0
+                && s.name().is_ok_and(|n| n.starts_with(b".debug") || n.starts_with(b".zdebug"))
+        })
+    })
+}
+
 /// One file's part of [`rows5`], with keys as `SymbolId`s.
 #[derive(Default)]
 struct File5<'s> {
     first_global: u32,
+    /// [`object_flags`] (WP-247).
+    flags: u8,
     versioned: u32,
     lazy: bool,
     /// Positional (IN-18e "`MENTIONS` by position"); a live object's only.
@@ -977,6 +1160,7 @@ fn rows5(
         let live = live_file(file);
         let first = table.first_global().0;
         let mut acc = File5 { first_global: first, lazy: !live, ..File5::default() };
+        acc.flags = object_flags(inputs, file);
         let globals = table.len().saturating_sub(first) as usize;
         if inputs.sym_map_of(file).len() < globals {
             return Err(format!(
@@ -1258,21 +1442,21 @@ fn rows5(
     out.files = files5
         .iter()
         .map(|f| FileCols {
-            flags: if f.lazy { crate::update::rows::file_flags::LAZY } else { 0 },
+            flags: f.flags | if f.lazy { crate::update::rows::file_flags::LAZY } else { 0 },
             first_global: f.first_global,
             ..FileCols::default()
         })
         .collect();
-    let mut fixed = 0usize;
     for e in eh {
         let [offset, capacity, records] =
             crate::state5::eh_columns(e.offset, e.capacity, u64::from(e.records))
                 .map_err(|r| r.report())?;
         let row = out.files.get_mut(e.file.0 as usize).ok_or("an .eh_frame range's file")?;
         row.eh = [offset, capacity, records, e.fdes];
+        // `!movable` (a KEPT CIE's encoding) implies the bytes' bit: or-ed
+        // as a guard, never a second definition
         if !e.movable {
             row.flags |= EH_FIXED;
-            fixed += 1;
         }
     }
     // ---- FILES.stack, FILES.properties (seam 6): 0 and empty for a LAZY
@@ -1289,8 +1473,14 @@ fn rows5(
             row.properties.clone_from(bytes);
         }
     }
+    let fixed = out.files.iter().filter(|f| f.flags & EH_FIXED != 0).count();
+    let exports =
+        out.files.iter().filter(|f| f.flags & crate::update::rows::file_flags::DEBUG_EXPORTS != 0);
+    let exports = exports.count();
     out.option_keys = extra.option_keys.to_vec();
     out.versioned = files5.iter().map(|f| f.versioned).sum();
+    let debug_note;
+    (out.debug_strs, debug_note) = debug_str_rows(link, keys, layout, live_frags)?;
     out.notes = vec![
         format!(
             "KEY_REFS {} (lazy {lazy_rows} of {lazy_files} files, linker-defined {internal}), demand on {used}",
@@ -1305,9 +1495,115 @@ fn rows5(
             out.commons.len(),
             out.copies.len()
         ),
-        format!("eh files {} (fixed encodings {fixed}), versioned {}", eh.len(), out.versioned),
+        format!(
+            "eh files {} (fixed encodings {fixed}), versioned {}, debug exports {exports}",
+            eh.len(),
+            out.versioned
+        ),
+        debug_note,
     ];
     Ok(out)
+}
+
+/// `DEBUG_STRS` of a full link (WP-247; WP-228 R-2, seam 8; incremental
+/// mode only, a plain link never comes here): per distinct string of the
+/// output's `.debug_str` (class 0) and `.debug_line_str` (class 1), its
+/// key `name_hash(bytes, b"")` (the string's bytes and its NUL, hashed)
+/// and its offset in the OUTPUT section; sorted by key, of two strings of
+/// one key the LOWER offset kept; no row at or past 2^32 (an accelerator:
+/// such a string is a miss, appended by an update). The strings are the
+/// section's merged fragments (the link's `MergeMap`, the fragments
+/// `live_frags` lists), so the rows are exactly the strings the image
+/// wrote; the merged chunk is the section (`frag_off` is from its start).
+/// A class whose output section holds anything but its merged chunk (an
+/// input `.debug_str` without `SHF_MERGE`, read whole) gets NO rows: every
+/// string a miss, never a wrong offset (the note says so). Also returns
+/// the note for the `incremental: state5` lines.
+///
+/// # Errors
+/// A fragment whose bytes cannot be read.
+fn debug_str_rows(
+    link: &Link<'_, '_>,
+    keys: &Keys<'_>,
+    layout: &Layout,
+    live_frags: &[(u32, [u8; 16], u32, u64)],
+) -> Result<(Vec<crate::update::rows::DebugStrRow>, String), String> {
+    use crate::update::rows::{DebugStrRow, debug_str_class, name_hash};
+    // WP-247's measurement (WP-228 R-2.4: the capture with and without
+    // the rows, one binary): a `testhooks` build with
+    // `MORTAR_INCR_NO_DEBUG_STRS` set writes none.
+    #[cfg(feature = "testhooks")]
+    if std::env::var_os("MORTAR_INCR_NO_DEBUG_STRS").is_some() {
+        return Ok((Vec::new(), "DEBUG_STRS off (MORTAR_INCR_NO_DEBUG_STRS)".to_owned()));
+    }
+    let mut classes: Vec<(u32, u8)> = Vec::new();
+    for id in link.assignment.outsecs.ids().iter() {
+        let Some(o) = mortar_core::identity::outsec_identity(&keys.outsecs, id) else { continue };
+        let class = match o.name {
+            b".debug_str" => debug_str_class::STR,
+            b".debug_line_str" => debug_str_class::LINE_STR,
+            _ => continue,
+        };
+        classes.push((id.0, class));
+    }
+    let mut rows = Vec::new();
+    let mut notes = Vec::new();
+    let mut buf = Vec::new();
+    for (out, class) in classes {
+        // The merged chunk, and whether its section header holds another.
+        let shndx = layout
+            .placement
+            .chunks
+            .iter()
+            .find(|(_, c)| matches!(c.kind, ChunkKind::Merged(o) if o.0 == out))
+            .and_then(|(_, c)| c.shndx);
+        let alone = shndx.is_some_and(|x| {
+            layout.placement.chunks.iter().filter(|(_, c)| c.shndx == Some(x)).count() == 1
+        });
+        if !alone {
+            notes.push(format!("class {class}: not one merged chunk, no rows"));
+            continue;
+        }
+        let at = live_frags.partition_point(|f| f.0 < out);
+        let mut n = 0usize;
+        let mut far = 0usize;
+        for &(o, _, frag, off) in &live_frags[at..] {
+            if o != out {
+                break;
+            }
+            let Ok(offset) = u32::try_from(off) else {
+                far += 1;
+                continue;
+            };
+            let bytes = frag_bytes(link, FragId::from_index(frag), &mut buf)
+                .ok_or("a debug string fragment's bytes")?;
+            let string = bytes.strip_suffix(&[0]).unwrap_or(bytes);
+            rows.push(DebugStrRow { out: class, hash: name_hash(string, b""), offset });
+            n += 1;
+        }
+        notes.push(format!("class {class}: {n} strings, {far} at or past 2^32"));
+    }
+    let rows = crate::state5::compact::debug_strs_whole(&rows);
+    let note = format!("DEBUG_STRS {} ({})", rows.len(), notes.join("; "));
+    Ok((rows, note))
+}
+
+/// A fragment's bytes (`frag_hash`'s read): `buf` holds them.
+fn frag_bytes<'b>(link: &Link<'_, '_>, frag: FragId, buf: &'b mut Vec<u8>) -> Option<&'b [u8]> {
+    let f = link.split.frags.get(frag)?;
+    let (file, index) = link.resolution.sh_index(f.section)?;
+    let Reader::Object(object) = link.inputs.files.get(file)?.reader else { return None };
+    let range = object.section(index).ok()?.file_range().ok()??;
+    let start = range.start as u64 + u64::from(f.offset);
+    let range = start..start + u64::from(f.size);
+    buf.clear();
+    if let Some(bytes) = link.inputs.resident(file, range.clone()) {
+        buf.extend_from_slice(bytes);
+    } else {
+        buf.resize(f.size as usize, 0);
+        link.inputs.copy_to(file, range, buf).ok()?;
+    }
+    Some(buf)
 }
 
 /// The format-5 state of a full link (WP-244): `state`, the link's
@@ -1331,6 +1627,7 @@ pub fn state5_bytes(state: &State, rows: Rows5, collide: bool) -> Result<Vec<u8>
 ///
 /// # Errors
 /// As [`state5_bytes`], but the encoding's.
+#[allow(clippy::too_many_lines)]
 pub fn state5_rows(
     state: &State,
     rows: Rows5,
@@ -1373,6 +1670,7 @@ pub fn state5_rows(
     m.commons = rows.commons;
     m.copies = rows.copies;
     m.meta.versioned = rows.versioned;
+    m.debug_strs = rows.debug_strs;
     if rows.slot_refs.len() != m.slots.len() {
         return Err("SLOTS: the rows are not this state's".into());
     }
@@ -1394,15 +1692,12 @@ pub fn state5_rows(
         let mut named: mortar_core::hash::HashSet<(&[u8], &[u8])> =
             mortar_core::hash::HashSet::default();
         for b in &rows.option_keys {
-            let key = match b.iter().position(|&c| c == b'@') {
-                None => (b.as_slice(), &[][..]),
-                Some(i) if b.get(i + 1) == Some(&b'@') => (&b[..i], &[][..]),
-                Some(i) => (&b[..i], &b[i + 1..]),
-            };
-            named.insert(key);
+            named.insert(option_key_of(b));
         }
         let text = |x: Str| m.strings.get(x.off as usize..(x.off + x.len) as usize);
         let mut set = Vec::new();
+        let mut found: mortar_core::hash::HashSet<(&[u8], &[u8])> =
+            mortar_core::hash::HashSet::default();
         for (i, r) in m.symbols.iter().enumerate() {
             if !matches!(r.kind, sym_kind::GLOBAL | sym_kind::VERSIONED) {
                 continue;
@@ -1411,10 +1706,40 @@ pub fn state5_rows(
                 && named.contains(&(n, v))
             {
                 set.push(i);
+                found.insert((n, v));
+            }
+        }
+        // WP-247 item b: a name an option roots (entry, `-u`, `EXTERN`,
+        // `--require-defined`, `-init`, `-fini`) that no file mentions has
+        // no key in the link: its row is added here, unmentioned, with the
+        // bit (IN-71b: never dead while the option names it), in the
+        // options' order; the compaction sorts it among the unmentioned.
+        let mut missing: Vec<(Vec<u8>, Vec<u8>)> = Vec::new();
+        for b in &rows.option_keys {
+            let key = option_key_of(b);
+            if !found.contains(&key) && !missing.iter().any(|(n, v)| (&n[..], &v[..]) == key) {
+                missing.push((key.0.to_vec(), key.1.to_vec()));
             }
         }
         for i in set {
             m.symbols[i].option = true;
+        }
+        for (name, version) in missing {
+            let mut add = |b: &[u8]| -> Result<Str, String> {
+                let off = u32::try_from(m.strings.len()).map_err(|_| "STRINGS over 4 GiB")?;
+                m.strings.extend_from_slice(b);
+                Ok(Str { off, len: u32::try_from(b.len()).map_err(|_| "an option's name")? })
+            };
+            let (name, version) = (add(&name)?, add(&version)?);
+            m.symbols.push(SymbolRow {
+                kind: if version.len == 0 { sym_kind::GLOBAL } else { sym_kind::VERSIONED },
+                file: NONE,
+                name,
+                version,
+                at_file: NONE,
+                option: true,
+                ..SymbolRow::default()
+            });
         }
     }
     if collide && let Some(&r) = m.frags.first() {
@@ -1422,6 +1747,37 @@ pub fn state5_rows(
     }
     crate::state5::check_capture(&m).map_err(|r| r.report())?;
     crate::state5::compact::normalize(&m).map_err(|e| e.to_string())
+}
+
+/// An option's operand as its key (`OptionKey::name`'s rule, as
+/// `compact::live_keys` matches it): split at the first `@`; `foo@@V` is
+/// `foo` with no version.
+fn option_key_of(b: &[u8]) -> (&[u8], &[u8]) {
+    match b.iter().position(|&c| c == b'@') {
+        None => (b, &[][..]),
+        Some(i) if b.get(i + 1) == Some(&b'@') => (&b[..i], &[][..]),
+        Some(i) => (&b[..i], &b[i + 1..]),
+    }
+}
+
+/// The names whose `SYMBOLS` rows carry the option bit (seam 6's
+/// `SYMBOLS.option`, WP-247 item b): `Plan::option_keys` (`--wrap`'s
+/// three names, `--defsym`'s symbol and the symbol its expression names)
+/// then the names [`OptionKeys::live_roots`] lists that are not among
+/// them (the entry, `-u` and `EXTERN`, `--require-defined`, `--defsym`'s
+/// operand, `-init`, `-fini`). The front passes it to the capture
+/// (`Incr5.option_keys`).
+///
+/// [`OptionKeys::live_roots`]: mortar_core::incr::OptionKeys::live_roots
+#[must_use]
+pub fn option_names(plan_keys: Vec<Vec<u8>>, keys: &mortar_core::incr::OptionKeys) -> Vec<Vec<u8>> {
+    let mut out = plan_keys;
+    for (name, _) in keys.live_roots() {
+        if !out.iter().any(|n| n == name) {
+            out.push(name.to_vec());
+        }
+    }
+    out
 }
 
 /// [`state5_rows`]' bytes (`state5::write::encode`).

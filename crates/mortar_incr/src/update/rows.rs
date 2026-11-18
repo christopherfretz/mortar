@@ -32,13 +32,28 @@ pub mod file_flags {
     pub const POSITIONAL: u8 = 1;
     pub const LAZY: u8 = 2;
     pub const GONE: u8 = 4;
-    /// The file's `.eh_frame` range holds a CIE whose FDE, LSDA or
-    /// personality encoding is not one an update moves by a delta
-    /// (`0x1b`, `0x1b`, `0x9b`): an update that writes the range answers
-    /// `update-not-implemented (eh)` (WP-244; PROPOSED, needs the
-    /// supervisor's word).
+    /// A CIE of the file's `.eh_frame` gives an FDE, LSDA or personality
+    /// pointer encoding other than `0x1b` (FDE, LSDA) / `0x9b`
+    /// (personality) (IN-34a's sentence; ruled for WP-247 item d): an
+    /// update that would move the file's range answers
+    /// `update-not-implemented (eh)`, decided by the plan before W1
+    /// (`state5::read::eh_fixed_check`). A function of the file's bytes
+    /// (`capture::object_flags`): written by the capture for every
+    /// object and by an update for a changed file. A record the walk
+    /// cannot read (a 64-bit length, a length past the section, an
+    /// augmentation it does not know) counts as such a CIE: an update
+    /// never moves bytes it cannot read.
     pub const EH_FIXED: u8 = 8;
-    pub const ALL: u8 = 15;
+    /// The file defines a GLOBAL, WEAK or `GNU_UNIQUE` symbol in a
+    /// non-allocated `.debug_*` (or `.zdebug_*`) section: another file
+    /// may refer into this file's debug bytes (WP-229 ruling 3; WP-247
+    /// item k). The join does not call such a file's change "handled"
+    /// by the debug packages (G-3). A function of the file's bytes
+    /// (`capture::object_flags`). WP-229 named it "bit 2" against
+    /// format 4's flags (only `POSITIONAL` used); in format 5 bits 1..3
+    /// are `LAZY`, `GONE`, `EH_FIXED`, so it is bit 4.
+    pub const DEBUG_EXPORTS: u8 = 16;
+    pub const ALL: u8 = 31;
 }
 
 /// `FILES` (kind 3, append-only; IN-18e): one row per file of the link,
@@ -325,17 +340,18 @@ pub struct EdgeRow {
     pub kind: u8,
     /// The source section: its `SECTIONS` row.
     pub source: u32,
-    /// By kind: a `SYMBOLS` row (`RELOC`, `START_STOP`, `NONALLOC_KEY`,
-    /// `FDE_KEY`) or a `SECTIONS` row (`LOCAL`, `FDE_SECTION`,
-    /// `NONALLOC_SECTION`).
+    /// By kind: [`edge_kind::target`].
     pub target: u32,
-    /// `LOCAL` into a split section: the offset (bytes) whose piece is
-    /// live; `u64::MAX` for "every piece" (`SHT_REL`); else 0.
-    pub offset: u64,
+    /// A `Section` target that is split: the offset (bytes) whose piece
+    /// is live, `u32::MAX` for every piece (a split section is under
+    /// 4 GiB, model.md §3.5, so it is never a real offset); else 0 (F8).
+    pub offset: u32,
 }
 
-/// IN-29's row kinds (image.md I-7's edge kinds that are stored as rows;
-/// `linkorder` and `group` are columns of `SECTIONS`, roots are flags).
+/// IN-29's row kinds: where a row came from (never how its key is read:
+/// one key reader for every kind, WP-238 F2), the roots, the
+/// C-identifier names, the split sections and the refusals; all made by
+/// `mortar_live::stored_edges` (spec/landed/incr/WP-238.md "Step 2" S1).
 pub mod edge_kind {
     pub const RELOC: u8 = 0;
     pub const START_STOP: u8 = 1;
@@ -344,6 +360,60 @@ pub mod edge_kind {
     pub const FDE_KEY: u8 = 4;
     pub const NONALLOC_KEY: u8 = 5;
     pub const NONALLOC_SECTION: u8 = 6;
+    /// `source` = the `sh_link` target, `target` = the `SHF_LINK_ORDER`
+    /// dependent.
+    pub const LINK_ORDER: u8 = 7;
+    /// `source` = a kept member, `target` = the next kept member of its
+    /// group (the last names the first; groups of two or more kept).
+    pub const GROUP: u8 = 8;
+    /// `source` = a root section (I-6); `target` 0.
+    pub const ROOT: u8 = 9;
+    /// `source` = a kept section named by a C identifier; `target` 0 (the
+    /// name is `SECTIONS.name`).
+    pub const NAMED: u8 = 10;
+    /// `source` = a kept split section (`Split::merge_of`); `target` 0.
+    pub const SPLIT: u8 = 11;
+    /// `source` = the section a refusal is about; `target` = a
+    /// [`refuse`] code. Every update that reads one falls back
+    /// (`update-not-implemented (live)`).
+    pub const REFUSE: u8 = 12;
+    pub const LAST: u8 = 12;
+
+    /// What a kind's `target` is (F4): every kind has exactly one.
+    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+    pub enum Target {
+        /// A `SYMBOLS` row (in `ChangedFile.edges`: a position in `keys`).
+        Key,
+        /// A `SECTIONS` row (in `ChangedFile.edges`: a new `SectionId`).
+        Section,
+        /// Always 0, `offset` 0.
+        Zero,
+        /// A [`refuse`] code, copied.
+        Code,
+    }
+
+    /// The target class of `kind`; `None` for a kind that does not exist.
+    #[must_use]
+    pub const fn target(kind: u8) -> Option<Target> {
+        Some(match kind {
+            RELOC | START_STOP | FDE_KEY | NONALLOC_KEY => Target::Key,
+            LOCAL | FDE_SECTION | NONALLOC_SECTION | LINK_ORDER | GROUP => Target::Section,
+            ROOT | NAMED | SPLIT => Target::Zero,
+            REFUSE => Target::Code,
+            _ => return None,
+        })
+    }
+
+    /// `REFUSE` codes.
+    pub mod refuse {
+        /// F3: an FDE whose initial location is named by a non-local
+        /// symbol (`source` = its `.eh_frame` section).
+        pub const FDE_GLOBAL: u32 = 1;
+        /// F6: a non-local symbol defined in a section dropped other than
+        /// by COMDAT election (`source` = that section).
+        pub const DEF_DROPPED: u32 = 2;
+        pub const LAST: u32 = 2;
+    }
 }
 
 /// `SYMTAB` (kind 43, file-keyed; IN-49a): a file's `.symtab` block and
@@ -790,6 +860,14 @@ pub struct MetaRow {
     /// `update-not-implemented (versioned)`; WP-215 D8); an update writes
     /// the value it read, 0. 4 bytes.
     pub versioned: u32,
+    /// IN-29/IN-71a, WP-238 F7: the live set's hash (S4: the wrapping sum
+    /// of `mortar_digest::L128` per file of its identity and its live
+    /// sections' `sh_index` with their marked split offsets). Written by
+    /// the capture (from the full mark) and by every update (its new
+    /// walk); compared with the update's old walk before the first write
+    /// (`state-corrupt` when it differs). Zero without `--gc-sections`.
+    /// Compaction copies it. 16 bytes.
+    pub live_hash: [u8; 16],
 }
 
 impl Default for MetaRow {
@@ -812,6 +890,7 @@ impl Default for MetaRow {
             symtab: mortar_core::incr::SymtabTables::default(),
             iterations: 0,
             versioned: 0,
+            live_hash: [0; 16],
         }
     }
 }
@@ -839,8 +918,11 @@ mod tests {
         assert_eq!(odr_class, 28);
         let odr_ref = 4 + 4 + 1 + 1 + 2; // key, file, kind, tomb, class
         assert_eq!(odr_ref, 12);
-        let edge = 1 + 4 + 4 + 8;
-        assert_eq!(edge, 17);
+        // WP-238 seam 9 (S1, R-2): `offset` is a `u32`; IN-18e's "17
+        // bytes ... offset `u64`" is the sentence the record proposes to
+        // amend.
+        let edge = 1 + 4 + 4 + 4;
+        assert_eq!(edge, 13);
         let name = 8 + 4;
         assert_eq!(name, 12);
         let debug_str = 1 + 8 + 4; // out, hash, offset (WP-228 R-2)
@@ -903,6 +985,39 @@ mod tests {
         let GroupRow { signature: _, file: _, tomb: _ } = GroupRow::default();
         let CommonRow { key: _, file: _, size: _, align: _, tomb: _ } = CommonRow::default();
         let CopyRow { key: _, file: _, index: _, size: _, typ: _, tomb: _ } = CopyRow::default();
+    }
+
+    // spec: WP-238 "Step 2" S1 and F4 (every `edge_kind` names its target
+    // class; a kind without one, or a gap in the numbering, fails here)
+    #[test]
+    fn edge_kind_every_kind_has_a_class() {
+        use edge_kind::{Target, refuse, target};
+        // By hand, one line per constant: a new kind needs a line here
+        // and an arm in `target`.
+        let table: [(u8, Target); 13] = [
+            (edge_kind::RELOC, Target::Key),
+            (edge_kind::START_STOP, Target::Key),
+            (edge_kind::LOCAL, Target::Section),
+            (edge_kind::FDE_SECTION, Target::Section),
+            (edge_kind::FDE_KEY, Target::Key),
+            (edge_kind::NONALLOC_KEY, Target::Key),
+            (edge_kind::NONALLOC_SECTION, Target::Section),
+            (edge_kind::LINK_ORDER, Target::Section),
+            (edge_kind::GROUP, Target::Section),
+            (edge_kind::ROOT, Target::Zero),
+            (edge_kind::NAMED, Target::Zero),
+            (edge_kind::SPLIT, Target::Zero),
+            (edge_kind::REFUSE, Target::Code),
+        ];
+        for (i, (k, class)) in table.iter().enumerate() {
+            assert_eq!(usize::from(*k), i, "kind {k}: a gap or a duplicate in the numbering");
+            assert_eq!(target(*k), Some(*class), "kind {k}");
+        }
+        assert_eq!(usize::from(edge_kind::LAST) + 1, table.len());
+        for k in 0..=u8::MAX {
+            assert_eq!(target(k).is_some(), k <= edge_kind::LAST, "kind {k}");
+        }
+        assert_eq!((refuse::FDE_GLOBAL, refuse::DEF_DROPPED, refuse::LAST), (1, 2, 2));
     }
 
     // spec: resolve.md §6.1 (the keeper is the live copy whose file has

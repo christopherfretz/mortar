@@ -1,8 +1,14 @@
 //! The in-memory backing of [`StateView`] (WP-213, U-1): hand-made rows
 //! for the packages' own tests (each U-package is tested ALONE against
 //! rows it builds here, `spec/landed/incr/WP-207.md` §C). Compiled always
-//! (the packages' integration tests use it) and called by no link: a plain
-//! or incremental link never builds one. Every accessor filters or copies
+//! (the packages' integration tests use it). [`MemoryState`] is also the
+//! state's rows in memory where a link needs them whole: the format-5
+//! capture of an incremental-mode full link (`crate::capture::state5_rows`:
+//! `normalize` then `encode`) and the compaction (`state5::plan_patch`
+//! decodes the old state into one, IN-18f); a plain link never builds one
+//! (WP-244 F-5's finding; WP-247). Its [`StateView`] (the `StateRows` impl
+//! below) is the tests' only: an update reads a state through
+//! `state5::open`. Every accessor filters or copies
 //! public fields: no hashing, no failure but a row out of range
 //! (`state-corrupt`, as the real reader).
 
@@ -11,8 +17,8 @@ use mortar_core::{ChunkId, FileId, OutSecId, SectionId, SymbolId};
 
 use super::diags::DiagRow;
 use super::rows::{
-    CommonRow, CopyRow, EdgeRow, FileIndexRow, FileRow, FragRow, FragUseRow, GroupRow, HoleRow,
-    IndexRow, KeyRefRow, MentionRow, MetaRow, NameRow, OdrClassRow, OdrRefRow, RegionRow,
+    CommonRow, CopyRow, DebugStrRow, EdgeRow, FileIndexRow, FileRow, FragRow, FragUseRow, GroupRow,
+    HoleRow, IndexRow, KeyRefRow, MentionRow, MetaRow, NameRow, OdrClassRow, OdrRefRow, RegionRow,
     ResolvedRow, SlotRow, SymbolRow, SymtabKeyRow, SymtabRow,
 };
 use super::view::{Rows, StateRows, StateView};
@@ -67,6 +73,9 @@ pub struct MemoryState {
     /// (as U-2's reader), so a test that looks a key up adds its row
     /// ([`MemoryState::name_rows`] makes them all).
     pub names: Vec<NameRow>,
+    /// `DEBUG_STRS` (kind 57; WP-228 R-2, WP-247): by `(out, hash)`, no
+    /// tomb. [`MemoryState::debug_str`] answers from these rows.
+    pub debug_strs: Vec<DebugStrRow>,
     pub symbols: Vec<SymbolRow>,
     pub resolved: Vec<ResolvedRow>,
     pub symtab_keys: Vec<SymtabKeyRow>,
@@ -511,6 +520,15 @@ impl StateRows for &MemoryState {
     }
     fn diags(&self) -> Rows<Vec<DiagRow>> {
         Ok(self.diags.iter().filter(|d| !d.tomb).cloned().collect())
+    }
+    fn debug_str(&self, out: u8, hash: u64) -> Rows<Option<u32>> {
+        // the lowest offset of the key (the rows need not be sorted here)
+        Ok(self
+            .debug_strs
+            .iter()
+            .filter(|r| (r.out, r.hash) == (out, hash))
+            .map(|r| r.offset)
+            .min())
     }
     fn symbol(&self, key: SymbolId) -> Rows<SymbolRow> {
         row(&self.symbols, key.0, "SYMBOLS")

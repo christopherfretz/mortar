@@ -444,7 +444,8 @@ pub struct ChangedFile {
     /// Its `INDEX` rows (`unit` and section targets in the new id space,
     /// key targets = position in `keys`).
     pub index: Vec<IndexRow>,
-    /// Its `EDGES` rows (under `--gc-sections`), ids as `index`.
+    /// Its `EDGES` rows (under `--gc-sections`), ids as `index` by
+    /// `edge_kind::target`'s class (`Zero` and `Code` targets as stored).
     pub edges: Vec<EdgeRow>,
     /// `.mason.meta` units it carries (IN-71d; 0 for GCC and Clang).
     pub meta_units: u32,

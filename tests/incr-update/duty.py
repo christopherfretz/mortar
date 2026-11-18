@@ -27,6 +27,14 @@ key's DIAGS rows are the key's; ODR_REFS and ODR_CLASSES are PROVISIONAL
 a changed file whose symbol table is replaced and a gone file mark their
 locals' old `SYMBOLS` run `GONE` (a SYMBOLS row's mark, FLAGS), so both
 rows change SYMBOLS.
+
+WP-247 (WP-228 R-2.3): `DEBUG_STRS` (57) is judged against THIS output,
+not by equality with a full link's capture (an update appends its strings,
+a full link packs them: both right). JUDGED_BY_OUTPUT holds it out of
+`uncovered` and `debug_strs_check(state, output)` is its check: every row
+names its string's bytes in the output section, and every string of the
+output section is found. IN-18e's class table may list the kind or not yet
+(the spec text is proposed in WP-247's record).
 """
 
 import os
@@ -44,7 +52,9 @@ KINDS = {
     'SYMTAB': 43, 'GROUPS': 44, 'KEY_REFS': 45, 'COMMONS': 46, 'ODR_CLASSES': 47, 'ODR_REFS': 48, 'DIAGS': 49,
     'SYMTAB_KEYS': 50, 'REGIONS': 51, 'NAMES': 52, 'COPIES': 55, 'FRAG_USE': 56,
 }
-NAMES = {k: n for n, k in KINDS.items()}
+# tables judged against the output, not by the duty list (WP-228 R-2.3)
+JUDGED_BY_OUTPUT = {'DEBUG_STRS': 57}
+NAMES = {k: n for n, k in list(KINDS.items()) + list(JUDGED_BY_OUTPUT.items())}
 FLAGS = {'POSITIONAL': 'FILES', 'LAZY': 'FILES',     # FILES flags the cells name
          'GONE': 'SYMBOLS'}                           # a SYMBOLS row's mark (seam 6)
 FILE_KEYED = ('SECTIONS', 'MENTIONS', 'INDEX', 'EDGES', 'FRAG_USE', 'SYMTAB', 'REGIONS')
@@ -123,6 +133,8 @@ def uncovered(diffs, causes=None):
     first row that is not."""
     for table, row, what in diffs:
         t = table_name(table)
+        if t in JUDGED_BY_OUTPUT:
+            continue    # debug_strs_check judges it
         rows = [d for d in DUTY if t in d[3] and (causes is None or d[0] in causes)]
         if not rows:
             known = [d[0] for d in DUTY if t in d[3]]
@@ -204,6 +216,10 @@ def check_spec(path=SPEC):
             if t not in KINDS:
                 problems.append('%s: %s is not a table of IN-18e' % (d[0], t))
     kinds = spec_kinds(path)
+    for t, k in JUDGED_BY_OUTPUT.items():
+        if kinds.get(t, k) != k:
+            problems.append('IN-18e gives %s kind %d, duty.py %d' % (t, kinds[t], k))
+        kinds.pop(t, None)
     if kinds != KINDS:
         problems.append('IN-18e\'s kinds differ from duty.py\'s: spec-only %s, duty-only %s' % (
             sorted(set(kinds.items()) - set(KINDS.items())), sorted(set(KINDS.items()) - set(kinds.items()))))
@@ -214,6 +230,153 @@ def tables_in_no_row():
     """IN-18e's tables that no cause changes (a note for the record)."""
     used = {t for d in DUTY for t in d[3]}
     return sorted(t for t in KINDS if t not in used)
+
+
+# ---- DEBUG_STRS against the output (WP-247) -----------------------------------
+
+M64 = (1 << 64) - 1
+P0, P1, P2, P3 = 0x2d358dccaa6c78a5, 0x8bb84b93962eacc9, 0x4b33a62ed433d4a3, 0x4d5a2da51de1aa47
+
+
+def _mum(a, b):
+    r = a * b
+    return r & M64, r >> 64
+
+
+def _mix(a, b):
+    lo, hi = _mum(a, b)
+    return lo ^ hi
+
+
+SEED = _mix(P0, P1)
+
+
+def hash_bytes(s):
+    """mortar_core::hash::hash_bytes (wyhash v4 with a fixed seed; the
+    vectors of mortar_core/tests/hash.rs are its self-test)."""
+    n = len(s)
+    r8 = lambda at: int.from_bytes(s[at:at + 8], 'little')
+    r4 = lambda at: int.from_bytes(s[at:at + 4], 'little')
+    seed = SEED
+    if n <= 16:
+        if n >= 4:
+            q = (n >> 3) << 2
+            a = (r4(0) << 32) | r4(q)
+            b = (r4(n - 4) << 32) | r4(n - 4 - q)
+        elif n > 0:
+            a, b = (s[0] << 16) | (s[n >> 1] << 8) | s[n - 1], 0
+        else:
+            a, b = 0, 0
+    else:
+        p, i = 0, n
+        if i >= 48:
+            l1 = l2 = seed
+            while i >= 48:
+                seed = _mix(r8(p) ^ P1, r8(p + 8) ^ seed)
+                l1 = _mix(r8(p + 16) ^ P2, r8(p + 24) ^ l1)
+                l2 = _mix(r8(p + 32) ^ P3, r8(p + 40) ^ l2)
+                p, i = p + 48, i - 48
+            seed ^= l1 ^ l2
+        while i > 16:
+            seed = _mix(r8(p) ^ P1, r8(p + 8) ^ seed)
+            p, i = p + 16, i - 16
+        a, b = r8(n - 16), r8(n - 8)
+    lo, hi = _mum(a ^ P1, b ^ seed)
+    return _mix(lo ^ P0 ^ n, hi ^ P1)
+
+
+def name_hash(name, version=b''):
+    """mortar_incr::update::rows::name_hash: the name, a NUL, the version."""
+    return hash_bytes(bytes(name) + b'\0' + bytes(version))
+
+
+DEBUG_STR_SECTIONS = {0: b'.debug_str', 1: b'.debug_line_str'}
+
+
+def state_debug_strs(state):
+    """The DEBUG_STRS rows [(out, hash, offset)] of the format-5 state
+    `state` (bytes; IN-18c's directory, rows in place; not verified: the
+    reader's tests do that)."""
+    if state[:8] != b'MORTARSR':
+        raise ValueError('not a format-5 state')
+    count = int.from_bytes(state[16:20], 'little')
+    for i in range(count):
+        e = state[80 + 72 * i:80 + 72 * (i + 1)]
+        kind, width = int.from_bytes(e[0:4], 'little'), int.from_bytes(e[4:8], 'little')
+        if kind != JUDGED_BY_OUTPUT['DEBUG_STRS']:
+            continue
+        if width != 13:
+            raise ValueError('DEBUG_STRS of width %d' % width)
+        rows, body = int.from_bytes(e[8:16], 'little'), int.from_bytes(e[40:48], 'little')
+        out = []
+        for r in range(rows):
+            b = state[body + 13 * r:body + 13 * (r + 1)]
+            out.append((b[0], int.from_bytes(b[1:9], 'little'), int.from_bytes(b[9:13], 'little')))
+        return out
+    return None
+
+
+def elf_sections(elf):
+    """{name: bytes, or None for SHF_COMPRESSED} of an ELF64 little-endian
+    file's sections."""
+    u = lambda at, n: int.from_bytes(elf[at:at + n], 'little')
+    shoff, shentsize, shnum, shstrndx = u(0x28, 8), u(0x3a, 2), u(0x3c, 2), u(0x3e, 2)
+    hdr = lambda i: shoff + i * shentsize
+    names = u(hdr(shstrndx) + 0x18, 8)
+    out = {}
+    for i in range(1, shnum):
+        h = hdr(i)
+        at = names + u(h, 4)
+        name = elf[at:elf.index(b'\0', at)]
+        flags, off, size = u(h + 8, 8), u(h + 0x18, 8), u(h + 0x20, 8)
+        out[name] = None if flags & 0x800 else elf[off:off + size]
+    return out
+
+
+def debug_strs_check(state, elf):
+    """WP-228 R-2.3 over a state's DEBUG_STRS and its output (both bytes):
+    [problems] (empty: the table is right for this output). Every row
+    names its string's bytes (the bytes at its offset, to a NUL inside the
+    section, hash to its key); every string of each section is found (its
+    key's row names those bytes). A compressed section is not judged."""
+    rows = state_debug_strs(state)
+    if rows is None:
+        return ['no DEBUG_STRS table']
+    secs = elf_sections(elf)
+    problems = []
+    by_key = {}
+    for out, h, off in rows:
+        if out not in DEBUG_STR_SECTIONS:
+            problems.append('row (%d, %#x, %d): class %d' % (out, h, off, out))
+            continue
+        by_key.setdefault((out, h), []).append(off)
+    for out, name in sorted(DEBUG_STR_SECTIONS.items()):
+        sec = secs.get(name)
+        mine = [(k, v) for k, v in by_key.items() if k[0] == out]
+        if sec is None:
+            if name not in secs and mine:
+                problems.append('%s: %d rows, no section' % (name.decode(), len(mine)))
+            continue
+
+        def string_at(at):
+            end = sec.find(b'\0', at)
+            return None if at >= len(sec) or end < 0 else sec[at:end]
+
+        for (o, h), offs in mine:
+            for off in offs:
+                s = string_at(off)
+                if s is None or name_hash(s) != h:
+                    problems.append('%s: row (%#x, %d) does not name its string' % (name.decode(), h, off))
+        at = 0
+        while at < len(sec):
+            s = string_at(at)
+            if s is None:
+                problems.append('%s: no NUL after %d' % (name.decode(), at))
+                break
+            if not any(string_at(o) == s for o in by_key.get((out, name_hash(s)), ())):
+                problems.append('%s: the string at %d is not found' % (name.decode(), at))
+            at += len(s) + 1
+    return problems
 
 
 if __name__ == '__main__':

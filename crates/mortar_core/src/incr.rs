@@ -498,6 +498,15 @@ pub struct OptionKeys {
     /// `--gc-sections` (`Plan::gc_sections`). Under it every update is
     /// `update-not-implemented (live)` (WP-215 seam 3; [later] WP-238).
     pub gc_sections: bool,
+    /// `-init SYM` (`Plan::dynamic.init`), only when given: under
+    /// `--gc-sections` its definition is a root (resolve.md §4.7;
+    /// `mortar_resolve::Outcome::roots`); never a root of extraction.
+    pub init: Option<OptionKey>,
+    /// `-fini SYM` (`Plan::dynamic.fini`), as `init`.
+    pub fini: Option<OptionKey>,
+    /// `--gc-keep-exported` (`Plan::shaping.gc_keep_exported`). v1:
+    /// `update-not-implemented (live)` (WP-238 R-5).
+    pub gc_keep_exported: bool,
 }
 
 /// A key an option names (§4.2), by name, with the option's argument
@@ -547,6 +556,30 @@ impl DefsymOperand {
     }
 }
 
+/// One stored liveness row (IN-29; WP-238 S1) in the link's id space,
+/// made by `mortar_live::stored_edges`; the capture and the join turn it
+/// into an `EdgeRow`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct LiveEdge {
+    /// `mortar_incr::update::rows::edge_kind`.
+    pub kind: u8,
+    pub source: SectionId,
+    pub target: LiveTarget,
+    /// As `EdgeRow::offset` (F8 applied).
+    pub offset: u32,
+}
+
+/// A [`LiveEdge`]'s target, by `edge_kind::target`'s class.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub enum LiveTarget {
+    Key(SymbolId),
+    Section(SectionId),
+    /// `ROOT`, `NAMED`, `SPLIT`.
+    None,
+    /// `REFUSE`'s code.
+    Code(u32),
+}
+
 impl OptionKeys {
     /// The root names with their `arg`, in `mortar_resolve::Options::roots`'
     /// order: the entry, `-u` and `EXTERN`, `--require-defined`, then each
@@ -563,6 +596,17 @@ impl OptionKeys {
                 out.push((b, d.arg));
             }
         }
+        out
+    }
+
+    /// The keys the liveness walk roots (WP-238 F1): [`Self::roots`]
+    /// then `-init` and `-fini`, the order of
+    /// `mortar_resolve::Outcome::roots`. Not `roots()`: `-init`/`-fini`
+    /// are never roots of extraction (§4.2).
+    #[must_use]
+    pub fn live_roots(&self) -> Vec<(&[u8], u32)> {
+        let mut out = self.roots();
+        out.extend([&self.init, &self.fini].into_iter().flatten().map(|k| (&*k.name, k.arg)));
         out
     }
 
@@ -1611,6 +1655,9 @@ mod tests {
                 },
             ],
             gc_sections: false,
+            init: Some(k("myinit", 0)),
+            fini: Some(k("myfini", 0)),
+            gc_keep_exported: false,
         };
         assert_eq!(o.redirect(b"foo"), Some(b"__wrap_foo".to_vec()));
         // `__real_foo` is `S` of the second option, which decides.
@@ -1621,6 +1668,15 @@ mod tests {
         let roots: Vec<(&[u8], u32)> = o.roots();
         let want: Vec<(&[u8], u32)> = vec![(b"_start", 0), (b"u", 3), (b"r", 5), (b"base", 8)];
         assert_eq!(roots, want);
+        // WP-238 F1, P0-6: the walk's roots are `roots()` then `-init`,
+        // `-fini` (never roots of extraction: `roots()` lacks them)
+        let live: Vec<(&[u8], u32)> = o.live_roots();
+        let mut want_live = want.clone();
+        want_live.extend([(b"myinit".as_slice(), 0), (b"myfini".as_slice(), 0)]);
+        assert_eq!(live, want_live);
+        let only_fini = OptionKeys { init: None, ..o.clone() };
+        assert_eq!(only_fini.live_roots().last(), Some(&(b"myfini".as_slice(), 0)));
+        assert_eq!(only_fini.live_roots().len(), want.len() + 1);
         assert_eq!(o.defsym_names().collect::<Vec<_>>(), [b"d".as_slice(), b"e"]);
     }
 

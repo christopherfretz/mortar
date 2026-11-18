@@ -12,6 +12,9 @@
 #           name: placed)
 # The outputs and maps are checked in: the tests judge them whatever a
 # later mortar does. Run from this directory:  sh gen.sh <mortar>
+# WP-253: the incremental-mode outputs checked in were made before IN-51's
+# one 38-byte table (WP-228 part A) and converted in place by
+# ../retable.py; a regeneration with a later mortar has the table already.
 set -e
 mortar=$1
 for arch in aarch64 x86_64; do

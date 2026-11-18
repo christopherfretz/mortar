@@ -86,6 +86,10 @@ pub fn apply(m: &mut MemoryState, p: &StatePatch, frags_aux: usize) -> Rows<()> 
     keyed(&mut m.commons, &p.commons, s, 0, |_| {})?;
     keyed(&mut m.copies, &p.copies, s, 0, |_| {})?;
     keyed(&mut m.names, &p.names, s, 0, |_| {})?;
+    if !p.debug_strs.delete.is_empty() {
+        return Err(corrupt("DEBUG_STRS: the patch deletes a row (an update only puts them)"));
+    }
+    keyed(&mut m.debug_strs, &p.debug_strs, s, 0, |_| {})?;
     if !(p.odr_classes.put.is_empty()
         && p.odr_classes.delete.is_empty()
         && p.odr_refs.put.is_empty()
@@ -597,11 +601,11 @@ pub fn normalize(m: &MemoryState) -> Result<MemoryState, StateError> {
         Ok(crate::format::IndexRow { unit: sec(r.unit)?, target, ..*r })
     })?;
     n.edges = per_file(&m.edges, &fid, &gone, |r| {
-        let target = match r.kind {
-            edge_kind::LOCAL | edge_kind::FDE_SECTION | edge_kind::NONALLOC_SECTION => {
-                sec(r.target)?
-            }
-            _ => sym(r.target)?,
+        let target = match edge_kind::target(r.kind) {
+            Some(edge_kind::Target::Section) => sec(r.target)?,
+            Some(edge_kind::Target::Key) => sym(r.target)?,
+            Some(edge_kind::Target::Zero | edge_kind::Target::Code) => r.target,
+            None => return Err(state_corrupt(format!("EDGES: kind {}", r.kind))),
         };
         Ok(crate::update::rows::EdgeRow { source: sec(r.source)?, target, ..*r })
     })?;
@@ -695,8 +699,26 @@ pub fn normalize(m: &MemoryState) -> Result<MemoryState, StateError> {
             refs.push(crate::update::diags::DiagRef { file: fid(r.file)?, ..*r });
         }
         refs.sort_unstable();
-        n.diags.push(DiagRow { subjects, refs, ..d.clone() });
+        // WP-247 item 4 (F-1's class): a file phase's unit is a `FILES`
+        // row (`diags::file_unit`, read as a rank by the report order).
+        let mut key = d.key;
+        if crate::update::diags::file_unit(key.phase) {
+            key.unit = file(key.unit)?;
+        }
+        n.diags.push(DiagRow { subjects, key, refs, ..d.clone() });
     }
+    // In the writer's key order (WP-247 item 3): `encode` appends each
+    // row's strings in this order, so a capture's and its decode's
+    // compactions are the same bytes.
+    n.diags.sort_by(|a, b| {
+        (a.key.phase, a.key.unit, a.key.seq, &a.code, &a.text).cmp(&(
+            b.key.phase,
+            b.key.unit,
+            b.key.seq,
+            &b.code,
+            &b.text,
+        ))
+    });
     let _ = &mut intern;
     // NAMES: the globals' index, rebuilt (it is derived from SYMBOLS).
     for (row, r) in n.symbols.iter().enumerate() {
@@ -710,8 +732,24 @@ pub fn normalize(m: &MemoryState) -> Result<MemoryState, StateError> {
             });
         }
     }
+    // DEBUG_STRS (WP-247; WP-228 R-2): rewritten whole, by key; of rows
+    // of one key the lowest offset stays (the capture's rule). No row
+    // names another table's row: nothing to map.
+    n.debug_strs = debug_strs_whole(&m.debug_strs);
     n.strings = pool;
     Ok(n)
+}
+
+/// `DEBUG_STRS` written whole (the capture's and the compaction's rows):
+/// sorted by `(out, hash)`, one row per key, the lowest offset kept.
+#[must_use]
+pub fn debug_strs_whole(
+    rows: &[crate::update::rows::DebugStrRow],
+) -> Vec<crate::update::rows::DebugStrRow> {
+    let mut v = rows.to_vec();
+    v.sort_unstable();
+    v.dedup_by_key(|r| (r.out, r.hash));
+    v
 }
 
 /// IN-71b "Live keys" (WP-215 R.6 3, `briefs/wp-215-rulings-3.md` item

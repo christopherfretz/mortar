@@ -176,6 +176,9 @@ pub fn canon_of(m: &MemoryState) -> Result<Canon, StateError> {
         (kind::NAMES, sorted(&n.names, s)?),
         (kind::COPIES, sorted(&n.copies, s)?),
         (kind::FRAG_USE, per_file!(frag_uses)),
+        // judged against the output, not for equality (WP-228 R-2.3):
+        // here sorted by key for the comparisons that want it
+        (kind::DEBUG_STRS, sorted(&n.debug_strs, s)?),
     ];
     Ok(Canon { tables })
 }

@@ -191,6 +191,29 @@ pub fn removed(
         .collect()
 }
 
+/// IN-29's rows (WP-238 S1) of `files`' kept sections (every file when
+/// `None`), F8 applied, sorted: the enumerator `Walk::edges` (the full
+/// mark's one walk) plus `file_facts`' roots, names, split sections, the
+/// group ring, and the `REFUSE` rows of S5 and F6. Called only by an
+/// incremental-mode full link with `--gc-sections` (the capture) and by
+/// the join (changed and drawn-in files); a plain link never calls it.
+///
+/// WP-238 seam 9: the signature only. Until Part 2 it returns no rows
+/// (nobody calls it yet).
+///
+/// # Errors
+/// As [`liveness`]: a relocation section the enumerator could not read.
+#[allow(clippy::result_large_err, reason = "the phases' diagnostic pair, returned once per link")]
+pub fn stored_edges(
+    t: &LiveInputs<'_, '_>,
+    options: LiveOptions,
+    files: Option<&[mortar_core::FileId]>,
+    pool: &Pool,
+) -> Result<Vec<mortar_core::incr::LiveEdge>, (Key, Diagnostic)> {
+    let _ = (t, options, files, pool);
+    Ok(Vec::new())
+}
+
 /// `--print-gc-sections` (I-10): one line per removed section with bytes,
 /// in [`removed`]'s order, as GNU ld prints them to standard error:
 /// `<prog>: removing unused section '<name>' in file '<file>'`, where

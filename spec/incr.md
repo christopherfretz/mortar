@@ -1293,7 +1293,10 @@ with each phase fed from the state for unchanged files:
   WP-207: an update makes these checks through the one descriptor U1
   opened, and checks the path again before its first write to `P`
   (IN-77a); "the link's lock" is IN-77b's lock on `S`; a full link's
-  unsynced output is checked once after a reboot (IN-77c).)* *Test:* `touch`,
+  unsynced output is checked once after a reboot (IN-77c).)* *(WP-255a:
+  the blocks an update dirties are also hashed against their stored
+  leaves before its first write, IN-75; every other block rests on
+  this binding.)* *Test:* `touch`,
   `strip`, `cp` of another output, `objcopy` in place, each over the
   output: each gives `output-changed`; a killed update gives
   `output-torn`; `stamp_rule.py` case B (an update followed at once by
@@ -1629,7 +1632,7 @@ with each phase fed from the state for unchanged files:
   |---|---|---|
   | **whole** (small; capacity = rows + max(64, rows/8)) | `META` (1), `PROBES` (4), `OUTSECS` (5), `CHUNKS` (8), `ORDER` (9), `SEGMENTS` (10), `SLOTS` (12), `SIZES` (15), `SYM_PLACE` (16), `DEFINED` (17), `PATCHES` (18), `REDIRECTS` (19), `SIZED` (20), `LAYOUT` (21), `LEAVES` (22) | the table is written again whole into its capacity when any row differs (its blocks only; the rest of the state is untouched); over capacity: compaction. Together under 2 MB on g10x (WP-105 §3's "the rest" and `CHUNKS`). `LEAVES`' row count follows the output's size (W3 truncates or extends), within its capacity |
   | **append-only** | `FILES` (3), `STAT` (2), `FILE_INDEX` (41), `STRINGS` (23) | rows (bytes, for `STRINGS`) are only appended, into a reserved append area of max(4,096 rows, rows/64); a row is never moved, so references to it stay valid. `FILES` and `FILE_INDEX` are parallel (one row each per file, members of archives included, `LAZY` when not extracted); `STAT` has one row per file plus the device rows; a file's load-order position is its `FILES.rank` (`u64`): the first link writes `rank = FileId << 20`, an appeared or newly extracted file takes the integer midpoint of its neighbours' ranks (none left: compaction), and `FileId` order is `rank` order. A gone file's row is marked `GONE`. A string is never overwritten or reused; strings no row names any more are dead until compaction. The build id is in `META` (a length and 64 bytes), not in `STRINGS`, so an update appends no string for it |
-  | **file-keyed** (one range per file through `FILE_INDEX`, with row slack: capacity = count + max(4, count/8)) | `SECTIONS` (7), `MENTIONS` (32), `INDEX` (34), `EDGES` (42: one row per stored edge, 17 bytes: kind `u8`, source `u32`, target `u32`, offset `u64`), `FRAG_USE` (56: one row per (file, fragment its live split pieces name), 28 bytes, below; WP-239), `SYMTAB` (43: per file its local block and `.strtab` region; file 0's range holds the global area's row), `REGIONS` (51: per file its regions, one row per (output section, category, ordinal): the chunk, offset and capacity; IN-72 item 2, WP-213) | a changed, drawn-in or appeared file's range is rewritten in place when the new count fits its capacity; a file's `SECTIONS` rows are also rewritten when IN-72 moved, killed or revived its sections (IN-78); a gone file's ranges are dead (`FILE_INDEX.gone`); a new file gets new ranges in the table's append area (max(4,096 rows, rows/64)); no room: compaction |
+  | **file-keyed** (one range per file through `FILE_INDEX`, with row slack: capacity = count + max(4, count/8)) | `SECTIONS` (7), `MENTIONS` (32), `INDEX` (34), `EDGES` (42: one row per stored liveness row, 13 bytes: kind `u8` (0 to 12, each with ONE target class: a key (`SYMBOLS` row), a section (`SECTIONS` row), none (0), or a refusal code; WP-238 S1), source `u32` (`SECTIONS` row), target `u32`, offset `u32` (0 unless the target is a split section; `u32::MAX`: every piece); written only under `--gc-sections`; seam 9), `FRAG_USE` (56: one row per (file, fragment its live split pieces name), 28 bytes, below; WP-239), `SYMTAB` (43: per file its local block and `.strtab` region; file 0's range holds the global area's row), `REGIONS` (51: per file its regions, one row per (output section, category, ordinal): the chunk, offset and capacity; IN-72 item 2, WP-213) | a changed, drawn-in or appeared file's range is rewritten in place when the new count fits its capacity; a file's `SECTIONS` rows are also rewritten when IN-72 moved, killed or revived its sections (IN-78); a gone file's ranges are dead (`FILE_INDEX.gone`); a new file gets new ranges in the table's append area (max(4,096 rows, rows/64)); no room: compaction |
   | **key-keyed** (sorted body + append area of max(4,096 rows, rows/64), kept sorted on insert + tombstones) | `KEY_REFS` (45: key, file, attributes, `demand`), `GROUPS` (44: by (signature, file): one row per live relocatable object's copy; the keeper is the copy whose file has the least `FILES.rank` (resolve.md §6.1; never the least row number: `FILES` is append-only), not stored; WP-215), `FRAGS` (11: by (out, class, hash), offset, `refs`; below), `HOLES` (39: by (chunk, offset)), `COMMONS` (46: by (key, file): one row per live file with a common mention of the key, its size and alignment (`max(1, st_value)`, as `RESOLVED.value` of a common); the winning common (resolve.md §3.3: the file of least `FILES.rank`, the largest size and alignment) is computed from the rows, not stored; WP-215), `ODR_CLASSES` (47: ODR key, class hash and layout; PROVISIONAL, not written until WP-236), `ODR_REFS` (48: ODR key, file, row kind, class; PROVISIONAL, not written until WP-236), `COPIES` (55: by (key, file, symbol index): one row per global definition in a section of a live COMDAT copy, its `st_size` and `st_type`, 24 bytes, for every input unless `--odr=off`; the copy's group is its `MENTIONS` row's section's `SECTIONS.anchor` (`anchor_kind` 1, the signature), not stored; no rank stored: W1 and W2 order copies by the files' current `FILES.rank`; kinds 53 and 54 are reserved for WP-236; WP-220), `DIAGS` (49: subjects, code, text, order), `NAMES` (52: the by-name index of `SYMBOLS`' globals, 12 bytes, keyed by (hash, row): `hash` is model.md's 64-bit hash (`mortar_core::hash::hash_bytes`) of the bytes of `SYMBOLS.name`, one zero byte and the bytes of `SYMBOLS.version` (empty when unversioned), as `STRINGS` holds them; `row` the `SYMBOLS` row; a lookup compares the name and version bytes of every row of the hash, so a hash never identifies a key alone; a `GONE` key keeps its row, and a key that comes back takes its old `SYMBOLS` row; WP-213) | a lookup binary-searches the body and the append area (the area is kept sorted: a new row is inserted into it at its place, moving at most the area's rows; WP-211, review-wp207 m-3: no linear scan of up to 4,096 rows per lookup); a deleted row is a tombstone (its key kept, a flag set); a changed row is changed in place when its key is unchanged, else deleted and appended. Compaction when an append area is full or tombstones pass 25% of a table's rows |
   | **key-parallel** (one row per `SYMBOLS` row, in its order) | `SYMBOLS` (6), `RESOLVED` (33), `SYMTAB_KEYS` (50: a global's `.symtab` index and `.strtab` offset) | a key's rows are changed in place by its `SYMBOLS` row number; a new key appends a row to each (append area of max(4,096 rows, rows/64)); a key no file mentions any more is a tombstone (`SYMBOLS.kind` `GONE`) |
 
@@ -1722,7 +1725,14 @@ with each phase fed from the state for unchanged files:
   full link that wrote the state; IN-71b Iterations) and `versioned`
   (`u32`: the non-local symbol-table entries named `foo@V` or `foo@@V`
   over the link's relocatable objects and archive members, extracted or
-  not; IN-71 Versions): 8 bytes. What the command line gives (the root
+  not; IN-71 Versions): 8 bytes; and (WP-238, seam 9) `live_hash`
+  (16 bytes after `versioned`, the row is 224 bytes: the hash of the
+  link's live set under `--gc-sections`, a function of the live
+  sections and marked split offsets by file identity and never of a
+  row id, so compaction copies it; all zeros without `--gc-sections`;
+  IN-29). Seams 6 and 9 changed row widths inside format 5: a state of
+  an older build is refused by the directory's width test
+  (`state-corrupt`) and replaced by a full link. What the command line gives (the root
   keys, `--wrap`, `--defsym`) is passed in, never stored (IN-71), with one
   exception (WP-214 seam 6, ruling 2): **`SYMBOLS.option`**, a bit in
   byte 1 of the row (one of format 4's three pad bytes after `kind`: 0
@@ -3756,7 +3766,8 @@ a pass over a whole table of the state; **O(output)**.
 
 - **IN-75 [v1] Refill, dirty ranges, build id** (amended by WP-207;
   review-in72 B-4, M-6, M-7). The units of the set are filled (image.md
-  I-95) into windows, and only the **dirty ranges** are written. The rule
+  I-95: the update fills its dirty ranges, not whole windows; WP-255a),
+  and only the **dirty ranges** are written. The rule
   is an invariant: **the dirty ranges cover every byte in which the
   update's output differs from the previous output**, and outside them
   the previous output's bytes are the update's. They include, and are
@@ -3778,7 +3789,13 @@ a pass over a whole table of the state; **O(output)**.
   is used; a difference is `input-changed`. The build id is the tree
   hash of image.md I-76 over the patched image: the leaves of the blocks
   the update wrote are recomputed from the new bytes, every other leaf is
-  the state's (`LEAVES`), and the tree is combined; the note's own bytes
+  the state's (`LEAVES`), and the tree is combined; **an update hashes
+  every block it will dirty against its stored leaf before its first
+  write; a difference is `output-changed`** (WP-255 ruling F8, WP-255a:
+  the block as read from the previous output, the note zeroed as I-72
+  says, one read serving the check and the new leaf; a byte flipped in
+  a dirtied block outside its ranges is caught; a block the update
+  leaves clean is not read, and IN-21 alone binds it); the note's own bytes
   are hashed as I-76 says (zeroed). The new leaves go to the state's
   patch. The update's map (`--mortar-map`) is the full link's map grammar
   with the update's placement, `incremental`, and its `hole`/`dead`

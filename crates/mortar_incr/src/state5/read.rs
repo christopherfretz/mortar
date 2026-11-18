@@ -39,9 +39,10 @@ use crate::format::{
 };
 use crate::update::diags::DiagRow;
 use crate::update::rows::{
-    CommonRow, CopyRow, EdgeRow, FileIndexRow, FileRow, FileTable, FragRow, FragUseRow, GroupRow,
-    HoleRow, IndexRow, KeyRefRow, MentionRow, MetaRow, NameRow, OdrClassRow, OdrRefRow, RegionRow,
-    ResolvedRow, SlotRow, SymbolRow, SymtabKeyRow, SymtabRow, file_flags, sym_kind,
+    CommonRow, CopyRow, DebugStrRow, EdgeRow, FileIndexRow, FileRow, FileTable, FragRow,
+    FragUseRow, GroupRow, HoleRow, IndexRow, KeyRefRow, MentionRow, MetaRow, NameRow, OdrClassRow,
+    OdrRefRow, RegionRow, ResolvedRow, SlotRow, SymbolRow, SymtabKeyRow, SymtabRow, file_flags,
+    sym_kind,
 };
 use crate::update::testing::MemoryState;
 use crate::update::view::{Rows, StateRows, StateView};
@@ -413,6 +414,26 @@ pub fn open(file: &File, plan_hash: [u8; 16]) -> Result<StateView<'_>, IncrReaso
     Ok(view_of(Core::open(Src::File(dup), Some(plan_hash))?))
 }
 
+/// The plan's `.eh_frame` check before W1 (WP-247 item d; IN-34a "Pad
+/// and move"): `update-not-implemented (eh)` when a file of `moved` (the
+/// files whose stored ranges the update will move from the previous
+/// output's bytes: unchanged, not gone) has `FILES.flags` `EH_FIXED`.
+/// One `FILES` row read per file. The join calls it with the delta
+/// layout's moved ranges (`EhLayout::ranges` without record offsets).
+///
+/// # Errors
+/// `update-not-implemented (eh)`; `state-corrupt` (a row past `FILES`).
+pub fn eh_fixed_check(view: &StateView<'_>, moved: &[FileId]) -> Result<(), IncrReason> {
+    for &f in moved {
+        if view.file(f)?.flags & file_flags::EH_FIXED != 0 {
+            return Err(IncrReason::UpdateNotImplemented(Some(
+                mortar_core::incr::Unimplemented::Eh,
+            )));
+        }
+    }
+    Ok(())
+}
+
 /// A view over a state's bytes in memory, the plan hash not checked
 /// (`incr_state`, tests): the same reader as [`open`].
 ///
@@ -569,6 +590,21 @@ impl StateRows for Reader {
         let s: StrFn<'_> = &|x| self.core.string(x);
         let raw: Vec<DiagRaw> = self.core.all_kept(kind::DIAGS)?;
         raw.iter().filter(|r| !r.tomb).map(|r| diag_row(r, s)).collect()
+    }
+    /// `DEBUG_STRS` by key (WP-228 R-2; WP-247): one binary search over
+    /// the sorted body and one over the sorted append area (IN-18e's
+    /// key-keyed lookup), each row read hashed first. A stored `out` other
+    /// than 0 or 1 is `state-corrupt` (the row's own check), and so are
+    /// rows out of order. NOT errors, by design (the caller checks every
+    /// hit against the previous output's bytes, R-2.1): two rows of one
+    /// key (the lowest of their offsets is returned), an offset past the
+    /// section, an
+    /// offset into the middle of a string. An `out` the format does not
+    /// have is a miss.
+    fn debug_str(&self, out: u8, hash: u64) -> Rows<Option<u32>> {
+        let key = (out, hash);
+        let rows = self.core.keyed::<DebugStrRow>(kind::DEBUG_STRS, &key, &|k| *k == key)?;
+        Ok(rows.iter().map(|r| r.offset).min())
     }
     fn symbol(&self, key: SymbolId) -> Rows<SymbolRow> {
         self.core.row(kind::SYMBOLS, u64::from(key.0))
@@ -746,6 +782,7 @@ pub(crate) fn decode_core(c: &Core) -> Rows<MemoryState> {
         commons: c.all(kind::COMMONS)?,
         copies: c.all(kind::COPIES)?,
         names: c.all(kind::NAMES)?,
+        debug_strs: c.all(kind::DEBUG_STRS)?,
         ..MemoryState::default()
     };
     let strings = &m.strings;
@@ -767,6 +804,7 @@ pub(crate) fn decode_core(c: &Core) -> Rows<MemoryState> {
     check_sorted::<CopyRow>(c, kind::COPIES, &m.copies, s)?;
     check_sorted::<DiagRaw>(c, kind::DIAGS, &raw, s)?;
     check_sorted::<NameRow>(c, kind::NAMES, &m.names, s)?;
+    check_sorted::<DebugStrRow>(c, kind::DEBUG_STRS, &m.debug_strs, s)?;
     // The file-keyed tables: per live file its range; ranges in bounds and
     // not overlapping (IN-18d).
     let extent = |t: FileTable| c.entry(t.kind()).rows;
@@ -850,7 +888,8 @@ pub(crate) fn decode_core(c: &Core) -> Rows<MemoryState> {
     Ok(m)
 }
 
-/// A key-keyed table's body and its append area are each sorted.
+/// A key-keyed table's body and its append area are each sorted
+/// (strictly, but for a table whose rows may share a key: `DEBUG_STRS`).
 fn check_sorted<T: Keyed>(c: &Core, k: u32, rows: &[T], s: StrFn<'_>) -> Rows<()> {
     let aux = usize::try_from(c.entry(k).aux).unwrap_or(0);
     let dead = rows.iter().filter(|r| r.tomb()).count() as u64;
@@ -863,7 +902,8 @@ fn check_sorted<T: Keyed>(c: &Core, k: u32, rows: &[T], s: StrFn<'_>) -> Rows<()
     }
     for part in [&rows[..aux.min(rows.len())], &rows[aux.min(rows.len())..]] {
         let keys = part.iter().map(|r| r.key(s)).collect::<Rows<Vec<_>>>()?;
-        if keys.windows(2).any(|w| w[0] >= w[1]) {
+        let out_of_order = |a: &T::K, b: &T::K| if T::DUPLICATES { a > b } else { a >= b };
+        if keys.windows(2).any(|w| out_of_order(&w[0], &w[1])) {
             return Err(corrupt(format!("{}: rows not sorted", name(k))));
         }
     }
