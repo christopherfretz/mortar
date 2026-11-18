@@ -28,9 +28,28 @@ LINK_TIMEOUT = 120
 RUN_TIMEOUT = 60
 
 
+# LLVM's tools are found as the link-test lane and the census find them
+# (mortar_testutil::find_tool, spec/harness.md "Toolchain for tests"):
+# `<name>-<major>` on PATH, then /usr/lib/llvm-<major>/bin/<name>, for
+# each pinned major newest first; never the plain name, whose major is
+# unknown and which the hosted image does not install. `cargo xtask l10`
+# passes the majors (mortar_testutil::LLVM_MAJORS) in MORTAR_LLVM_MAJORS.
+LLVM_MAJORS = tuple(int(m) for m in os.environ.get('MORTAR_LLVM_MAJORS', '22 19').split())
+LLVM_TOOLS = ('clang', 'clang++')
+
+
 def which(name):
     if os.path.isabs(name):
         return name if os.access(name, os.X_OK) else None
+    if name in LLVM_TOOLS:
+        for major in LLVM_MAJORS:
+            found = shutil.which('%s-%d' % (name, major))
+            if found:
+                return found
+            installed = '/usr/lib/llvm-%d/bin/%s' % (major, name)
+            if os.path.isfile(installed) and os.access(installed, os.X_OK):
+                return installed
+        return None
     return shutil.which(name)
 
 
@@ -104,7 +123,8 @@ class Cfg:
             kiln, env = self.kiln_env()
             return [kiln] + ([] if self.arch == HOST else [t]), env
         if self.compiler == 'clang':
-            return ['clang++' if lang == 'c++' else 'clang', t], None
+            # missing() found it, or the configuration was skipped.
+            return [which('clang++' if lang == 'c++' else 'clang'), t], None
         return [self.tool('g++' if lang == 'c++' else 'gcc')], None
 
     def driver(self):
@@ -181,7 +201,11 @@ def capture(work, cfg):
     """The linker's words for this configuration, captured once from the
     driver through a `-B` wrapper: (words before the inputs, words after),
     with `-o` and its value removed. The placeholder input is l10-inputs.o."""
-    d = os.path.join(work, 'capture', cfg.name)
+    argv, env = cfg.driver()
+    # Keyed by the driver too: another compiler (clang-19 for clang-22)
+    # gives other words, never a capture made by the previous one.
+    key = hashlib.sha256(repr(argv).encode()).hexdigest()[:12]
+    d = os.path.join(work, 'capture', '%s-%s' % (cfg.name, key))
     saved = os.path.join(d, 'ld.args')
     if not os.path.exists(saved):
         os.makedirs(os.path.join(d, 'bin'), exist_ok=True)
@@ -194,7 +218,6 @@ def capture(work, cfg):
             if not os.path.lexists(p):
                 os.symlink('ld', p)
         open(os.path.join(d, 'l10-inputs.o'), 'wb').close()
-        argv, env = cfg.driver()
         env = dict(env or os.environ)
         env['L10_CAPTURE'] = saved
         link = ['-static'] if cfg.link == 'static' else ['-pie']

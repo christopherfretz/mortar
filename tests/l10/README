@@ -26,6 +26,8 @@ Files:
   regressions/  minimized failing sequences (JSON), replayed nightly
 
 Work directory: <cargo target dir>/l10 (cache/: objects by content;
-capture/: each configuration's linker words; seq/<label>/: a running
+capture/<config>-<driver key>/: each configuration's linker words, per
+compiler driver (clang is clang-22 or clang-19, found as find_tool finds
+it; never a plain clang); seq/<label>/: a running
 sequence, removed when it passes unless --keep; failed/: the sequence
 files of failures).

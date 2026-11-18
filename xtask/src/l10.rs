@@ -119,6 +119,11 @@ fn floor_binary() -> Result<PathBuf, String> {
     if p.is_file() { Ok(p) } else { Err(format!("no incr_floor at '{}'", p.display())) }
 }
 
+/// [`mortar_testutil::LLVM_MAJORS`], newest first, space-separated.
+fn llvm_majors() -> String {
+    mortar_testutil::LLVM_MAJORS.map(|m| m.to_string()).join(" ")
+}
+
 fn lane(a: &Args, extra: &[String]) -> Result<bool, String> {
     let mortar = crate::mason::mortar_binary(a.mortar.as_deref())?;
     let python = mortar_testutil::find_tool("python3").ok_or("python3 not found")?;
@@ -135,7 +140,10 @@ fn lane(a: &Args, extra: &[String]) -> Result<bool, String> {
         .arg(a.jobs.to_string())
         .args(&a.pass)
         .args(extra)
-        .env("PYTHONDONTWRITEBYTECODE", "1");
+        .env("PYTHONDONTWRITEBYTECODE", "1")
+        // The LLVM majors the lane's clang is found by, as find_tool finds
+        // the link tests' and the census's (tests/l10/build.py `which`).
+        .env("MORTAR_LLVM_MAJORS", llvm_majors());
     if a.floor && !a.pass.iter().any(|w| w == "--floor") {
         cmd.arg("--floor").arg(floor_binary()?);
     }
