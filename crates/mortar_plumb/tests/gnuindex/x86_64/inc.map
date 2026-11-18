@@ -1,0 +1,76 @@
+mortar-map 2
+file 0 a.o
+file 1 b.o
+file 2 p.o
+piece 0 22 0 400120 18
+piece 0 22 18 400138 20
+place 0 1 4111cc 29
+place 0 3 4222f0 0
+place 0 4 4222f0 8
+piece 1 21 0 400158 18
+piece 1 21 18 400170 20
+place 1 1 411235 2c
+place 1 3 4222f0 0
+place 1 4 422338 8
+piece 2 20 0 400190 18
+piece 2 20 18 4001a8 20
+place 2 1 4112a1 c
+place 2 3 4222f0 0
+place 2 4 422380 4
+nplace 0 5 .debug_addr 0 18
+nplace 0 7 .debug_info 0 35
+nplace 0 9 .debug_abbrev 0 15
+nplace 0 14 .debug_aranges 0 30
+nplace 0 16 .debug_line 0 59
+merged 0 18 .debug_str
+merged 0 19 .comment
+merged 0 21 .debug_line_str
+nplace 1 5 .debug_addr 18 10
+nplace 1 7 .debug_info 48 34
+nplace 1 9 .debug_abbrev 20 1a
+nplace 1 14 .debug_aranges 30 30
+nplace 1 16 .debug_line 80 48
+merged 1 18 .debug_str
+merged 1 19 .comment
+nplace 2 5 .debug_info 7c 83
+nplace 2 7 .debug_abbrev 40 72
+nplace 2 8 .debug_pubnames 0 32
+nplace 2 10 .debug_pubtypes 0 26
+nplace 2 12 .debug_aranges 60 30
+nplace 2 14 .debug_line c8 4f
+merged 2 16 .debug_str
+merged 2 17 .debug_line_str
+merged 2 18 .comment
+discard 0 10 unspecified
+discard 0 12 unspecified
+discard 1 10 unspecified
+discard 1 12 unspecified
+chunk synthetic .eh_frame 400120 ac
+chunk synthetic .symtab - f0
+chunk synthetic .strtab - 55
+chunk synthetic .shstrtab - b5
+chunk synthetic .comment - d
+incremental
+hole .text 29 40
+hole .text 95 40
+hole .text e1 40
+hole .bss 8 40
+hole .bss 50 40
+hole .bss 94 40
+dead .debug_info 35 13 neutral
+dead .debug_info ff 1d neutral
+dead .debug_abbrev 15 b neutral
+dead .debug_abbrev 3a 6 neutral
+dead .debug_abbrev b2 6 neutral
+dead .debug_abbrev b8 9 neutral
+dead .debug_line 59 27 neutral
+dead .debug_line 117 21 neutral
+arg -static
+arg --incremental=full
+arg a.o
+arg b.o
+arg p.o
+arg -o
+arg inc
+arg --mortar-map=inc.map
+end

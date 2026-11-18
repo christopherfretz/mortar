@@ -13,12 +13,48 @@ use mortar_elf::{Machine, SymbolIndex, SymbolSection};
 
 use std::collections::{BTreeMap, BTreeSet};
 
+use crate::image::Image;
 use crate::locate::{Obj, Place, Sec};
 use crate::map::{DiscardReason, Format, Map, OutputKind};
 use crate::opts::Options;
 use crate::reloc::debug::is_debug_name;
 use crate::report::{Finding, Rule};
 use crate::shared::{ExportRule, split_version};
+
+/// The GNU name index's two sets (`spec/incr.md` IN-55): non-allocated
+/// debug sections an incremental-mode output leaves out (option (A)).
+fn gnu_index_set(s: &Sec<'_>) -> bool {
+    s.shdr.sh_flags & SHF_ALLOC == 0 && is_gnu_index_name(&s.name)
+}
+
+fn is_gnu_index_name(n: &str) -> bool {
+    matches!(n, ".debug_gnu_pubnames" | ".debug_gnu_pubtypes")
+}
+
+/// Whether M10 judges the output as an incremental-mode one
+/// (`spec/plumb.md` §3.3 M10, WP-251): the map says `incremental` AND the
+/// line's words ask for that mode (`--incremental` last, none of IN-12's
+/// options that make the link plain). The output cannot show the mode
+/// (IN-17: the state is a file beside it). `Err`: the map's word against
+/// a line that rules the mode out, the finding's text; the output is then
+/// judged as a plain one.
+pub(crate) fn incremental_mode(map: &Map, opts: &Options) -> Result<bool, String> {
+    if !map.incremental {
+        return Ok(false);
+    }
+    if !opts.incremental {
+        return Err("the map says 'incremental' but the line does not ask for incremental mode \
+                    (no --incremental, or --no-incremental last; incr.md IN-10, IN-11)"
+            .into());
+    }
+    match opts.incr_plain().first() {
+        Some(w) => Err(format!(
+            "the map says 'incremental' but the line's {w} makes an --incremental link a plain \
+             one (incr.md IN-12)"
+        )),
+        None => Ok(true),
+    }
+}
 
 /// Why a section of a live object may be without a place, by
 /// `spec/resolve.md` §10's rows (`None`: no row drops it).
@@ -342,6 +378,7 @@ fn judge_discard(
     alloc_group: bool,
     ss: &BTreeSet<Vec<u8>>,
     root: Option<&String>,
+    incremental: bool,
 ) -> Result<(), String> {
     match reason {
         DiscardReason::Comdat if comdat => Ok(()),
@@ -361,6 +398,10 @@ fn judge_discard(
         },
         DiscardReason::Script if opts.script => Ok(()),
         DiscardReason::Script => Err("discarded as 'script' but the line has no -T".into()),
+        // IN-55 option (A) (WP-251): a kept set left out of an
+        // incremental-mode output, with its `discard` record (a copy not
+        // kept is the COMDAT row's).
+        DiscardReason::Unspecified if incremental && !comdat && gnu_index_set(s) => Ok(()),
         DiscardReason::Unspecified => match dropped_by_row(o, s, opts) {
             Some(_) => Ok(()),
             None => Err("discarded as 'unspecified' but no row of resolve.md §10 drops it \
@@ -418,6 +459,7 @@ pub(crate) fn collect_empty(
 
 /// M10 over every section of every live object of mortar's map.
 pub(crate) fn check(
+    image: &Image<'_>,
     objs: &[Obj<'_>],
     map: &Map,
     opts: &Options,
@@ -427,6 +469,12 @@ pub(crate) fn check(
     if map.format != Format::Mortar {
         return out;
     }
+    let incremental = incremental_mode(map, opts).unwrap_or_else(|m| {
+        out.push(Finding::new(Rule::Map(10), m));
+        false
+    });
+    // IN-55 option (A): in incremental mode no set is placed (WP-251).
+    let mut set_placed = false;
     let comdat = comdat_dropped(objs);
     let groups = in_alloc_group(objs);
     let ss = start_stop(objs);
@@ -448,10 +496,34 @@ pub(crate) fn check(
                         groups[oi][si],
                         &ss,
                         root,
+                        incremental,
                     ) {
                         Ok(()) => continue,
                         Err(m) => m,
                     }
+                }
+                // IN-55 option (A) (WP-251): the linker forgot the rule; an
+                // update would find a dead unit by name. A set `-S`/`-s`
+                // strips, or in a COMDAT copy not kept, is not this row's.
+                (Place::Whole(_) | Place::Pieces(_) | Place::Merged | Place::Rewritten, _)
+                    if incremental
+                        && gnu_index_set(s)
+                        && !opts.strip_debug
+                        && !comdat[oi][si] =>
+                {
+                    set_placed = true;
+                    out.push(
+                        Finding::new(
+                            Rule::Map(10),
+                            format!(
+                                "section '{}' is placed in an incremental-mode output: \
+                                 incr.md IN-55 option (A) leaves the GNU name index out",
+                                s.name
+                            ),
+                        )
+                        .site(o.site(si, 0)),
+                    );
+                    continue;
                 }
                 // No record: a consumed section (I-78), an empty one (no
                 // bytes, so no `place` or `discard` record need name it:
@@ -490,6 +562,23 @@ pub(crate) fn check(
                 )
                 .site(o.site(si, 0)),
             );
+        }
+    }
+    // The output's own bytes (WP-251): a non-allocated section of a set's
+    // name in an incremental-mode output that no record places (a record
+    // that does is the finding above).
+    if incremental && !set_placed {
+        for t in image.sections.iter().skip(1) {
+            if !t.alloc() && is_gnu_index_name(&t.name) && t.shdr.sh_size > 0 {
+                out.push(Finding::new(
+                    Rule::Map(10),
+                    format!(
+                        "the incremental-mode output has section '{}' ({:#x} bytes): \
+                         incr.md IN-55 option (A) leaves the GNU name index out",
+                        t.name, t.shdr.sh_size
+                    ),
+                ));
+            }
         }
     }
     out

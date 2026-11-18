@@ -821,6 +821,14 @@ pub struct Options {
     /// The last of `-z now` (true) and `-z lazy` (false), when the line
     /// has either (§13.1: the runtime's `-z now` unless `-z lazy`).
     pub z_now: Option<bool>,
+    /// The last of `--incremental[=MODE]` (true) and `--no-incremental`
+    /// (`spec/incr.md` IN-10): the line asks for incremental mode.
+    pub incremental: bool,
+    /// The options of `spec/incr.md` IN-12 (and IN-12a's `-shared`) that
+    /// make an `--incremental` link a plain one, by the spelling §3.3 M10
+    /// names, each with the last of the option and its negation (WP-251;
+    /// [`Options::incr_plain`]).
+    pub in12: Vec<(&'static str, bool)>,
 }
 
 impl Default for Options {
@@ -845,6 +853,8 @@ impl Default for Options {
             odr_runtime: OdrRuntime::Off,
             odr_table_given: false,
             z_now: None,
+            incremental: false,
+            in12: Vec::new(),
             wrap: Vec::new(),
             defsym: Vec::new(),
             unread: Vec::new(),
@@ -891,6 +901,32 @@ impl Options {
         o
     }
 
+    /// The last state of one of IN-12's options (WP-251).
+    fn in12(&mut self, name: &'static str, on: bool) {
+        match self.in12.iter_mut().find(|(n, _)| *n == name) {
+            Some(e) => e.1 = on,
+            None => self.in12.push((name, on)),
+        }
+    }
+
+    /// IN-12's options (and IN-12a's `-shared`) that make an
+    /// `--incremental` link plain and that the words alone show, in the
+    /// order of their first word: `-r`, `--emit-relocs`, a
+    /// `--compress-debug-sections` other than `none`, `--gdb-index`,
+    /// `--debug-names`, an `--icf` other than `none`, `--sort-common`,
+    /// `--sort-section`, `--start-lib`, `-shared`. A `SECTIONS` script
+    /// and the output kind are not read from the words (WP-251).
+    pub fn incr_plain(&self) -> Vec<&'static str> {
+        self.in12.iter().filter(|&&(_, on)| on).map(|&(n, _)| n).collect()
+    }
+
+    /// Whether the line puts the link in incremental mode as far as its
+    /// words show (`spec/plumb.md` §3.3 M10, WP-251): `--incremental`
+    /// last, and none of IN-12's options the words show.
+    pub fn incremental_by_words(&self) -> bool {
+        self.incremental && self.in12.iter().all(|&(_, on)| !on)
+    }
+
     fn z(&mut self, kw: &str, value: Option<&str>) {
         match kw {
             "execstack" => self.execstack = Some(true),
@@ -906,8 +942,14 @@ impl Options {
     fn apply(&mut self, id: &str, value: Option<&str>) {
         match id {
             "--fix-cortex-a53-843419" => self.fix_843419 = true,
-            "--gdb-index" => self.gdb_index = true,
-            "--no-gdb-index" => self.gdb_index = false,
+            "--gdb-index" => {
+                self.gdb_index = true;
+                self.in12("--gdb-index", true);
+            }
+            "--no-gdb-index" => {
+                self.gdb_index = false;
+                self.in12("--gdb-index", false);
+            }
             "-s" => {
                 self.strip_debug = true;
                 self.strip_all = true;
@@ -917,7 +959,10 @@ impl Options {
             "--no-gc-sections" => self.gc_sections = false,
             "-T" | "--default-script" => self.script = true,
             "-e" => self.entry = value.map(str::to_string),
-            "-shared" => self.shared = true,
+            "-shared" => {
+                self.shared = true;
+                self.in12("-shared", true);
+            }
             "-E" => self.export_dynamic = true,
             "--no-export-dynamic" => self.export_dynamic = false,
             "-init" | "-fini" | "--export-dynamic-symbol" => {
@@ -955,6 +1000,20 @@ impl Options {
                 };
             }
             "--no-build-id" => self.build_id = BuildId::None,
+            "--incremental" => self.incremental = true,
+            "--no-incremental" => self.incremental = false,
+            "-r" => self.in12("-r", true),
+            "-q" => self.in12("--emit-relocs", true),
+            "--compress-debug-sections" => {
+                self.in12("--compress-debug-sections", value.is_some_and(|v| v != "none"));
+            }
+            "--debug-names" => self.in12("--debug-names", true),
+            "--no-debug-names" => self.in12("--debug-names", false),
+            "--icf" => self.in12("--icf", value.is_some_and(|v| v != "none")),
+            "--no-icf" => self.in12("--icf", false),
+            "--sort-common" => self.in12("--sort-common", true),
+            "--sort-section" => self.in12("--sort-section", true),
+            "--start-lib" => self.in12("--start-lib", true),
             _ => {}
         }
     }
