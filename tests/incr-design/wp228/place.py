@@ -46,6 +46,17 @@ Options:
   --addr-base    see .debug_info above
   --keep-aranges .debug_aranges left as linked (its dead sets name dead
                  units: the negative case of IN-54)
+  --rust=BIN     WP-228 step 2: every neutral form's bytes (and the
+                 abbreviation tables) come from mortar's
+                 `crates/mortar_image/src/neutral.rs`, through its test
+                 binary BIN (`neutral::tests::emit_forms`); this script
+                 only chooses where. `.debug_types` units then use code 2
+                 of the 17-byte table (compile and type-unit abbreviations,
+                 IN-51b as proposed): mortar's own table hole when it holds
+                 17 bytes, else a copy written in the dead file's
+                 `.debug_abbrev` range (needs 28 bytes)
+  --form-version=N  with --rust: the version the forms are asked for (5,
+                 what the image writes; 4 for the v2-v4 forms)
 Prints one line per section: ranges and bytes neutralized.
 """
 import struct
@@ -98,10 +109,42 @@ MINS = {'.debug_info': (15, 1), '.debug_abbrev': (1, 1), '.debug_line': (32, 1),
         '.debug_macinfo': (1, 1)}
 
 
+RUST = None  # (test binary, scratch prefix) with --rust
+FORMV = 5
+_memo = {}
+
+
+def rust(req):
+    """One request to neutral.rs's emitter (see its `emit_forms`)."""
+    if req in _memo:
+        return _memo[req]
+    import os
+    import subprocess
+    binp, pre = RUST
+    rq, an = pre + '.req', pre + '.ans'
+    open(rq, 'w').write(req + '\n')
+    env = dict(os.environ, MORTAR_NEUTRAL_REQ=rq, MORTAR_NEUTRAL_OUT=an)
+    subprocess.run([binp, '--ignored', '--exact', 'neutral::tests::emit_forms', '-q'],
+                   env=env, check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    ans = open(an).read().split()[0]
+    os.remove(rq)
+    os.remove(an)
+    if ans == 'none':
+        raise ValueError('neutral.rs has no form for: ' + req)
+    _memo[req] = bytes.fromhex(ans)
+    return _memo[req]
+
+
 def neutral(name, size, abbrev, addr_size=8, addr_base=None, abbrev_addr=None, sig=0xdead000000000000):
     """The neutral unit of `size` bytes of section `name` (neutral.rs's
     `unit` with version 5, ported; and the proposed forms)."""
     L = size
+    if RUST is not None:
+        if name == '.debug_info' and addr_base is not None:
+            return rust('addrbase %d %d %d %d' % (L, addr_size, abbrev_addr, addr_base))
+        if name == '.debug_types':
+            return rust('type %d %d %d %d' % (L, addr_size, abbrev, sig & 0xffffffffffff))
+        return rust('unit %s %d %d %d %d' % (name, L, FORMV, addr_size, abbrev or 0))
     if name == '.debug_info':
         if addr_base is not None:
             out = u32(L - 4) + u16(5) + bytes([1, addr_size]) + u32(abbrev_addr) + bytes([1]) + u32(addr_base)
@@ -211,6 +254,17 @@ def main():
     as_pieces = '--pieces' in opts
     addr_base_on = '--addr-base' in opts
     keep_ar = '--keep-aranges' in opts
+    global RUST, FORMV, ABBREV_ADDR, ABBREV_TYPE
+    for o in opts:
+        if o.startswith('--rust='):
+            RUST = (o.split('=', 1)[1], out)
+        if o.startswith('--form-version='):
+            FORMV = int(o.split('=', 1)[1])
+    if RUST is not None:
+        assert rust('table compile') == ABBREV, 'the compile-unit table'
+        ABBREV_ADDR = rust('table addrbase')
+        # the 17-byte table: both abbreviations and the 0 ending it
+        ABBREV_TYPE = ABBREV + rust('table type') + b'\0'
     elf = Elf(open(src, 'rb').read())
     b = bytearray(elf.b)
     lines = open(mapf).read().splitlines()
@@ -236,6 +290,9 @@ def main():
     if ab is not None:
         abd = bytes(b[ab.off:ab.off + ab.size])
         abbrev_at = abd.rfind(ABBREV)
+    # --rust: mortar's table hole already holds the 17-byte table
+    shared17 = RUST is not None and abbrev_at is not None and abbrev_at >= 0 \
+        and abd[abbrev_at:abbrev_at + 17] == ABBREV_TYPE
     new_dead = []  # (sec, off, size)
     report = {}
     dead_files = sorted(dead)
@@ -245,8 +302,12 @@ def main():
         abr = ranges.get((f, '.debug_abbrev'), [])
         type_abbrev = None
         if (f, '.debug_types') in ranges:
-            assert abr and abr[0][1] >= 19, 'no room for the type-unit table'
-            type_abbrev = abr[0][0] + 11
+            if shared17:
+                type_abbrev = abbrev_at
+            else:
+                need = 11 + len(ABBREV_TYPE)
+                assert abr and abr[0][1] >= need, 'no room for the type-unit table'
+                type_abbrev = abr[0][0] + 11
         for name in sorted({n for (ff, n) in ranges if ff == f}):
             if name == '.debug_aranges':
                 continue
@@ -293,7 +354,8 @@ def main():
                         b[s.off + o:s.off + o + size] = data
                     if name == '.debug_abbrev' and addr_base_on and addr and (o, size) == abr[0] and size >= 11:
                         b[s.off + o:s.off + o + len(ABBREV_ADDR)] = ABBREV_ADDR
-                    if name == '.debug_abbrev' and type_abbrev is not None and (o, size) == abr[0]:
+                    if name == '.debug_abbrev' and type_abbrev is not None and (o, size) == abr[0] \
+                            and not shared17:
                         b[s.off + type_abbrev:s.off + type_abbrev + len(ABBREV_TYPE)] = ABBREV_TYPE
                 new_dead.append((name, o, size))
                 r = report.setdefault(name, [0, 0])

@@ -16,7 +16,11 @@
 # Checks: readelf --debug-dump warnings, llvm-dwarfdump --verify errors
 # (counts equal to the reference's), gdb and lldb transcripts equal to the
 # reference's (addresses masked), the verifier (xtask plumb) on the edited
-# map (findings 0). EXTRA adds compiler flags (TAGX to the tag). One line per check in OUTDIR/emulate.log; FINAL line
+# map (findings 0). EXTRA adds compiler flags (TAGX to the tag).
+# Step 2 (WP-228 part A): RUST_BIN=<mortar_image test binary> makes
+# place.py take every neutral form from neutral.rs (--rust); VARIANTS
+# overrides the variant list (plain pieces perunit addrbase v4; v4 = plain
+# with the version-4 forms, DWARF 4 only; addrbase Clang/kiln DWARF 5 only). One line per check in OUTDIR/emulate.log; FINAL line
 # "EMULATE-DONE runs=N same=N differ=N".
 set -u
 ulimit -c 0
@@ -173,8 +177,9 @@ for c in $CONFIGS; do
     else dbg=0; fi
     "$XT" plumb ref1 --map ref1.map --map-format mortar > ref1.plumb 2>&1
     note "$tag ref1 plumb $(tail -1 ref1.plumb)"
-    variants="plain pieces perunit"
-    case $c-$dw in clang*-5|kiln*-5) variants="$variants addrbase";; esac
+    variants="${VARIANTS:-plain pieces perunit addrbase}"
+    case $c-$dw in clang*-5|kiln*-5) ;; *) variants=$(echo " $variants " | sed 's/ addrbase / /');; esac
+    case $dw in 4) ;; *) variants=$(echo " $variants " | sed 's/ v4 / /');; esac
     for s in s2 s3 s4 s5; do
       case $s in s2) ref=ref1;; s3|s5) ref=ref3;; s4) ref=ref4;; esac
       case $s in s4) src=b.cc; line=9;; *) src=b2.cc; line=12;; esac
@@ -184,7 +189,8 @@ for c in $CONFIGS; do
       cmp_files "$tag $s" "raw-verify" $ref.vf $s.vf
       for v in $variants; do
         x=${s}$v
-        case $v in plain) o="";; pieces) o="--pieces";; perunit) o="--per-unit";; addrbase) o="--addr-base";; esac
+        case $v in plain) o="";; pieces) o="--pieces";; perunit) o="--per-unit";; addrbase) o="--addr-base";; v4) o="--form-version=4";; esac
+        [ -n "${RUST_BIN:-}" ] && o="$o --rust=$RUST_BIN"
         # shellcheck disable=SC2086
         python3 -I "$HERE/place.py" $s $s.map $x $x.map --dead=$fn $o > $x.place 2>&1 || { check "$tag $x" place DIFF "$(tail -1 $x.place)"; continue; }
         static_checks $x
