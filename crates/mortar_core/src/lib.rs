@@ -29,6 +29,7 @@ pub mod demands;
 pub mod hash;
 pub mod id;
 pub mod identity;
+pub mod incr;
 pub mod idset;
 pub mod inputs;
 pub mod intern;
