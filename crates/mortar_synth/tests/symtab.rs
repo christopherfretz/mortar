@@ -92,7 +92,8 @@ fn program() -> (Syms, Secs, Addrs) {
     (syms, secs, addrs)
 }
 
-const FACTS: PatchFacts = PatchFacts { thunk_size: 12, erratum_843419_size: 8, mapping: true };
+const FACTS: PatchFacts =
+    PatchFacts { thunk_size: 12, erratum_843419_size: 8, mapping: true, room: false };
 
 #[test]
 fn s80_patch_facts_come_from_the_architecture() {

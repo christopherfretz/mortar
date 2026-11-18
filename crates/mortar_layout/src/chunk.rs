@@ -1019,6 +1019,9 @@ fn capacities(
             }
         } else if slack::is_debug(name, ch.flags) {
             slack.debug_tail(size)
+        } else if name == b".symtab" || name == b".strtab" {
+            // spec/layout.md L-72, spec/incr.md IN-49a: the file slack.
+            slack.tail(size)
         } else {
             0
         };

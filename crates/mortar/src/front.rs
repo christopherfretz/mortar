@@ -767,7 +767,9 @@ pub fn front<'s>(
         eh: Some((&eh, &merge_eh)),
         discard: plan.shaping.discard,
     };
-    let facts = PatchFacts::of(arch);
+    // spec/incr.md IN-49a: per-file room in an incremental-mode output
+    // (a replay, IN-61, reproduces one: its spans are the stored ones).
+    let facts = PatchFacts { room: env.slack || env.replay.is_some(), ..PatchFacts::of(arch) };
     let symtab = if strip_all {
         None
     } else {

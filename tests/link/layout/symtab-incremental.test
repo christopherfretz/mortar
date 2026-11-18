@@ -1,0 +1,60 @@
+# `.symtab` and `.strtab` of an incremental-mode full link (IN-49a,
+# WP-217): per-file blocks followed by fillers, a local tail reserve of 64
+# fillers, a `.strtab` region per block with slack. Every tool reads the
+# output as the plain link's but for the filler lines: each local and its
+# name as in the plain link (the first name of each block included: a
+# region's slack precedes it), every filler of the one form (unnamed,
+# `STT_SECTION`, `LOCAL`, section 1, section 1's address) and none after
+# `sh_info`. eu-elflint: the four complaints of a static glibc executable
+# (spec/harness.md "Checks") and nothing else.
+#@ spec: incr.md "IN-49a"
+#@ arch: aarch64 x86_64
+#@ requires: eu-elflint
+
+cc -O1 a.c -o a.o
+cc -O1 b.c -o b.o
+link(mortar) gcc -static a.o b.o -Wl,--incremental -o inc
+run(mortar) inc
+  stdout: hi 18
+link(mortar) gcc -static a.o b.o -o plain
+check(mortar) readelf -sW inc
+  has: 0 FILE LOCAL DEFAULT ABS a.c$
+  has: 0 FILE LOCAL DEFAULT ABS b.c$
+  has: 0 FILE LOCAL DEFAULT ABS crtstuff.c$
+  not: FILE LOCAL DEFAULT ABS$
+  not: FILE LOCAL DEFAULT ABS $
+  has: OBJECT LOCAL DEFAULT * s_one$
+  has: OBJECT LOCAL DEFAULT * s_two$
+  has: FUNC LOCAL DEFAULT * helper$
+  has: FUNC LOCAL HIDDEN * hid$
+  has: FUNC GLOBAL DEFAULT * main$
+  has: FUNC GLOBAL DEFAULT * bfun$
+  has: OBJECT GLOBAL DEFAULT * gv$
+  has: 0 SECTION LOCAL DEFAULT 1 .
+  not: SECTION GLOBAL
+  not: SECTION WEAK
+check(mortar) readelf -sW plain
+  not: SECTION
+check(mortar) nm -a inc
+  has: t helper$
+  has: b s_one$
+  has: b s_two$
+  has: a a.c$
+  has: a b.c$
+check(mortar) elflint inc
+  allow: section [*] '.rela.plt': relocation * invalid type
+  allow: section [*] '.rela.plt': relocation * invalid symbol index
+  allow: section [*] '.symtab': symbol * (__ehdr_start): st_value out of bounds
+  allow: section [*] '.symtab': symbol * unknown bit set in st_other
+
+#--- a.c
+#include <stdio.h>
+static int helper(int x) __attribute__((noinline));
+static int helper(int x) { return x * 3; }
+int gv = 5;
+__attribute__((visibility("hidden"), noinline)) int hid(int x) { return x + 1; }
+int bfun(void);
+int main(void) { printf("hi %d\n", helper(gv) + hid(1) + bfun()); return 0; }
+#--- b.c
+static int s_one, s_two;
+int bfun(void) { s_one++; return s_one + s_two++; }

@@ -2288,3 +2288,18 @@ fn slot_words_agree_on_both_64_bit_targets() {
     );
     assert_eq!((mortar_a64::FACTS.word, mortar_x64::FACTS.word), (8, 8));
 }
+// spec: incr.md IN-49a, layout.md L-72 (WP-217 item 9: one file slack).
+// `.symtab`'s and `.strtab`'s file slack (`mortar_synth::symtab::file_slack`)
+// is the layout's tail (`mortar_layout::slack::Slack::tail`): the two crates
+// do not depend on each other, so this test holds them to one function.
+#[test]
+fn symtab_file_slack_is_the_layout_tail() {
+    use mortar_layout::slack::{Slack, TAIL_DIV, TAIL_MIN};
+    use mortar_synth::symtab::{FILE_SLACK_DIV, FILE_SLACK_MIN, file_slack};
+    assert_eq!((FILE_SLACK_MIN, FILE_SLACK_DIV), (TAIL_MIN, TAIL_DIV));
+    let edges = [0, 1, 4095, 4096, 65_535, 65_536, 65_537, 65_551, 65_552, 1 << 30, u64::MAX];
+    let steps = (0..64).map(|k| (1u64 << k).wrapping_mul(3) / 2);
+    for size in edges.into_iter().chain(steps) {
+        assert_eq!(file_slack(size), Slack::INCREMENTAL.tail(size), "size {size}");
+    }
+}
