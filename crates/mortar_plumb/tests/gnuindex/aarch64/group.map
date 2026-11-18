@@ -51,7 +51,7 @@ hole .bss 90 40
 dead .debug_info 35 13 neutral
 dead .debug_abbrev 15 b neutral
 dead .debug_abbrev 3a 6 neutral
-dead .debug_abbrev 40 9 neutral
+dead .debug_abbrev 40 26 neutral
 dead .debug_line 59 27 neutral
 dead .debug_line c7 21 neutral
 arg -static

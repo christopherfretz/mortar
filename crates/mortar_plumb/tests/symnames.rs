@@ -290,6 +290,19 @@ fn evidence(s: &Scratch) -> Option<PathBuf> {
     for n in names {
         std::fs::copy(from.join(n), to.join(n)).unwrap();
     }
+    // The evidence predates IN-51's one 38-byte table (WP-228 part A):
+    // `tests/retable.py` gives the scratch copy of `inc` the table, as it
+    // gave the checked-in fixtures (WP-253).
+    let py = mortar_testutil::tool("python3")?;
+    let mut c = std::process::Command::new(py);
+    c.arg(dir().join("../retable.py")).arg(to.join("inc")).arg(to.join("inc.map"));
+    let r = run_with(&mut c, b"", mortar_testutil::DEFAULT_TIMEOUT);
+    assert!(r.success(), "retable.py: {}", r.stderr_text());
+    // ... and reseals its build id, as the linker that wrote those bytes would.
+    let mut bytes = std::fs::read(to.join("inc")).unwrap();
+    let map = read_map(&to.join("inc.map"));
+    assert_eq!(mortar_plumb::buildid::reseal(&mut bytes, &map), 1);
+    std::fs::write(to.join("inc"), bytes).unwrap();
     Some(to)
 }
 
