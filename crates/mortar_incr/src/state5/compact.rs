@@ -710,8 +710,24 @@ pub fn normalize(m: &MemoryState) -> Result<MemoryState, StateError> {
             });
         }
     }
+    // DEBUG_STRS (WP-247; WP-228 R-2): rewritten whole, by key; of rows
+    // of one key the lowest offset stays (the capture's rule). No row
+    // names another table's row: nothing to map.
+    n.debug_strs = debug_strs_whole(&m.debug_strs);
     n.strings = pool;
     Ok(n)
+}
+
+/// `DEBUG_STRS` written whole (the capture's and the compaction's rows):
+/// sorted by `(out, hash)`, one row per key, the lowest offset kept.
+#[must_use]
+pub fn debug_strs_whole(
+    rows: &[crate::update::rows::DebugStrRow],
+) -> Vec<crate::update::rows::DebugStrRow> {
+    let mut v = rows.to_vec();
+    v.sort_unstable();
+    v.dedup_by_key(|r| (r.out, r.hash));
+    v
 }
 
 /// IN-71b "Live keys" (WP-215 R.6 3, `briefs/wp-215-rulings-3.md` item

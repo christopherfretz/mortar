@@ -919,6 +919,8 @@ pub struct Rows5 {
     commons: Vec<crate::update::rows::CommonRow>,
     copies: Vec<crate::update::rows::CopyRow>,
     versioned: u32,
+    /// `DEBUG_STRS` (WP-247, [`debug_str_rows`]).
+    debug_strs: Vec<crate::update::rows::DebugStrRow>,
     /// Counts for the experiments (`incremental: state5 ...` lines).
     pub notes: Vec<String>,
 }
@@ -1296,6 +1298,8 @@ fn rows5(
     }
     out.option_keys = extra.option_keys.to_vec();
     out.versioned = files5.iter().map(|f| f.versioned).sum();
+    let debug_note;
+    (out.debug_strs, debug_note) = debug_str_rows(link, keys, layout, live_frags)?;
     out.notes = vec![
         format!(
             "KEY_REFS {} (lazy {lazy_rows} of {lazy_files} files, linker-defined {internal}), demand on {used}",
@@ -1311,8 +1315,103 @@ fn rows5(
             out.copies.len()
         ),
         format!("eh files {} (fixed encodings {fixed}), versioned {}", eh.len(), out.versioned),
+        debug_note,
     ];
     Ok(out)
+}
+
+/// `DEBUG_STRS` of a full link (WP-247; WP-228 R-2, seam 8; incremental
+/// mode only, a plain link never comes here): per distinct string of the
+/// output's `.debug_str` (class 0) and `.debug_line_str` (class 1), its
+/// key `name_hash(bytes, b"")` (the string's bytes and its NUL, hashed)
+/// and its offset in the OUTPUT section; sorted by key, of two strings of
+/// one key the LOWER offset kept; no row at or past 2^32 (an accelerator:
+/// such a string is a miss, appended by an update). The strings are the
+/// section's merged fragments (the link's `MergeMap`, the fragments
+/// `live_frags` lists), so the rows are exactly the strings the image
+/// wrote; the merged chunk is the section (`frag_off` is from its start).
+/// A class whose output section holds anything but its merged chunk (an
+/// input `.debug_str` without `SHF_MERGE`, read whole) gets NO rows: every
+/// string a miss, never a wrong offset (the note says so). Also returns
+/// the note for the `incremental: state5` lines.
+///
+/// # Errors
+/// A fragment whose bytes cannot be read.
+fn debug_str_rows(
+    link: &Link<'_, '_>,
+    keys: &Keys<'_>,
+    layout: &Layout,
+    live_frags: &[(u32, [u8; 16], u32, u64)],
+) -> Result<(Vec<crate::update::rows::DebugStrRow>, String), String> {
+    use crate::update::rows::{DebugStrRow, debug_str_class, name_hash};
+    let mut classes: Vec<(u32, u8)> = Vec::new();
+    for id in link.assignment.outsecs.ids().iter() {
+        let Some(o) = mortar_core::identity::outsec_identity(&keys.outsecs, id) else { continue };
+        let class = match o.name {
+            b".debug_str" => debug_str_class::STR,
+            b".debug_line_str" => debug_str_class::LINE_STR,
+            _ => continue,
+        };
+        classes.push((id.0, class));
+    }
+    let mut rows = Vec::new();
+    let mut notes = Vec::new();
+    let mut buf = Vec::new();
+    for (out, class) in classes {
+        // The merged chunk, and whether its section header holds another.
+        let shndx = layout
+            .placement
+            .chunks
+            .iter()
+            .find(|(_, c)| matches!(c.kind, ChunkKind::Merged(o) if o.0 == out))
+            .and_then(|(_, c)| c.shndx);
+        let alone = shndx.is_some_and(|x| {
+            layout.placement.chunks.iter().filter(|(_, c)| c.shndx == Some(x)).count() == 1
+        });
+        if !alone {
+            notes.push(format!("class {class}: not one merged chunk, no rows"));
+            continue;
+        }
+        let at = live_frags.partition_point(|f| f.0 < out);
+        let mut n = 0usize;
+        let mut far = 0usize;
+        for &(o, _, frag, off) in &live_frags[at..] {
+            if o != out {
+                break;
+            }
+            let Ok(offset) = u32::try_from(off) else {
+                far += 1;
+                continue;
+            };
+            let bytes = frag_bytes(link, FragId::from_index(frag), &mut buf)
+                .ok_or("a debug string fragment's bytes")?;
+            let string = bytes.strip_suffix(&[0]).unwrap_or(bytes);
+            rows.push(DebugStrRow { out: class, hash: name_hash(string, b""), offset });
+            n += 1;
+        }
+        notes.push(format!("class {class}: {n} strings, {far} at or past 2^32"));
+    }
+    let rows = crate::state5::compact::debug_strs_whole(&rows);
+    let note = format!("DEBUG_STRS {} ({})", rows.len(), notes.join("; "));
+    Ok((rows, note))
+}
+
+/// A fragment's bytes (`frag_hash`'s read): `buf` holds them.
+fn frag_bytes<'b>(link: &Link<'_, '_>, frag: FragId, buf: &'b mut Vec<u8>) -> Option<&'b [u8]> {
+    let f = link.split.frags.get(frag)?;
+    let (file, index) = link.resolution.sh_index(f.section)?;
+    let Reader::Object(object) = link.inputs.files.get(file)?.reader else { return None };
+    let range = object.section(index).ok()?.file_range().ok()??;
+    let start = range.start as u64 + u64::from(f.offset);
+    let range = start..start + u64::from(f.size);
+    buf.clear();
+    if let Some(bytes) = link.inputs.resident(file, range.clone()) {
+        buf.extend_from_slice(bytes);
+    } else {
+        buf.resize(f.size as usize, 0);
+        link.inputs.copy_to(file, range, buf).ok()?;
+    }
+    Some(buf)
 }
 
 /// The format-5 state of a full link (WP-244): `state`, the link's
@@ -1378,6 +1477,7 @@ pub fn state5_rows(
     m.commons = rows.commons;
     m.copies = rows.copies;
     m.meta.versioned = rows.versioned;
+    m.debug_strs = rows.debug_strs;
     if rows.slot_refs.len() != m.slots.len() {
         return Err("SLOTS: the rows are not this state's".into());
     }

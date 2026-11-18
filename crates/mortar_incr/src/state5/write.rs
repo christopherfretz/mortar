@@ -270,6 +270,11 @@ pub fn encode(m: &MemoryState) -> Result<Vec<u8>, StateError> {
             .ok_or_else(|| corrupt("STRINGS: a string out of range"))
     };
     let s2: StrFn<'_> = &strings_of2;
+    // DEBUG_STRS (WP-247): sorted by key, and rows of one key by offset
+    // (the derived order: out, hash, offset), so the bytes are a function
+    // of the rows whatever their order.
+    let mut debug_strs = m.debug_strs.clone();
+    debug_strs.sort_unstable();
     let mut stat = body(&m.stat, Class::AppendOnly);
     stat.aux = m.stat.iter().rposition(|r| r.tag == stat_tag::OUTPUT).map_or(NO_ROW, |i| i as u64);
     let mut bodies: Vec<(u32, Body)> = vec![
@@ -310,6 +315,7 @@ pub fn encode(m: &MemoryState) -> Result<Vec<u8>, StateError> {
         (kind::NAMES, keyed_body(&sorted(&m.names, s)?.0)),
         (kind::COPIES, keyed_body(&sorted(&m.copies, s)?.0)),
         (kind::FRAG_USE, fu_body),
+        (kind::DEBUG_STRS, keyed_body(&debug_strs)),
     ];
     debug_assert!(bodies.iter().zip(TABLES).all(|((k, _), t)| *k == t.0));
     Ok(assemble(&mut bodies, m.plan_hash, 0))

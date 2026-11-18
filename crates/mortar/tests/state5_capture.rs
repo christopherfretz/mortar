@@ -57,14 +57,19 @@ impl Line {
 /// The C++ program (exceptions, COMDAT, TLS, IFUNCs) on both 64-bit
 /// targets, GCC's objects.
 fn lines() -> Vec<Line> {
+    lines_by(&["-O1"])
+}
+
+/// [`lines`], compiled with `flags`.
+fn lines_by(flags: &[&str]) -> Vec<Line> {
     let mut v = Vec::new();
     let s = Scratch::new("wp244-a64");
-    match build(&s, Driver::Gxx, &["-O1"], support::CXX_PROGRAM) {
+    match build(&s, Driver::Gxx, flags, support::CXX_PROGRAM) {
         Some(b) => v.push(Line::of("aarch64 g++", s, b)),
         None => assert!(!tools_required(), "{} is required", Driver::Gxx.tool()),
     }
     let s = Scratch::new("wp244-x64");
-    match build_by(&s, "x86_64-linux-gnu-g++", &["-O1"], support::CXX_PROGRAM) {
+    match build_by(&s, "x86_64-linux-gnu-g++", flags, support::CXX_PROGRAM) {
         Some(b) => v.push(Line::of("x86-64 g++", s, b)),
         None => assert!(!tools_required(), "x86_64-linux-gnu-g++ is required"),
     }
@@ -1221,6 +1226,91 @@ fn raw_table_diff(p: &str, a: &MemoryState, b: &MemoryState) {
             "    first differing byte {i}\n    {:?}\n    {:?}",
             at(&a.strings),
             at(&b.strings)
+        );
+    }
+}
+
+// ---- WP-247 --------------------------------------------------------------------
+
+/// The bytes of the ELF64 (little-endian) section `name` of `path`.
+fn section_bytes(path: &std::path::Path, name: &[u8]) -> Option<Vec<u8>> {
+    let b = std::fs::read(path).expect("the output");
+    let u16_at = |at: usize| usize::from(u16::from_le_bytes([b[at], b[at + 1]]));
+    let u32_at = |at: usize| u32::from_le_bytes(b[at..at + 4].try_into().expect("4"));
+    let u64_at = |at: usize| {
+        usize::try_from(u64::from_le_bytes(b[at..at + 8].try_into().expect("8"))).expect("small")
+    };
+    let (shoff, shentsize, shnum, shstrndx) =
+        (u64_at(0x28), u16_at(0x3a), u16_at(0x3c), u16_at(0x3e));
+    let header = |i: usize| shoff + i * shentsize;
+    let names = u64_at(header(shstrndx) + 0x18);
+    (1..shnum).find_map(|i| {
+        let h = header(i);
+        let at = names + u32_at(h) as usize;
+        let end = at + b[at..].iter().position(|&c| c == 0)?;
+        (&b[at..end] == name).then(|| {
+            let (off, size) = (u64_at(h + 0x18), u64_at(h + 0x20));
+            b[off..off + size].to_vec()
+        })
+    })
+}
+
+// spec: WP-228 R-2.2 (the capture: per distinct string of the output's
+// `.debug_str` and `.debug_line_str` its offset in the OUTPUT section;
+// R-2.3: judged against THIS output, every row names its string's bytes
+// and every string of the output is found); a link without `-g` has none
+#[test]
+fn debug_strs_name_the_output_strings() {
+    use mortar_incr::update::rows::{debug_str_class, name_hash};
+    for line in lines_by(&["-O1", "-g"]) {
+        let m = rows5(&line, "dbg", &[]);
+        let out = line.dir.join("dbg");
+        let mut seen = 0;
+        for (class, name) in [
+            (debug_str_class::STR, &b".debug_str"[..]),
+            (debug_str_class::LINE_STR, b".debug_line_str"),
+        ] {
+            let rows: Vec<_> = m.debug_strs.iter().filter(|r| r.out == class).collect();
+            let Some(sec) = section_bytes(&out, name) else {
+                assert!(rows.is_empty(), "{}: rows without {name:?}", line.label);
+                continue;
+            };
+            assert!(!rows.is_empty(), "{}: {name:?} without rows", line.label);
+            let string_at = |at: usize| {
+                let end = at + sec[at..].iter().position(|&c| c == 0).expect("a NUL");
+                &sec[at..end]
+            };
+            for r in &rows {
+                let s = string_at(r.offset as usize);
+                assert_eq!(name_hash(s, b""), r.hash, "{}: {name:?} row {r:?}", line.label);
+            }
+            assert!(rows.windows(2).all(|w| (w[0].out, w[0].hash) < (w[1].out, w[1].hash)));
+            let mut at = 0;
+            while at < sec.len() {
+                let s = string_at(at);
+                let h = name_hash(s, b"");
+                let i = rows.partition_point(|r| r.hash < h);
+                let hit = rows.get(i).filter(|r| r.hash == h);
+                assert!(
+                    hit.is_some_and(|r| string_at(r.offset as usize) == s),
+                    "{}: {name:?} string at {at} not found",
+                    line.label
+                );
+                at += s.len() + 1;
+                seen += 1;
+            }
+        }
+        assert!(seen > 10, "{}: {seen} strings", line.label);
+        // the rows reach the state's bytes and back
+        let (err, bytes) = link5(&line, "dbg", &[], false);
+        let bytes = bytes.unwrap_or_else(|| panic!("{}: no format-5 state: {err}", line.label));
+        assert_eq!(decode(&bytes).expect("decode").debug_strs, m.debug_strs, "{}", line.label);
+    }
+    for line in lines() {
+        assert!(
+            rows5(&line, "nodbg", &[]).debug_strs.is_empty(),
+            "{}: rows without -g",
+            line.label
         );
     }
 }

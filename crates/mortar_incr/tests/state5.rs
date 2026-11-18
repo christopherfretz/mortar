@@ -10,9 +10,9 @@ use mortar_incr::format::{SectionRow, StatRow, StateError, Str, kind, stat_tag};
 use mortar_incr::ops::{StdOps, WriteFailure};
 use mortar_incr::state5::{self, compact, read, write};
 use mortar_incr::update::rows::{
-    CommonRow, CopyRow, EdgeRow, FileIndexRow, FileRow, FragRow, FragUseRow, GroupRow, KeyRefRow,
-    LocalRange, MentionRow, NameRow, ResolvedRow, SymbolRow, SymtabKeyRow, edge_kind, file_flags,
-    sym_kind,
+    CommonRow, CopyRow, DebugStrRow, EdgeRow, FileIndexRow, FileRow, FragRow, FragUseRow, GroupRow,
+    KeyRefRow, LocalRange, MentionRow, NameRow, ResolvedRow, SymbolRow, SymtabKeyRow,
+    debug_str_class, edge_kind, file_flags, sym_kind,
 };
 use mortar_incr::update::testing::MemoryState;
 use mortar_incr::update::view::{FileRanges, KeyEdits, StatePatch};
@@ -1629,4 +1629,113 @@ fn every_flipped_byte_with_edges_is_state_corrupt() {
         check(at);
     }
     assert!(flipped > 16 + 15 * 13 / 5, "{flipped}");
+}
+
+// ---- DEBUG_STRS (WP-247 item 1; WP-228 R-2, seam 8) -------------------------
+
+fn dstr(out: u8, hash: u64, offset: u32) -> DebugStrRow {
+    DebugStrRow { out, hash, offset }
+}
+
+// spec: WP-228 R-2.1 (kind 57, KeyKeyed, 13 bytes: `u8 out`, `u64 hash`,
+// `u32 offset`, sorted by `(out, hash)`, no tomb), R-2.2 (equal keys keep
+// the lower offset), the reader's one binary search
+#[test]
+fn debug_strs_round_trip_and_lookup() {
+    let t = state5::TABLES.iter().find(|t| t.0 == kind::DEBUG_STRS).expect("listed");
+    assert_eq!((t.1, t.2), (state5::Class::KeyKeyed, 13));
+    let mut m = sample(&[0, 1], 3);
+    let str_ = debug_str_class::STR;
+    let line = debug_str_class::LINE_STR;
+    m.debug_strs = vec![
+        dstr(line, 5, 40),
+        dstr(str_, 9, 30),
+        dstr(str_, 2, 0),
+        dstr(str_, 9, 12),
+        dstr(line, 2, 7),
+    ];
+    let bytes = full(&m);
+    let back = read::decode(&bytes).expect("decode");
+    assert_eq!(
+        back.debug_strs,
+        vec![dstr(str_, 2, 0), dstr(str_, 9, 12), dstr(line, 2, 7), dstr(line, 5, 40)],
+        "sorted by (out, hash), the lower offset kept"
+    );
+    assert_eq!(full(&back), bytes, "a fixpoint");
+    let view = read::open_bytes(bytes).expect("open");
+    assert_eq!(view.debug_str(str_, 9).expect("read"), Some(12));
+    assert_eq!(view.debug_str(str_, 2).expect("read"), Some(0));
+    assert_eq!(view.debug_str(line, 2).expect("read"), Some(7));
+    assert_eq!(view.debug_str(line, 9).expect("read"), None, "the class is part of the key");
+    assert_eq!(view.debug_str(str_, 3).expect("read"), None);
+    assert_eq!(view.debug_str(7, 2).expect("read"), None, "an unknown class asked: a miss");
+    // the memory view answers alike (the tests' StateView)
+    let mv = mortar_incr::update::view::StateView::new(Box::new(&back));
+    assert_eq!(mv.debug_str(str_, 9).expect("read"), Some(12));
+    // an empty table: every string a miss
+    let view = read::open_bytes(full(&sample(&[0, 1], 3))).expect("open");
+    assert_eq!(view.debug_str(str_, 2).expect("read"), None);
+}
+
+// spec: WP-228 R-2.1 (`out` other than 0 or 1 is `state-corrupt`; the
+// reader never trusts the rest: a duplicate key, an offset past the
+// section or into a string's middle are not errors, the caller checks a
+// hit against the output's bytes)
+#[test]
+fn debug_strs_what_the_reader_refuses() {
+    for out in [2u8, 0xff] {
+        let mut n = compact::normalize(&sample(&[0, 1], 3)).expect("normalize");
+        n.debug_strs = vec![dstr(0, 1, 0), dstr(out, 1, 0)];
+        let bytes = write::encode(&n).expect("the writer does not judge `out`");
+        match read::decode(&bytes) {
+            Err(StateError::Corrupt(why)) => assert!(why.contains("DEBUG_STRS"), "{why}"),
+            other => panic!("out {out}: {other:?}"),
+        }
+        let view = read::open_bytes(bytes).expect("open: rows are read on demand");
+        assert!(matches!(reason(view.debug_str(out, 1)), IncrReason::StateCorrupt(_)), "out {out}");
+    }
+    // a duplicate key (written past normalize): not an error, the lower
+    // offset answers
+    let mut n = compact::normalize(&sample(&[0, 1], 3)).expect("normalize");
+    n.debug_strs = vec![dstr(0, 4, 90), dstr(0, 4, 3), dstr(0, 4, 50)];
+    let bytes = write::encode(&n).expect("encode");
+    assert_eq!(read::decode(&bytes).expect("duplicates decode").debug_strs.len(), 3);
+    let view = read::open_bytes(bytes).expect("open");
+    assert_eq!(view.debug_str(0, 4).expect("read"), Some(3));
+    // an offset past any section, an offset into a string's middle: not
+    // judged here (the sample has no output section at all)
+    let mut m = sample(&[0, 1], 3);
+    m.debug_strs = vec![dstr(0, 6, u32::MAX), dstr(1, 6, 3)];
+    let view = read::open_bytes(full(&m)).expect("open");
+    assert_eq!(view.debug_str(0, 6).expect("read"), Some(u32::MAX));
+    assert_eq!(view.debug_str(1, 6).expect("read"), Some(3));
+}
+
+// spec: WP-228 R-2.3 (canon and compaction sort by key; compaction
+// rewrites the table whole)
+#[test]
+fn debug_strs_canon_and_compaction_sort() {
+    let mut a = sample(&[0, 1], 3);
+    a.debug_strs = vec![dstr(1, 3, 1), dstr(0, 8, 2), dstr(0, 1, 3)];
+    let mut b = a.clone();
+    b.debug_strs.reverse();
+    assert_eq!(state5::canon_of(&a).expect("canon"), state5::canon_of(&b).expect("canon"));
+    assert_eq!(full(&a), full(&b));
+    assert_eq!(
+        compact::debug_strs_whole(&[dstr(1, 3, 9), dstr(0, 8, 2), dstr(1, 3, 1)]),
+        vec![dstr(0, 8, 2), dstr(1, 3, 1)]
+    );
+    // a compaction keeps the rows (no update edits them here)
+    let mut c = sample(&[0, 1, 2], 2);
+    c.debug_strs = b.debug_strs.clone();
+    let bytes = full(&c);
+    let view = read::open_bytes(bytes.clone()).expect("open");
+    let plan = state5::plan_patch(&view, &remove_file_1(&read::decode(&bytes).expect("decode")))
+        .expect("plan");
+    assert!(plan.compacts(), "{}", plan.reason());
+    let got = compact::plan_bytes(&plan, &output_of(&bytes)).expect("compacted");
+    assert_eq!(
+        read::decode(&got).expect("decode").debug_strs,
+        vec![dstr(0, 1, 3), dstr(0, 8, 2), dstr(1, 3, 1)]
+    );
 }
