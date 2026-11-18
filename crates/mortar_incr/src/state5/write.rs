@@ -21,7 +21,9 @@ use crate::format::{Hash16, NONE, StatRow, StateError, Str, W, kind, stat_tag};
 use crate::format::{index_kind, patch_kind};
 use crate::ops::{WriteFailure, WriteOps};
 use crate::update::rows::edge_kind;
-use crate::update::rows::{FileIndexRow, FileTable, RowRange, file_flags};
+use crate::update::rows::{
+    FileIndexRow, FileTable, LocalRange, RowRange, SymbolRow, file_flags, sym_kind,
+};
 use crate::update::testing::MemoryState;
 use crate::update::view::{KeyEdits, Rows, StatePatch, StateView};
 
@@ -147,6 +149,7 @@ pub fn encode(m: &MemoryState) -> Result<Vec<u8>, StateError> {
         ranges[f].gone =
             r.flags & file_flags::GONE != 0 || m.file_index.get(f).is_some_and(|i| i.gone);
         ranges[f].first_global = m.file_index.get(f).map_or(0, |i| i.first_global);
+        ranges[f].locals = m.file_index.get(f).map_or_else(LocalRange::default, |i| i.locals);
     }
     // SECTIONS first: every other table's section references follow it.
     let live = m.sections.iter().enumerate().filter(|(_, r)| r.file != NONE);
@@ -892,6 +895,8 @@ fn plan_in_place(core: &Arc<Core>, p: &StatePatch) -> Plan<InPlace> {
     ed.dir[t].aux = stat_out;
     // file-keyed
     let total_files = ed.dir[Ed::t(kind::FILE_INDEX)].rows;
+    let syms = ed.dir[Ed::t(kind::SYMBOLS)].rows;
+    let mut retired: Vec<(FileId, LocalRange)> = Vec::new();
     for fr in &p.ranges {
         let f = u64::from(fr.file.0);
         if f >= total_files {
@@ -918,6 +923,19 @@ fn plan_in_place(core: &Arc<Core>, p: &StatePatch) -> Plan<InPlace> {
         range!(fr.frag_uses.as_deref(), FileTable::FragUse);
         range!(fr.symtab.as_ref().map(Option::as_slice), FileTable::Symtab);
         range!(fr.regions.as_deref(), FileTable::Regions);
+        // IN-18d (seam 6): a replaced symbol table's or a gone file's old
+        // locals run is retired below, through this row; a new run names
+        // appended rows.
+        if fr.gone || fr.locals.is_some() {
+            if idx.locals.count != 0 {
+                retired.push((fr.file, idx.locals));
+            }
+            let new = if fr.gone { None } else { fr.locals };
+            if let Some(run) = new {
+                new_locals(fr.file, run, syms, &p.symbols.append)?;
+            }
+            idx.locals = new.filter(|r| r.count != 0).unwrap_or_default();
+        }
         idx.gone = idx.gone || fr.gone;
         ed.put_rows(kind::FILE_INDEX, f, std::slice::from_ref(&idx))?;
     }
@@ -962,7 +980,6 @@ fn plan_in_place(core: &Arc<Core>, p: &StatePatch) -> Plan<InPlace> {
         ed.keyed(kind::DIAGS, &raw, false)?;
     }
     // key-parallel
-    let syms = ed.dir[Ed::t(kind::SYMBOLS)].rows;
     let n = p.symbols.append.len();
     let mut resolved_append = p.resolved.append.clone();
     let mut keys_append = p.symtab_keys.append.clone();
@@ -975,6 +992,17 @@ fn plan_in_place(core: &Arc<Core>, p: &StatePatch) -> Plan<InPlace> {
     parallel(&mut ed, kind::SYMBOLS, &p.symbols.set, &p.symbols.append, syms)?;
     parallel(&mut ed, kind::RESOLVED, &p.resolved.set, &resolved_append, syms)?;
     parallel(&mut ed, kind::SYMTAB_KEYS, &p.symtab_keys.set, &keys_append, syms)?;
+    // The retired runs marked GONE (O(their rows); never a pass over
+    // SYMBOLS). A `set` of one of their rows is a patch defect.
+    if !retired.is_empty() {
+        let set: std::collections::BTreeSet<u32> = p.symbols.set.iter().map(|x| x.0.0).collect();
+        for (file, run) in retired {
+            let mut rows: Vec<SymbolRow> =
+                core.rows(kind::SYMBOLS, u64::from(run.first), u64::from(run.count))?;
+            retire(file, run, &mut rows, &set)?;
+            ed.put_rows(kind::SYMBOLS, u64::from(run.first), &rows)?;
+        }
+    }
     // STRINGS last: DIAGS may have appended.
     if !ed.appended.is_empty() {
         let t = Ed::t(kind::STRINGS);
@@ -1013,6 +1041,64 @@ fn plan_in_place(core: &Arc<Core>, p: &StatePatch) -> Plan<InPlace> {
         stat_out,
         strs: Strs::default(),
     })
+}
+
+/// A file's new locals run (IN-18d, seam 6): rows `syms ..` of the
+/// patch's `append` (`syms`: `SYMBOLS`' stored rows), each `LOCAL` of
+/// `file`.
+pub(crate) fn new_locals(
+    file: FileId,
+    run: LocalRange,
+    syms: u64,
+    append: &[SymbolRow],
+) -> Rows<()> {
+    if run.count == 0 {
+        return Ok(());
+    }
+    let ok = u64::from(run.first)
+        .checked_sub(syms)
+        .and_then(|a| usize::try_from(a).ok())
+        .is_some_and(|a| {
+            append.get(a..a + run.count as usize).is_some_and(|rows| {
+                rows.iter().all(|r| r.kind == sym_kind::LOCAL && r.file == file.0)
+            })
+        });
+    if ok {
+        Ok(())
+    } else {
+        Err(corrupt(format!(
+            "FILE_INDEX: file {}'s new locals ({} rows at {}) are not a run of its appended \
+             LOCAL rows",
+            file.0, run.count, run.first
+        )))
+    }
+}
+
+/// A retired locals run's stored `rows` marked `GONE` (IN-18d, seam 6):
+/// each must be a `LOCAL` of `file`, none named by the patch's `set`.
+pub(crate) fn retire(
+    file: FileId,
+    run: LocalRange,
+    rows: &mut [SymbolRow],
+    set: &std::collections::BTreeSet<u32>,
+) -> Rows<()> {
+    if set.range(run.first..run.first.saturating_add(run.count)).next().is_some() {
+        return Err(corrupt(format!(
+            "SYMBOLS: the patch sets a row of file {}'s old locals",
+            file.0
+        )));
+    }
+    for (i, r) in rows.iter_mut().enumerate() {
+        if r.kind != sym_kind::LOCAL || r.file != file.0 {
+            return Err(corrupt(format!(
+                "SYMBOLS row {}: in file {}'s locals run, not one of its locals",
+                u64::from(run.first) + i as u64,
+                file.0
+            )));
+        }
+        r.kind = sym_kind::GONE;
+    }
+    Ok(())
 }
 
 /// One file's new rows of one file-keyed table (IN-18e): in place when they

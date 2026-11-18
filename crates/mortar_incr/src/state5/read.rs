@@ -41,7 +41,7 @@ use crate::update::diags::DiagRow;
 use crate::update::rows::{
     CommonRow, CopyRow, EdgeRow, FileIndexRow, FileRow, FileTable, FragRow, FragUseRow, GroupRow,
     HoleRow, IndexRow, KeyRefRow, MentionRow, MetaRow, NameRow, OdrClassRow, OdrRefRow, RegionRow,
-    ResolvedRow, SlotRow, SymbolRow, SymtabKeyRow, SymtabRow, sym_kind,
+    ResolvedRow, SlotRow, SymbolRow, SymtabKeyRow, SymtabRow, file_flags, sym_kind,
 };
 use crate::update::testing::MemoryState;
 use crate::update::view::{Rows, StateRows, StateView};
@@ -286,6 +286,12 @@ impl Core {
                     name(t.kind())
                 )));
             }
+        }
+        if u64::from(row.locals.first) + u64::from(row.locals.count)
+            > self.entry(kind::SYMBOLS).rows
+            && row.locals.count != 0
+        {
+            return Err(corrupt(format!("FILE_INDEX row {}: locals out of SYMBOLS", file.0)));
         }
         Ok(row)
     }
@@ -662,7 +668,7 @@ pub fn size_report(bytes: &[u8]) -> Result<String, StateError> {
     let mut lazy = 0u64;
     let mut n = 0u64;
     for (f, idx) in files.iter().zip(&index) {
-        if f.flags & crate::update::rows::file_flags::LAZY == 0 {
+        if f.flags & file_flags::LAZY == 0 {
             continue;
         }
         n += 1;
@@ -794,6 +800,15 @@ pub(crate) fn decode_core(c: &Core) -> Rows<MemoryState> {
         }
         if idx.gone {
             continue;
+        }
+        // IN-18d: the file's locals, one run of its own LOCAL rows.
+        let run = idx.locals.first as usize..(idx.locals.first + idx.locals.count) as usize;
+        let ok = idx.locals.count == 0
+            || m.symbols.get(run.clone()).is_some_and(|rows| {
+                rows.iter().all(|r| r.kind == sym_kind::LOCAL && r.file == file.0)
+            });
+        if !ok {
+            return Err(corrupt(format!("FILE_INDEX row {f}: locals not a run of its own")));
         }
         let at = |t: FileTable| {
             let r = idx.ranges[t as usize];
@@ -1071,6 +1086,7 @@ impl LayoutRows for LayoutOf<'_, '_> {
             class,
             hash,
             offset: f.offset,
+            size: f.size,
             refs: f.refs,
         }))
     }
@@ -1088,7 +1104,30 @@ impl LayoutRows for LayoutOf<'_, '_> {
             offset: f.eh_offset,
             capacity: f.eh_capacity,
             records: f.eh_records,
+            fdes: f.eh_fdes,
         }))
+    }
+    /// `FILES` read whole (the named read of IN-18c, WP-243): every file
+    /// not `GONE` with kept records, by its current rank.
+    fn eh_ranges(&self) -> Result<Vec<(FileId, u64, StoredEhRange)>, IncrReason> {
+        let n = u32::try_from(self.view.count(kind::FILES))
+            .map_err(|_| corrupt("FILES over 2^32 rows"))?;
+        let mut out = Vec::new();
+        for i in 0..n {
+            let f = self.view.file(FileId(i))?;
+            if f.eh_records == 0 || f.flags & file_flags::GONE != 0 {
+                continue;
+            }
+            let range = StoredEhRange {
+                offset: f.eh_offset,
+                capacity: f.eh_capacity,
+                records: f.eh_records,
+                fdes: f.eh_fdes,
+            };
+            out.push((FileId(i), f.rank, range));
+        }
+        out.sort_by_key(|&(f, rank, _)| (rank, f));
+        Ok(out)
     }
     fn key_refs_of(&self, file: FileId) -> Result<Vec<StoredKeyRef>, IncrReason> {
         let mut keys: Vec<u32> = self.view.mentions_of(file)?.iter().map(|m| m.symbol).collect();

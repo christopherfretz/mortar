@@ -175,6 +175,7 @@ fn strings_growth(path4: &str, version: &str, suffixes: &[&str]) -> Result<(), S
             frag_uses: None,
             symtab: None,
             regions: None,
+            locals: None,
             gone: false,
         });
         let view = read::open_bytes(bytes.clone()).map_err(|e| e.to_string())?;
@@ -211,15 +212,15 @@ fn strings_growth(path4: &str, version: &str, suffixes: &[&str]) -> Result<(), S
     Ok(())
 }
 
-/// The keys the conversion's rows leave dead (IN-71b, `live_keys` with
-/// no option): their count by stored definition and a sample.
+/// The keys the conversion's rows leave dead (IN-71b, `live_keys`; a
+/// format-4 conversion carries no `SYMBOLS.option` bit): their count by
+/// stored definition and a sample.
 fn dead_keys(path4: &str, version: &str) -> Result<(), String> {
     let bytes = std::fs::read(path4).map_err(|e| format!("{path4}: {e}"))?;
     let s = format::decode(&bytes, version.as_bytes()).map_err(|e| format!("{path4}: {e}"))?;
     let mut m = MemoryState::from_format4(&s);
     seam_rows(&mut m);
-    let live = state5::live_keys(&m, &mortar_core::incr::OptionKeys::default())
-        .map_err(|e| e.to_string())?;
+    let live = state5::live_keys(&m).map_err(|e| e.to_string())?;
     let mut by = std::collections::BTreeMap::<(u8, bool, u8), usize>::default();
     let mut sample = Vec::new();
     for (k, r) in m.symbols.iter().enumerate() {

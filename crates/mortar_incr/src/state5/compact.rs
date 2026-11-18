@@ -10,7 +10,7 @@ use std::collections::HashMap;
 use std::ffi::OsString;
 use std::path::{Path, PathBuf};
 
-use mortar_core::incr::{IncrReason, OptionKeys};
+use mortar_core::incr::IncrReason;
 use mortar_core::{FileId, SymbolId};
 
 use super::write::{PatchPlan, Planned};
@@ -19,7 +19,7 @@ use crate::format::{NONE, StatRow, StateError, Str, index_kind, patch_kind, stat
 use crate::ops::{LockMode, WriteFailure, WriteOps};
 use crate::update::diags::{DiagRow, Subject};
 use crate::update::rows::{
-    FileIndexRow, FileTable, KeyRefRow, RowRange, edge_kind, file_flags, sym_kind,
+    FileIndexRow, FileTable, KeyRefRow, LocalRange, RowRange, edge_kind, file_flags, sym_kind,
 };
 use crate::update::testing::MemoryState;
 use crate::update::view::{KeyEdits, StatePatch, StateView};
@@ -97,6 +97,8 @@ pub fn apply(m: &mut MemoryState, p: &StatePatch, frags_aux: usize) -> Rows<()> 
     }
     diags(&mut m.diags, &p.diags)?;
     // File-keyed.
+    let syms = m.symbols.len() as u64;
+    let mut retired: Vec<(FileId, LocalRange)> = Vec::new();
     for fr in &p.ranges {
         let f = fr.file.0 as usize;
         if f >= m.files.len() {
@@ -108,6 +110,17 @@ pub fn apply(m: &mut MemoryState, p: &StatePatch, frags_aux: usize) -> Rows<()> 
         let idx = &mut m.file_index[f];
         idx.first_global = fr.first_global;
         let was_gone = idx.gone;
+        // IN-18d (seam 6), as `plan_patch`'s editor.
+        if fr.gone || fr.locals.is_some() {
+            if idx.locals.count != 0 {
+                retired.push((fr.file, idx.locals));
+            }
+            let new = if fr.gone { None } else { fr.locals };
+            if let Some(run) = new {
+                super::write::new_locals(fr.file, run, syms, &p.symbols.append)?;
+            }
+            idx.locals = new.filter(|r| r.count != 0).unwrap_or_default();
+        }
         if let Some(rows) = &fr.sections {
             let old = idx.ranges[FileTable::Sections as usize];
             let n = u32::try_from(rows.len()).map_err(|_| corrupt("a range over 2^32"))?;
@@ -188,6 +201,18 @@ pub fn apply(m: &mut MemoryState, p: &StatePatch, frags_aux: usize) -> Rows<()> 
         return Err(corrupt("a key-parallel table appended past SYMBOLS"));
     }
     m.symbols.extend(p.symbols.append.iter().copied());
+    if !retired.is_empty() {
+        let set: std::collections::BTreeSet<u32> = p.symbols.set.iter().map(|x| x.0.0).collect();
+        for (file, run) in retired {
+            let rows = m
+                .symbols
+                .get_mut(run.first as usize..(run.first + run.count) as usize)
+                .ok_or_else(|| {
+                    corrupt(format!("FILE_INDEX: file {}'s locals past SYMBOLS", file.0))
+                })?;
+            super::write::retire(file, run, rows, &set)?;
+        }
+    }
     m.resolved.extend(p.resolved.append.iter().copied());
     m.resolved
         .resize(n + add, crate::update::rows::ResolvedRow { section: NONE, ..Default::default() });
@@ -322,10 +347,11 @@ pub fn normalize(m: &MemoryState) -> Result<MemoryState, StateError> {
             .ok_or_else(|| bad(&format!("FILES row {f}")))
     };
     let fid = |f: FileId| file(f.0).map(FileId);
-    // SYMBOLS in the stated order; GONE keys, dead keys (IN-71b "Live
-    // keys", by [`live_keys`]; no option set is stored: see there) and the
-    // locals of gone files dropped.
-    let alive = live_keys(m, &OptionKeys::default())?;
+    // SYMBOLS in the stated order; GONE keys (a replaced file's old
+    // locals among them, IN-18d), dead keys (IN-71b "Live keys", by
+    // [`live_keys`]: the option bit is stored) and the locals of gone files
+    // dropped.
+    let alive = live_keys(m)?;
     let mut globals = Vec::new();
     let mut unmentioned = Vec::new();
     let mut locals = Vec::new();
@@ -415,6 +441,7 @@ pub fn normalize(m: &MemoryState) -> Result<MemoryState, StateError> {
         n.files.push(crate::update::rows::FileRow {
             path: intern(r.path)?,
             member_name: intern(r.member_name)?,
+            properties: intern(r.properties)?,
             rank: u64::from(new) << 20,
             ..r.clone()
         });
@@ -426,6 +453,17 @@ pub fn normalize(m: &MemoryState) -> Result<MemoryState, StateError> {
             ..FileIndexRow::default()
         })
         .collect();
+    // IN-18d: each file's locals run, from IN-18e's sorted tail (by new
+    // file, then index: one run per file).
+    let tail = globals.len() + unmentioned.len();
+    for (k, &((f, _), _)) in locals.iter().enumerate() {
+        let row = u32::try_from(tail + k).map_err(|_| state_corrupt("SYMBOLS over 2^32"))?;
+        let run = &mut n.file_index[f as usize].locals;
+        if run.count == 0 {
+            run.first = row;
+        }
+        run.count += 1;
+    }
     for r in &m.probes {
         n.probes.push(crate::format::ProbeRow { path: intern(r.path)?, ..r.clone() });
     }
@@ -669,20 +707,17 @@ pub fn normalize(m: &MemoryState) -> Result<MemoryState, StateError> {
 /// gives it a mention by a live file (a `KEY_REFS` row, a definition: its
 /// `RESOLVED` section in a live file, a `COMMONS` row), a `LAZY` member's
 /// definition (a `KEY_REFS` row of a `LAZY` file: its undefined mentions
-/// are not stored), or an option names it (`options`, matched by name as
-/// `InputsView::key_of` matches: split at the first `@`, `foo@@V` is
-/// `foo`); any other global is DEAD. A local is live while its file is,
-/// a `GONE` key never. The one rule of the canon and the compaction
-/// ([`normalize`] drops the dead keys); public for other packages' tests
-/// (U-3's series replaces its stand-in by it).
-///
-/// `options` is never stored (`OptionKeys`): [`normalize`], so the
-/// compaction and the canon, pass the empty set, and a key that only an
-/// option names is dropped there (a finding of WP-214 §10).
+/// are not stored), or its row carries `SYMBOLS.option` (an option names
+/// it: `Plan::option_keys`, WP-214 seam 6 ruling 2; set by the capture,
+/// never by an update); any other global is DEAD. A local is live while
+/// its file is, a `GONE` key never. The one rule of the canon and the
+/// compaction ([`normalize`] drops the dead keys) and `incr_state`; no
+/// command line is read. Public for other packages' tests (U-3's series
+/// replaces its stand-in by it).
 ///
 /// # Errors
-/// `state-corrupt` for a string out of the pool.
-pub fn live_keys(m: &MemoryState, options: &OptionKeys) -> Result<Vec<bool>, StateError> {
+/// None today (`StateError` kept for a rule that reads strings).
+pub fn live_keys(m: &MemoryState) -> Result<Vec<bool>, StateError> {
     let gone = |f: u32| {
         let f = f as usize;
         m.files.get(f).is_none_or(|r| r.flags & file_flags::GONE != 0)
@@ -709,37 +744,11 @@ pub fn live_keys(m: &MemoryState, options: &OptionKeys) -> Result<Vec<bool>, Sta
             mark(u32::try_from(k).unwrap_or(NONE));
         }
     }
-    // The option names, as (name, version).
-    let mut named: std::collections::HashSet<(Vec<u8>, Vec<u8>)> = std::collections::HashSet::new();
-    let mut name = |b: &[u8]| {
-        let key = match b.iter().position(|&c| c == b'@') {
-            None => (b.to_vec(), Vec::new()),
-            Some(i) if b.get(i + 1) == Some(&b'@') => (b[..i].to_vec(), Vec::new()),
-            Some(i) => (b[..i].to_vec(), b[i + 1..].to_vec()),
-        };
-        named.insert(key);
-    };
-    for k in options.entry.iter().chain(&options.undefined).chain(&options.require_defined) {
-        name(&k.name);
-    }
-    for w in &options.wrap {
-        name(w);
-        name(&[b"__wrap_".as_slice(), w].concat());
-        name(&[b"__real_".as_slice(), w].concat());
-    }
-    for d in &options.defsym {
-        name(&d.name);
-        if let Some(b) = d.value.base() {
-            name(b);
-        }
-    }
-    let s = |x: Str| pool_string(&m.strings, x).map_err(super::read::to_state_error);
     for (k, r) in m.symbols.iter().enumerate() {
         match r.kind {
             sym_kind::GONE => live[k] = false,
             sym_kind::LOCAL => live[k] = !gone(r.file),
-            _ if live[k] || named.is_empty() => {}
-            _ => live[k] = named.contains(&(s(r.name)?, s(r.version)?)),
+            _ => live[k] |= r.option,
         }
     }
     Ok(live)
