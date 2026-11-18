@@ -35,12 +35,11 @@ fn host() -> Option<(PathBuf, PathBuf)> {
     if std::env::consts::ARCH != "aarch64" {
         return None;
     }
-    match (tool("gcc"), tool("ar")) {
-        (Some(gcc), Some(ar)) => Some((gcc, ar)),
-        _ => {
-            assert!(!tools_required(), "gcc and ar are required");
-            None
-        }
+    if let (Some(gcc), Some(ar)) = (tool("gcc"), tool("ar")) {
+        Some((gcc, ar))
+    } else {
+        assert!(!tools_required(), "gcc and ar are required");
+        None
     }
 }
 
@@ -283,7 +282,8 @@ fn section(image: &[u8], name: &str) -> Option<(u32, u64, u64)> {
         let h = shoff + i * 64;
         let n = str_off + u32_at(h) as usize;
         let end = n + image[n..].iter().position(|&b| b == 0)?;
-        (&image[n..end] == name.as_bytes()).then(|| (u32_at(h + 4), u64_at(h + 8), u64_at(h + 0x20)))
+        (&image[n..end] == name.as_bytes())
+            .then(|| (u32_at(h + 4), u64_at(h + 8), u64_at(h + 0x20)))
     })
 }
 
@@ -316,7 +316,8 @@ fn r_sizes_agree() {
         let parsed = mortar_cli::parse(&args);
         assert!(!parsed.failed(), "{}: {:?}", case.name, parsed.diagnostics);
         let diag = Collector::new(Policy::default());
-        let env = mortar::front::Env { cwd: s.path(), pool: Pool::new(2), replay: None, slack: false };
+        let env =
+            mortar::front::Env { cwd: s.path(), pool: Pool::new(2), replay: None, slack: false };
         let mut timer = mortar::timing::Timer::new(false);
         let f = mortar::relocatable::front(parsed.plan, env, &store, &diag, &mut timer);
         let failed = diag.finish();
@@ -454,7 +455,10 @@ fn r_gnu_warning_carried() {
     // so no final link warns for it (GNU ld warned at -r; L-R1's gap).
     s.write("main.c", "int wuser(void);\nint main(void) { return wuser(); }\n");
     ok(&run_in(s.path(), &gcc, &["-O2", "-c", "main.c", "-o", "main.o"]), "main.c");
-    let direct = mortar(s.path(), &["-m", "aarch64linux", "-e", "main", "main.o", "w.o", "wuser.o", "-o", "d"]);
+    let direct = mortar(
+        s.path(),
+        &["-m", "aarch64linux", "-e", "main", "main.o", "w.o", "wuser.o", "-o", "d"],
+    );
     let via = mortar(s.path(), &["-m", "aarch64linux", "-e", "main", "main.o", "w.r.o", "-o", "v"]);
     for (what, o) in [("direct", &direct), ("via -r", &via)] {
         let e = o.stderr_text();
@@ -491,7 +495,10 @@ fn r_section_groups_refused() {
          \t.text\n\t.globl user\n\t.type user, %function\nuser:\n\tb inl\n",
     );
     ok(&run_in(s.path(), &gcc, &["-c", "g.s", "-o", "g.o"]), "g.s");
-    for line in [&["-r", "g.o", "-o", "g.r.o"][..], &["-m", "aarch64linux", "-Ur", "g.o", "-o", "g2.r.o"][..]] {
+    for line in [
+        &["-r", "g.o", "-o", "g.r.o"][..],
+        &["-m", "aarch64linux", "-Ur", "g.o", "-o", "g2.r.o"][..],
+    ] {
         let o = mortar(s.path(), line);
         let e = o.stderr_text();
         assert!(!o.success(), "{line:?}: refused");

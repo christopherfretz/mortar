@@ -28,6 +28,7 @@ use mortar_core::check::CheckContext;
 use mortar_core::check::relocatable::{validate_groups, validate_relocs};
 use mortar_core::demands::Demands;
 use mortar_core::id::{FileId, OutSecId, SectionId};
+use mortar_core::inputs::RelocForm;
 use mortar_core::inputs::{CopyError, Inputs};
 use mortar_core::layout::{ChunkKind, SegmentRules};
 use mortar_core::par::Pool;
@@ -37,16 +38,15 @@ use mortar_core::split::Split;
 use mortar_core::{Liveness, RelocatableLayout};
 use mortar_diag::{Collector, Diagnostic, Key, Place};
 use mortar_elf::{Class, Machine, Object, Section, SectionIndex, SymbolIndex};
+use mortar_image::relocatable::RelocatableLink;
 use mortar_input::load::{LoadEnv, load_steps_with};
 use mortar_input::store::Store;
 use mortar_layout::headers::{HeaderShapes, Headers, gather};
 use mortar_layout::relocatable::NoteSizes;
 use mortar_layout::{Target, relocatable::reloc_entry_size};
-use mortar_core::inputs::RelocForm;
 use mortar_merge::eh::Target as RelocTarget;
 use mortar_merge::phase::{ArchRelocs, Link, LinkSection, Tables};
 use mortar_merge::problem::What;
-use mortar_image::relocatable::RelocatableLink;
 
 use crate::arch::LinkArch;
 use crate::front::Env;
@@ -168,7 +168,7 @@ fn records(
     headers: &Headers<'_>,
     layout: &RelocatableLayout<'_>,
     class: Class,
-) -> Result<Vec<u64>, Diagnostic> {
+) -> Result<Vec<u64>, Box<Diagnostic>> {
     let mut out = vec![0u64; layout.assignment.outsecs.len() as usize];
     let size = reloc_entry_size(class);
     for (s, row) in resolution.sections.iter() {
@@ -176,13 +176,16 @@ fn records(
         if row.reloc.0 == 0 || !row.is_kept() {
             continue;
         }
-        let (file, _) = resolution.sh_index(s).ok_or_else(|| internal("a section with no file"))?;
+        let (file, _) =
+            resolution.sh_index(s).ok_or_else(|| Box::new(internal("a section with no file")))?;
         let r = resolution
             .section_id(file, row.reloc)
-            .ok_or_else(|| internal("a relocation section with no id"))?;
+            .ok_or_else(|| Box::new(internal("a relocation section with no id")))?;
         let bytes = headers.get(r).map_or(0, |h| h.size);
-        if bytes % size != 0 {
-            return Err(internal("a relocation section is not a whole number of records"));
+        if !bytes.is_multiple_of(size) {
+            return Err(Box::new(internal(
+                "a relocation section is not a whole number of records",
+            )));
         }
         out[o.0 as usize] += bytes / size;
     }
@@ -266,9 +269,8 @@ pub fn front<'s>(
     }
     // 60: the `.eh_frame` split.
     let empty = Assignment::empty(n);
-    let eh = EhOnly {
-        tables: Tables { inputs: &inputs, resolution: &resolution, assignment: &empty },
-    };
+    let eh =
+        EhOnly { tables: Tables { inputs: &inputs, resolution: &resolution, assignment: &empty } };
     let split = match mortar_merge::phase::run(&pool, &eh, &ArchRelocs(arch.get())) {
         Ok(p) => p.split,
         Err(problems) => {
@@ -339,7 +341,8 @@ pub fn front<'s>(
         Ok(l) => l,
         Err(errors) => {
             for (i, d) in errors.into_iter().enumerate() {
-                let (k, d) = crate::front::layout_diag(&inputs, &resolution, d, Key::new(90, 0, i as u64));
+                let (k, d) =
+                    crate::front::layout_diag(&inputs, &resolution, d, Key::new(90, 0, i as u64));
                 diag.emit(k, d);
             }
             return None;
@@ -348,10 +351,7 @@ pub fn front<'s>(
     // L-R6: removing a record is RL-8's (the image refuses it too; here it
     // comes before L-R10's record counts, which assume none).
     if !layout.eh_removed.is_empty() {
-        diag.emit(
-            Key::new(90, 0, 0),
-            mortar_diag::relocatable::refused_eh_records_removed(),
-        );
+        diag.emit(Key::new(90, 0, 0), mortar_diag::relocatable::refused_eh_records_removed());
         return None;
     }
     let headers = match gather(&inputs, &resolution, &pool) {
@@ -365,7 +365,7 @@ pub fn front<'s>(
     let records = match records(&resolution, &headers, &layout, target.class) {
         Ok(r) => r,
         Err(d) => {
-            diag.emit(Key::new(90, 0, u64::MAX), d);
+            diag.emit(Key::new(90, 0, u64::MAX), *d);
             return None;
         }
     };
@@ -609,7 +609,7 @@ fn text_map(f: &RFront<'_>, output: &[u8]) -> mortar_image::textmap::TextMap {
     }
     let outsecs = &f.layout.assignment.outsecs;
     let mut sections = Vec::new();
-    for &c in pl.order.iter() {
+    for &c in &pl.order {
         let ch = &pl.chunks[c];
         let name: Vec<u8> = match ch.kind {
             ChunkKind::Body(p) => outsecs[p.out].name.to_vec(),

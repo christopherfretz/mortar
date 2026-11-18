@@ -218,7 +218,10 @@ pub const OUT_OF_M4R: &[(&str, &str)] = &[
         "unsupported feature: relocations against a dropped COMDAT copy at -r",
         "RL-8: spec/image.md I-R7",
     ),
-    ("unsupported feature: the Mason container at -r", "RL-12: spec/meta.md MT-30 at -r (kiln's objects)"),
+    (
+        "unsupported feature: the Mason container at -r",
+        "RL-12: spec/meta.md MT-30 at -r (kiln's objects)",
+    ),
     ("unsupported feature: x86-64 output with -r", "RL-9: x86-64 at -r"),
     ("unsupported feature: i386 output with -r", "RL-9: i386 (REL) at -r"),
     ("unsupported option: -s with -r", "RL-11: spec/image.md I-R9"),
@@ -230,7 +233,10 @@ pub const OUT_OF_M4R: &[(&str, &str)] = &[
         "unsupported option: --gc-sections with -r",
         "spec/cli.md C-R4: a partial link cannot know what the final link needs (for good)",
     ),
-    ("unsupported feature: GCC LTO sections with -r", "spec/resolve.md RV-R9: a line that needs it"),
+    (
+        "unsupported feature: GCC LTO sections with -r",
+        "spec/resolve.md RV-R9: a line that needs it",
+    ),
 ];
 
 /// The refusals a rule puts out of M2: a key mortar's diagnostic carries,
@@ -858,7 +864,10 @@ impl Lane {
         for (name, input) in [("direct", object.as_str()), ("via", r_s.as_str())] {
             let exe = dir.join(format!("mortar.{name}"));
             let exe_map = dir.join(format!("mortar.{name}.map"));
-            let mut argv: Vec<String> = words.iter().map(|w| if *w == r_s { input.to_owned() } else { w.clone() }).collect();
+            let mut argv: Vec<String> = words
+                .iter()
+                .map(|w| if *w == r_s { input.to_owned() } else { w.clone() })
+                .collect();
             if let Some(i) = argv.iter().position(|w| w == "-o")
                 && let Some(o) = argv.get_mut(i + 1)
             {

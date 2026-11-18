@@ -1538,9 +1538,9 @@ pub fn property_plan_with(
         diag,
     ) {
         Ok(p) => Ok(p.exists().then_some(p)),
-        Err(_) => Err(Failed {
-            diagnostics: vec![(key0(0), internal("the property note merge failed"))],
-        }),
+        Err(_) => {
+            Err(Failed { diagnostics: vec![(key0(0), internal("the property note merge failed"))] })
+        }
     }
 }
 
@@ -1600,10 +1600,7 @@ pub fn write(
     opts: &OutputOptions,
 ) -> Result<Written, Failed> {
     if !link.layout.eh_removed.is_empty() {
-        return Err(one(
-            key0(0),
-            mortar_diag::relocatable::refused_eh_records_removed(),
-        ));
+        return Err(one(key0(0), mortar_diag::relocatable::refused_eh_records_removed()));
     }
     let img = prepare(link)?;
     let bytes = img.fill()?;
