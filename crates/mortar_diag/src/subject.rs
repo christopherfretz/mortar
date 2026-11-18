@@ -4,7 +4,7 @@
 //! (U-1): the type [`SubjectKind`] and the entry point [`subjects`];
 //! filled by U-9 (WP-221).
 //!
-//! WP-221 step 1 (PROPOSED, not ruled): the stored form of a warning,
+//! WP-221 §1.1 (ruled): the stored form of a warning,
 //! [`stored`] and [`from_stored`]. A `DIAGS` row keeps the diagnostic's
 //! model (its kind's fields, its place, its context lines), never a
 //! rendering: the program name, colour and the demangling hook are the
@@ -72,7 +72,7 @@ pub fn subjects(code: &str) -> &'static [SubjectKind] {
     }
 }
 
-// ---- the stored form (WP-221 step 1, PROPOSED) ------------------------------
+// ---- the stored form (WP-221 §1.1, ruled) ------------------------------------
 //
 // A sequence of tokens, each `<length in bytes, decimal>:<bytes>`: valid
 // UTF-8 whenever the fields are (they are Rust strings), self-delimiting,
@@ -81,7 +81,7 @@ pub fn subjects(code: &str) -> &'static [SubjectKind] {
 // (`DiagRow.code`); the severity is not stored: a state holds warnings only
 // (IN-75a, IN-48).
 //
-//   form    = fields place *context
+//   form    = count fields place *context  (count: the kind's field count)
 //   fields  = the kind's fields in declaration order (numbers in decimal)
 //   place   = "-" / form-of-place
 //   context = "n" text / "@" relation-index form-of-place
@@ -99,7 +99,7 @@ impl Out {
         self.0.push_str(s);
         self
     }
-    fn num(&mut self, n: impl ToString) -> &mut Self {
+    fn num(&mut self, n: u64) -> &mut Self {
         self.tok(&n.to_string())
     }
     fn opt(&mut self, s: Option<&str>) -> &mut Self {
@@ -111,24 +111,25 @@ impl Out {
     fn file(&mut self, f: &FileRef) -> &mut Self {
         self.tok(f.path()).opt(f.member())
     }
-    fn place(&mut self, p: &Place) -> Option<()> {
+    fn place(&mut self, p: &Place) -> &mut Self {
         match p {
             Place::File(f) => self.tok("F").file(f),
             Place::Section { file, section, offset } => {
-                self.tok("S").file(file).tok(section).num(offset)
+                self.tok("S").file(file).tok(section).num(*offset)
             }
             Place::Symbol { file, name } => self.tok("Y").file(file).tok(name),
             Place::Argument(text) => self.tok("A").tok(text),
-            Place::Script { path, line, column } => self.tok("C").tok(path).num(line).num(column),
+            Place::Script { path, line, column } => {
+                self.tok("C").tok(path).num(u64::from(*line)).num(u64::from(*column))
+            }
             Place::Record { file, name, kept, source } => {
-                self.tok("R").file(file).opt(name.as_deref()).num(u8::from(*kept));
+                self.tok("R").file(file).opt(name.as_deref()).num(u64::from(*kept));
                 match source {
                     None => self.tok("-"),
-                    Some((path, line)) => self.tok("+").tok(path).num(line),
+                    Some((path, line)) => self.tok("+").tok(path).num(u64::from(*line)),
                 }
             }
-        };
-        Some(())
+        }
     }
 }
 
@@ -192,9 +193,7 @@ fn kind_of(code: &str, f: &mut In<'_>) -> Option<Kind> {
             Kind::CopyOfLocallyBoundDefinition { name: t()?, file: t()? }
         }
         "gnu-warning" => Kind::GnuWarning { text: t()? },
-        "version-reassigned" => {
-            Kind::VersionReassigned { name: t()?, first: t()?, second: t()? }
-        }
+        "version-reassigned" => Kind::VersionReassigned { name: t()?, first: t()?, second: t()? },
         "version-script-undefined-name" => {
             Kind::VersionScriptUndefinedName { name: t()?, version: t()? }
         }
@@ -229,7 +228,7 @@ fn kind_of(code: &str, f: &mut In<'_>) -> Option<Kind> {
     })
 }
 
-/// The stored form of the warning `diag` (WP-221 step 1, PROPOSED):
+/// The stored form of the warning `diag` (WP-221 §1.1, ruled):
 /// `DIAGS`' `text`, beside `code` = `diag.id()`. `None` for a diagnostic
 /// that is not a warning or whose kind is never one: a state holds
 /// warnings only (IN-75a).
@@ -239,15 +238,15 @@ pub fn stored(diag: &Diagnostic) -> Option<String> {
         return None;
     }
     let mut out = Out(String::new());
-    for f in fields(diag.kind())? {
+    let fields = fields(diag.kind())?;
+    out.num(fields.len() as u64);
+    for f in fields {
         out.tok(&f);
     }
     match diag.place() {
-        None => {
-            out.tok("-");
-        }
-        Some(p) => out.place(p)?,
-    }
+        None => out.tok("-"),
+        Some(p) => out.place(p),
+    };
     for c in diag.context() {
         match c {
             Context::Note(text) => {
@@ -255,8 +254,7 @@ pub fn stored(diag: &Diagnostic) -> Option<String> {
             }
             Context::At(relation, place) => {
                 let index = Relation::ALL.iter().position(|r| r == relation)?;
-                out.tok("@").num(index);
-                out.place(place)?;
+                out.tok("@").num(index as u64).place(place);
             }
         }
     }
@@ -277,19 +275,23 @@ impl<'a> In<'a> {
         self.0 = &rest[len..];
         Some(t)
     }
-    fn num<T: std::str::FromStr>(&mut self) -> Option<T> {
-        self.tok()?.parse().ok()
+    /// A number in its one decimal spelling (no sign, no leading zero).
+    fn num<T: std::str::FromStr + ToString>(&mut self) -> Option<T> {
+        let t = self.tok()?;
+        let n: T = t.parse().ok()?;
+        (n.to_string() == t).then_some(n)
     }
-    fn opt(&mut self) -> Option<Option<&'a str>> {
-        match self.tok()? {
-            "-" => Some(None),
-            "+" => Some(Some(self.tok()?)),
-            _ => None,
+    /// `-` (absent, `Ok(None)`) or `+` and a token; `Err` otherwise.
+    fn opt(&mut self) -> Result<Option<&'a str>, ()> {
+        match self.tok().ok_or(())? {
+            "-" => Ok(None),
+            "+" => Ok(Some(self.tok().ok_or(())?)),
+            _ => Err(()),
         }
     }
     fn file(&mut self) -> Option<FileRef> {
         let path = self.tok()?;
-        Some(match self.opt()? {
+        Some(match self.opt().ok()? {
             None => FileRef::new(path),
             Some(m) => FileRef::in_archive(path, m),
         })
@@ -314,7 +316,7 @@ impl<'a> In<'a> {
             }
             "R" => {
                 let file = self.file()?;
-                let name = self.opt()?.map(str::to_owned);
+                let name = self.opt().ok()?.map(str::to_owned);
                 let kept = match self.tok()? {
                     "0" => false,
                     "1" => true,
@@ -335,13 +337,20 @@ impl<'a> In<'a> {
     }
 }
 
-/// The warning a `DIAGS` row stores (WP-221 step 1, PROPOSED): the inverse
+/// The warning a `DIAGS` row stores (WP-221 §1.1, ruled): the inverse
 /// of [`stored`]; `None` when `text` is not a stored form of `code` (the
 /// state is corrupt).
 #[must_use]
 pub fn from_stored(code: &str, text: &str) -> Option<Diagnostic> {
     let mut i = In(text);
-    let mut d = Diagnostic::warning(kind_of(code, &mut i)?);
+    // The kind's field count first: a state written by a build whose
+    // model has a field more or less ends here (WP-221 ruling 1).
+    let count: usize = i.num()?;
+    let kind = kind_of(code, &mut i)?;
+    if fields(&kind)?.len() != count {
+        return None;
+    }
+    let mut d = Diagnostic::warning(kind);
     match i.tok()? {
         "-" => {}
         tag => d = d.at(i.place(tag)?),
@@ -435,7 +444,7 @@ mod tests {
         out
     }
 
-    // spec: WP-221 step 1 (PROPOSED): every kind that can be a warning has
+    // spec: WP-221 §1.1 (ruled): every kind that can be a warning has
     // a stored form, read back as the same model value, which renders as
     // the original under every style (program name, colour, demangling)
     #[test]
@@ -456,7 +465,9 @@ mod tests {
         assert_eq!(ids, want, "a sample for every code with subjects");
         for d in &all {
             let text = stored(d).expect("a stored form");
-            assert!(!text.contains("mortar") && !text.contains('\u{1b}') || d.id() == "gnu-warning");
+            assert!(
+                !text.contains("mortar") && !text.contains('\u{1b}') || d.id() == "gnu-warning"
+            );
             let back = from_stored(d.id(), &text).expect("read back");
             assert_eq!(&back, d);
             for style in &styles {
@@ -476,7 +487,49 @@ mod tests {
         assert!(stored(&Diagnostic::error(undefined())).is_none());
         assert!(stored(&Diagnostic::warning(undefined())).is_some());
         assert!(stored(&Diagnostic::warning(Kind::NoInputFiles)).is_none());
-        assert!(from_stored("no-input-files", "1:-").is_none());
-        assert!(from_stored("undefined-symbol", "01:f1:-").is_none());
+        assert!(from_stored("no-input-files", "1:01:-").is_none());
+        assert_eq!(
+            from_stored("undefined-symbol", "1:11:f1:-"),
+            Some(Diagnostic::warning(undefined()))
+        );
+        assert!(from_stored("undefined-symbol", "01:11:f1:-").is_none(), "a length's leading zero");
+        assert!(from_stored("undefined-symbol", "2:011:f1:-").is_none(), "a number's leading zero");
+    }
+
+    // spec: WP-221 ruling 1: a state written by a build of mortar whose
+    // model differs decodes to `None` (state-corrupt), never to another
+    // warning: a field more, a field less, an unknown place tag
+    #[test]
+    fn another_model_is_refused() {
+        let file = FileRef::in_archive("lib.a", "w1.o");
+        let d = Diagnostic::warning(Kind::GnuWarning { text: "w is deprecated".to_owned() })
+            .at(Place::section(file.clone(), ".text", 0x10))
+            .with(Relation::ReferencedBy, Place::section(file, ".text.f", 4));
+        let text = stored(&d).expect("stored");
+        assert_eq!(from_stored("gnu-warning", &text), Some(d));
+        // the same fields with one more (`-` and `F`: the tags a place
+        // starts with) and one fewer
+        let rest = text.strip_prefix("1:115:w is deprecated").expect("the head");
+        for more in ["1:-", "1:F", "1:x"] {
+            let t = format!("1:21:115:w is deprecated{more}{rest}");
+            assert!(from_stored("gnu-warning", &t).is_none(), "{t}");
+            let t = format!("1:115:w is deprecated{more}{rest}");
+            assert!(from_stored("gnu-warning", &t).is_none(), "{t}");
+        }
+        assert!(from_stored("gnu-warning", &format!("1:0{rest}")).is_none());
+        assert!(from_stored("gnu-warning", &format!("1:1{rest}")).is_none());
+        // an unknown place tag in the head, in the context line; an
+        // unknown context tag
+        let head = text.replacen("1:S", "1:Q", 1);
+        let context = format!(
+            "{}1:Q{}",
+            &text[..text.rfind("1:S").expect("S")],
+            &text[text.rfind("1:S").expect("S") + 3..]
+        );
+        let line = text.replacen("1:@", "1:#", 1);
+        for t in [head, context, line] {
+            assert_ne!(t, text);
+            assert!(from_stored("gnu-warning", &t).is_none(), "{t}");
+        }
     }
 }
