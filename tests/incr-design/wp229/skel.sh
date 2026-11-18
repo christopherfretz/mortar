@@ -95,7 +95,9 @@ quit
 E
 norm() { sed -e 's/0x[0-9a-f]*/ADDR/g' -e 's/[Pp]rocess [0-9]*/process N/g' -e "s#$W/##g" \
   -e 's/\(plain\|full\|emuldrop\|emul\)\b/X/g' -e 's/\.text + [0-9]*/.text + OFF/' -e 's/\.data + [0-9]*/.data + OFF/' \
-  -e 's/\.bss + [0-9]*/.bss + OFF/' -e 's/PT_LOAD\[[0-9]\]/PT_LOAD[N]/g' | grep -v '^(lldb) quit'; }
+  -e 's/\.bss + [0-9]*/.bss + OFF/' -e 's/PT_LOAD\[[0-9]\]/PT_LOAD[N]/g' \
+  -e '/^(UOnly) x = (a = 1, b = 3/!s/^(UOnly) x = .*/(UOnly) x = UNINITIALIZED/' \
+  -e '/^x = {a = 1, b = 3/!s/^x = {.*/x = UNINITIALIZED/' | grep -v '^(lldb) quit'; }
 tr_run() { # dir out tag
   ( cd "$1" && gdb -batch -nx -x ../g.cmd ./"$2" 2>&1 | norm > "$2.$3.gdb"
     lldb -b -s ../l.cmd ./"$2" 2>&1 | norm > "$2.$3.lldb" )

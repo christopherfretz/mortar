@@ -1,0 +1,168 @@
+# IN-55 option (A) (WP-229, G-2): a link with an incremental session leaves
+# the GNU name index (.debug_gnu_pubnames, .debug_gnu_pubtypes) out, as -S
+# leaves out .debug_*: the section is not in the output and the map says
+# `discard <file> <section> unspecified` (image.md I-78). A plain link
+# keeps the sets.
+# - The switch is the session, not the plan's mode: `--incremental` with
+#   an option that makes the link plain (`--sort-common`, IN-12) warns,
+#   keeps the sets and writes the same bytes as the link without
+#   `--incremental`.
+# - Hand-written sets (x.S) in odd places: in a COMDAT group with an
+#   allocated member (GROUP: the set alone is left out, the group's other
+#   member is kept); an allocated section of that name (ALLOC: kept, not
+#   debug information); a set a kept section relocates against: .data
+#   (RELOC: refused as discarded-section-reference, I-46, as with -S; the
+#   plain link links) and .debug_info (DINFO: the reference gets I-47's
+#   tombstone, as any debug reference to a section not in the output).
+#@ spec: incr.md IN-55 IN-12; image.md I-46 I-47 I-78
+#@ arch: aarch64 x86_64
+#@ requires: g++ llvm-dwarfdump
+
+cxx -g -gsplit-dwarf -gdwarf-5 -O0 main.cc -o main5.o
+cxx -g -gsplit-dwarf -gdwarf-5 -O0 b.cc -o b5.o
+cxx -g -gsplit-dwarf -gdwarf-4 -O0 main.cc -o main4.o
+cxx -g -gsplit-dwarf -gdwarf-4 -O0 b.cc -o b4.o
+cc -O0 c.c -o c.o
+as -DGROUP x.S -o x-group.o
+as -DALLOC x.S -o x-alloc.o
+as -DRELOC x.S -o x-reloc.o
+as -DDINFO x.S -o x-dinfo.o
+link g++ -static -no-pie -fno-use-linker-plugin main5.o b5.o -o plain5
+run plain5
+  stdout: 5 10
+check readelf -SW plain5
+  has: .debug_gnu_pubnames
+  has: .debug_gnu_pubtypes
+link(mortar) g++ -static -no-pie -fno-use-linker-plugin -Wl,--incremental=full -Wl,--mortar-map=inc5.map main5.o b5.o -o inc5
+run(mortar) inc5
+  stdout: 5 10
+check(mortar) readelf -SW inc5
+  not: .debug_gnu_pub
+  has: .debug_addr
+check(mortar) readelf --debug-dump=info inc5
+  has: DW_UT_skeleton
+  has: Found separate debug object file: */main5.dwo
+check(mortar) llvm-dwarfdump --verify inc5
+  has: No errors.
+check(mortar) text inc5.map
+  has: ^discard * unspecified$
+link(mortar) g++ -static -no-pie -fno-use-linker-plugin -Wl,--incremental=full main4.o b4.o -Wl,--mortar-map=inc4.map -o inc4
+run(mortar) inc4
+  stdout: 5 10
+check(mortar) readelf -SW inc4
+  not: .debug_gnu_pub
+  has: .debug_addr
+check(mortar) llvm-dwarfdump --verify inc4
+  has: No errors.
+# The session decides: --sort-common makes the link plain (IN-12).
+link g++ -static -no-pie -fno-use-linker-plugin -Wl,--sort-common main5.o b5.o -o sorted
+link(mortar) g++ -static -no-pie -fno-use-linker-plugin -Wl,--sort-common -Wl,--incremental main5.o b5.o -Wl,--mortar-map=sorted-inc.map -o sorted-inc
+  diag: --incremental is not supported with --sort-common; linking without a state
+check(mortar) readelf -SW sorted-inc
+  has: .debug_gnu_pubnames
+check(mortar) cmp sorted-inc sorted
+  has: ^identical$
+# Hand-written sets.
+link g++ -static -no-pie -fno-use-linker-plugin c.o x-group.o -o group
+link(mortar) g++ -static -no-pie -fno-use-linker-plugin -Wl,--incremental=full -Wl,--mortar-map=group-inc.map c.o x-group.o -o group-inc
+run(mortar) group-inc
+  exit: 3
+check(mortar) readelf -SW group-inc
+  not: .debug_gnu_pubnames
+check(mortar) readelf -sW group-inc
+  has: xg
+check(mortar) text group-inc.map
+  has: ^discard * unspecified$
+link(mortar) g++ -static -no-pie -fno-use-linker-plugin -Wl,--incremental=full c.o x-alloc.o -Wl,--mortar-map=alloc-inc.map -o alloc-inc
+check(mortar) readelf -SW alloc-inc
+  has: .debug_gnu_pubnames
+link g++ -static -no-pie -fno-use-linker-plugin c.o x-reloc.o -o reloc
+run reloc
+  exit: 3
+link(mortar) g++ -static -no-pie -fno-use-linker-plugin -Wl,--incremental=full c.o x-reloc.o -o reloc-inc
+  exit: fail
+  diag: relocation refers to a symbol in a discarded section: .debug_gnu_pubnames
+link(mortar) g++ -static -no-pie -fno-use-linker-plugin -Wl,-S c.o x-reloc.o -o reloc-strip
+  exit: fail
+  diag: relocation refers to a symbol in a discarded section: .debug_gnu_pubnames
+link(mortar) g++ -static -no-pie -fno-use-linker-plugin -Wl,--incremental=full c.o x-dinfo.o -Wl,--mortar-map=dinfo-inc.map -o dinfo-inc
+run(mortar) dinfo-inc
+  exit: 3
+check(mortar) readelf -SW dinfo-inc
+  not: .debug_gnu_pubnames
+check(mortar) llvm-dwarfdump --debug-info dinfo-inc
+  has: DW_AT_unknown_2000*(0xffffffff)
+
+#--- main.cc
+#include <cstdio>
+struct Point { int x; int y; };
+int helper(int);
+int main(int argc, char **) {
+  Point p{argc, 4};
+  std::printf("%d %d\n", helper(argc) + p.y, 10 * p.x);
+  return 0;
+}
+#--- b.cc
+__attribute__((noinline)) int helper(int x) { return x * 3 - 2; }
+#--- c.c
+int main(void) { return 3; }
+#--- x.S
+/* .debug_gnu_pubnames in odd places (WP-229 ruling 4). GROUP: in COMDAT
+   group xgrp with an allocated member; ALLOC: an allocated section of
+   that name; RELOC: .data relocated against it; DINFO: .debug_info
+   relocated against it (an attribute of form DW_FORM_sec_offset). */
+	.text
+	.globl xfn
+	.type xfn, %function
+xfn:
+	ret
+	.size xfn, .-xfn
+#ifdef GROUP
+	.section .text.xg,"axG",%progbits,xgrp,comdat
+	.globl xg
+	.type xg, %function
+xg:
+	ret
+	.size xg, .-xg
+	.section .debug_gnu_pubnames,"G",%progbits,xgrp,comdat
+#elif defined(ALLOC)
+	.section .debug_gnu_pubnames,"a",%progbits
+#else
+	.section .debug_gnu_pubnames,"",%progbits
+#endif
+.Lpn:
+	.long 14
+	.short 2
+	.long 0
+	.long 0
+	.long 0
+	.byte 0
+	.byte 0
+	.byte 0
+	.byte 0
+#ifdef RELOC
+	.data
+	.globl xdata
+xdata:
+	.quad .Lpn
+#endif
+#ifdef DINFO
+	.section .debug_abbrev,"",%progbits
+.Labbrev:
+	.uleb128 1
+	.uleb128 0x11
+	.byte 0
+	.uleb128 0x2000
+	.uleb128 0x17
+	.byte 0, 0
+	.byte 0
+	.section .debug_info,"",%progbits
+	.long .Lcu_end - .Lcu_start
+.Lcu_start:
+	.short 4
+	.long .Labbrev
+	.byte 8
+	.uleb128 1
+	.long .Lpn
+.Lcu_end:
+#endif
