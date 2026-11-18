@@ -91,7 +91,7 @@ def block_tail(rest):
 MINS = {'.debug_info': (15, 1), '.debug_abbrev': (1, 1), '.debug_line': (32, 1),
         '.debug_rnglists': (12, 1), '.debug_loclists': (12, 1), '.debug_str_offsets': (8, 4),
         '.debug_addr': (8, 8), '.debug_ranges': (16, 1), '.debug_loc': (16, 1),
-        '.debug_frame': (13, 1), '.debug_macro': (6, 1)}
+        '.debug_frame': (13, 1), '.debug_macro': (7, 1)}
 
 
 def neutral(name, size, abbrev, addr_size=8, addr_base=None, abbrev_addr=None):
@@ -142,6 +142,51 @@ def pieces(name, D):
             r -= L
         L += 1
     return out + [r]
+
+
+# record kinds of mortar's map (plumb.md 3.2) and the token positions that
+# hold a file id
+FILE_FIELDS = {'file': [1], 'place': [1], 'piece': [1], 'nplace': [1], 'merged': [1],
+               'discard': [1], 'fold': [1, 3], 'region': [1], 'redirect': [1],
+               'symblock': [1], 'rplace': [1], 'rframe': [1], 'rgroup': [2]}
+
+
+def drop_files(lines, dead):
+    """The map of the update: the emulation's old files are not inputs of
+    the update, so every record of theirs goes (and the `arg` naming
+    them), and later ids close up."""
+    paths = set()
+    for ln in lines:
+        w = ln.split()
+        if w and w[0] == 'file' and int(w[1]) in dead and len(w) == 3:
+            paths.add(w[2])
+    ren = lambda f: f - sum(1 for d in dead if d < f)
+    out = []
+    for ln in lines:
+        w = ln.split()
+        if not w:
+            out.append(ln)
+            continue
+        if w[0] == 'arg' and len(w) == 2 and w[1] in paths:
+            continue
+        pos = list(FILE_FIELDS.get(w[0], []))
+        if w[0] == 'slot' and len(w) == 5:
+            pos = [2]
+        if w[0] == 'common' and len(w) == 6:
+            pos = [5]
+        skip = False
+        for p_ in pos:
+            if w[p_] == '-':
+                continue
+            f = int(w[p_])
+            if f in dead:
+                skip = True
+                break
+            w[p_] = str(ren(f))
+        if skip:
+            continue
+        out.append(' '.join(w))
+    return out
 
 
 def main():
@@ -281,6 +326,8 @@ def main():
             for (name, o, size) in sorted(new_dead):
                 mo.append('dead %s %x %x neutral' % (name, o, size))
         mo.append(ln)
+    if '--keep-file' not in opts:
+        mo = drop_files(mo, dead)
     open(outmap, 'w').write('\n'.join(mo) + '\n')
     for k in sorted(report):
         print('%s %s' % (k, report[k]))
