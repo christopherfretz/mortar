@@ -2546,7 +2546,9 @@ fn file_rows_are_the_whole_capture_s() {
                 .unwrap();
         let all: Vec<mortar_core::FileId> =
             (0..f.inputs.files.len()).map(mortar_core::FileId).collect();
-        let rows = file_rows(&link, &keys, &f.layout, &mut strings, &all).unwrap();
+        let rows = file_rows(&link, &keys, &f.layout, &mut strings, &all, true).unwrap();
+        // G-2b: the capture's per-file task's rows come with them.
+        assert!(rows.iter().any(|r| !r.refs.is_empty()), "no KEY_REFS rows");
         assert_eq!(rows.len(), all.len());
         let (mut sections, mut mentions) = (0usize, 0usize);
         for r in &rows {

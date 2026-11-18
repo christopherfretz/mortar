@@ -2715,16 +2715,24 @@ pub struct FileRows {
     /// Its non-local entries whose name holds an `@` (`META.versioned`'s
     /// count, as the format-5 capture counts it).
     pub versioned: u32,
+    /// The format-5 capture's own per-file rows (`file5`, ruling G-2b:
+    /// one producer), keys as the link's `SymbolId`s: `KEY_REFS`'
+    /// `(key, def, bind, typ, flags)` one per key, `COMMONS`'
+    /// `(key, size, align)`, `COPIES`' `(key, symbol index, size, type)`,
+    /// and the COMDAT signatures it has a copy of (`GROUPS`), sorted.
+    pub refs: Vec<(u32, u8, u8, u8, u8)>,
+    pub commons: Vec<(u32, u64, u64)>,
+    pub copies: Vec<(u32, u32, u64, u8)>,
+    pub groups: Vec<Vec<u8>>,
 }
 
 /// [`FileRows`] for each of `files`, in that order: O(those files'
-/// sections and symbols), no pass over the link's other files.
+/// sections and symbols), no pass over the link's other files. `copies`
+/// is `Link5::copies` (`COPIES` written: every `--odr` mode but `off`).
 ///
-/// Not produced here (they need lines this function may not change, a
-/// finding of WP-225 G-2): `INDEX` (`tables::index_file` is private to
-/// `tables`), and `KEY_REFS`/`COMMONS`/`COPIES`/`GROUPS` (the format-5
-/// capture makes them in a closure inside `rows5`), `demand` and `facts`
-/// (the scan's, whole-link).
+/// Not produced here: `INDEX` (`tables::index_file`, `pub(crate)` by
+/// ruling G-2a, called by the U4 adapter next), `demand` and `facts` (the
+/// scan's, whole-link: path (A)'s front in M2, ruling G-2c).
 ///
 /// # Errors
 /// A file or section without identity, or a symbol table that is not
@@ -2735,6 +2743,7 @@ pub fn file_rows(
     layout: &Layout,
     strings: &mut Strings,
     files: &[FileId],
+    copies: bool,
 ) -> Result<Vec<FileRows>, String> {
     use mortar_core::resolution::FileLive;
     let inputs = link.inputs;
@@ -2752,7 +2761,18 @@ pub fn file_rows(
             mentions: Vec::new(),
             values: Vec::new(),
             versioned: 0,
+            refs: Vec::new(),
+            commons: Vec::new(),
+            copies: Vec::new(),
+            groups: Vec::new(),
         };
+        // KEY_REFS, COMMONS, COPIES, GROUPS: the capture's per-file task
+        // (`copies`: `Link5::copies`, the link's `--odr` mode).
+        let five = file5(inputs, res, copies, file)?;
+        rows.refs = five.refs;
+        rows.commons = five.commons;
+        rows.copies = five.copies;
+        rows.groups = five.groups.iter().map(|g| g.to_vec()).collect();
         // SECTIONS: `capture`'s row per section.
         for sid in range.start.0..range.end.0 {
             let id = SectionId(sid);
