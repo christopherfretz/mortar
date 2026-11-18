@@ -17,45 +17,39 @@
 
 use std::path::Path;
 
-use mortar_arch::{
-    Arch, DemandFlags, FillTables, OutputKind, ProofRun, SlotKind, SymFacts, SymNames, SymValue,
-    TargetKind, TlsBlock,
-};
+use mortar_arch::{Arch, FillTables, OutputKind, ProofRun, SymFacts, SymNames, TlsBlock};
 use mortar_core::assignment::Assignment;
 use mortar_core::demands::Demands;
 use mortar_core::inputs::{CopyError, Reader};
-use mortar_core::layout::{Addresses, AllocKey, ChunkKind, DefValue, Layout, SlotIndex};
+use mortar_core::layout::{AllocKey, ChunkKind, DefValue, Layout};
 use mortar_core::par::Pool;
-use mortar_core::place::NoPlace;
 use mortar_core::records::RecIndex;
 use mortar_core::resolution::{Def, SectionKind};
 use mortar_core::{
-    ChunkId, FileId, Inputs, Liveness, Resolution, SectionId, Split, SymEntry, SymKey, SymKind,
-    SymbolId,
+    ChunkId, FileId, Inputs, Liveness, Resolution, SectionId, Split, SymEntry, SymKey, SymbolId,
 };
 use mortar_diag::{Diagnostic, FileRef, Key, Kind};
 use mortar_digest::TreeStyle;
-use mortar_elf::{SectionIndex, SymbolIndex, SymbolSection, SymbolTable};
+use mortar_elf::{SectionIndex, SymbolIndex, SymbolSection};
 use mortar_merge::order::Order;
-use mortar_merge::refs;
 use mortar_synth::chunks::SynthKind;
 use mortar_synth::dynamic::{ArraySection, DynKind, DynamicPlan, RunpathTag};
 use mortar_synth::dynstr::DynstrChunk;
 use mortar_synth::dynsym::{DynsymChunk, DynsymInputs};
 use mortar_synth::eh::CodeRef;
 use mortar_synth::gnuhash::GnuHashChunk;
-use mortar_synth::got::{GotAddrs, GotPlan, Region, SlotValues};
+use mortar_synth::got::{GotAddrs, GotPlan, SlotValues};
 use mortar_synth::hdr::{HdrAddrs, HdrPlan};
 use mortar_synth::image::{EhChunk, GotChunk, GotPart, HdrChunk, SymTable, SymtabChunk};
 use mortar_synth::symtab::{InternalValue, SymAddrs, SymCtx, SymtabPlan};
 use mortar_synth::version::{VerdefChunk, VerneedChunk, VersymChunk};
 use mortar_synth::{
-    BuildIdPlan, Division, DynAddrs, DynRecord, DynSymSource, DynsymPlan, EhPlan, EhSource,
-    EhValue, EhWho, FillCx, InterpPlan, PropertyPlan, RelUnit, RelaPlan, ShstrtabPlan, SizeCx,
-    SynthChunk, SynthError, Window,
+    BuildIdPlan, Division, DynAddrs, DynRecord, DynSymSource, DynsymPlan, EhPlan, EhSource, FillCx,
+    InterpPlan, PropertyPlan, RelUnit, RelaPlan, ShstrtabPlan, SizeCx, SynthChunk, SynthError,
+    Window,
 };
 
-use crate::fill::{self, EhFill, Failed, Filled, Image, MergedFrags, SplitPlace, Tables};
+use crate::fill::{self, EhFill, Failed, Filled, Image, MergedFrags, Tables};
 use crate::headers::{self, Ehdr, Phdr, Shdr};
 use crate::layout_plan::{self, Extras, Model, SynthRow};
 use crate::output::{Output, OutputOptions};
@@ -71,7 +65,6 @@ const SHT_RELA: u32 = 4;
 const SHT_INIT_ARRAY: u32 = 14;
 const SHT_FINI_ARRAY: u32 = 15;
 const SHT_PREINIT_ARRAY: u32 = 16;
-const STT_SECTION: u8 = 3;
 const SHN_LORESERVE: u32 = 0xff00;
 const SHN_XINDEX: u16 = 0xffff;
 const ET_EXEC: u16 = 2;
@@ -331,745 +324,69 @@ fn failed(d: Diagnostic) -> Failed {
 
 // ---- the tables ------------------------------------------------------------
 
-/// One output section as its header gives it (L-86).
-/// The value of a definition (`spec/image.md` I-124; `spec/resolve.md`
-/// §10.1 P-1; `spec/model.md` §4.5's invariant). There is deliberately no
-/// accessor to an `Option` or a number: every consumer says what it does
-/// with each case, so "no place" cannot be defaulted to 0.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum Valued {
-    /// Its address (for a non-alloc section, its offset, I-117; for
-    /// `SHN_ABS`, `st_value`; for a weak undefined key, 0, resolve §5.4).
-    At(u64),
-    /// Not defined in this output: a strong undefined key (the scan
-    /// refused its references, or a shared object supplies it at run
-    /// time) or a shared definition without a copy. The static `S` of
-    /// such a key is 0 (`spec/arch.md` §4.3).
-    Import,
-    /// Defined in a section without a place, by the named rule.
-    NoPlace(NoPlace),
-    /// A defined key the layout gave no place although its section has
-    /// one: an internal fault, never a number.
-    Missing,
-}
+pub use crate::rows::Valued;
+use crate::rows::{FrontRows, RowTables, Rows};
 
-/// What fill reads of a value (I-124): the address, if any, and whether
-/// the target is live. `NoPlace` and `Missing` are never live, so fill
-/// writes P-1's value for the referring section or stops; only `Import`
-/// (and a split target, whose caller asks `split_target`) is live
-/// without an address of its own, its `S` 0 by `spec/arch.md` §4.3.
-fn fill_parts(value: Valued) -> (Option<u64>, bool) {
-    match value {
-        Valued::At(v) => (Some(v), true),
-        Valued::Import => (None, true),
-        Valued::NoPlace(_) | Valued::Missing => (None, false),
-    }
-}
+/// The fill tables and the synthetic chunks' answers over one link: the
+/// generic [`RowTables`] over the full link's rows (WP-255b).
+pub type LinkTables<'a, 's> = RowTables<FrontRows<'a, 's>>;
 
-#[derive(Debug, Clone, Copy, Default)]
-struct OutSection {
-    addr: u64,
-    offset: u64,
-    size: u64,
-}
-
-/// The fill tables and the synthetic chunks' answers over one link.
-pub struct LinkTables<'a, 's> {
-    link: Link<'a, 's>,
-    addrs: Addresses<'a, 's>,
-    /// Per file: its symbol table, when it is an object with one.
-    tables: Box<[Option<SymbolTable<'s>>]>,
-    /// Per global symbol: its definition's value (model §4.5, without
-    /// `redirect`: the record keys are already redirected, as the scan
-    /// decoded them; I-124).
-    global: Box<[Valued]>,
-    got: SlotIndex,
-    tls_ie: SlotIndex,
-    tls_gd: SlotIndex,
-    tls_desc: SlotIndex,
-    iplt: SlotIndex,
-    got_addrs: GotAddrs,
-    /// `.eh_frame`'s section index and address.
-    eh_frame: Option<(u32, u64)>,
-    /// `_DYNAMIC`, `.dynamic`'s address (`spec/dyn.md` D-32); `None` in a
-    /// static link.
-    dynamic: Option<u64>,
-    /// Per section index (0 is the null section).
-    sections: Box<[OutSection]>,
-    /// References into `Merge` sections by offset (I-119).
-    pieces: refs::PieceIndex,
-}
-
-impl std::fmt::Debug for LinkTables<'_, '_> {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("LinkTables").field("got", &self.got_addrs).finish_non_exhaustive()
-    }
-}
-
-impl<'a, 's> LinkTables<'a, 's> {
+impl<'a, 's> RowTables<FrontRows<'a, 's>> {
     /// The tables of `link`.
     #[must_use]
     pub fn new(link: Link<'a, 's>) -> Self {
-        let addrs = Addresses::new(link.resolution, link.assignment, link.split, link.layout);
-        let tables: Box<[Option<SymbolTable<'s>>]> = link
-            .inputs
-            .files
-            .iter()
-            .map(|(_, f)| match &f.reader {
-                Reader::Object(o) => o.symbols().ok().flatten(),
-                _ => None,
-            })
-            .collect();
-        let slots = &link.layout.slots;
-        let pl = &link.layout.placement;
-        let chunk_addr = |kind: SynthKind| {
-            link.synth
-                .chunks
-                .iter()
-                .find(|c| c.0 == kind)
-                .and_then(|c| pl.chunks.get(c.1))
-                .and_then(|c| c.addr)
-        };
-        let got_addrs = GotAddrs {
-            got: chunk_addr(SynthKind::Got).unwrap_or(0),
-            got_plt: chunk_addr(SynthKind::GotPlt).unwrap_or(0),
-            plt: chunk_addr(SynthKind::Plt).unwrap_or(0),
-        };
-        let eh_frame = link
-            .synth
-            .chunks
-            .iter()
-            .find(|c| c.0 == SynthKind::EhFrame)
-            .and_then(|c| pl.chunks.get(c.1))
-            .and_then(|c| Some((c.shndx?, c.addr?)));
-        let mut t = Self {
-            link,
-            addrs,
-            tables,
-            global: Box::new([]),
-            got: SlotIndex::new(&slots.got),
-            tls_ie: SlotIndex::new(&slots.tls_ie),
-            tls_gd: SlotIndex::new(&slots.tls_gd),
-            tls_desc: SlotIndex::new(&slots.tls_desc),
-            iplt: SlotIndex::new(&slots.iplt),
-            got_addrs,
-            eh_frame,
-            dynamic: link.synth.dynamic.and_then(|_| chunk_addr(SynthKind::Dynamic)),
-            sections: out_sections(link.layout).into(),
-            pieces: refs::PieceIndex::default(),
-        };
-        t.pieces = refs::PieceIndex::new(link.split, |s| t.section_size(s));
-        let n = link.inputs.symbols.len() as usize;
-        let global = link.pool.unit_cost(16).map(n, |i| t.def_value(SymbolId(i as u32)));
-        t.global = global.into();
-        t
+        RowTables::from_rows(FrontRows::new(link))
     }
 
     /// The addresses of the synthetic chunks `.got`, `.got.plt`, `.plt`.
     #[must_use]
     pub fn got_addrs(&self) -> GotAddrs {
-        self.got_addrs
+        self.rows.got_addrs
     }
 
     /// The link of these tables (WP-218: the map's decision records,
     /// `crate::map::decisions_of`).
     pub(crate) const fn link(&self) -> &Link<'a, 's> {
-        &self.link
+        &self.rows.link
     }
 
-    fn sym_of(&self, e: SymEntry) -> Option<(SymbolTable<'s>, mortar_elf::raw::Sym)> {
-        let t = (*self.tables.get(e.file.0 as usize)?)?;
-        let s = t.get(e.index).ok()?;
-        Some((t, s))
-    }
-
-    /// The input section entry `e` is defined in, with its value; `Err`
-    /// with the absolute value for `SHN_ABS`.
-    fn entry_place(&self, e: SymEntry) -> Option<Result<(SectionId, mortar_elf::raw::Sym), u64>> {
-        let (t, s) = self.sym_of(e)?;
-        match t.section_of(e.index, &s).ok()? {
-            SymbolSection::Absolute => Some(Err(s.st_value)),
-            SymbolSection::Section(index) => {
-                Some(Ok((self.link.resolution.section_id(e.file, index)?, s)))
-            }
-            _ => None,
-        }
-    }
-
-    fn section_size(&self, s: SectionId) -> Option<u64> {
-        let (file, index) = self.link.resolution.sh_index(s)?;
-        let Reader::Object(o) = &self.link.inputs.files.get(file)?.reader else { return None };
-        Some(o.section(index).ok()?.size())
-    }
-
-    fn section_flags(&self, s: SectionId) -> u64 {
-        let Some((file, index)) = self.link.resolution.sh_index(s) else { return 0 };
-        let Some(Reader::Object(o)) = self.link.inputs.files.get(file).map(|f| &f.reader) else {
-            return 0;
-        };
-        o.section(index).map_or(0, |s| s.flags())
-    }
-
-    fn kind_of(&self, s: SectionId) -> Option<SectionKind> {
-        self.link.resolution.sections.get(s).map(|r| r.kind)
-    }
-
-    /// Whether section `s` has a place (resolve.md §10.1 P-1): the
-    /// predicate the scan's `dead` asks too.
-    fn place_of(&self, s: SectionId) -> Result<(), NoPlace> {
-        let l = &self.link;
-        mortar_core::place::section_place(l.resolution, Some(l.assignment), l.liveness, s)
-    }
-
-    /// The value of a named symbol at `v` in section `s` (I-124): no
-    /// value at all when the section has no place (P-1).
     fn value_in(&self, s: SectionId, v: u64) -> Valued {
-        if let Err(why) = self.place_of(s) {
-            return Valued::NoPlace(why);
-        }
-        self.addr_in_placed(s, v).map_or(Valued::Missing, Valued::At)
+        crate::rows::value_in(&self.rows, s, v)
     }
 
-    /// The output address of a named symbol at `v` in section `s`, which
-    /// has a place (model §4.5; S-19/S-22 for a split `Merge` section;
-    /// S-50 for an `.eh_frame`).
-    fn addr_in_placed(&self, s: SectionId, v: u64) -> Option<u64> {
-        match self.kind_of(s)? {
-            SectionKind::Merge => {
-                let p = if let Some(p) = self.pieces.named_symbol(self.link.split, s, v) {
-                    p.ok()?
-                } else {
-                    let size = self.section_size(s)?;
-                    refs::named_symbol(self.link.split, s, size, v).ok()?
-                };
-                self.frag_value(p.frag)?.checked_add(p.within)
-            }
-            SectionKind::EhFrame => {
-                let (plan, src) = self.link.eh?;
-                let r = i64::try_from(v).ok()?;
-                match plan.value(src, s, r, EhWho::Symbol { droppable: false }).ok()? {
-                    EhValue::Offset(o) => self.eh_frame?.1.checked_add(o),
-                    EhValue::Dropped => None,
-                }
-            }
-            _ => {
-                let (c, at) = self.link.layout.placement.place.get(s)?.get()?;
-                Some(self.chunk_at(c, at.checked_add(v)?)?.1)
-            }
-        }
-    }
-
-    /// A live fragment's value (model §4.5): its address, or in a
-    /// non-allocated merged chunk its offset from its section's start
-    /// (`.debug_str`, the gABI's `sh_addr` 0).
-    /// Whether `frag` survived the mark (`frag_live`; every fragment
-    /// without `--gc-sections`).
-    fn frag_live(&self, frag: mortar_core::FragId) -> bool {
-        self.link.liveness.frag_live.get(frag).copied().unwrap_or(true)
-    }
-
-    /// Whether a named symbol at `v` in `Merge` section `s` names a
-    /// collected piece (I-7): its references are then to a dead target.
-    fn named_piece_dead(&self, s: SectionId, v: u64) -> bool {
-        let found = if let Some(p) = self.pieces.named_symbol(self.link.split, s, v) {
-            p
-        } else {
-            let Some(size) = self.section_size(s) else { return false };
-            refs::named_symbol(self.link.split, s, size, v)
-        };
-        found.is_ok_and(|p| !self.frag_live(p.frag))
-    }
-
-    fn frag_value(&self, frag: mortar_core::FragId) -> Option<u64> {
-        let row = self.link.split.frags.get(frag)?;
-        let chunk = self.addrs.merged_chunk(self.link.assignment.out(row.section)?)?;
-        let offset = self.link.layout.merge.offset(frag)?;
-        Some(self.chunk_at(chunk, offset)?.1)
-    }
-
-    /// The value of entry `e`'s definition (I-124).
-    fn entry_value(&self, e: SymEntry) -> Valued {
-        match self.entry_place(e) {
-            Some(Err(abs)) => Valued::At(abs),
-            Some(Ok((s, sym))) => self.value_in(s, sym.st_value),
-            None => Valued::Missing,
-        }
-    }
-
-    /// The value of global `id`'s definition (model §4.5 without
-    /// `redirect`; I-124): weak undefined is `At(0)` (resolve §5.4),
-    /// strong undefined `Import`.
-    fn def_value(&self, id: SymbolId) -> Valued {
-        let l = &self.link;
-        let pl = &l.layout.placement;
-        let found = |v: Option<u64>| v.map_or(Valued::Missing, Valued::At);
-        let Some(def) = l.assignment.def(l.resolution, id) else { return Valued::Import };
-        match def {
-            Def::Undefined { weak: true } => Valued::At(0),
-            Def::Undefined { weak: false } => Valued::Import,
-            Def::Defined(e) => self.entry_value(e),
-            Def::Common(_) => found(self.alloc_addr(AllocKey::Common(id))),
-            Def::Shared(_) => {
-                let copies = &l.layout.slots.copy_of;
-                match copies.binary_search_by_key(&id, |row| row.0) {
-                    Ok(at) => found(self.alloc_addr(AllocKey::Copy(copies[at].1))),
-                    Err(_) => Valued::Import,
-                }
-            }
-            Def::Internal(_) => found(pl.defined_of(id)),
-        }
+    fn def_entry(&self, key: SymKey) -> Option<SymEntry> {
+        crate::rows::def_entry(&self.rows, key)
     }
 
     /// A global's value as an address for a consumer that has no use for
     /// the other cases (the map, `.dynamic`'s `DT_INIT`): `None` for
     /// each, so such a consumer omits the symbol; never 0 for "no place".
     fn global_addr(&self, id: SymbolId) -> Option<u64> {
-        match self.global.get(id.0 as usize)? {
+        match self.rows.global.get(id.0 as usize)? {
             Valued::At(v) => Some(*v),
             Valued::Import | Valued::NoPlace(_) | Valued::Missing => None,
         }
     }
 
-    fn alloc_addr(&self, key: AllocKey) -> Option<u64> {
-        let pl = &self.link.layout.placement;
-        let row = pl.sym_place_of(key)?;
-        pl.chunks.get(row.chunk)?.addr?.checked_add(row.offset)
-    }
-
-    /// I-47a: the value of a local symbol at `v` in section `d`, when `d`
-    /// has no `SHF_ALLOC`, is not live only because its COMDAT group copy
-    /// is dropped (`spec/resolve.md` §6.2), and the group's keeper has, in
-    /// its copy, exactly one section `k` of `d`'s name, `k` has no
-    /// `SHF_ALLOC`, `d`'s `sh_size`, and is live: the value at `v` in `k`.
-    /// `None` otherwise (I-47's tombstone). Section names and sizes only:
-    /// no DWARF is parsed, no bytes are compared. Only a dead key's path
-    /// asks, and an alloc `d` (a dropped copy's code) costs one flag test.
-    /// `d` and `k` are of a kind placed as a whole (a `Merge` or
-    /// `.eh_frame` member is not redirected: its value is not
-    /// `k`'s address plus an offset). The referrer's half of the
-    /// condition (live, non-alloc, debug-named) is fill's
-    /// (`reloc.rs`, `own_value`): the value is per key, and only a
-    /// debug-named non-alloc referrer takes it.
-    fn kept_copy_value(&self, d: SectionId, v: u64) -> Option<Valued> {
-        use mortar_core::resolution::{DropReason, SectionState};
-        let r = self.link.resolution;
-        let row = r.sections.get(d)?;
-        if row.state != SectionState::Dropped(DropReason::Comdat) || !row.kind.is_placed() {
-            return None;
-        }
-        let shdr = |s: SectionId| {
-            let (file, index) = r.sh_index(s)?;
-            let Reader::Object(o) = &self.link.inputs.files.get(file)?.reader else { return None };
-            let sec = o.section(index).ok()?;
-            Some((sec.name().ok()?, sec.flags(), sec.size()))
-        };
-        let (name, flags, size) = shdr(d)?;
-        if flags & SHF_ALLOC != 0 {
-            return None;
-        }
-        let group = row.comdat.get()?;
-        let keeper = r.comdat.get(group)?.get()?;
-        let mut found = None;
-        for k in r.section_base.get(keeper)?.iter() {
-            if r.sections.get(k)?.comdat.get() != Some(group) {
-                continue;
-            }
-            let Some(kh) = shdr(k) else { continue };
-            if kh.0 == name {
-                if found.is_some() {
-                    return None;
-                }
-                found = Some((k, kh));
-            }
-        }
-        let (k, (_, k_flags, k_size)) = found?;
-        let k_row = r.sections.get(k)?;
-        if k_flags & SHF_ALLOC != 0 || k_size != size || !k_row.is_kept() || !k_row.kind.is_placed()
-        {
-            return None;
-        }
-        match self.value_in(k, v) {
-            Valued::At(a) => Some(Valued::At(a)),
-            Valued::Import | Valued::NoPlace(_) | Valued::Missing => None,
-        }
-    }
-
-    /// The entry defining `key` in a section (a local's own, a global's
-    /// regular definition).
-    fn def_entry(&self, key: SymKey) -> Option<SymEntry> {
-        match key.kind() {
-            SymKind::Local(e) => Some(e),
-            SymKind::Global(id) => match self.link.assignment.def(self.link.resolution, id)? {
-                Def::Defined(e) => Some(e),
-                _ => None,
-            },
-        }
-    }
-
-    /// The address a slot holds for `key` (S-66): its definition's, the
-    /// resolver's for an IFUNC; `None` for an undefined key, and for one
-    /// without a place (P-1: the scan refused every reference to it, so
-    /// no slot exists; a slot that did would be the caller's internal
-    /// error, never 0).
-    fn address(&self, key: SymKey) -> Option<u64> {
-        let v = match key.kind() {
-            SymKind::Local(e) => self.entry_value(e),
-            SymKind::Global(id) => {
-                let l = &self.link;
-                if matches!(l.assignment.def(l.resolution, id)?, Def::Undefined { .. }) {
-                    return None;
-                }
-                *self.global.get(id.0 as usize)?
-            }
-        };
-        match v {
-            Valued::At(a) => Some(a),
-            Valued::Import | Valued::NoPlace(_) | Valued::Missing => None,
-        }
-    }
-
-    fn got_slot(&self, region: Region, ix: &SlotIndex, key: SymKey) -> Option<u64> {
-        let i = ix.find(key)?;
-        Some(self.got_addrs.got + self.link.synth.got.got_offset(region, i))
+    pub(crate) fn chunk_at(&self, c: ChunkId, offset: u64) -> Option<(u32, u64)> {
+        crate::rows::chunk_at(&self.rows, c, offset)
     }
 
     fn tls_block(&self) -> Option<TlsBlock> {
-        self.link.layout.placement.tls.map(|t| TlsBlock {
-            start: t.start,
-            size: t.size,
-            align: 1u64 << t.align,
-        })
+        self.rows.tls()
     }
 
-    /// The section index and the address base of chunk `c`: its address,
-    /// or for a non-alloc chunk its offset from its section's start.
-    pub(crate) fn chunk_at(&self, c: ChunkId, offset: u64) -> Option<(u32, u64)> {
-        let chunk = self.link.layout.placement.chunks.get(c)?;
-        let shndx = match chunk.kind {
-            ChunkKind::FileHeader | ChunkKind::ProgramHeaders => 1,
-            _ => chunk.shndx?,
-        };
-        let base = if let Some(a) = chunk.addr {
-            a
-        } else {
-            let sec = self.sections.get(shndx as usize)?;
-            chunk.offset.checked_sub(sec.offset)?
-        };
-        Some((shndx, base.checked_add(offset)?))
-    }
-
-    /// `spec/synth.md` S-18: the refusal of a section symbol plus addend
-    /// `r` outside split `Merge` section `s` (`r < 0` or `r ≥ sh_size`;
-    /// one past the last piece included, as lld: the references disagree
-    /// on its address, WP-148), naming the target: the section and its
-    /// file (`defined in`), `r` and the section's size. The caller adds
-    /// the referring place (fill's record, `.rela.dyn`'s planner).
-    fn outside_merge(&self, s: SectionId, r: i64, w: &mortar_merge::What) -> Diagnostic {
-        let d = Diagnostic::error(Kind::Malformed { what: w.message() });
-        let Some((file, index)) = self.link.resolution.sh_index(s) else { return d };
-        let name = match self.link.inputs.files.get(file).map(|f| &f.reader) {
-            Some(Reader::Object(o)) => o
-                .section(index)
-                .ok()
-                .and_then(|h| h.name().ok())
-                .map(|n| String::from_utf8_lossy(n).into_owned())
-                .unwrap_or_default(),
-            _ => String::new(),
-        };
-        let size = self.section_size(s).unwrap_or(0);
-        let target = if r < 0 {
-            format!("{name}-{:#x}", r.unsigned_abs())
-        } else {
-            format!("{name}+{r:#x}")
-        };
-        let path = layout_plan::file_ref(self.link.inputs, file);
-        d.with(mortar_diag::Relation::DefinedIn, mortar_diag::Place::symbol(path, name)).note(
-            format!(
-                "the reference is to {target} (the section symbol plus addend); the mergeable \
-                 section holds {size:#x} bytes, so no piece contains it (synth.md S-18)"
-            ),
-        )
+    fn kind_of(&self, s: SectionId) -> Option<SectionKind> {
+        self.rows.section_kind(s)
     }
 
     /// The chunk holding input section `s`'s bytes (a `Merge` section's:
     /// its output section's merged chunk).
     fn chunk_of(&self, s: SectionId) -> Option<(ChunkId, u64)> {
         if self.kind_of(s)? == SectionKind::Merge {
-            let out = self.link.assignment.out(s)?;
-            return Some((self.addrs.merged_chunk(out)?, 0));
+            return Some((self.rows.merged_chunk(s)?, 0));
         }
-        self.link.layout.placement.place.get(s)?.get()
-    }
-}
-
-impl SymNames for LinkTables<'_, '_> {
-    fn name(&self, key: SymKey) -> &[u8] {
-        self.link.facts.name(key)
-    }
-}
-
-impl LinkTables<'_, '_> {
-    /// `sym(key)`, reading the key's symbol once; with `split` (the
-    /// caller asks `split_target`), `s` is left 0 when the target is in a
-    /// split section, and the flag says so (`Tables::record_sym`).
-    fn sym_value(&self, key: SymKey, split: bool) -> (SymValue, bool) {
-        self.sym_value_of(key, split, self.link.facts.facts(key))
-    }
-
-    /// [`Self::sym_value`] with the key's facts (a definition's) given.
-    fn sym_value_of(&self, key: SymKey, split: bool, facts: SymFacts) -> (SymValue, bool) {
-        let entry = self.def_entry(key);
-        let read = entry.and_then(|e| self.sym_of(e).map(|(t, s)| (e, t, s)));
-        let size = read.map_or(0, |r| r.2.st_size);
-        let place = read.and_then(|(e, t, sym)| match t.section_of(e.index, &sym).ok()? {
-            SymbolSection::Absolute => Some(Err(sym.st_value)),
-            SymbolSection::Section(index) => {
-                Some(Ok((self.link.resolution.section_id(e.file, index)?, sym)))
-            }
-            _ => None,
-        });
-        // `split_target`'s cases: a section symbol of a `Merge` section,
-        // any key defined in an `.eh_frame`.
-        let in_split = |s: SectionId, sym: &mortar_elf::raw::Sym| match self.kind_of(s) {
-            Some(SectionKind::Merge) => sym.sym_type() == STT_SECTION,
-            Some(SectionKind::EhFrame) => true,
-            _ => false,
-        };
-        let is_split = split && matches!(&place, Some(Ok((s, sym))) if in_split(*s, sym));
-        // A named symbol in a collected merge piece (I-7) is dead, as one
-        // in a collected section is.
-        let piece_dead = |place: &Option<Result<(SectionId, mortar_elf::raw::Sym), u64>>| {
-            matches!(place, Some(Ok((s, sym)))
-                if sym.sym_type() != STT_SECTION
-                    && self.kind_of(*s) == Some(SectionKind::Merge)
-                    && self.named_piece_dead(*s, sym.st_value))
-        };
-        // I-124: the value is typed; a key without a place (P-1), or
-        // whose place the layout lacks, is not live, whatever `facts`
-        // says, so fill writes the referring section's P-1 value (the
-        // tombstone, 0 in `.gcc_except_table`) or stops: never `S = 0`.
-        let value = match key.kind() {
-            SymKind::Local(_) => {
-                if facts.dead {
-                    // I-47a: a non-alloc member of a dropped COMDAT copy
-                    // is read in the keeper's copy; otherwise I-47.
-                    match &place {
-                        Some(Ok((d, sym))) => {
-                            self.kept_copy_value(*d, sym.st_value).unwrap_or(Valued::Missing)
-                        }
-                        _ => Valued::Missing,
-                    }
-                } else if piece_dead(&place) {
-                    Valued::Missing
-                } else if is_split {
-                    Valued::Import
-                } else {
-                    match place {
-                        Some(Err(abs)) => Valued::At(abs),
-                        Some(Ok((s, sym))) => self.value_in(s, sym.st_value),
-                        // `r_sym` 0, or a symbol of no section: S is 0
-                        // (the gABI's undefined symbol 0).
-                        None => Valued::Import,
-                    }
-                }
-            }
-            SymKind::Global(id) => {
-                if piece_dead(&place) {
-                    Valued::Missing
-                } else {
-                    self.global.get(id.0 as usize).copied().unwrap_or(Valued::Missing)
-                }
-            }
-        };
-        let (s, live) = fill_parts(value);
-        // A PLT entry is `S` only where it is the symbol's address for the
-        // whole program (`spec/arch.md` §3.6, WP-113): the canonical entry
-        // of a `CANON_PLT` key (`spec/dyn.md` D-44), and, S-71, the IPLT
-        // entry of an IFUNC defined in this output. An ordinary PLT entry
-        // (a `JUMP_SLOT`'s, a library IFUNC's) is a stand-in for calls
-        // only: such a key's `S` is its copy, or 0 (arch.md §4.3).
-        let entry = if self.flags(key).contains(DemandFlags::CANON_PLT) {
-            self.plt(key)
-        } else if matches!(facts.kind, TargetKind::Shlib { .. } | TargetKind::WeakDyn) {
-            None
-        } else {
-            self.link.synth.got.iplt_address(&self.got_addrs, key)
-        };
-        // `S` of a live key without an address of its own is 0 only for
-        // `Import` (arch.md §4.3) and a split target (its caller's); a
-        // key that is not live carries no `S` fill reads.
-        let s = match (entry, s) {
-            (Some(e), _) if live => e,
-            (_, Some(v)) => v,
-            _ => 0,
-        };
-        (SymValue { s, kind: facts.kind, size, live, tls: facts.tls }, is_split)
-    }
-}
-
-impl FillTables for LinkTables<'_, '_> {
-    fn sym(&self, key: SymKey) -> SymValue {
-        self.sym_value(key, false).0
-    }
-
-    fn slot(&self, key: SymKey, kind: SlotKind) -> Option<u64> {
-        match kind {
-            SlotKind::Addr => self.got_slot(Region::Addr, &self.got, key),
-            SlotKind::TpOff { .. } => self.got_slot(Region::TpOff, &self.tls_ie, key),
-            SlotKind::TlsGd => self.got_slot(Region::TlsGd, &self.tls_gd, key),
-            SlotKind::TlsDesc => self.got_slot(Region::TlsDesc, &self.tls_desc, key),
-            SlotKind::TlsLd => self
-                .link
-                .layout
-                .slots
-                .tls_ld
-                .then(|| self.got_addrs.got + self.link.synth.got.got_offset(Region::TlsLd, 0)),
-            SlotKind::PltGot => {
-                let n = self.iplt.find(key)?;
-                Some(self.got_addrs.got_plt + self.link.synth.got.iplt_word(n))
-            }
-        }
-    }
-
-    fn plt(&self, key: SymKey) -> Option<u64> {
-        // `spec/dyn.md` D-44, D-49: a PLT entry (dynamic) or an IPLT one.
-        self.link.synth.got.plt_address(&self.got_addrs, key)
-    }
-
-    fn flags(&self, key: SymKey) -> DemandFlags {
-        self.link.demands.of(key)
-    }
-
-    fn redirect(&self, section: SectionId, offset: u64) -> Option<u64> {
-        let pl = &self.link.layout.placement;
-        let patch = pl.redirect_of(section, offset)?;
-        pl.chunks.get(patch.chunk)?.addr?.checked_add(patch.offset)
-    }
-}
-
-impl Tables for LinkTables<'_, '_> {
-    fn record_sym(&self, key: SymKey) -> (SymValue, bool) {
-        self.sym_value(key, true)
-    }
-
-    fn scan_facts(&self, key: SymKey, mention: Option<SymEntry>) -> Option<SymFacts> {
-        Some(self.link.facts.facts_at(key, mention))
-    }
-
-    /// One read of the scan's facts where the mention cannot change them:
-    /// a mention gives only an undefined key its type, and an undefined
-    /// key's kind is `Weak0`, `WeakDyn` or `Undefined` (I-19); otherwise
-    /// the definition's facts are those at the mention.
-    fn record_sym_at(
-        &self,
-        key: SymKey,
-        mention: Option<SymEntry>,
-    ) -> (SymValue, bool, Option<SymFacts>) {
-        let at = self.link.facts.facts_at(key, mention);
-        let undefined =
-            matches!(at.kind, TargetKind::Weak0 | TargetKind::WeakDyn | TargetKind::Undefined);
-        let def = if mention.is_some() && undefined && matches!(key.kind(), SymKind::Global(_)) {
-            self.link.facts.facts(key)
-        } else {
-            debug_assert_eq!(at, self.link.facts.facts(key), "facts at a mention");
-            at
-        };
-        let (value, split) = self.sym_value_of(key, true, def);
-        (value, split, Some(at))
-    }
-
-    /// D-25, D-46: the OUTPUT section's `SHF_WRITE` (the loader maps the
-    /// output section; RELRO sections have it), as the scan's place.
-    fn section_writable(&self, section: SectionId) -> Option<bool> {
-        let a = self.link.assignment;
-        let flags = match a.out(section).and_then(|o| a.outsecs.get(o)) {
-            Some(out) => out.flags,
-            None => self.section_flags(section),
-        };
-        Some(flags & mortar_elf::consts::SHF_WRITE != 0)
-    }
-
-    fn target_alloc(&self, key: SymKey) -> bool {
-        match self.def_entry(key).and_then(|e| self.entry_place(e)) {
-            Some(Ok((s, _))) => self.section_flags(s) & SHF_ALLOC != 0,
-            Some(Err(_)) => false,
-            // Commons, linker-defined symbols: in alloc chunks.
-            None => true,
-        }
-    }
-
-    fn split_target(&self, key: SymKey, addend: i64) -> Option<Result<Option<u64>, Diagnostic>> {
-        let place = self.split_place(key)?;
-        self.split_at(&place, key, addend)
-    }
-
-    fn split_place(&self, key: SymKey) -> Option<SplitPlace> {
-        let e = self.def_entry(key)?;
-        let Ok((s, sym)) = self.entry_place(e)? else { return None };
-        let section_sym = sym.sym_type() == STT_SECTION;
-        let merge = match self.kind_of(s)? {
-            SectionKind::Merge if section_sym => true,
-            SectionKind::EhFrame => false,
-            _ => return None,
-        };
-        let row = if merge { self.pieces.row_of(s).unwrap_or(u32::MAX) } else { u32::MAX };
-        let chunk_base = merge
-            .then(|| {
-                let chunk = self.addrs.merged_chunk(self.link.assignment.out(s)?)?;
-                Some(self.chunk_at(chunk, 0)?.1)
-            })
-            .flatten();
-        Some(SplitPlace { section: s, merge, value: sym.st_value, section_sym, row, chunk_base })
-    }
-
-    fn split_at(
-        &self,
-        place: &SplitPlace,
-        _key: SymKey,
-        addend: i64,
-    ) -> Option<Result<Option<u64>, Diagnostic>> {
-        let &SplitPlace { section: s, merge, value, section_sym, row, chunk_base } = place;
-        if merge {
-            let r = (value as i64).wrapping_add(addend);
-            let found = if let Some(found) = self.pieces.section_symbol_in(self.link.split, row, r)
-            {
-                found
-            } else {
-                let size = self.section_size(s)?;
-                refs::section_symbol(self.link.split, s, size, r)
-            };
-            // S-13: the piece's fragment is in the section's output
-            // section's merged chunk.
-            let frag_value = |frag| match chunk_base {
-                Some(base) => {
-                    let v = self.link.layout.merge.offset(frag).and_then(|o| base.checked_add(o));
-                    debug_assert_eq!(v, self.frag_value(frag), "S-13");
-                    v
-                }
-                None => self.frag_value(frag),
-            };
-            return Some(match found {
-                Ok(p) if !self.frag_live(p.frag) => Ok(None),
-                Ok(p) => frag_value(p.frag)
-                    .and_then(|a| a.checked_add(p.within))
-                    .map(Some)
-                    .ok_or_else(|| internal("fill: a live merge piece has no address")),
-                Err(w) => Err(self.outside_merge(s, r, &w)),
-            });
-        }
-        let Some((plan, src)) = self.link.eh else {
-            return Some(Err(internal("fill: a reference into .eh_frame without its plan")));
-        };
-        let Some((_, eh)) = self.eh_frame else {
-            return Some(Err(internal("fill: a reference into .eh_frame without the chunk")));
-        };
-        let r = if section_sym { (value as i64).wrapping_add(addend) } else { value as i64 };
-        let tail = if section_sym { 0 } else { addend };
-        Some(match plan.value(src, s, r, EhWho::Reloc) {
-            Ok(EhValue::Offset(o)) => Ok(Some(eh.wrapping_add(o).wrapping_add(tail as u64))),
-            Ok(EhValue::Dropped) => Err(internal("fill: a relocation to a dropped symbol")),
-            Err(e) => Err(e.into_diagnostic()),
-        })
+        self.rows.place(s)
     }
 }
 
@@ -1078,7 +395,7 @@ impl RecordKeys for LinkTables<'_, '_> {
     /// §3.3: `redirect` applies to undefined mentions).
     fn key(&self, file: FileId, r_sym: u32) -> Option<SymKey> {
         let local = |index| SymKey::local(SymEntry { file, index: SymbolIndex(index) });
-        let Some(t) = self.tables.get(file.0 as usize).copied().flatten() else {
+        let Some(t) = self.rows.tables.get(file.0 as usize).copied().flatten() else {
             return (r_sym == 0).then(|| local(0));
         };
         if r_sym >= t.len() {
@@ -1088,8 +405,8 @@ impl RecordKeys for LinkTables<'_, '_> {
         if r_sym < first {
             return Some(local(r_sym));
         }
-        let id = *self.link.inputs.sym_map_of(file).get((r_sym - first) as usize)?;
-        let to = self.link.resolution.redirect.get(id).copied().unwrap_or(id);
+        let id = *self.link().inputs.sym_map_of(file).get((r_sym - first) as usize)?;
+        let to = self.link().resolution.redirect.get(id).copied().unwrap_or(id);
         if to != id {
             let s = t.get(SymbolIndex(r_sym)).ok()?;
             if t.section_of(SymbolIndex(r_sym), &s).ok()? == SymbolSection::Undefined {
@@ -1102,7 +419,7 @@ impl RecordKeys for LinkTables<'_, '_> {
 
 impl SlotValues for LinkTables<'_, '_> {
     fn address(&self, key: SymKey) -> Option<u64> {
-        LinkTables::address(self, key)
+        crate::rows::address(&self.rows, key)
     }
 
     fn tls(&self) -> Option<TlsBlock> {
@@ -1110,7 +427,7 @@ impl SlotValues for LinkTables<'_, '_> {
     }
 
     fn dynamic(&self) -> Option<u64> {
-        self.dynamic
+        self.rows.dynamic
     }
 }
 
@@ -1168,47 +485,6 @@ impl SymAddrs for LinkTables<'_, '_> {
 }
 
 // ---- the structural units (I-40) -------------------------------------------
-
-/// The output sections by index (L-86): the first chunk's address and
-/// offset, the size to the end of the last chunk's `size`.
-fn out_sections(layout: &Layout) -> Vec<OutSection> {
-    let mut rows: Vec<Option<OutSection>> = Vec::new();
-    let mut ends: Vec<u64> = Vec::new();
-    for (_, c) in layout.placement.chunks.iter() {
-        let Some(n) = c.shndx else { continue };
-        let n = n as usize;
-        if rows.len() <= n {
-            rows.resize(n + 1, None);
-            ends.resize(n + 1, 0);
-        }
-        let start = c.addr.unwrap_or(c.offset);
-        let end = start + c.size;
-        match &mut rows[n] {
-            Some(s) => {
-                let first = s.addr_or_offset(c.addr.is_some());
-                if start < first {
-                    s.addr = c.addr.unwrap_or(0);
-                    s.offset = c.offset;
-                }
-                ends[n] = ends[n].max(end);
-                let first = s.addr_or_offset(c.addr.is_some());
-                s.size = ends[n] - first;
-            }
-            slot @ None => {
-                *slot =
-                    Some(OutSection { addr: c.addr.unwrap_or(0), offset: c.offset, size: c.size });
-                ends[n] = end;
-            }
-        }
-    }
-    rows.into_iter().map(Option::unwrap_or_default).collect()
-}
-
-impl OutSection {
-    fn addr_or_offset(&self, alloc: bool) -> u64 {
-        if alloc { self.addr } else { self.offset }
-    }
-}
 
 /// The bytes of the `Patches` chunks with file bytes (I-39), by chunk:
 /// each thunk written by `Arch::write_thunk` at its offset, with its
@@ -1574,7 +850,7 @@ fn section_headers(link: &Link<'_, '_>) -> Result<Vec<Shdr>, Diagnostic> {
     let class = facts.class;
     let word = u64::from(facts.word);
     let rel = matches!(facts.rel_form, mortar_arch::RelForm::Rel);
-    let secs = out_sections(link.layout);
+    let secs = crate::rows::out_sections(&link.layout.placement.chunks);
     let mut rows: Vec<Option<Shdr>> = vec![None; secs.len().max(1)];
     rows[0] = Some(Shdr::default());
     let kind_of = |id: ChunkId| link.synth.chunks.iter().find(|c| c.1 == id).map(|c| c.0);
@@ -2707,7 +1983,9 @@ impl LinkTables<'_, '_> {
                         for (k, &off) in offs.iter().enumerate() {
                             let end = offs.get(k + 1).map_or(size, |&e| u64::from(e));
                             let frag = l.split.piece_frag[span.start as usize + k];
-                            let Some(addr) = self.frag_value(frag) else { continue };
+                            let Some(addr) = crate::rows::frag_value(&self.rows, frag) else {
+                                continue;
+                            };
                             placed.push(Placed::Piece {
                                 section: i,
                                 input_offset: u64::from(off),
@@ -3315,7 +2593,7 @@ impl LinkTables<'_, '_> {
 
 #[cfg(test)]
 mod place_tests {
-    use super::{Valued, fill_parts};
+    use crate::rows::{Valued, fill_parts};
     use mortar_core::place::NoPlace;
     use mortar_core::resolution::DropReason;
 
