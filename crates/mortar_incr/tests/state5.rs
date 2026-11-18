@@ -33,27 +33,68 @@ fn sample(ids: &[u32], sections: u32) -> MemoryState {
         let f = u32::try_from(f).expect("small");
         let path = add(&mut pool, format!("f{id}.o").as_bytes());
         m.files.push(FileRow { path, rank: u64::from(id) << 20, ..FileRow::default() });
-        m.stat.push(StatRow { tag: stat_tag::INPUT, path, size: u64::from(id), ..StatRow::default() });
+        m.stat.push(StatRow {
+            tag: stat_tag::INPUT,
+            path,
+            size: u64::from(id),
+            ..StatRow::default()
+        });
         let first = u32::try_from(m.sections.len()).expect("small");
         for k in 0..sections {
             let name = add(&mut pool, format!(".text.{id}.{k}").as_bytes());
-            m.sections.push(SectionRow { file: f, name, ordinal: k, size: 16, ..SectionRow::default() });
+            m.sections.push(SectionRow {
+                file: f,
+                name,
+                ordinal: k,
+                size: 16,
+                ..SectionRow::default()
+            });
         }
         // a local first, then the global: the capture's first-call order
         let lname = add(&mut pool, format!("l{id}").as_bytes());
-        m.symbols.push(SymbolRow { kind: sym_kind::LOCAL, file: f, name: lname, at_file: f, at_index: 1, ..SymbolRow::default() });
+        m.symbols.push(SymbolRow {
+            kind: sym_kind::LOCAL,
+            file: f,
+            name: lname,
+            at_file: f,
+            at_index: 1,
+            ..SymbolRow::default()
+        });
         let gname = add(&mut pool, format!("g{id}").as_bytes());
         let g = u32::try_from(m.symbols.len()).expect("small");
-        m.symbols.push(SymbolRow { kind: sym_kind::GLOBAL, file: u32::MAX, name: gname, at_file: f, at_index: 2, ..SymbolRow::default() });
-        m.mentions.push((FileId(f), MentionRow { symbol: g, section: first, ..MentionRow::default() }));
+        m.symbols.push(SymbolRow {
+            kind: sym_kind::GLOBAL,
+            file: u32::MAX,
+            name: gname,
+            at_file: f,
+            at_index: 2,
+            ..SymbolRow::default()
+        });
+        m.mentions
+            .push((FileId(f), MentionRow { symbol: g, section: first, ..MentionRow::default() }));
         m.key_refs.push(KeyRefRow { key: g, file: f, ..KeyRefRow::default() });
         let frag = m.frags.len() as u64;
-        m.frags.push(FragRow { out: 0, ordinal: id, hash: hash_of(id), offset: u64::from(id) * 8, ..FragRow::default() });
+        m.frags.push(FragRow {
+            out: 0,
+            ordinal: id,
+            hash: hash_of(id),
+            offset: u64::from(id) * 8,
+            ..FragRow::default()
+        });
         m.frag_at.push((FileId(f), FragAtRow { section: first, offset: 0, frag }));
     }
     // an unmentioned key (a --defsym), early
     let dname = add(&mut pool, b"defsym");
-    m.symbols.insert(0, SymbolRow { kind: sym_kind::GLOBAL, file: u32::MAX, name: dname, at_file: u32::MAX, ..SymbolRow::default() });
+    m.symbols.insert(
+        0,
+        SymbolRow {
+            kind: sym_kind::GLOBAL,
+            file: u32::MAX,
+            name: dname,
+            at_file: u32::MAX,
+            ..SymbolRow::default()
+        },
+    );
     for (_, r) in &mut m.mentions {
         r.symbol += 1;
     }
@@ -93,10 +134,14 @@ fn round_trip_is_a_fixpoint() {
     let bytes = full(&sample(&[0, 1, 2], 3));
     let back = read::decode(&bytes).expect("decode");
     assert_eq!(full(&back), bytes);
-    assert_eq!(state5::canon(&bytes).expect("canon"), state5::canon_of(&sample(&[0, 1, 2], 3)).expect("canon"));
+    assert_eq!(
+        state5::canon(&bytes).expect("canon"),
+        state5::canon_of(&sample(&[0, 1, 2], 3)).expect("canon")
+    );
     let view = read::open_bytes(bytes).expect("open");
-    let names: Vec<SymbolId> =
-        (0..3).map(|i| view.find_key(format!("g{i}").as_bytes(), b"").expect("lookup").expect("found")).collect();
+    let names: Vec<SymbolId> = (0..3)
+        .map(|i| view.find_key(format!("g{i}").as_bytes(), b"").expect("lookup").expect("found"))
+        .collect();
     assert_eq!(names, vec![SymbolId(0), SymbolId(1), SymbolId(2)]);
 }
 
@@ -143,8 +188,11 @@ fn every_flipped_byte_is_state_corrupt() {
     // last)
     let probe = read::decode(&bytes).map(|_| ()).expect("clean");
     let _ = probe;
-    let dir = state5::parse_directory(&state5::Header::parse(&bytes).expect("h"), &bytes[state5::HEADER..dir_end])
-        .expect("dir");
+    let dir = state5::parse_directory(
+        &state5::Header::parse(&bytes).expect("h"),
+        &bytes[state5::HEADER..dir_end],
+    )
+    .expect("dir");
     for e in &dir {
         for at in e.list..e.list + e.list_len() {
             check(usize::try_from(at).expect("small"));
@@ -179,12 +227,27 @@ fn incr_state_refuses_flag_set() {
 fn edit(base: &MemoryState, grow: u32) -> StatePatch {
     let mut p = StatePatch::default();
     let n = base.sections.iter().filter(|r| r.file == 0).count() as u32 + grow;
-    let rows: Vec<SectionRow> =
-        (0..n).map(|k| SectionRow { file: 0, ordinal: k, size: 32, ..SectionRow::default() }).collect();
+    let rows: Vec<SectionRow> = (0..n)
+        .map(|k| SectionRow { file: 0, ordinal: k, size: 32, ..SectionRow::default() })
+        .collect();
     // the update numbers the moved rows as U-2 places them (IN-18e)
-    let first = if n <= state5::range_capacity(n - grow) { 0 } else { u32::try_from(base.sections.len()).expect("small") };
-    let mentions = base.mentions.iter().filter(|r| r.0 == FileId(0)).map(|r| MentionRow { section: first, ..r.1 }).collect();
-    let frag_at = base.frag_at.iter().filter(|r| r.0 == FileId(0)).map(|r| FragAtRow { section: first, ..r.1 }).collect();
+    let first = if n <= state5::range_capacity(n - grow) {
+        0
+    } else {
+        u32::try_from(base.sections.len()).expect("small")
+    };
+    let mentions = base
+        .mentions
+        .iter()
+        .filter(|r| r.0 == FileId(0))
+        .map(|r| MentionRow { section: first, ..r.1 })
+        .collect();
+    let frag_at = base
+        .frag_at
+        .iter()
+        .filter(|r| r.0 == FileId(0))
+        .map(|r| FragAtRow { section: first, ..r.1 })
+        .collect();
     p.ranges.push(FileRanges {
         file: FileId(0),
         sections: Some(rows),
@@ -198,7 +261,13 @@ fn edit(base: &MemoryState, grow: u32) -> StatePatch {
         gone: false,
     });
     p.key_refs.put.push(KeyRefRow { key: 1, file: 0, ..KeyRefRow::default() });
-    p.frags.put.push(FragRow { out: 9, ordinal: 0, hash: [9; 16], offset: 72, ..FragRow::default() });
+    p.frags.put.push(FragRow {
+        out: 9,
+        ordinal: 0,
+        hash: [9; 16],
+        offset: 72,
+        ..FragRow::default()
+    });
     p
 }
 
@@ -225,9 +294,17 @@ fn patch_then_read_equals_rewrite() {
         compact::apply(&mut want, &p, 3).expect("apply");
         let out = want.stat.iter_mut().rfind(|r| r.tag == stat_tag::OUTPUT).expect("output row");
         *out = output_of(&bytes);
-        assert_eq!(format!("{:?}", got.sections), format!("{:?}", want.sections), "{grow}: SECTIONS ids");
+        assert_eq!(
+            format!("{:?}", got.sections),
+            format!("{:?}", want.sections),
+            "{grow}: SECTIONS ids"
+        );
         assert_eq!(format!("{:?}", got.frags), format!("{:?}", want.frags), "{grow}: FRAGS ids");
-        assert_eq!(state5::canon_of(&got).expect("c"), state5::canon_of(&want).expect("c"), "{grow}");
+        assert_eq!(
+            state5::canon_of(&got).expect("c"),
+            state5::canon_of(&want).expect("c"),
+            "{grow}"
+        );
         assert!(got.meta.output_synced);
         let fresh = read::open_bytes(patched).expect("open the patched state");
         assert_eq!(fresh.key_refs(SymbolId(1)).expect("rows").len(), 2);
@@ -250,7 +327,11 @@ fn update_reads_only_touched_blocks() {
     // FILE_INDEX's block, SECTIONS' block (1 or 2), the key-ref and frag
     // lookups (log2 rows blocks each), their lists.
     let bound = 16 * state5::BLOCK as u64;
-    eprintln!("state {} bytes, open {base}, plan {read}, blocks written {}", bytes.len(), plan.blocks());
+    eprintln!(
+        "state {} bytes, open {base}, plan {read}, blocks written {}",
+        bytes.len(),
+        plan.blocks()
+    );
     assert!(read <= bound, "{read} > {bound}");
     assert!(plan.blocks() <= 8, "{}", plan.blocks());
 }
@@ -260,8 +341,11 @@ fn update_reads_only_touched_blocks() {
 fn patched_block_is_verified_first() {
     let bytes = full(&sample(&[0, 1, 2], 3));
     let dir_end = state5::HEADER + state5::TABLES.len() * state5::ENTRY;
-    let dir = state5::parse_directory(&state5::Header::parse(&bytes).expect("h"), &bytes[state5::HEADER..dir_end])
-        .expect("dir");
+    let dir = state5::parse_directory(
+        &state5::Header::parse(&bytes).expect("h"),
+        &bytes[state5::HEADER..dir_end],
+    )
+    .expect("dir");
     let sec = &dir[state5::table_index(kind::SECTIONS).expect("t")];
     let mut b = bytes.clone();
     b[usize::try_from(sec.body).expect("small")] ^= 1;
@@ -292,10 +376,15 @@ fn remove_file_1(m: &MemoryState) -> StatePatch {
     for (i, r) in m.symbols.iter().enumerate() {
         let name = s(m, r.name);
         if name == b"g1" || name == b"l1" {
-            p.symbols.set.push((SymbolId(u32::try_from(i).expect("small")), SymbolRow { kind: sym_kind::GONE, ..*r }));
+            p.symbols.set.push((
+                SymbolId(u32::try_from(i).expect("small")),
+                SymbolRow { kind: sym_kind::GONE, ..*r },
+            ));
         }
         if name == b"g1" {
-            p.key_refs.delete.push(*m.key_refs.iter().find(|k| k.key == i as u32).expect("its ref"));
+            p.key_refs
+                .delete
+                .push(*m.key_refs.iter().find(|k| k.key == i as u32).expect("its ref"));
         }
     }
     p.frags.delete.push(*m.frags.iter().find(|f| f.ordinal == 1).expect("its frag"));
@@ -338,14 +427,18 @@ fn compaction_equals_full_link_capture() {
 fn compaction_reads_every_block() {
     let bytes = full(&sample(&[0, 1, 2], 2));
     let dir_end = state5::HEADER + state5::TABLES.len() * state5::ENTRY;
-    let dir = state5::parse_directory(&state5::Header::parse(&bytes).expect("h"), &bytes[state5::HEADER..dir_end])
-        .expect("dir");
+    let dir = state5::parse_directory(
+        &state5::Header::parse(&bytes).expect("h"),
+        &bytes[state5::HEADER..dir_end],
+    )
+    .expect("dir");
     // the last block of PROBES (no row, no patch touches it)
     let e = &dir[state5::table_index(kind::PROBES).expect("t")];
     let mut b = bytes.clone();
     b[usize::try_from(e.body + e.body_len() - 1).expect("small")] ^= 1;
     let m = read::decode(&bytes).expect("decode");
-    let in_place = state5::plan_patch(&read::open_bytes(b.clone()).expect("open"), &StatePatch::default());
+    let in_place =
+        state5::plan_patch(&read::open_bytes(b.clone()).expect("open"), &StatePatch::default());
     assert!(in_place.is_ok(), "an in-place plan reads only its blocks");
     let r = state5::plan_patch(&read::open_bytes(b).expect("open"), &remove_file_1(&m));
     assert!(matches!(reason(r), IncrReason::StateCorrupt(_)));
@@ -392,7 +485,11 @@ fn key_refs_single_mentioner() {
         None => compact::plan_bytes(&plan, &output_of(&bytes)).expect("compacted"),
     };
     let v = read::open_bytes(after).expect("open");
-    assert!(v.find_key(b"g1", b"").expect("lookup").is_none_or(|k| v.key_refs(k).expect("rows").is_empty()));
+    assert!(
+        v.find_key(b"g1", b"")
+            .expect("lookup")
+            .is_none_or(|k| v.key_refs(k).expect("rows").is_empty())
+    );
 }
 
 // spec: incr.md IN-18e "Size, restated" (the sample's table sizes; the
@@ -445,11 +542,16 @@ fn patch_and_compact_on_a_file() {
     let view = state5::open(&file, [7; 16]).expect("open");
     let m = read::decode(&on_disk).expect("decode");
     let mut p = remove_file_1(&m);
-    p.key_refs.delete.push(*m.key_refs.iter().find(|k| k.file == 0 && k.key == 1).expect("the added ref"));
+    p.key_refs
+        .delete
+        .push(*m.key_refs.iter().find(|k| k.file == 0 && k.key == 1).expect("the added ref"));
     let plan = state5::plan_patch(&view, &p).expect("plan");
     assert!(plan.compacts());
     compact(&view, &plan, &output_of(&bytes), &mut StdOps, &path).expect("compact");
-    assert_eq!(std::fs::read(&path).expect("read"), compact::plan_bytes(&plan, &output_of(&bytes)).expect("bytes"));
+    assert_eq!(
+        std::fs::read(&path).expect("read"),
+        compact::plan_bytes(&plan, &output_of(&bytes)).expect("bytes")
+    );
     assert!(state5::open(&file, [8; 16]).is_err(), "another plan hash: options-changed");
     let _ = NameRow::default();
 }

@@ -28,8 +28,8 @@ use mortar_core::{ChunkId, FileId, OutSecId, SectionId, SymEntry, SymKey, Symbol
 use mortar_elf::SymbolIndex;
 
 use super::{
-    BLOCK, DiagRaw, ENTRY, Entry, HEADER, Header, Keyed, Rec, StrFn, TABLES,
-    corrupt, decode_rows, diag_row, name, parse_directory, table_index,
+    BLOCK, DiagRaw, ENTRY, Entry, HEADER, Header, Keyed, Rec, StrFn, TABLES, corrupt, decode_rows,
+    diag_row, name, parse_directory, table_index,
 };
 use crate::format::{
     ChunkRow, DefinedRow, EhRow, FragAtRow, Hash16, LayoutRow, NONE, OutSecRow, PatchRow, ProbeRow,
@@ -524,11 +524,13 @@ impl StateRows for Reader {
     }
     fn group(&self, signature: &[u8]) -> Rows<Option<GroupRow>> {
         let lo = signature.to_vec();
-        let mut v = self.core.keyed::<GroupRow>(kind::GROUPS, &lo, &|k| k.as_slice() == signature)?;
+        let mut v =
+            self.core.keyed::<GroupRow>(kind::GROUPS, &lo, &|k| k.as_slice() == signature)?;
         Ok(v.pop())
     }
     fn frags_in(&self, out: OutSecId) -> Rows<Vec<FragRow>> {
-        let mut v = self.core.keyed::<FragRow>(kind::FRAGS, &(out.0, [0; 16], 0), &|k| k.0 == out.0)?;
+        let mut v =
+            self.core.keyed::<FragRow>(kind::FRAGS, &(out.0, [0; 16], 0), &|k| k.0 == out.0)?;
         v.sort_by_key(|f| f.offset);
         Ok(v)
     }
@@ -615,12 +617,32 @@ pub fn size_report(bytes: &[u8]) -> Result<String, StateError> {
     let total = bytes.len() as u64;
     let pct = |b: u64| if total == 0 { 0.0 } else { b as f64 * 100.0 / total as f64 };
     let mut out = String::new();
-    let _ = writeln!(out, "{:<12} {:>12} {:>12} {:>14} {:>7}", "table", "rows", "capacity", "bytes", "share");
+    let _ = writeln!(
+        out,
+        "{:<12} {:>12} {:>12} {:>14} {:>7}",
+        "table", "rows", "capacity", "bytes", "share"
+    );
     let head = (HEADER + core.dir.len() * ENTRY) as u64;
-    let _ = writeln!(out, "{:<12} {:>12} {:>12} {:>14} {:>6.2}%", "header+dir", "", "", head, pct(head));
+    let _ = writeln!(
+        out,
+        "{:<12} {:>12} {:>12} {:>14} {:>6.2}%",
+        "header+dir",
+        "",
+        "",
+        head,
+        pct(head)
+    );
     for e in &core.dir {
         let b = e.list_len() + e.body_len();
-        let _ = writeln!(out, "{:<12} {:>12} {:>12} {:>14} {:>6.2}%", name(e.kind), e.rows, e.capacity, b, pct(b));
+        let _ = writeln!(
+            out,
+            "{:<12} {:>12} {:>12} {:>14} {:>6.2}%",
+            name(e.kind),
+            e.rows,
+            e.capacity,
+            b,
+            pct(b)
+        );
     }
     let _ = writeln!(out, "{:<12} {:>12} {:>12} {:>14} {:>6.2}%", "total", "", "", total, 100.0);
     // lazy members
@@ -635,7 +657,8 @@ pub fn size_report(bytes: &[u8]) -> Result<String, StateError> {
         n += 1;
         lazy += (FileRow::WIDTH + FileIndexRow::WIDTH + <StatRow as Rec>::WIDTH) as u64;
         for t in FileTable::ALL {
-            lazy += u64::from(idx.ranges[t as usize].capacity) * u64::from(core.entry(t.kind()).width);
+            lazy +=
+                u64::from(idx.ranges[t as usize].capacity) * u64::from(core.entry(t.kind()).width);
         }
     }
     let _ = writeln!(out, "lazy members {n} files, {lazy} bytes, {:.2}%", pct(lazy));
@@ -728,8 +751,11 @@ pub(crate) fn decode_core(c: &Core) -> Rows<MemoryState> {
     // The file-keyed tables: per live file its range; ranges in bounds and
     // not overlapping (IN-18d).
     let extent = |t: FileTable| c.entry(t.kind()).rows;
-    let mut sections: Vec<SectionRow> =
-        vec![SectionRow { file: NONE, ..SectionRow::default() }; usize::try_from(extent(FileTable::Sections)).unwrap_or(0)];
+    let mut sections: Vec<SectionRow> = vec![
+        SectionRow { file: NONE, ..SectionRow::default() };
+        usize::try_from(extent(FileTable::Sections))
+            .unwrap_or(0)
+    ];
     let all_sections: Vec<SectionRow> = c.all(kind::SECTIONS)?;
     let mentions: Vec<MentionRow> = c.all(kind::MENTIONS)?;
     let index: Vec<IndexRow> = c.all(kind::INDEX)?;
@@ -744,10 +770,14 @@ pub(crate) fn decode_core(c: &Core) -> Rows<MemoryState> {
         for t in FileTable::ALL {
             let r = idx.ranges[t as usize];
             if u64::from(r.first) + u64::from(r.capacity) > extent(t) && r.capacity != 0 {
-                return Err(corrupt(format!("FILE_INDEX row {f}: {} out of range", name(t.kind()))));
+                return Err(corrupt(format!(
+                    "FILE_INDEX row {f}: {} out of range",
+                    name(t.kind())
+                )));
             }
             if r.capacity != 0 && !idx.gone {
-                spans[t as usize].push((u64::from(r.first), u64::from(r.first) + u64::from(r.capacity)));
+                spans[t as usize]
+                    .push((u64::from(r.first), u64::from(r.first) + u64::from(r.capacity)));
             }
         }
         if idx.gone {
@@ -790,7 +820,11 @@ fn check_sorted<T: Keyed>(c: &Core, k: u32, rows: &[T], s: StrFn<'_>) -> Rows<()
     let aux = usize::try_from(c.entry(k).aux).unwrap_or(0);
     let dead = rows.iter().filter(|r| r.tomb()).count() as u64;
     if dead != c.entry(k).dead {
-        return Err(corrupt(format!("{}: {dead} tombstones, the directory says {}", name(k), c.entry(k).dead)));
+        return Err(corrupt(format!(
+            "{}: {dead} tombstones, the directory says {}",
+            name(k),
+            c.entry(k).dead
+        )));
     }
     for part in [&rows[..aux.min(rows.len())], &rows[aux.min(rows.len())..]] {
         let keys = part.iter().map(|r| r.key(s)).collect::<Rows<Vec<_>>>()?;
@@ -1010,7 +1044,9 @@ impl LayoutRows for LayoutOf<'_, '_> {
                     key: self.sym_key(r.symbol)?,
                     addend: r.value.cast_signed(),
                 }),
-                patch_kind::THUNK_PLT => PatchKind::Thunk(ThunkTarget::Plt(self.sym_key(r.symbol)?)),
+                patch_kind::THUNK_PLT => {
+                    PatchKind::Thunk(ThunkTarget::Plt(self.sym_key(r.symbol)?))
+                }
                 patch_kind::E843419 => PatchKind::Erratum {
                     erratum: Erratum::E843419,
                     section: SectionId(r.section),

@@ -142,12 +142,17 @@ pub fn encode(m: &MemoryState) -> Result<Vec<u8>, StateError> {
     let s: StrFn<'_> = &strings_of;
     let mut ranges = vec![FileIndexRow::default(); files];
     for (f, r) in m.files.iter().enumerate() {
-        ranges[f].gone = r.flags & file_flags::GONE != 0 || m.file_index.get(f).is_some_and(|i| i.gone);
+        ranges[f].gone =
+            r.flags & file_flags::GONE != 0 || m.file_index.get(f).is_some_and(|i| i.gone);
     }
     // SECTIONS first: every other table's section references follow it.
     let live = m.sections.iter().enumerate().filter(|(_, r)| r.file != NONE);
-    let (sec_body, moved) =
-        by_file(files, live.map(|(i, r)| (FileId(r.file), (i, r.clone()))).map(|(f, (_, r))| (f, r)), &mut ranges, FileTable::Sections)?;
+    let (sec_body, moved) = by_file(
+        files,
+        live.map(|(i, r)| (FileId(r.file), (i, r.clone()))).map(|(f, (_, r))| (f, r)),
+        &mut ranges,
+        FileTable::Sections,
+    )?;
     // `by_file` numbers rows by their position among the live ones; map
     // the old positions.
     let mut sec_map = vec![NONE; m.sections.len()];
@@ -162,11 +167,9 @@ pub fn encode(m: &MemoryState) -> Result<Vec<u8>, StateError> {
         if x == NONE {
             return Ok(NONE);
         }
-        sec_map
-            .get(x as usize)
-            .copied()
-            .filter(|&v| v != NONE)
-            .ok_or_else(|| state_corrupt(format!("a reference to SECTIONS row {x}, which has none")))
+        sec_map.get(x as usize).copied().filter(|&v| v != NONE).ok_or_else(|| {
+            state_corrupt(format!("a reference to SECTIONS row {x}, which has none"))
+        })
     };
     let (frags, frag_order) = sorted(&m.frags, s)?;
     let mut frag_map = vec![0u64; m.frags.len()];
@@ -182,7 +185,10 @@ pub fn encode(m: &MemoryState) -> Result<Vec<u8>, StateError> {
     let mut index = Vec::with_capacity(m.index.len());
     for (f, r) in &m.index {
         let target = match r.kind {
-            index_kind::SECTION | index_kind::EH_FRAME | index_kind::LINK_ORDER | index_kind::LOCAL_SLOT => sec(r.target)?,
+            index_kind::SECTION
+            | index_kind::EH_FRAME
+            | index_kind::LINK_ORDER
+            | index_kind::LOCAL_SLOT => sec(r.target)?,
             _ => r.target,
         };
         index.push((*f, crate::format::IndexRow { unit: sec(r.unit)?, kind: r.kind, target }));
@@ -190,7 +196,9 @@ pub fn encode(m: &MemoryState) -> Result<Vec<u8>, StateError> {
     let mut edges = Vec::with_capacity(m.edges.len());
     for (f, r) in &m.edges {
         let target = match r.kind {
-            edge_kind::LOCAL | edge_kind::FDE_SECTION | edge_kind::NONALLOC_SECTION => sec(r.target)?,
+            edge_kind::LOCAL | edge_kind::FDE_SECTION | edge_kind::NONALLOC_SECTION => {
+                sec(r.target)?
+            }
             _ => r.target,
         };
         edges.push((*f, crate::update::rows::EdgeRow { source: sec(r.source)?, target, ..*r }));
@@ -200,7 +208,10 @@ pub fn encode(m: &MemoryState) -> Result<Vec<u8>, StateError> {
         let frag = *frag_map
             .get(usize::try_from(r.frag).unwrap_or(usize::MAX))
             .ok_or_else(|| state_corrupt("FRAG_AT: a FRAGS row out of range"))?;
-        frag_at.push((*f, crate::format::FragAtRow { section: sec(r.section)?, offset: r.offset, frag }));
+        frag_at.push((
+            *f,
+            crate::format::FragAtRow { section: sec(r.section)?, offset: r.offset, frag },
+        ));
     }
     let mut eh = Vec::with_capacity(m.eh_records.len());
     for (f, r) in &m.eh_records {
@@ -544,7 +555,10 @@ impl Ed<'_> {
         }
         let off = self.old_strings + self.appended.len() as u64;
         self.appended.extend_from_slice(b);
-        Str { off: u32::try_from(off).unwrap_or(u32::MAX), len: u32::try_from(b.len()).unwrap_or(u32::MAX) }
+        Str {
+            off: u32::try_from(off).unwrap_or(u32::MAX),
+            len: u32::try_from(b.len()).unwrap_or(u32::MAX),
+        }
     }
 
     /// A key-keyed table's edits (IN-18e): deletes are tombstones; a put
@@ -566,7 +580,9 @@ impl Ed<'_> {
         let this = &*self;
         let s: StrFn<'_> = &|x| this.string(x);
         let mut area_keys: Vec<T::K> = area.iter().map(|r| r.key(s)).collect::<Rows<_>>()?;
-        for (del, row) in edits.delete.iter().map(|r| (true, r)).chain(edits.put.iter().map(|r| (false, r))) {
+        for (del, row) in
+            edits.delete.iter().map(|r| (true, r)).chain(edits.put.iter().map(|r| (false, r)))
+        {
             let key = row.key(s)?;
             // the sorted body
             let (mut a, mut b) = (0, e.aux);
@@ -593,10 +609,9 @@ impl Ed<'_> {
             };
             let found = match found {
                 Some(f) => Some(f),
-                None => area_keys
-                    .binary_search(&key)
-                    .ok()
-                    .map(|i| (false, i as u64, area[i].clone())),
+                None => {
+                    area_keys.binary_search(&key).ok().map(|i| (false, i as u64, area[i].clone()))
+                }
             };
             match (del, found) {
                 (true, None) => {
@@ -614,7 +629,10 @@ impl Ed<'_> {
                 (true, Some((in_body, i, mut r))) => {
                     r.set_tomb(true);
                     if !r.tomb() {
-                        return Err(PlanError::Fail(corrupt(format!("{}: its rows are not deleted", name(k)))));
+                        return Err(PlanError::Fail(corrupt(format!(
+                            "{}: its rows are not deleted",
+                            name(k)
+                        ))));
                     }
                     dead += 1;
                     if in_body {
@@ -640,7 +658,10 @@ impl Ed<'_> {
                 (false, None) => {
                     let at = area_keys.partition_point(|x| *x < key);
                     if stable_rows && at < area_len0 {
-                        return overflow(format!("{}: an insert would move a row others name", name(k)));
+                        return overflow(format!(
+                            "{}: an insert would move a row others name",
+                            name(k)
+                        ));
                     }
                     let mut r = row.clone();
                     r.set_tomb(false);
@@ -720,7 +741,11 @@ pub fn plan_patch(view: &StateView<'_>, patch: &StatePatch) -> Result<PatchPlan,
     // Every check of the compaction happens here (a reference with no
     // image is a defect): `compact` normalizes again with the binding.
     super::compact::normalize(&state).map_err(|e| corrupt(e.to_string()))?;
-    Ok(PatchPlan { compacts: true, reason: why, inner: Some(Arc::new(Planned::Compact { core, state })) })
+    Ok(PatchPlan {
+        compacts: true,
+        reason: why,
+        inner: Some(Arc::new(Planned::Compact { core, state })),
+    })
 }
 
 /// The in-place plan, or why the patch does not fit.
@@ -758,14 +783,19 @@ fn plan_in_place(core: &Arc<Core>, p: &StatePatch) -> Plan<InPlace> {
     let old_files = core.entry(kind::FILES).rows;
     for (f, row) in &p.files_set {
         if u64::from(f.0) >= old_files {
-            return Err(PlanError::Fail(corrupt(format!("FILES: the patch sets row {}, past the table", f.0))));
+            return Err(PlanError::Fail(corrupt(format!(
+                "FILES: the patch sets row {}, past the table",
+                f.0
+            ))));
         }
         ed.put_rows(kind::FILES, u64::from(f.0), std::slice::from_ref(row))?;
     }
     if !p.files_append.is_empty() {
         let t = Ed::t(kind::FILES);
         let n = p.files_append.len() as u64;
-        if old_files + n > ed.dir[t].capacity || old_files + n > ed.dir[Ed::t(kind::FILE_INDEX)].capacity {
+        if old_files + n > ed.dir[t].capacity
+            || old_files + n > ed.dir[Ed::t(kind::FILE_INDEX)].capacity
+        {
             return overflow("FILES: its append area is full");
         }
         ed.put_rows(kind::FILES, old_files, &p.files_append)?;
@@ -805,7 +835,9 @@ fn plan_in_place(core: &Arc<Core>, p: &StatePatch) -> Plan<InPlace> {
     let old_stat = ed.dir[t].rows;
     for (i, row) in &p.stat_set {
         if u64::from(*i) >= old_stat {
-            return Err(PlanError::Fail(corrupt(format!("STAT: the patch sets row {i}, past the table"))));
+            return Err(PlanError::Fail(corrupt(format!(
+                "STAT: the patch sets row {i}, past the table"
+            ))));
         }
         ed.put_rows(kind::STAT, u64::from(*i), std::slice::from_ref(row))?;
     }
@@ -819,7 +851,8 @@ fn plan_in_place(core: &Arc<Core>, p: &StatePatch) -> Plan<InPlace> {
         ed.dir[t].aux
     };
     // Load the output row's block now: W5 changes it.
-    let out_row: StatRow = if stat_out < old_stat { core.row(kind::STAT, stat_out)? } else { StatRow::default() };
+    let out_row: StatRow =
+        if stat_out < old_stat { core.row(kind::STAT, stat_out)? } else { StatRow::default() };
     ed.put_rows(kind::STAT, stat_out, std::slice::from_ref(&out_row))?;
     if rows > ed.dir[t].capacity {
         return overflow("STAT: its append area is full");
@@ -831,7 +864,9 @@ fn plan_in_place(core: &Arc<Core>, p: &StatePatch) -> Plan<InPlace> {
     for fr in &p.ranges {
         let f = u64::from(fr.file.0);
         if f >= total_files {
-            return Err(PlanError::Fail(corrupt(format!("FILE_INDEX: the patch's file {f} is past FILES"))));
+            return Err(PlanError::Fail(corrupt(format!(
+                "FILE_INDEX: the patch's file {f} is past FILES"
+            ))));
         }
         let mut idx: FileIndexRow =
             if f < old_files { core.file_index(fr.file)? } else { FileIndexRow::default() };
@@ -865,7 +900,9 @@ fn plan_in_place(core: &Arc<Core>, p: &StatePatch) -> Plan<InPlace> {
         && p.odr_refs.put.is_empty()
         && p.odr_refs.delete.is_empty())
     {
-        return Err(PlanError::Fail(corrupt("the patch has ODR_CLASSES or ODR_REFS rows: format 5 holds none (WP-236)")));
+        return Err(PlanError::Fail(corrupt(
+            "the patch has ODR_CLASSES or ODR_REFS rows: format 5 holds none (WP-236)",
+        )));
     }
     ed.keyed(kind::NAMES, &p.names, false)?;
     if !p.diags.put.is_empty() || !p.diags.delete.is_empty() {
@@ -877,7 +914,13 @@ fn plan_in_place(core: &Arc<Core>, p: &StatePatch) -> Plan<InPlace> {
         for d in &p.diags.delete {
             // a delete names the row by its key: strings are compared,
             // not added (an absent string is a key the state lacks).
-            let key: DiagKey = (d.key.phase, d.key.unit, d.key.seq, d.code.clone().into_bytes(), d.text.clone().into_bytes());
+            let key: DiagKey = (
+                d.key.phase,
+                d.key.unit,
+                d.key.seq,
+                d.code.clone().into_bytes(),
+                d.text.clone().into_bytes(),
+            );
             let mut add = |b: &[u8]| ed.add_string(b);
             let r = diag_raw(d, &mut add);
             let _ = key;
@@ -893,7 +936,8 @@ fn plan_in_place(core: &Arc<Core>, p: &StatePatch) -> Plan<InPlace> {
     if resolved_append.len() > n || keys_append.len() > n {
         return Err(PlanError::Fail(corrupt("a key-parallel table appended past SYMBOLS")));
     }
-    resolved_append.resize(n, crate::update::rows::ResolvedRow { section: NONE, ..Default::default() });
+    resolved_append
+        .resize(n, crate::update::rows::ResolvedRow { section: NONE, ..Default::default() });
     keys_append.resize(n, crate::update::rows::SymtabKeyRow { index: NONE, strtab: 0 });
     parallel(&mut ed, kind::SYMBOLS, &p.symbols.set, &p.symbols.append, syms)?;
     parallel(&mut ed, kind::RESOLVED, &p.resolved.set, &resolved_append, syms)?;
@@ -903,14 +947,19 @@ fn plan_in_place(core: &Arc<Core>, p: &StatePatch) -> Plan<InPlace> {
         let t = Ed::t(kind::STRINGS);
         let old = ed.old_strings;
         let bytes = std::mem::take(&mut ed.appended);
-        if old + bytes.len() as u64 > ed.dir[t].capacity || u32::try_from(old + bytes.len() as u64).is_err() {
+        if old + bytes.len() as u64 > ed.dir[t].capacity
+            || u32::try_from(old + bytes.len() as u64).is_err()
+        {
             return overflow("STRINGS: its append area is full");
         }
         ed.write(t, old, &bytes)?;
         ed.dir[t].rows = old + bytes.len() as u64;
     }
     // Blocks no row changed are not written (the output's and META's are).
-    let must = [(Ed::t(kind::STAT), stat_out * u64::from(ed.dir[t].width) / BLOCK as u64), (Ed::t(kind::META), 0)];
+    let must = [
+        (Ed::t(kind::STAT), stat_out * u64::from(ed.dir[t].width) / BLOCK as u64),
+        (Ed::t(kind::META), 0),
+    ];
     let mut blocks = BTreeMap::new();
     let mut lists = BTreeMap::new();
     for ((t, k), b) in ed.blocks {
@@ -963,10 +1012,20 @@ fn place_range<T: Rec>(
     Ok(())
 }
 
-fn parallel<T: Rec>(ed: &mut Ed<'_>, k: u32, set: &[(mortar_core::SymbolId, T)], append: &[T], rows: u64) -> Plan<()> {
+fn parallel<T: Rec>(
+    ed: &mut Ed<'_>,
+    k: u32,
+    set: &[(mortar_core::SymbolId, T)],
+    append: &[T],
+    rows: u64,
+) -> Plan<()> {
     for (id, r) in set {
         if u64::from(id.0) >= rows {
-            return Err(PlanError::Fail(corrupt(format!("{}: the patch sets row {}, past the table", name(k), id.0))));
+            return Err(PlanError::Fail(corrupt(format!(
+                "{}: the patch sets row {}, past the table",
+                name(k),
+                id.0
+            ))));
         }
         ed.put_rows(k, u64::from(id.0), std::slice::from_ref(r))?;
     }
@@ -1005,12 +1064,17 @@ pub(crate) fn writes(p: &InPlace, output: &StatRow) -> Vec<(u64, Vec<u8>)> {
     let mut out = Vec::new();
     let mut lists: BTreeMap<usize, Vec<Hash16>> = BTreeMap::new();
     for ((t, k), b) in &blocks {
-        let list = lists.entry(*t).or_insert_with(|| p.lists.get(t).map(|l| l.to_vec()).unwrap_or_default());
+        let list = lists
+            .entry(*t)
+            .or_insert_with(|| p.lists.get(t).map(|l| l.to_vec()).unwrap_or_default());
         if let Some(h) = list.get_mut(usize::try_from(*k).unwrap_or(usize::MAX)) {
             *h = mortar_digest::l128(b);
         }
         out.push((dir[*t].body + k * BLOCK as u64, b.clone()));
-        out.push((dir[*t].list + k * 16, list.get(usize::try_from(*k).unwrap_or(0)).copied().unwrap_or_default().to_vec()));
+        out.push((
+            dir[*t].list + k * 16,
+            list.get(usize::try_from(*k).unwrap_or(0)).copied().unwrap_or_default().to_vec(),
+        ));
     }
     for (t, list) in &lists {
         let mut bytes = Vec::with_capacity(list.len() * 16);
@@ -1056,7 +1120,8 @@ pub fn patch(
         return Err(WriteFailure::Fallback(corrupt("the plan is not this view's")));
     };
     for (off, bytes) in writes(p, output) {
-        ops.pwrite(file, off, &bytes).map_err(|error| WriteFailure::Failed { step: "W5", error })?;
+        ops.pwrite(file, off, &bytes)
+            .map_err(|error| WriteFailure::Failed { step: "W5", error })?;
     }
     ops.fdatasync(file).map_err(|error| WriteFailure::Failed { step: "W5", error })
 }

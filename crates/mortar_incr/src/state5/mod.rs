@@ -34,8 +34,8 @@ use crate::format::{
 use crate::update::diags::{DiagRow, Subject};
 use crate::update::rows::{
     CloneProbe, CommonRow, EdgeRow, FileIndexRow, FileRow, FileTable, FragRow, GroupRow, HoleRow,
-    IndexRow, KeyRefRow, MentionRow, MetaRow, NameRow, RegionRow,
-    ResolvedRow, RowRange, SymbolRow, SymtabKeyRow, SymtabRow, key_ref_flags,
+    IndexRow, KeyRefRow, MentionRow, MetaRow, NameRow, RegionRow, ResolvedRow, RowRange, SymbolRow,
+    SymtabKeyRow, SymtabRow, key_ref_flags,
 };
 use crate::update::view::Rows;
 
@@ -658,8 +658,8 @@ impl Rec for GroupRow {
 impl Rec for KeyRefRow {
     const WIDTH: usize = 12;
     fn put(&self, w: &mut W<'_>) {
-        let flags = (self.flags & !key_ref_flags::TOMB)
-            | if self.tomb { key_ref_flags::TOMB } else { 0 };
+        let flags =
+            (self.flags & !key_ref_flags::TOMB) | if self.tomb { key_ref_flags::TOMB } else { 0 };
         w.u32(self.key).u32(self.file).u8(self.def).u8(self.bind).u8(self.typ).u8(flags);
     }
     fn get(r: &mut R<'_>) -> Self {
@@ -909,7 +909,11 @@ pub(crate) fn decode_rows<T: Rec>(bytes: &[u8], what: u32, first: u64) -> Rows<V
         let mut r = R::new(chunk);
         let row = T::get(&mut r);
         if r.bad_pad || !row.ok() {
-            return Err(corrupt(format!("{} row {}: field out of range", name(what), first + i as u64)));
+            return Err(corrupt(format!(
+                "{} row {}: field out of range",
+                name(what),
+                first + i as u64
+            )));
         }
         out.push(row);
     }

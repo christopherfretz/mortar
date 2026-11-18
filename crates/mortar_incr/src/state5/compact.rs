@@ -59,15 +59,18 @@ pub fn apply(m: &mut MemoryState, p: &StatePatch, frags_aux: usize) -> Rows<()> 
     }
     m.meta.output_synced = true;
     for (f, row) in &p.files_set {
-        *m.files.get_mut(f.0 as usize).ok_or_else(|| corrupt(format!("FILES: the patch sets row {}", f.0)))? =
-            row.clone();
+        *m.files
+            .get_mut(f.0 as usize)
+            .ok_or_else(|| corrupt(format!("FILES: the patch sets row {}", f.0)))? = row.clone();
     }
     for row in &p.files_append {
         m.files.push(row.clone());
         m.file_index.push(FileIndexRow::default());
     }
     for (i, row) in &p.stat_set {
-        *m.stat.get_mut(*i as usize).ok_or_else(|| corrupt(format!("STAT: the patch sets row {i}")))? = row.clone();
+        *m.stat
+            .get_mut(*i as usize)
+            .ok_or_else(|| corrupt(format!("STAT: the patch sets row {i}")))? = row.clone();
     }
     // Appended STAT rows go after the extent, the output's row stays.
     m.stat.extend(p.stat_append.iter().cloned());
@@ -95,7 +98,9 @@ pub fn apply(m: &mut MemoryState, p: &StatePatch, frags_aux: usize) -> Rows<()> 
         && p.odr_refs.put.is_empty()
         && p.odr_refs.delete.is_empty())
     {
-        return Err(corrupt("the patch has ODR_CLASSES or ODR_REFS rows: format 5 holds none (WP-236)"));
+        return Err(corrupt(
+            "the patch has ODR_CLASSES or ODR_REFS rows: format 5 holds none (WP-236)",
+        ));
     }
     diags(&mut m.diags, &p.diags)?;
     // File-keyed.
@@ -128,7 +133,8 @@ pub fn apply(m: &mut MemoryState, p: &StatePatch, frags_aux: usize) -> Rows<()> 
                     }
                 }
                 let capacity = if n == 0 { 0 } else { super::range_capacity(n) };
-                let first = u32::try_from(m.sections.len()).map_err(|_| corrupt("a table over 2^32"))?;
+                let first =
+                    u32::try_from(m.sections.len()).map_err(|_| corrupt("a table over 2^32"))?;
                 m.sections.extend(rows.iter().cloned());
                 m.sections.resize(m.sections.len() + (capacity - n) as usize, filler);
                 idx.ranges[FileTable::Sections as usize] = RowRange { first, count: n, capacity };
@@ -171,12 +177,14 @@ pub fn apply(m: &mut MemoryState, p: &StatePatch, frags_aux: usize) -> Rows<()> 
     // Key-parallel.
     let n = m.symbols.len();
     for (id, r) in &p.symbols.set {
-        *m.symbols.get_mut(id.0 as usize).ok_or_else(|| corrupt("SYMBOLS: the patch sets a row past the table"))? =
-            *r;
+        *m.symbols
+            .get_mut(id.0 as usize)
+            .ok_or_else(|| corrupt("SYMBOLS: the patch sets a row past the table"))? = *r;
     }
     for (id, r) in &p.resolved.set {
-        *m.resolved.get_mut(id.0 as usize).ok_or_else(|| corrupt("RESOLVED: the patch sets a row past the table"))? =
-            *r;
+        *m.resolved
+            .get_mut(id.0 as usize)
+            .ok_or_else(|| corrupt("RESOLVED: the patch sets a row past the table"))? = *r;
     }
     for (id, r) in &p.symtab_keys.set {
         *m.symtab_keys
@@ -189,7 +197,8 @@ pub fn apply(m: &mut MemoryState, p: &StatePatch, frags_aux: usize) -> Rows<()> 
     }
     m.symbols.extend(p.symbols.append.iter().copied());
     m.resolved.extend(p.resolved.append.iter().copied());
-    m.resolved.resize(n + add, crate::update::rows::ResolvedRow { section: NONE, ..Default::default() });
+    m.resolved
+        .resize(n + add, crate::update::rows::ResolvedRow { section: NONE, ..Default::default() });
     m.symtab_keys.extend(p.symtab_keys.append.iter().copied());
     m.symtab_keys.resize(n + add, crate::update::rows::SymtabKeyRow { index: NONE, strtab: 0 });
     Ok(())
@@ -224,14 +233,20 @@ fn keyed<T: Keyed>(
         let key = row.key(s)?;
         let found = keys.iter().position(|k| *k == key);
         match (del, found) {
-            (true, None) => return Err(corrupt(format!("a key-keyed delete of a key the state lacks ({key:?})"))),
+            (true, None) => {
+                return Err(corrupt(format!(
+                    "a key-keyed delete of a key the state lacks ({key:?})"
+                )));
+            }
             (true, Some(i)) if rows[i].tomb() => {
                 return Err(corrupt(format!("a key-keyed delete of a dead key ({key:?})")));
             }
             (true, Some(i)) => {
                 rows[i].set_tomb(true);
                 if !rows[i].tomb() {
-                    return Err(corrupt("a delete from a table whose rows are not deleted (NAMES)"));
+                    return Err(corrupt(
+                        "a delete from a table whose rows are not deleted (NAMES)",
+                    ));
                 }
             }
             (false, Some(i)) => {
@@ -308,7 +323,11 @@ pub fn normalize(m: &MemoryState) -> Result<MemoryState, StateError> {
         file_map[old] = u32::try_from(new).map_err(|_| state_corrupt("FILES over 2^32"))?;
     }
     let file = |f: u32| -> Result<u32, StateError> {
-        file_map.get(f as usize).copied().filter(|&v| v != NONE).ok_or_else(|| bad(&format!("FILES row {f}")))
+        file_map
+            .get(f as usize)
+            .copied()
+            .filter(|&v| v != NONE)
+            .ok_or_else(|| bad(&format!("FILES row {f}")))
     };
     let fid = |f: FileId| file(f.0).map(FileId);
     // SYMBOLS in the stated order; GONE keys and the locals of gone files
@@ -342,7 +361,11 @@ pub fn normalize(m: &MemoryState) -> Result<MemoryState, StateError> {
         sym_map[old] = u32::try_from(new).map_err(|_| state_corrupt("SYMBOLS over 2^32"))?;
     }
     let sym = |x: u32| -> Result<u32, StateError> {
-        sym_map.get(x as usize).copied().filter(|&v| v != NONE).ok_or_else(|| bad(&format!("SYMBOLS row {x}")))
+        sym_map
+            .get(x as usize)
+            .copied()
+            .filter(|&v| v != NONE)
+            .ok_or_else(|| bad(&format!("SYMBOLS row {x}")))
     };
     // STRINGS afresh.
     let mut pool: Vec<u8> = Vec::new();
@@ -356,7 +379,10 @@ pub fn normalize(m: &MemoryState) -> Result<MemoryState, StateError> {
             return Ok(*v);
         }
         let off = u32::try_from(pool.len()).map_err(|_| state_corrupt("STRINGS over 4 GiB"))?;
-        let v = Str { off, len: u32::try_from(b.len()).map_err(|_| state_corrupt("a string over 4 GiB"))? };
+        let v = Str {
+            off,
+            len: u32::try_from(b.len()).map_err(|_| state_corrupt("a string over 4 GiB"))?,
+        };
         pool.extend_from_slice(&b);
         seen.insert(b, v);
         Ok(v)
@@ -447,7 +473,11 @@ pub fn normalize(m: &MemoryState) -> Result<MemoryState, StateError> {
         if x == NONE {
             return Ok(NONE);
         }
-        sec_map.get(x as usize).copied().filter(|&v| v != NONE).ok_or_else(|| bad(&format!("SECTIONS row {x}")))
+        sec_map
+            .get(x as usize)
+            .copied()
+            .filter(|&v| v != NONE)
+            .ok_or_else(|| bad(&format!("SECTIONS row {x}")))
     };
     for r in &m.chunks {
         n.chunks.push(crate::format::ChunkRow { name: intern(r.name)?, ..r.clone() });
@@ -496,7 +526,11 @@ pub fn normalize(m: &MemoryState) -> Result<MemoryState, StateError> {
         Ok(v.into_iter().map(|(f, _, r)| (f, r)).collect())
     }
     n.mentions = per_file(&m.mentions, &fid, &gone, |r| {
-        Ok(crate::update::rows::MentionRow { symbol: sym(r.symbol)?, section: sec(r.section)?, ..*r })
+        Ok(crate::update::rows::MentionRow {
+            symbol: sym(r.symbol)?,
+            section: sec(r.section)?,
+            ..*r
+        })
     })?;
     n.index = per_file(&m.index, &fid, &gone, |r| {
         let target = match r.kind {
@@ -507,7 +541,9 @@ pub fn normalize(m: &MemoryState) -> Result<MemoryState, StateError> {
     })?;
     n.edges = per_file(&m.edges, &fid, &gone, |r| {
         let target = match r.kind {
-            edge_kind::LOCAL | edge_kind::FDE_SECTION | edge_kind::NONALLOC_SECTION => sec(r.target)?,
+            edge_kind::LOCAL | edge_kind::FDE_SECTION | edge_kind::NONALLOC_SECTION => {
+                sec(r.target)?
+            }
             _ => sym(r.target)?,
         };
         Ok(crate::update::rows::EdgeRow { source: sec(r.source)?, target, ..*r })
@@ -531,8 +567,9 @@ pub fn normalize(m: &MemoryState) -> Result<MemoryState, StateError> {
             .ok_or_else(|| bad(&format!("FRAGS row {}", r.frag)))?;
         Ok(crate::format::FragAtRow { section: sec(r.section)?, frag, ..*r })
     })?;
-    n.eh_records =
-        per_file(&m.eh_records, &fid, &gone, |r| Ok(crate::format::EhRow { section: sec(r.section)?, ..r.clone() }))?;
+    n.eh_records = per_file(&m.eh_records, &fid, &gone, |r| {
+        Ok(crate::format::EhRow { section: sec(r.section)?, ..r.clone() })
+    })?;
     n.symtab = per_file(&m.symtab, &fid, &gone, |r| Ok(*r))?;
     n.regions = per_file(&m.regions, &fid, &gone, |r| Ok(*r))?;
     // Key-keyed: tombstones dropped, references mapped (encode sorts).
@@ -543,7 +580,11 @@ pub fn normalize(m: &MemoryState) -> Result<MemoryState, StateError> {
         n.key_refs.push(KeyRefRow { key: sym(r.key)?, file: file(r.file)?, ..*r });
     }
     for r in m.commons.iter().filter(|r| !r.tomb) {
-        n.commons.push(crate::update::rows::CommonRow { key: sym(r.key)?, file: file(r.file)?, ..*r });
+        n.commons.push(crate::update::rows::CommonRow {
+            key: sym(r.key)?,
+            file: file(r.file)?,
+            ..*r
+        });
     }
     n.holes = m.holes.iter().filter(|r| !r.tomb).copied().collect();
     for d in m.diags.iter().filter(|d| !d.tomb) {
@@ -552,7 +593,9 @@ pub fn normalize(m: &MemoryState) -> Result<MemoryState, StateError> {
             subjects.push(match x {
                 Subject::File(f) => Subject::File(fid(*f)?),
                 Subject::Key(k) => Subject::Key(SymbolId(sym(k.0)?)),
-                Subject::OdrKey { name, class } => Subject::OdrKey { name: intern(*name)?, class: *class },
+                Subject::OdrKey { name, class } => {
+                    Subject::OdrKey { name: intern(*name)?, class: *class }
+                }
                 other => other.clone(),
             });
         }
@@ -625,7 +668,8 @@ pub fn compact(
     if !super::read::core_of(view).is_some_and(|c| std::sync::Arc::ptr_eq(&c, core)) {
         return Err(WriteFailure::Fallback(corrupt("the plan is not this view's")));
     }
-    let bytes = compacted_bytes(state, output).map_err(|e| WriteFailure::Fallback(corrupt(e.to_string())))?;
+    let bytes = compacted_bytes(state, output)
+        .map_err(|e| WriteFailure::Fallback(corrupt(e.to_string())))?;
     let tmp = temporary(state_path);
     let failed = |step: &'static str| move |error| WriteFailure::Failed { step, error };
     let file = ops.create_new(&tmp).map_err(failed("compact"))?;
@@ -634,7 +678,8 @@ pub fn compact(
         ops.pwrite(&file, 0, &bytes)?;
         ops.fdatasync(&file)?;
         ops.rename(&tmp, state_path)?;
-        let dir = state_path.parent().filter(|d| !d.as_os_str().is_empty()).unwrap_or(Path::new("."));
+        let dir =
+            state_path.parent().filter(|d| !d.as_os_str().is_empty()).unwrap_or(Path::new("."));
         ops.fsync_dir(dir)
     })();
     if let Err(error) = result {
@@ -652,7 +697,10 @@ pub fn compact(
 ///
 /// # Errors
 /// The writer's.
-pub(crate) fn compacted_bytes(state: &MemoryState, output: &StatRow) -> Result<Vec<u8>, StateError> {
+pub(crate) fn compacted_bytes(
+    state: &MemoryState,
+    output: &StatRow,
+) -> Result<Vec<u8>, StateError> {
     let mut m = state.clone();
     let mut row = output.clone();
     row.tag = stat_tag::OUTPUT;

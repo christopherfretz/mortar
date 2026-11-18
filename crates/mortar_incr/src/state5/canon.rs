@@ -47,7 +47,10 @@ fn rows<T: Rec>(v: &[T]) -> Vec<Vec<u8>> {
 fn sorted<T: Keyed>(v: &[T], s: StrFn<'_>) -> Result<Vec<Vec<u8>>, StateError> {
     let mut k: Vec<(T::K, Vec<u8>)> = Vec::with_capacity(v.len());
     for r in v {
-        k.push((r.key(s).map_err(super::read::to_state_error)?, encode_rows(std::slice::from_ref(r))));
+        k.push((
+            r.key(s).map_err(super::read::to_state_error)?,
+            encode_rows(std::slice::from_ref(r)),
+        ));
     }
     k.sort();
     Ok(k.into_iter().map(|x| x.1).collect())
@@ -78,7 +81,13 @@ pub fn canon_of(m: &MemoryState) -> Result<Canon, StateError> {
         f.round = 0;
     }
     for r in n.stat.iter_mut().filter(|r| r.tag == stat_tag::OUTPUT) {
-        *r = crate::format::StatRow { tag: r.tag, trust: r.trust, path: r.path, fstype: r.fstype, ..Default::default() };
+        *r = crate::format::StatRow {
+            tag: r.tag,
+            trust: r.trust,
+            path: r.path,
+            fstype: r.fstype,
+            ..Default::default()
+        };
     }
     let pool = n.strings.clone();
     let s: StrFn<'_> = &|x: Str| {
@@ -117,13 +126,18 @@ pub fn canon_of(m: &MemoryState) -> Result<Canon, StateError> {
     let frag_at: Vec<_> = n
         .frag_at
         .iter()
-        .map(|(f, r)| (*f, crate::format::FragAtRow { frag: map[usize::try_from(r.frag).unwrap_or(0)], ..*r }))
+        .map(|(f, r)| {
+            (*f, crate::format::FragAtRow { frag: map[usize::try_from(r.frag).unwrap_or(0)], ..*r })
+        })
         .collect();
     // DIAGS: compared by their strings' bytes.
     let diags: Vec<Vec<u8>> = n
         .diags
         .iter()
-        .map(|d| format!("{:?}", (d.key.phase, d.key.unit, d.key.seq, &d.code, &d.text, &d.subjects)).into_bytes())
+        .map(|d| {
+            format!("{:?}", (d.key.phase, d.key.unit, d.key.seq, &d.code, &d.text, &d.subjects))
+                .into_bytes()
+        })
         .collect();
     let mut diags = diags;
     diags.sort();
@@ -188,14 +202,19 @@ pub fn compare(a: &Canon, b: &Canon, p_u: &StoredLayout<'_>) -> Vec<CanonDiff> {
     let _ = p_u;
     let mut out = Vec::new();
     let empty = Vec::new();
-    let kinds: std::collections::BTreeSet<u32> = a.tables.iter().chain(&b.tables).map(|t| t.0).collect();
+    let kinds: std::collections::BTreeSet<u32> =
+        a.tables.iter().chain(&b.tables).map(|t| t.0).collect();
     for k in kinds {
         let ra = a.tables.iter().find(|t| t.0 == k).map_or(&empty, |t| &t.1);
         let rb = b.tables.iter().find(|t| t.0 == k).map_or(&empty, |t| &t.1);
         if ra.len() == rb.len() {
             for (i, (x, y)) in ra.iter().zip(rb).enumerate() {
                 if x != y {
-                    out.push(CanonDiff { kind: k, row: format!("row {i}"), what: format!("{} != {}", hex(x), hex(y)) });
+                    out.push(CanonDiff {
+                        kind: k,
+                        row: format!("row {i}"),
+                        what: format!("{} != {}", hex(x), hex(y)),
+                    });
                 }
             }
             continue;
