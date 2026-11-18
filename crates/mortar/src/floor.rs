@@ -68,6 +68,7 @@ use std::os::unix::ffi::OsStrExt as _;
 use std::os::unix::fs::{FileExt as _, MetadataExt as _};
 use std::path::{Path, PathBuf};
 
+use mortar_core::incr::IncrReason;
 use mortar_core::layout::ChunkKind;
 use mortar_diag::Collector;
 use mortar_digest::{Leaf, LeafColumn, TreeFn};
@@ -144,6 +145,12 @@ pub fn update_by(args: &[OsString], cwd: &Path, write: WritePath, by_position: b
     Update { outcome, report, phases: timer.finish() }
 }
 
+/// A reason as the floor's error string has always printed it, `name:
+/// detail` (WP-213: the reasons are `IncrReason`; the words are today's).
+fn said(r: &IncrReason) -> String {
+    format!("{}: {}", r.name(), r.detail())
+}
+
 fn ms(d: std::time::Duration) -> f64 {
     d.as_secs_f64() * 1000.0
 }
@@ -185,13 +192,14 @@ fn run(
     let state_path = incremental::state_path(&parsed, cwd, &out_path);
 
     // 1. The state, read and validated, against the plan and the output.
-    let bytes = std::fs::read(&state_path).map_err(|e| format!("no-state: {e}"))?;
+    let bytes =
+        std::fs::read(&state_path).map_err(|e| said(&IncrReason::NoState(e.to_string())))?;
     let mut state = format::decode(&bytes, crate::VERSION.as_bytes())
-        .map_err(|e| format!("{}: {}", e.reason(), e.detail()))?;
+        .map_err(|e| said(&IncrReason::from(e)))?;
     drop(bytes);
     let reason = incremental::check_state(&state, incremental::plan_hash(&parsed, cwd), &out_path);
-    if reason != "update-not-implemented" {
-        return Err(reason);
+    if reason != IncrReason::UpdateNotImplemented(None) {
+        return Err(reason.report());
     }
     timer.phase(15, "state");
 
@@ -343,8 +351,10 @@ fn run(
             // cannot translate is a changed layout (IN-28's "a replay
             // that does not fit").
             Some(e) if e.starts_with("state-corrupt") => e,
-            Some(e) => format!("layout-changed: the replay: {e}"),
-            None => "layout-changed: the replayed layout does not fit this link".to_owned(),
+            Some(e) => said(&IncrReason::LayoutChanged(format!("the replay: {e}"))),
+            None => said(&IncrReason::LayoutChanged(
+                "the replayed layout does not fit this link".to_owned(),
+            )),
         });
     };
     f.keep_leaves = true;
@@ -416,7 +426,7 @@ fn run(
     // on must be as the state stored it, decided before anything is
     // written.
     mortar_incr::contribution::compare(&link, &state, &pos, &tr, &f.layout, file, row)
-        .map_err(|(reason, detail)| format!("{reason}: {detail}"))?;
+        .map_err(|r| said(&r))?;
     timer.phase(95, "changed file compared");
 
     // 5. The dirty windows, filled into memory.

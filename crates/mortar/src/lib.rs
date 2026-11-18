@@ -25,6 +25,7 @@ mod proof;
 mod sites;
 pub mod syms;
 pub mod timing;
+pub mod update;
 pub mod written;
 
 use std::ffi::{OsStr, OsString};

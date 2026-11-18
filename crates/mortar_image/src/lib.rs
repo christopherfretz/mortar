@@ -45,6 +45,7 @@ pub mod synth;
 pub mod target;
 pub mod textmap;
 pub mod tombstone;
+pub mod update;
 
 /// `W = IMAGE_BLOCK` (I-31, I-75): the window, and the build id's leaf.
 pub const IMAGE_BLOCK: u64 = mortar_digest::IMAGE_BLOCK;

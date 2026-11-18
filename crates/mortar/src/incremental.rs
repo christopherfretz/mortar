@@ -19,6 +19,7 @@ use std::time::Instant;
 use mortar_cli::Parsed;
 use mortar_cli::table::{Lands, Status};
 use mortar_core::id::FileId;
+use mortar_core::incr::IncrReason;
 use mortar_core::plan::{Compression, Icf, IncrementalMode, InputSpec, OutputKind, ScriptRole};
 use mortar_diag::{Collector, Diagnostic, Key, Kind};
 use mortar_digest::{L128, TreeFn};
@@ -60,8 +61,10 @@ pub struct Session {
     report: Option<Report>,
     plan_hash: [u8; 16],
     stamps: Vec<DeviceStamp>,
-    /// The fall-back reason, with its detail (§7).
-    reason: String,
+    /// The fall-back reason, with its detail (§7); `None` for
+    /// `--incremental=full`, printed `full requested` (WP-213: the one
+    /// reason type, `mortar_core::incr::IncrReason`).
+    reason: Option<IncrReason>,
     /// The state's target (`META` machine and class), when it was read.
     recorded_target: Option<(u16, u8)>,
     /// The state read, kept for the dry run of `--incremental-report`
@@ -242,25 +245,29 @@ pub fn start(parsed: &Parsed, cwd: &Path, out_path: &Path, diagnostics: &Collect
     let stamps = take_stamps(parsed, cwd, out_path, &state_path);
     let (reason, recorded_target, old) = if mode == IncrementalMode::Full {
         // `--incremental=full` links from scratch whatever the state says.
-        ("full requested".to_owned(), None, None)
+        (None, None, None)
     } else {
-        check(&state_path, plan_hash, out_path)
+        let (reason, target, old) = check(&state_path, plan_hash, out_path);
+        (Some(reason), target, old)
     };
     // §7 `small-output`: a state that could be updated from, of an output
     // below the bound, is linked in full; `--incremental=update` updates
     // whatever the size (so far: fails, `update-not-implemented`).
     let reason = match &old {
         Some(s)
-            if !update && reason == UPDATABLE && mortar_incr::small_output(s.meta.file_size) =>
+            if !update
+                && reason == Some(UPDATABLE)
+                && mortar_incr::small_output(s.meta.file_size) =>
         {
-            SMALL_OUTPUT.to_owned()
+            Some(IncrReason::SmallOutput(String::new()))
         }
         _ => reason,
     };
     // The dry run (WP-063, WP-106) is computed only for a state an update
     // could start from, and only when the report asks for it.
-    let old = old.filter(|_| report.is_some() && dry_run_wanted(&reason)).map(Box::new);
+    let old = old.filter(|_| report.is_some() && dry_run_wanted(reason.as_ref())).map(Box::new);
     if update {
+        let reason = words(reason.as_ref());
         emit(diagnostics, 2, Diagnostic::error(Kind::IncrementalUpdateFailed { reason }));
         return Start::Failed;
     }
@@ -355,34 +362,41 @@ fn check(
     state_path: &Path,
     plan_hash: [u8; 16],
     out_path: &Path,
-) -> (String, Option<(u16, u8)>, Option<State>) {
+) -> (IncrReason, Option<(u16, u8)>, Option<State>) {
     // I-58b: a state is a regular file; anything else (a pipe through
     // /dev/stdout, which this process would read until it writes) is not
     // read.
     if std::fs::metadata(state_path).is_ok_and(|m| !m.is_file()) {
-        return ("state-corrupt: not a regular file".to_owned(), None, None);
+        return (IncrReason::StateCorrupt("not a regular file".to_owned()), None, None);
     }
     let bytes = match std::fs::read(state_path) {
         Ok(b) => b,
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
-            return ("no-state".to_owned(), None, None);
+            return (IncrReason::NoState(String::new()), None, None);
         }
-        Err(e) => return (format!("state-corrupt: cannot read the state: {e}"), None, None),
+        Err(e) => {
+            let why = format!("cannot read the state: {e}");
+            return (IncrReason::StateCorrupt(why), None, None);
+        }
     };
     let state = match format::decode(&bytes, crate::VERSION.as_bytes()) {
         Ok(s) => s,
-        Err(e) => return (format!("{}: {}", e.reason(), e.detail()), None, None),
+        Err(e) => return (e.into(), None, None),
     };
     let target = Some((state.meta.machine, state.meta.class));
     (check_state(&state, plan_hash, out_path), target, Some(state))
 }
 
 /// The reason of a state every check of §7 accepted: an update could start
-/// from it, and the update does not exist yet (stage A).
-const UPDATABLE: &str = "update-not-implemented";
+/// from it, and the update does not exist yet (stage A; printed with no
+/// detail word).
+const UPDATABLE: IncrReason = IncrReason::UpdateNotImplemented(None);
 
-/// §7's `small-output` (`mortar_incr::SMALL_OUTPUT`).
-const SMALL_OUTPUT: &str = "small-output";
+/// The words a reason prints (`incremental: full (<words>)`,
+/// `incremental-update-failed`): `full requested` for `--incremental=full`.
+fn words(reason: Option<&IncrReason>) -> String {
+    reason.map_or_else(|| "full requested".to_owned(), IncrReason::report)
+}
 
 /// Whether a link whose reason is `reason` computes the dry run when the
 /// report asks for it (`spec/incr.md` IN-10a): only for a state an update
@@ -390,21 +404,21 @@ const SMALL_OUTPUT: &str = "small-output";
 /// (a policy decided from the size alone, which `--incremental=update`
 /// does not apply). Every other reason says before the delta that no
 /// update could run, and the report names it alone.
-fn dry_run_wanted(reason: &str) -> bool {
-    reason == UPDATABLE || reason == SMALL_OUTPUT
+fn dry_run_wanted(reason: Option<&IncrReason>) -> bool {
+    matches!(reason, Some(IncrReason::UpdateNotImplemented(None) | IncrReason::SmallOutput(_)))
 }
 
-pub(crate) fn check_state(state: &State, plan_hash: [u8; 16], out_path: &Path) -> String {
+pub(crate) fn check_state(state: &State, plan_hash: [u8; 16], out_path: &Path) -> IncrReason {
     if state.plan_hash != plan_hash {
-        return "options-changed".to_owned();
+        return IncrReason::OptionsChanged(String::new());
     }
     if state.flags & format::FLAG_UPDATING != 0 {
-        return "output-torn".to_owned();
+        return IncrReason::OutputTorn(String::new());
     }
     if let Err(why) = output_matches(state, out_path) {
-        return format!("output-changed: {why}");
+        return IncrReason::OutputChanged(why);
     }
-    UPDATABLE.to_owned()
+    UPDATABLE
 }
 
 /// IN-21's check of the output against the state: its tuple, then its
@@ -488,10 +502,10 @@ impl Session {
         own_files(&self.state_path, self.report.as_ref())
     }
 
-    /// The fall-back reason (for tests).
+    /// The fall-back reason (for tests); `None` for `--incremental=full`.
     #[must_use]
-    pub fn reason(&self) -> &str {
-        &self.reason
+    pub fn reason(&self) -> Option<&IncrReason> {
+        self.reason.as_ref()
     }
 
     /// WP-094: the timed parts of the state's work, filled by
@@ -519,13 +533,13 @@ impl Session {
         // target is `options-changed`, ahead of the output's reasons.
         if let Some(recorded) = self.recorded_target
             && recorded != target_of(f)
-            && self.reason != "options-changed"
+            && !matches!(self.reason, Some(IncrReason::OptionsChanged(_)))
         {
-            "options-changed".clone_into(&mut self.reason);
+            self.reason = Some(IncrReason::OptionsChanged(String::new()));
         }
         // No update could start from a state of another target: no dry run
         // (WP-106; it ran on one before).
-        if !dry_run_wanted(&self.reason) {
+        if !dry_run_wanted(self.reason.as_ref()) {
             self.old = None;
         }
         if f.dyn_tables.is_some() {
@@ -561,7 +575,7 @@ impl Session {
             });
         let mut line = format!(
             "incremental: full ({}) changed={changed} refilled={refilled} bytes={} time={:.3}\n",
-            self.reason,
+            words(self.reason.as_ref()),
             written.file_size,
             self.start.elapsed().as_secs_f64() * 1e3
         );
@@ -596,8 +610,8 @@ impl Session {
                     let _ = writeln!(stderr, "incremental: cannot write the report: {e}");
                 }
             }
-            None if self.reason != "no-state" && self.reason != "full requested" => {
-                let _ = writeln!(stderr, "incremental: full ({})", self.reason);
+            None if !matches!(self.reason, None | Some(IncrReason::NoState(_))) => {
+                let _ = writeln!(stderr, "incremental: full ({})", words(self.reason.as_ref()));
             }
             None => {}
         }

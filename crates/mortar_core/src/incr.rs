@@ -829,6 +829,14 @@ pub struct SymtabPlan {
     /// Each global whose `.symtab` index or `.strtab` offset changed:
     /// `(key, index, strtab offset)` (`SYMTAB_KEYS` rows).
     pub globals: Vec<(SymbolId, u32, u32)>,
+    /// Entries U-6 copies from the previous output, `(from, to)` indices
+    /// (the global area's last entry taking a removed one's index; IN-49a:
+    /// read from the output, not the state).
+    pub moves: Vec<(u32, u32)>,
+    /// Index ranges `[start, end)` of unchanged files' blocks whose
+    /// `st_value`s U-6 remaps through `LayoutDelta::growth_steps`, the rest
+    /// of each entry as read (IN-49a).
+    pub remap: Vec<(u32, u32)>,
 }
 
 // ---- what U-3 gives U-6 -----------------------------------------------------

@@ -55,8 +55,11 @@ impl WritePolicy {
 /// IN-76's policy constant (operator, 2026-11-17): in place by default at
 /// or above [`SMALL_OUTPUT`], the copy path below (an update below the
 /// bound runs only under `--incremental=update`).
-pub const WRITE_PATH: WritePolicy =
-    WritePolicy { in_place_from: SMALL_OUTPUT, at_or_above: WritePath::InPlace, below: WritePath::Copy };
+pub const WRITE_PATH: WritePolicy = WritePolicy {
+    in_place_from: SMALL_OUTPUT,
+    at_or_above: WritePath::InPlace,
+    below: WritePath::Copy,
+};
 
 pub mod capture;
 pub mod contribution;

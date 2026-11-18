@@ -66,6 +66,7 @@ pub mod out;
 pub mod rela;
 pub mod shstrtab;
 pub mod symtab;
+pub mod symtab_incr;
 pub mod version;
 
 pub use chunks::{SynthKind, chunk_ids};
