@@ -5,10 +5,11 @@
 - Step 1 committed 165110d7: `mortar_resolve::tables::option_keys`
   (static-identical 3450 links 0 differ; protoc 10 interleaved runs each,
   median 0.29-0.30 s before, 0.29 s after; RSS 150,040 vs 148,432 KiB).
-- `update/extract.rs`: shared `Ctx` (update's link: facts by current rank,
-  ments_old/new, targets, wrap redirect/sources, edges) and `extract`
-  (IN-71b: lost/gained edges, removal cone by round, re-seed + addition).
-  Being compiled.
+- U-8's seam cherry-picked (5ee6ef54, clean).
+- 7ed417fc: `extract` + shared `Ctx` (extract.rs), `recompute`
+  (defined.rs), `refill_set` (refill.rs); 17 tests in
+  tests/update_resolve.rs pass (incl. 3000-link random extraction series).
+- Interim hand-back sent: gaps G1-G3 need rulings before resolve/live.
 
 ## Next
 1. `resolve.rs` (defs per §3.2 classes, COMDAT re-election, Q.2 closure
