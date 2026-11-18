@@ -22,8 +22,12 @@ fn diags_until_it_lands() {
     assert_eq!(out, fresh);
 }
 
-// spec: incr.md IN-75a, diag.md's subjects column (until U-9: none)
+// spec: incr.md IN-75a, diag.md's subjects column (WP-221: filled; the
+// column and the code agree both ways in mortar_diag's spec_tables)
 #[test]
-fn subjects_until_it_lands() {
-    assert!(mortar_diag::subject::subjects("undefined-symbol").is_empty());
+fn subjects_of_a_reference_site_warning() {
+    use mortar_diag::subject::{SubjectKind, subjects};
+    assert_eq!(subjects("undefined-symbol"), [SubjectKind::File, SubjectKind::Key]);
+    assert_eq!(subjects("gnu-warning"), [SubjectKind::File, SubjectKind::Key]);
+    assert!(subjects("duplicate-symbol").is_empty());
 }

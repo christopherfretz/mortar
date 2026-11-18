@@ -1,0 +1,12 @@
+# WP-221 (U-9), IN-75a's `.gnu.warning` case: two members of lib.a carry
+# `.gnu.warning.<sym>` sections (glibc's link_warning form). c.o, the
+# changed file, calls w_once (in w1.o, extracted only for c.o) and w_both
+# (in w2.o, also called by the unchanged u.o) in the first link; EDIT
+# drops both calls; then they come back; then they go again.
+proves: an update's standard error equals the full link's on every hop: the w_once warning appears and goes with its referrer and its member, the w_both warning stays and only its "referenced by" lines follow c.o
+source: WP-221 step 1 (c), IN-75a, tests/incr-design/review-wp207/gnu-warning.sh
+edit: c.c
+link: main.o c.o u.o lib.a
+archive lib.a: w1.o w2.o
+compilers: gcc
+not kiln: C, and glibc's link_warning form (a section name ending in an assembler comment, so `.gnu.warning.<sym>` is not allocated): kiln compiles C++ only
