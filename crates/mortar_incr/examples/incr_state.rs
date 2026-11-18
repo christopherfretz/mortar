@@ -220,7 +220,7 @@ fn dead_keys(path4: &str, version: &str) -> Result<(), String> {
     seam_rows(&mut m);
     let live = state5::live_keys(&m, &mortar_core::incr::OptionKeys::default())
         .map_err(|e| e.to_string())?;
-    let mut by: std::collections::BTreeMap<(u8, bool, u8), usize> = Default::default();
+    let mut by = std::collections::BTreeMap::<(u8, bool, u8), usize>::default();
     let mut sample = Vec::new();
     for (k, r) in m.symbols.iter().enumerate() {
         if live[k] {

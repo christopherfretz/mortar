@@ -784,7 +784,7 @@ pub fn eh_columns(offset: u64, capacity: u64, records: u64) -> Result<[u32; 3], 
             ))
         })
     };
-    let end = offset.checked_add(capacity).unwrap_or(u64::MAX);
+    let end = offset.saturating_add(capacity);
     col(end, "range end")?;
     Ok([col(offset, "offset")?, col(capacity, "capacity")?, col(records, "record count")?])
 }

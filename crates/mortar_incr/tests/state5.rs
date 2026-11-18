@@ -24,6 +24,7 @@ fn add(pool: &mut Vec<u8>, b: &[u8]) -> Str {
 
 /// The capture of the files `ids` (of a full set `0..`), each with
 /// `sections` sections; symbols deliberately out of IN-18e's order.
+#[allow(clippy::too_many_lines)]
 fn sample(ids: &[u32], sections: u32) -> MemoryState {
     let mut m = MemoryState { plan_hash: [7; 16], ..MemoryState::default() };
     let mut pool = Vec::new();
@@ -829,7 +830,7 @@ fn drop_key(m: &mut MemoryState, k: u32) {
 // no `.debug_*` fragment): written, read back by the accessors and
 // `LayoutOf`, patched
 #[test]
-#[allow(clippy::too_many_lines)]
+#[allow(clippy::too_many_lines, clippy::many_single_char_names)]
 fn seam5_rows_round_trip_and_patch() {
     use mortar_core::incr::LayoutRows as _;
     use mortar_core::{OutSecId, SectionId};
@@ -971,6 +972,7 @@ fn capture_collision_and_limit_are_refused() {
 // `GONE`); the compaction and the canon drop it by `live_keys`; the
 // result equals a fresh capture's of inputs that never named it
 #[test]
+#[allow(clippy::many_single_char_names)]
 fn dead_key_dropped_by_compaction() {
     use mortar_core::incr::{OptionKey, OptionKeys};
     // eight files: one KEY_REFS tombstone in eight stays in place
