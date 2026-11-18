@@ -697,6 +697,8 @@ fn seam6_option_bit_marks_the_option_keys() {
             b"wp244_nowhere",
             b"__wrap_wp244_nowhere",
             b"__real_wp244_nowhere",
+            // the entry: a `live_roots()` name (WP-247 item b)
+            b"_start",
         ];
         let mut seen = Vec::new();
         for r in m.symbols.iter().filter(|r| r.option) {
