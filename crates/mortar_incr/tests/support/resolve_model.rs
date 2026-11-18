@@ -272,12 +272,19 @@ impl Link {
     }
 
     /// Every key name the link has (a mention, a root), sorted.
-    fn names(&self) -> BTreeSet<String> {
+    /// The keys an option names: roots, `--defsym` keys, and `--wrap`'s
+    /// three names rows (the input phase gives them, model.md §2.3).
+    fn option_names(&self) -> BTreeSet<String> {
         let mut v: BTreeSet<String> = self.roots.iter().chain(&self.defsym).cloned().collect();
-        // The input phase gives `--wrap`'s three names rows (model.md §2.3).
         for w in &self.wrap {
             v.extend([w.clone(), format!("__wrap_{w}"), format!("__real_{w}")]);
         }
+        v
+    }
+
+    /// Every key of the link: the options' and the mentioned.
+    fn names(&self) -> BTreeSet<String> {
+        let mut v = self.option_names();
         for f in self.files.iter().flatten() {
             v.extend(f.ments.iter().map(|m| m.key.clone()));
         }
@@ -787,6 +794,26 @@ impl Joined {
     }
 }
 
+/// IN-71b "Live keys" (WP-215 R.6 3): a global key is live when a stored
+/// row gives it a mention by a live file or a `LAZY` definition (a
+/// `KEY_REFS` row: a `LAZY` member's undefined mentions are not stored)
+/// or an option names it. The test's stand-in for the rule as IN-78's
+/// `canon` applies it: U-2's `canon` replaces [`canon_live_keys`] when it
+/// lands (not on this branch).
+fn is_live_key(k: &str, key_refs: &BTreeSet<String>, named: &BTreeSet<String>) -> bool {
+    key_refs.contains(k) || named.contains(k)
+}
+
+/// The rows of the live keys only: what `canon` keeps (IN-78, dead keys
+/// dropped).
+fn canon_live_keys(
+    rows: BTreeMap<String, Row>,
+    key_refs: &BTreeSet<String>,
+    named: &BTreeSet<String>,
+) -> BTreeMap<String, Row> {
+    rows.into_iter().filter(|(k, _)| is_live_key(k, key_refs, named)).collect()
+}
+
 /// The update `old` -> `new` equals the full link of `new`: every key's
 /// `RESOLVED` row (affected ones from the delta, the others stored), gone
 /// and new keys, `at`, `KEY_REFS`, `COMMONS`, `GROUPS`.
@@ -817,76 +844,7 @@ fn same_as_full(j: &Joined, d: &resolve::ResolveDelta, new: &Link, what: &str) {
         let r = affected.get(&id).unwrap_or_else(|| panic!("{what}: new key {id} has no row"));
         rows.insert(String::from_utf8(n.name.clone()).unwrap(), canon(r));
     }
-    // A key only a LAZY member's undefined mentions named (not stored,
-    // IN-71b "Stored"): when the member changes it cannot be found, so it
-    // stays, an undefined key nothing mentions (WP-215's record: a finding
-    // for U-2's compaction). The full link has no such key.
-    let refd: BTreeSet<String> = j
-        .state
-        .key_refs
-        .iter()
-        .map(|r| j.keys[r.key as usize].clone())
-        .chain(d.key_refs.put.iter().map(|r| j.name(d, r.key)))
-        .collect();
-    let stale: BTreeSet<String> = rows
-        .keys()
-        .filter(|k| !full.rows.contains_key(*k) && !refd.contains(*k))
-        .cloned()
-        .collect();
-    for k in &stale {
-        assert_eq!(rows.remove(k).unwrap().kind, def_kind::UNDEFINED, "{what}: stale key {k}");
-    }
-    // The other way: a key the update finds unmentioned (its stored rows
-    // all gone) that the new link's LAZY members still name undefined is
-    // gone, the full link keeps it (unreferenced, undefined). An
-    // extraction reads the member fresh and makes it again.
-    let lazy_only: BTreeSet<String> = full
-        .rows
-        .keys()
-        .filter(|k| {
-            gone.contains(*k)
-                && !full.referenced.contains(*k)
-                && new.files.iter().enumerate().all(|(f, x)| {
-                    x.as_ref().is_none_or(|x| {
-                        x.ments.iter().all(|m| {
-                            m.key != **k
-                                || (m.kind == def_kind::UNDEFINED && !full.live.contains_key(&(f as u32)))
-                        })
-                    })
-                })
-        })
-        .cloned()
-        .collect();
-    let mut want_rows = full.rows.clone();
-    for k in &lazy_only {
-        assert_eq!(want_rows.remove(k).unwrap().kind, def_kind::UNDEFINED);
-    }
-    assert_eq!(rows, want_rows, "{what}: RESOLVED");
-    let want_gone: BTreeSet<String> = j
-        .keys
-        .iter()
-        .filter(|k| (!full.rows.contains_key(*k) && !stale.contains(*k)) || lazy_only.contains(*k))
-        .cloned()
-        .collect();
-    assert_eq!(gone, want_gone, "{what}: gone keys");
-    // at
-    let mut at: BTreeMap<String, (u32, u32)> = BTreeMap::new();
-    for (i, k) in j.keys.iter().enumerate() {
-        let s = j.state.symbols[i];
-        at.insert(k.clone(), (s.at_file, s.at_index));
-    }
-    for &(k, f, x) in &d.at {
-        at.insert(j.name(d, k.0), (f, x));
-    }
-    for n in &d.new_keys {
-        at.insert(String::from_utf8(n.name.clone()).unwrap(), (n.row.at_file, n.row.at_index));
-    }
-    for k in full.rows.keys().filter(|k| !lazy_only.contains(*k)) {
-        let w = full.at.get(k).copied().unwrap_or((NONE, 0));
-        assert_eq!(at.get(k).copied(), Some(w), "{what}: at of {k}");
-    }
-    // KEY_REFS, COMMONS, GROUPS: the stored rows with the edits, against
-    // the new link's own.
+    // KEY_REFS first: the live keys (IN-71b "Live keys") are read from it.
     let mut nk = Vec::new();
     let want = new.state(&mut nk);
     let mut key_refs: BTreeMap<(String, u32), KeyRefRow> = BTreeMap::new();
@@ -905,6 +863,42 @@ fn same_as_full(j: &Joined, d: &resolve::ResolveDelta, new: &Link, what: &str) {
         .map(|r| ((nk[r.key as usize].clone(), r.file), KeyRefRow { key: 0, ..*r }))
         .collect();
     assert_eq!(key_refs, want_refs, "{what}: KEY_REFS");
+    // Both sides through the rule (WP-215 R.6 3, ruled): a dead key (no
+    // `KEY_REFS` row, no option naming it) is dropped from the update's
+    // rows and from the full link's; no list of tolerated keys.
+    let named = new.option_names();
+    let live_after: BTreeSet<String> = key_refs.keys().map(|(k, _)| k.clone()).collect();
+    let want_live: BTreeSet<String> = want_refs.keys().map(|(k, _)| k.clone()).collect();
+    let rows = canon_live_keys(rows, &live_after, &named);
+    let want_rows = canon_live_keys(full.rows.clone(), &want_live, &named);
+    assert_eq!(rows, want_rows, "{what}: RESOLVED");
+    for k in &gone {
+        assert!(!is_live_key(k, &live_after, &named), "{what}: gone key {k} is live");
+    }
+    // A dead key the update leaves (not gone) is undefined: no reader
+    // gives it a definition.
+    for (i, k) in j.keys.iter().enumerate() {
+        if !gone.contains(k) && !is_live_key(k, &live_after, &named) {
+            let r = affected.get(&(i as u32)).copied().unwrap_or(j.state.resolved[i]);
+            assert_eq!(r.kind, def_kind::UNDEFINED, "{what}: dead key {k} left defined");
+        }
+    }
+    // at
+    let mut at: BTreeMap<String, (u32, u32)> = BTreeMap::new();
+    for (i, k) in j.keys.iter().enumerate() {
+        let s = j.state.symbols[i];
+        at.insert(k.clone(), (s.at_file, s.at_index));
+    }
+    for &(k, f, x) in &d.at {
+        at.insert(j.name(d, k.0), (f, x));
+    }
+    for n in &d.new_keys {
+        at.insert(String::from_utf8(n.name.clone()).unwrap(), (n.row.at_file, n.row.at_index));
+    }
+    for k in want_rows.keys() {
+        let w = full.at.get(k).copied().unwrap_or((NONE, 0));
+        assert_eq!(at.get(k).copied(), Some(w), "{what}: at of {k}");
+    }
     let mut commons: BTreeMap<(String, u32), (u64, u64)> = BTreeMap::new();
     for c in &j.state.commons {
         commons.insert((j.keys[c.key as usize].clone(), c.file), (c.size, c.align));
@@ -937,11 +931,15 @@ fn same_as_full(j: &Joined, d: &resolve::ResolveDelta, new: &Link, what: &str) {
         .map(|g| (want.view().string(g.signature).unwrap(), g.file))
         .collect();
     assert_eq!(groups, want_groups, "{what}: GROUPS");
-    let new_names: BTreeSet<String> =
-        d.new_keys.iter().map(|n| String::from_utf8(n.name.clone()).unwrap()).collect();
+    let new_names: BTreeSet<String> = d
+        .new_keys
+        .iter()
+        .map(|n| String::from_utf8(n.name.clone()).unwrap())
+        .filter(|k| is_live_key(k, &live_after, &named))
+        .collect();
     let want_new: BTreeSet<String> =
-        full.rows.keys().filter(|k| !j.keys.contains(k)).cloned().collect();
-    assert_eq!(new_names, want_new, "{what}: new keys");
+        want_rows.keys().filter(|k| !j.keys.contains(k)).cloned().collect();
+    assert_eq!(new_names, want_new, "{what}: new (live) keys");
 }
 
 /// The update's live set equals §4.1's on the new inputs, and its rounds

@@ -2971,13 +2971,14 @@ a pass over a whole table of the state; **O(output)**.
   **Values** (WP-215 seam 3): a changed file's `st_value` and `st_size`
   per mention are passed in (`ChangedFile::values`, made by the capture
   function that makes its `MENTIONS` rows; never stored). An unchanged
-  file that becomes a key's definer, a common's winning file or a
-  group's keeper is **drawn in**: `resolve` returns the files to read
+  file that becomes a key's definer or a group's keeper is **drawn in**
+  (never for a common: item 2a): `resolve` returns the files to read
   (`Resolution::DrawIn`) instead of a delta, never a partial delta; the
   join reads them (`Change::DrawnIn`, IN-75's `STAT` check first) and
   calls `resolve` again. A drawn-in file's mentions equal its stored
-  rows, so it adds no affected key beyond those the first call derived
-  and changes no candidate or winner: the second call asks for nothing
+  rows, so its keys are affected (its sections take new ids, so the
+  `RESOLVED` rows naming them are rewritten); no candidate or winner
+  changes, so the second call asks for nothing (WP-215 R.6 2, ruled)
   (at most `RESOLVE_CALLS` = 2 calls; a second draw-in means a drawn-in
   file's bytes disagree with its rows: `input-changed`). Drawn-in files
   count toward IN-16's bound.
@@ -3049,7 +3050,21 @@ a pass over a whole table of the state; **O(output)**.
     member's common's size and alignment are not stored (`COMMONS` holds
     the live files' rows, IN-18e; WP-215 D6): an extracted member is read,
     and they come from its bytes; a `LAZY` member's undefined mentions
-    are not stored (an extracted member's are). Each
+    are not stored (an extracted member's are), and decide nothing that
+    is stored (as `at`, IN-71: the first LIVE mentioner).
+    **Live keys** (WP-215 R.6 3, ruled): a global key is **live** in a
+    state when a stored row gives it a mention by a live file (a
+    `KEY_REFS` row of a live file, a definition, a common, a group), a
+    `LAZY` member's definition (a `KEY_REFS` row of a `LAZY` file), or an
+    option names it (`OptionKeys`); any other key is **dead**. A capture
+    writes exactly the live keys. An update need not delete a key whose
+    last mention went: it may leave it dead (its `SYMBOLS` row, its
+    `RESOLVED` row undefined), like a dead string; IN-78's `canon` and a
+    compaction drop dead keys by this rule. No reader treats a dead key
+    as live: it is never reported undefined, never a draw-in's or a
+    re-election's reason, never affected by its own deadness; a dead key
+    that gets a mention again is found by name (`NAMES`) and its row
+    reused, never a second row. Each
     extracted member's `FILES` row carries its **round**: a number such
     that some live file or root with an edge to it has a smaller round
     (non-archive files and roots 0): the **support property**. The first
@@ -3325,12 +3340,14 @@ a pass over a whole table of the state; **O(output)**.
      change its sections or its `.symtab` block for a reason outside it:
      a section of it becomes live (IN-71a) or kept (IN-71's election), or
      stops being so; one of its globals is demoted to a local of its
-     block by the merged visibility (S-74) or promoted back; it becomes,
-     or stops being, the **winning file of a common** ([later], with item
-     11's placing rule: a changed file adds or removes a common mention
-     less by ≺ than the current winner, or the winner's own mention
-     changes; review-wp207 M-3; v1 draws no file in for a common, item
-     11). A drawn-in
+     block by the merged visibility (S-74) or promoted back. **Never for
+     a common** (WP-215 R.6 1, ruled): a winning common's `RESOLVED` row
+     is given whole by the rows (kind `COMMON`, the size the largest over
+     the key's live `COMMONS` rows, the value the winner's alignment, the
+     type, binding and `st_other` its `MENTIONS` row), so its file is
+     never read for it; and v1 places no common (item 11). [later] With
+     item 11's placing rule, the old and the new winning files of a
+     common are drawn in for their sections (review-wp207 M-3). A drawn-in
      file is processed exactly as a changed file whose bytes are its old
      bytes: it is opened, `fstat`ed and compared with its `STAT` row
      (IN-28a condition 2; else `input-changed`; review-in72 M-6) and read
@@ -4020,7 +4037,11 @@ a pass over a whole table of the state; **O(output)**.
   - `canon(X)` is `X`'s rows with: the slack rows of file-keyed ranges,
     the unused capacity of every table, tombstones (`GONE` symbols,
     deleted key-keyed rows) and the ranges and rows of gone files
-    removed; each key-keyed table sorted by its key (append order
+    removed; the **dead keys** (IN-71b "Live keys": no stored mention by a
+    live file, no `LAZY` definition, no option) removed with their
+    `SYMBOLS`, `NAMES` and `RESOLVED` rows (WP-215 R.6 3: so a capture
+    and a compaction agree without a list of tolerated keys); each
+    key-keyed table sorted by its key (append order
     forgotten); every row reference replaced by the referenced row's
     canonical name: a file by its load-order position (`rank` order), a
     symbol by its key name (a local by (file, symbol-table index)), a

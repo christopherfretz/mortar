@@ -5,9 +5,8 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 
-use mortar_core::incr::{IncrReason, LayoutDelta};
+use mortar_core::incr::{IncrReason, LayoutDelta, PlaceNow, StoredLayout};
 pub use mortar_core::incr::{RefillChunk, RefillSet, RefillUnit};
-use mortar_core::layout::Place;
 use mortar_core::{FileId, SectionId, SymbolId};
 use mortar_elf::consts::SHF_ALLOC;
 
@@ -38,7 +37,9 @@ use crate::format::{def_kind, index_kind, kind};
 ///   non-allocated units;
 /// - `slots`: the units using a global's slot that was appended or died.
 ///
-/// A unit is listed only when the update places it. Chunks (synthetic
+/// A unit is listed only when the update places it, read through the one
+/// reader of the sparse placement, `LayoutDelta::place_of` over `stored`
+/// (WP-216 seam 4). Chunks (synthetic
 /// tables, headers, gaps) are U-6's: `chunks` stays empty.
 ///
 /// # Errors
@@ -49,10 +50,11 @@ pub fn refill_set(
     view: &StateView<'_>,
     changed: &ChangedFiles,
     resolved: &ResolveDelta,
+    stored: &StoredLayout<'_>,
     layout: &LayoutDelta,
     defined: &[DefinedChange],
 ) -> Result<RefillSet, IncrReason> {
-    let mut r = Refill::new(view, layout)?;
+    let mut r = Refill::new(view, stored, layout)?;
     r.changed = changed
         .files
         .iter()
@@ -63,9 +65,11 @@ pub fn refill_set(
         })
         .collect();
     r.changed_files = changed.files.iter().map(|c| c.file.0).collect();
-    // IN-27 row 1: the new rows.
-    for id in r.sections..layout.placement.place.len() {
-        r.add(SectionId(id), reason::FILE);
+    // IN-27 row 1: the new rows (every section of `changed`; their ids
+    // are past the state's `SECTIONS` count).
+    let new: Vec<u32> = r.changed.keys().copied().filter(|&id| id >= r.sections).collect();
+    for id in new {
+        r.add(SectionId(id), reason::FILE)?;
     }
     // IN-27 row 3: keys whose resolution changed.
     let mut keys: BTreeSet<u32> = BTreeSet::new();
@@ -110,6 +114,7 @@ pub fn refill_set(
 
 struct Refill<'a, 's> {
     view: &'a StateView<'s>,
+    stored: &'a StoredLayout<'a>,
     layout: &'a LayoutDelta,
     sections: u32,
     symbols: u32,
@@ -121,13 +126,18 @@ struct Refill<'a, 's> {
 }
 
 impl<'a, 's> Refill<'a, 's> {
-    fn new(view: &'a StateView<'s>, layout: &'a LayoutDelta) -> Result<Self, IncrReason> {
+    fn new(
+        view: &'a StateView<'s>,
+        stored: &'a StoredLayout<'a>,
+        layout: &'a LayoutDelta,
+    ) -> Result<Self, IncrReason> {
         let count = |k| {
             u32::try_from(view.count(k))
                 .map_err(|_| IncrReason::StateCorrupt("a table's count past u32".into()))
         };
         Ok(Self {
             view,
+            stored,
             layout,
             sections: count(kind::SECTIONS)?,
             symbols: count(kind::SYMBOLS)?,
@@ -138,14 +148,20 @@ impl<'a, 's> Refill<'a, 's> {
         })
     }
 
-    fn placed(&self, s: SectionId) -> bool {
-        self.layout.placement.place.get(s).is_some_and(|p| *p != Place::NONE)
+    /// Whether the update places `s`: `place_of`, the one reader.
+    fn placed(&self, s: SectionId) -> Result<bool, IncrReason> {
+        Ok(match self.layout.place_of(self.stored, s)? {
+            PlaceNow::Here(_) => true,
+            PlaceNow::Stored(p) => p.get().is_some(),
+            PlaceNow::NotPlaced => false,
+        })
     }
 
-    fn add(&mut self, s: SectionId, why: u32) {
-        if self.placed(s) {
+    fn add(&mut self, s: SectionId, why: u32) -> Result<(), IncrReason> {
+        if self.placed(s)? {
             *self.units.entry(s.0).or_default() |= why;
         }
+        Ok(())
     }
 
     fn index_of(&mut self, file: u32) -> Result<&[IndexRow], IncrReason> {
@@ -171,7 +187,7 @@ impl<'a, 's> Refill<'a, 's> {
                 .map(|x| x.unit)
                 .collect();
             for u in units {
-                self.add(SectionId(u), why);
+                self.add(SectionId(u), why)?;
             }
         }
         Ok(())
@@ -187,7 +203,7 @@ impl<'a, 's> Refill<'a, 's> {
         refs: u32,
         file: u32,
     ) -> Result<u64, IncrReason> {
-        self.add(s, own);
+        self.add(s, own)?;
         if s.0 >= self.sections {
             return Ok(0);
         }
@@ -208,7 +224,7 @@ impl<'a, 's> Refill<'a, 's> {
             .map(|x| x.unit)
             .collect();
         for u in units {
-            self.add(SectionId(u), refs);
+            self.add(SectionId(u), refs)?;
         }
         let mut n = 0;
         for m in self.view.mentions_of(FileId(f))? {
@@ -231,7 +247,7 @@ impl<'a, 's> Refill<'a, 's> {
         let rows = self.view.sections_of(f)?;
         for (i, x) in rows.iter().enumerate() {
             if x.sh_flags & SHF_ALLOC == 0 {
-                self.add(SectionId(start + i as u32), why);
+                self.add(SectionId(start + i as u32), why)?;
             }
         }
         Ok(())

@@ -8,7 +8,7 @@
 
 include!("support/resolve_model.rs");
 
-use mortar_core::incr::{LayoutDelta, StoredSlot};
+use mortar_core::incr::{LayoutDelta, MemoryLayout, StoredLayout, StoredSection, StoredSlot};
 use mortar_core::layout::{Chunk, ChunkKind, DefValue, Defined, Place, SlotKind};
 use mortar_core::{ChunkId, Column, SymEntry, SymKey, SymbolId};
 use mortar_incr::format::index_kind;
@@ -372,7 +372,10 @@ fn empty_update_recompute_and_refill_set() {
     let layout = LayoutDelta::default();
     assert!(defined::recompute(&view, &layout).is_empty());
     let resolved = resolve::ResolveDelta::default();
-    let set = refill::refill_set(&view, &ChangedFiles::default(), &resolved, &layout, &[]).unwrap();
+    let rows = MemoryLayout::default();
+    let stored = StoredLayout::new(&rows);
+    let set = refill::refill_set(&view, &ChangedFiles::default(), &resolved, &stored, &layout, &[])
+        .unwrap();
     assert!(set.units.is_empty());
 }
 
@@ -546,9 +549,29 @@ impl Defs {
             .collect();
         let mut layout = LayoutDelta::default();
         layout.placement.chunks = Column::from_vec(chunks).unwrap();
-        // Each referrer's unit: 8 bytes into chunk 0 (unchanged).
-        layout.placement.place =
-            Column::from_vec(vec![Place::at(ChunkId(0), 0); self.referrers.len()]).unwrap();
+        // Each referrer's unit: stored at chunk 0 (unchanged); no file is
+        // placed by the update, so `place_of` answers from the stored rows
+        // (the sparse placement, WP-216 seam 4: `placement.place` empty).
+        let rows = MemoryLayout {
+            sections: (0..self.referrers.len())
+                .map(|i| StoredSection {
+                    id: SectionId(i as u32),
+                    file: FileId(i as u32 + 1),
+                    index: 1,
+                    anchor_kind: 0,
+                    anchor: Vec::new(),
+                    name: b".text".to_vec(),
+                    ordinal: 0,
+                    sh_type: mortar_elf::consts::SHT_PROGBITS,
+                    sh_flags: mortar_elf::consts::SHF_ALLOC,
+                    size: 8,
+                    align: 1,
+                    place: Place::at(ChunkId(0), 0),
+                })
+                .collect(),
+            ..MemoryLayout::default()
+        };
+        let stored = StoredLayout::new(&rows);
         layout.placement.defined = next
             .values
             .iter()
@@ -559,8 +582,15 @@ impl Defs {
         (layout.slots_appended, layout.slots_dead) = slots;
         let changes = defined::recompute(&view, &layout);
         let resolved = resolve::ResolveDelta::default();
-        let set = refill::refill_set(&view, &ChangedFiles::default(), &resolved, &layout, &changes)
-            .unwrap();
+        let set = refill::refill_set(
+            &view,
+            &ChangedFiles::default(),
+            &resolved,
+            &stored,
+            &layout,
+            &changes,
+        )
+        .unwrap();
         let keys = changes.iter().map(|c| self.keys[c.key.0 as usize]).collect();
         (keys, set.units.iter().map(|u| u.section.0).collect())
     }
@@ -880,6 +910,55 @@ fn key_refs_single_mentioner() {
     let (d, _) = hop_ok(&b, &a);
     assert_eq!(d.new_keys.len(), 1);
     assert_eq!(d.new_keys[0].name, b"only".to_vec());
+}
+
+// spec: incr.md IN-71b "Live keys" (WP-215 R.6 3, ruled): a DEAD key (no
+// stored mention by a live file, no `LAZY` definition, no option) is inert
+// to every reader of the update, and found and reused when it gets a
+// mention again. `d` is dead in the stored state: only the `LAZY`
+// member's undefined mention names it (not stored). (1) An edit of
+// another file: `d` is not affected, not gone, not a reason for a
+// draw-in, no fall-back (no undefined report), its row stays undefined.
+// (2) The lazy member itself changes (dropping its `d`): `d` stays as
+// it was (dead), not affected. (3) A live file defines `d`: its stored
+// row is reused (no new key). (4) The same from a `GONE` row (a dead key
+// an update left): reused. Re-election reads `GROUPS` by signature, never
+// a key's rows, so a dead key never reaches it.
+#[test]
+fn dead_key_is_inert_and_reused() {
+    let mut a = Link::new();
+    let f1 = a.add(R, false, vec![def("x")]);
+    let m = a.add(2 * R, true, vec![def("z"), undef("d")]);
+    let d_key = key_of(&a, "d");
+    let mut b = a.clone();
+    b.files[f1 as usize].as_mut().unwrap().ments = vec![def("x").val(8, 8)];
+    let (delta, drawn) = hop_ok(&a, &b);
+    assert!(drawn.is_empty());
+    assert!(!delta.affected.contains(&d_key), "a dead key is not affected");
+    assert!(!delta.gone.contains(&d_key));
+    assert!(delta.resolved.iter().all(|(k, _)| *k != d_key));
+    // (2) the lazy member changes.
+    let mut c = a.clone();
+    c.files[m as usize].as_mut().unwrap().ments = vec![def("z").val(4, 4)];
+    let (delta, drawn) = hop_ok(&a, &c);
+    assert!(drawn.is_empty());
+    assert!(!delta.affected.contains(&d_key) && !delta.gone.contains(&d_key));
+    // (3) a live file defines it: the stored row, not a new key.
+    let mut e = a.clone();
+    e.files[f1 as usize].as_mut().unwrap().ments = vec![def("x"), def("d")];
+    let (delta, _) = hop_ok(&a, &e);
+    assert!(delta.new_keys.is_empty(), "{:?}", delta.new_keys);
+    assert!(delta.affected.contains(&d_key));
+    let row = delta.resolved.iter().find(|(k, _)| *k == d_key).unwrap().1;
+    assert_eq!(row.kind, def_kind::SECTION);
+    // (4) from a GONE row (as an update leaves it).
+    let j = join_patched(&a, &e, |st, keys| {
+        let k = keys.iter().position(|x| x == "d").unwrap();
+        st.symbols[k].kind = sym_kind::GONE;
+    });
+    let delta = j.result.clone().unwrap();
+    same_as_full(&j, &delta, &e, "GONE d defined again");
+    assert!(delta.new_keys.is_empty() && delta.affected.contains(&d_key));
 }
 
 // spec: incr.md IN-71 ("first", "least" by CURRENT rank; WP-215 rulings):
