@@ -173,7 +173,10 @@ pub fn write_with(
     //    W1).
     let meta = view.meta()?;
     if !well_formed(pair.size, ranges, bytes) {
-        debug_assert!(false, "dirty ranges not sorted, disjoint, as long as their bytes and in size");
+        debug_assert!(
+            false,
+            "dirty ranges not sorted, disjoint, as long as their bytes and in size"
+        );
         return Err(WriteFailure::Fallback(IncrReason::UpdateNotImplemented(Some(
             Unimplemented::Write,
         ))));
@@ -923,7 +926,10 @@ pub fn lock_state(path: &Path, ops: &mut dyn WriteOps) -> Result<Option<File>, I
             Ok(_) => {}
         }
         let opened = OpenOptions::new().read(true).write(true).open(path).or_else(|e| {
-            if matches!(e.kind(), io::ErrorKind::PermissionDenied | io::ErrorKind::ReadOnlyFilesystem) {
+            if matches!(
+                e.kind(),
+                io::ErrorKind::PermissionDenied | io::ErrorKind::ReadOnlyFilesystem
+            ) {
                 File::open(path)
             } else {
                 Err(e)
@@ -955,7 +961,8 @@ pub fn lock_state(path: &Path, ops: &mut dyn WriteOps) -> Result<Option<File>, I
 /// image.md I-59's probe on `S` while this link holds its lock: a second
 /// descriptor's `try_lock` must find it held.
 fn lock_enforced(path: &Path, ops: &mut dyn WriteOps) -> bool {
-    File::open(path).is_ok_and(|other| matches!(ops.flock(&other, LockMode::TryExclusive), Ok(false)))
+    File::open(path)
+        .is_ok_and(|other| matches!(ops.flock(&other, LockMode::TryExclusive), Ok(false)))
 }
 
 /// The boot id (IN-77c): `/proc/sys/kernel/random/boot_id`'s 16 bytes, or
@@ -990,12 +997,17 @@ fn parse_boot_id(text: &str) -> Option<[u8; 16]> {
 /// # Errors
 /// `output-changed` naming the first leaf that differs, or a size that
 /// differs or a read that fails; the view's own reasons.
-pub fn boot_check(view: &StateView<'_>, out: &File, boot: Option<[u8; 16]>) -> Result<(), IncrReason> {
+pub fn boot_check(
+    view: &StateView<'_>,
+    out: &File,
+    boot: Option<[u8; 16]>,
+) -> Result<(), IncrReason> {
     let meta = view.meta()?;
     if meta.output_synced || boot == Some(meta.boot_id) {
         return Ok(());
     }
-    let changed = |why: String| IncrReason::OutputChanged(format!("{why} (after a reboot, IN-77c)"));
+    let changed =
+        |why: String| IncrReason::OutputChanged(format!("{why} (after a reboot, IN-77c)"));
     let f = match meta.leaf_fn {
         0 => mortar_digest::TreeFn::L128,
         1 => mortar_digest::TreeFn::Sha1,

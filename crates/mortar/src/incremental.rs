@@ -665,7 +665,11 @@ impl Session {
         let result = result.and_then(|written| {
             // IN-77d: the temporary is another live link's: no state, and
             // `S` is left as it is.
-            if written { Ok(()) } else { Err("state-busy (its temporary is another link's)".to_owned()) }
+            if written {
+                Ok(())
+            } else {
+                Err("state-busy (its temporary is another link's)".to_owned())
+            }
         });
         if result.is_err() && !busy {
             // No state is left that the next link could accept: an older

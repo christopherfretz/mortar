@@ -15,6 +15,7 @@ use std::io;
 use std::os::unix::fs::{FileExt, MetadataExt, PermissionsExt};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU32, Ordering};
+use std::sync::{PoisonError, RwLock, RwLockReadGuard, RwLockWriteGuard};
 
 use mortar::update::write::{
     Pair, Written, boot_check, boot_id, lock_state, write, write_state_whole, write_with,
@@ -46,6 +47,48 @@ impl Tmp {
 impl Drop for Tmp {
     fn drop(&mut self) {
         let _ = std::fs::remove_dir_all(&self.0);
+    }
+}
+
+// ---- children and updates in one test process ------------------------------------
+
+/// Between its fork and its exec a child holds a copy of every descriptor
+/// of this process, `P`'s among them, and IN-45's `/proc` scan then sees
+/// `P` held by another process: the update rightly takes the copy path.
+/// So a child is spawned only while no update runs here (an update holds
+/// [`updating`]; a spawn holds [`forking`] until the child has exec'd,
+/// or, for `output`/`status`, until it ends).
+static FORKS: RwLock<()> = RwLock::new(());
+
+fn updating() -> RwLockReadGuard<'static, ()> {
+    FORKS.read().unwrap_or_else(PoisonError::into_inner)
+}
+
+fn forking() -> RwLockWriteGuard<'static, ()> {
+    FORKS.write().unwrap_or_else(PoisonError::into_inner)
+}
+
+/// `Command`'s spawns, each under [`forking`].
+trait Fork {
+    fn fork_spawn(&mut self) -> io::Result<std::process::Child>;
+    fn fork_output(&mut self) -> io::Result<std::process::Output>;
+    fn fork_status(&mut self) -> io::Result<std::process::ExitStatus>;
+}
+
+impl Fork for std::process::Command {
+    fn fork_spawn(&mut self) -> io::Result<std::process::Child> {
+        let _g = forking();
+        self.spawn()
+    }
+
+    fn fork_output(&mut self) -> io::Result<std::process::Output> {
+        let _g = forking();
+        self.output()
+    }
+
+    fn fork_status(&mut self) -> io::Result<std::process::ExitStatus> {
+        let _g = forking();
+        self.status()
     }
 }
 
@@ -367,6 +410,7 @@ fn run(
     let pair = w.pair(out, state);
     let m = w.view();
     let s = w.s.clone();
+    let _u = updating();
     write_with(
         &pair,
         &m.view(),
@@ -985,6 +1029,7 @@ fn write_path_default_by_size() {
         let mut m = w.view();
         m.meta.file_size = len;
         let pair = Pair { size: len, ..w.pair(&out, &state) };
+        let _u = updating();
         let r = write_with(
             &pair,
             &m.view(),
@@ -1024,6 +1069,7 @@ fn condition(
     let pair = w.pair(&out, &state);
     let mut m = w.view();
     m.meta.output_kind = kind;
+    let _u = updating();
     let r = write_with(
         &pair,
         &m.view(),
@@ -1077,7 +1123,7 @@ fn in_place_conditions_each_take_copy() {
         "held open by another process",
         |w| {
             let f = File::open(&w.p).unwrap();
-            Some(std::process::Command::new("sleep").arg("30").stdin(f).spawn().unwrap())
+            Some(std::process::Command::new("sleep").arg("30").stdin(f).fork_spawn().unwrap())
         },
         true,
         0,
@@ -1100,16 +1146,16 @@ fn exec_fails_from_u1() {
     let p = tmp.0.join("prog");
     // Written by a child (`cp`): a descriptor this process opened for
     // writing would be inherited by every child another test forks.
-    let o = std::process::Command::new("cp").arg("/bin/true").arg(&p).status().unwrap();
+    let o = std::process::Command::new("cp").arg("/bin/true").arg(&p).fork_status().unwrap();
     assert!(o.success());
     let out = File::options().read(true).write(true).open(&p).unwrap();
-    let e = std::process::Command::new(&p).status().unwrap_err();
+    let e = std::process::Command::new(&p).fork_status().unwrap_err();
     assert_eq!(e.raw_os_error(), Some(26), "ETXTBSY: {e}");
     drop(out);
     // Closed (W4's end): it runs, once no other test's child holds it.
     let mut ok = false;
     for _ in 0..50 {
-        match std::process::Command::new(&p).status() {
+        match std::process::Command::new(&p).fork_status() {
             Ok(s) => {
                 ok = s.success();
                 break;
@@ -1170,7 +1216,7 @@ fn kill_at(point: &str, path: WritePath, compacts: bool) -> (Killed, Tmp) {
         .env("MORTAR_WP219_CHILD", &tmp.0)
         .env("MORTAR_WP219_MODE", &mode)
         .env("MORTAR_INCR_CRASH", point)
-        .output()
+        .fork_output()
         .unwrap();
     let err = String::from_utf8_lossy(&o.stderr);
     assert_eq!(o.status.signal(), Some(6), "{point} {mode}: aborted? {:?} {err}", o.status);
@@ -1274,7 +1320,7 @@ fn output_missing_after_kill_in_window() {
         let (k, tmp) = kill_at(point, WritePath::InPlace, false);
         assert!(!k.p && k.a, "{point}");
         let w = World::names(&tmp.0, false);
-        let e = std::process::Command::new(&w.p).status().unwrap_err();
+        let e = std::process::Command::new(&w.p).fork_status().unwrap_err();
         assert_eq!(e.kind(), io::ErrorKind::NotFound, "{point}: {e}");
     }
 }
@@ -1288,7 +1334,12 @@ fn make_relinks_after_kill_at_w3() {
     let make = |dir: &Path| {
         let mark = dir.join("relinked");
         let _ = std::fs::remove_file(&mark);
-        let o = std::process::Command::new("make").arg("-s").arg("-C").arg(dir).arg("out").output();
+        let o = std::process::Command::new("make")
+            .arg("-s")
+            .arg("-C")
+            .arg(dir)
+            .arg("out")
+            .fork_output();
         let Ok(o) = o else {
             assert!(!mortar_testutil::tools_required(), "make is required");
             return None;
@@ -1343,7 +1394,7 @@ impl Floor {
             .arg(&src)
             .arg("-o")
             .arg(tmp.0.join("a.o"))
-            .status();
+            .fork_status();
         if !cc.is_ok_and(|s| s.success()) {
             assert!(!mortar_testutil::tools_required(), "cc is required");
             return None;
@@ -1357,12 +1408,14 @@ impl Floor {
 
     fn command(&self, extra: &[&str]) -> std::process::Command {
         let mut c = std::process::Command::new(env!("CARGO_BIN_EXE_mortar"));
-        c.current_dir(self.dir()).args(["a.o", "-static", "--incremental", "-o", "out"]).args(extra);
+        c.current_dir(self.dir())
+            .args(["a.o", "-static", "--incremental", "-o", "out"])
+            .args(extra);
         c
     }
 
     fn link(&self, extra: &[&str]) -> std::process::Output {
-        let o = self.command(extra).output().unwrap();
+        let o = self.command(extra).fork_output().unwrap();
         assert!(o.status.success(), "{}", String::from_utf8_lossy(&o.stderr));
         o
     }
@@ -1393,7 +1446,7 @@ impl Floor {
 #[test]
 fn floor_state_temporary_is_the_compact_name() {
     let Some(fl) = Floor::new("floor-name") else { return };
-    let o = fl.command(&[]).env("MORTAR_INCR_CRASH", "F-state-written").output().unwrap();
+    let o = fl.command(&[]).env("MORTAR_INCR_CRASH", "F-state-written").fork_output().unwrap();
     assert!(!o.status.success(), "{}", String::from_utf8_lossy(&o.stderr));
     let names: Vec<String> = std::fs::read_dir(fl.dir())
         .unwrap()
@@ -1445,8 +1498,8 @@ fn two_floors_at_once() {
     let Some(fl) = Floor::new("two-floors") else { return };
     for round in 0..10 {
         let _ = std::fs::remove_file(fl.state());
-        let mut a = fl.command(&[]).stderr(std::process::Stdio::piped()).spawn().unwrap();
-        let mut b = fl.command(&[]).stderr(std::process::Stdio::piped()).spawn().unwrap();
+        let mut a = fl.command(&[]).stderr(std::process::Stdio::piped()).fork_spawn().unwrap();
+        let mut b = fl.command(&[]).stderr(std::process::Stdio::piped()).fork_spawn().unwrap();
         let (sa, sb) = (a.wait().unwrap(), b.wait().unwrap());
         assert!(sa.success() && sb.success(), "round {round}");
         assert!(!fl.temporary().exists(), "round {round}: no temporary left");
@@ -1463,7 +1516,7 @@ fn floor_waits_for_the_state_lock() {
     fl.link(&[]);
     let held = File::open(fl.state()).unwrap();
     held.lock().unwrap();
-    let mut child = fl.command(&[]).stderr(std::process::Stdio::null()).spawn().unwrap();
+    let mut child = fl.command(&[]).stderr(std::process::Stdio::null()).fork_spawn().unwrap();
     std::thread::sleep(std::time::Duration::from_millis(500));
     assert!(child.try_wait().unwrap().is_none(), "the link waits for the lock");
     drop(held);
@@ -1486,6 +1539,7 @@ fn output_written_after_u1_check() {
         File::options().write(true).open(&w.p).unwrap().write_all_at(b"XX", 100).unwrap();
         let m = w.view();
         let mut ops = RecordingOps::default();
+        let _u = updating();
         let r = write_with(
             &pair,
             &m.view(),
@@ -1514,7 +1568,7 @@ fn lock_state_no_state_and_not_a_file() {
     let tmp = Tmp::new("lock-none");
     let s = tmp.0.join("out.mortar-state");
     assert!(matches!(lock_state(&s, &mut StdOps), Ok(None)));
-    let made = std::process::Command::new("mkfifo").arg(&s).status();
+    let made = std::process::Command::new("mkfifo").arg(&s).fork_status();
     if made.is_ok_and(|x| x.success()) {
         assert!(matches!(lock_state(&s, &mut StdOps), Err(IncrReason::StateCorrupt(_))));
     }
@@ -1725,7 +1779,7 @@ fn full_link_during_compaction() {
     for path in [WritePath::InPlace, WritePath::Copy] {
         for compacts in [true, false] {
             let calls = clean_calls(path, compacts);
-            for at in 0..calls.len() {
+            for (at, &kind) in calls.iter().enumerate() {
                 let tmp = Tmp::new("full-during");
                 let w = World::create(&tmp.0, false);
                 let (out, state) = w.open(path == WritePath::InPlace);
@@ -1735,7 +1789,6 @@ fn full_link_during_compaction() {
                     }
                 });
                 let r = run(&w, &out, &state, path, compacts, &mut ops, &mut Vec::new());
-                let kind = calls[at];
                 let v = judge(&w, &real, Some(OTHER_OUTPUT))
                     .unwrap_or_else(|e| panic!("{path:?} {compacts} after {at} ({kind:?}): {e}"));
                 assert!(
