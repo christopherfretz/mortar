@@ -39,18 +39,32 @@ use super::rows::{
 use super::view::{Change, ChangedFile, ChangedFiles, StateView};
 use crate::format::{NONE, def_kind, kind};
 
-/// The ODR findings of the ODR-affected keys (WP-211 §C; IN-71d), as
-/// `DIAGS` rows for U-9's union: W1 and W2, exact. Called by the join
-/// after `resolve`.
+/// What an update's ODR checks give U-9 (IN-71d, IN-75a; WP-220
+/// rulings-2 §1). The contract: every stored ODR `DIAGS` row of a key in
+/// `keys` is replaced by the rows of `rows` for it (possibly none); every
+/// other stored ODR row stays. U-9 derives that set from nothing else
+/// (`ResolveDelta::affected` is U-3's and means something else).
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct OdrUpdate {
+    /// The keys recomputed, sorted and unique.
+    pub keys: Vec<SymbolId>,
+    /// Their W1/W2 findings, in key order then the comparator's.
+    pub rows: Vec<DiagRow>,
+}
+
+/// The ODR findings of the ODR-affected keys (WP-211 §C; IN-71d): W1 and
+/// W2, exact, with the set of keys recomputed ([`OdrUpdate`]). Called by
+/// the join after `resolve`.
 ///
-/// In order, before any row is read: `--odr=off` gives no rows; a switch
-/// that turns on anything of odr.md but W1 and W2
+/// In order, before any row is read: `--odr=off` recomputes nothing; a
+/// switch that turns on anything of odr.md but W1 and W2
 /// ([`update_fallback`]) gives `update-not-implemented (meta)`; so does
 /// `--keep-mason-meta` with a changed file that carries units, or a gone
-/// or no longer extracted file (whose units the update does not know).
-/// Then each ODR-affected key ([`Now::affected`]) is compared afresh; the
-/// rows' `key.unit` is the `FILES` row (U-9 maps it), their subjects the
-/// key and the files the text names.
+/// or no longer extracted file (whose units the update does not know;
+/// the conservative fall-back stays in v1, rulings-2 §3). Then each
+/// ODR-affected key ([`Now::affected`]) is compared afresh; the rows'
+/// `key.unit` is the `FILES` row (U-9 maps it), their subjects the key
+/// and the files the text names.
 ///
 /// # Errors
 /// `state-corrupt`; `update-not-implemented (meta)` as above.
@@ -59,9 +73,9 @@ pub fn odr(
     changed: &ChangedFiles,
     resolved: &ResolveDelta,
     odr: &Odr,
-) -> Result<Vec<DiagRow>, IncrReason> {
+) -> Result<OdrUpdate, IncrReason> {
     if odr.mode == OdrMode::Off {
-        return Ok(Vec::new());
+        return Ok(OdrUpdate::default());
     }
     if update_fallback(odr).is_some() {
         return Err(IncrReason::UpdateNotImplemented(Some(Unimplemented::Meta)));
@@ -75,16 +89,17 @@ pub fn odr(
     }
     let (w1, w2) = (Check::W1.runs(odr), Check::W2.runs(odr));
     if !w1 && !w2 {
-        return Ok(Vec::new());
+        return Ok(OdrUpdate::default());
     }
     let now = Now::new(view, changed, resolved);
     let rank = |f: u32| now.rank(f);
-    let mut out = Vec::new();
+    let mut out = OdrUpdate::default();
     for key in now.affected()? {
         let input = now.key_input(key, &rank)?;
         for (_, finding) in input.compare(w1, w2) {
-            out.push(now.diag_row(finding)?);
+            out.rows.push(now.diag_row(finding)?);
         }
+        out.keys.push(key);
     }
     Ok(out)
 }
@@ -595,7 +610,7 @@ impl<'a, 'v> Now<'a, 'v> {
     ///
     /// # Errors
     /// `state-corrupt`.
-    pub fn affected(&self) -> Result<BTreeSet<SymbolId>, IncrReason> {
+    fn affected(&self) -> Result<BTreeSet<SymbolId>, IncrReason> {
         let mut keys = BTreeSet::new();
         for cf in &self.changed.files {
             if cf.change == Change::Appeared || u64::from(cf.file.0) >= self.file_rows {
@@ -631,9 +646,13 @@ impl<'a, 'v> Now<'a, 'v> {
         Ok(keys)
     }
 
-    /// A finding as a `DIAGS` row: the full link's text (rendered plain,
-    /// as `mortar`), §9.1's key with the unit as the `FILES` row, the
-    /// subjects the key and each file named (IN-75a, WP-220).
+    /// A finding as a `DIAGS` row: §9.1's key with the unit as the `FILES`
+    /// row, the subjects the key and each file named (IN-75a, WP-220).
+    /// **PROVISIONAL** (WP-220 rulings-2 §5): `code` and `text` must be
+    /// byte-equal to the full link's capture's row, made by the capture's
+    /// own function; no capture writes `DIAGS` yet (U-2's format 5), and
+    /// `text` here is `render(Style::plain("mortar"))`, which freezes a
+    /// program name the link takes from `argv[0]` (record §M).
     ///
     /// # Errors
     /// `state-corrupt`: a file named without its row.

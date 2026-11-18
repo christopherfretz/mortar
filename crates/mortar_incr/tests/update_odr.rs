@@ -8,7 +8,7 @@ use mortar_elf::SymbolIndex;
 use mortar_elf::consts::{STB_GLOBAL, STB_WEAK, STT_FUNC, STT_OBJECT};
 use mortar_incr::format::{NONE, SectionRow, Str, def_kind};
 use mortar_incr::update::diags::{DiagRow, Subject};
-use mortar_incr::update::odr::{Now, odr, stored_resolved};
+use mortar_incr::update::odr::{Now, OdrUpdate, odr, stored_resolved};
 use mortar_incr::update::resolve::{NewKey, ResolveDelta};
 use mortar_incr::update::rows::{
     CommonRow, CopyRow, FileIndexRow, FileRow, GroupRow, KeyRefRow, MentionRow, ResolvedRow,
@@ -29,7 +29,7 @@ fn odr_units_without_keep_meta_are_read() {
     let view = m.view();
     let resolved = ResolveDelta::default();
     let warn = Odr { mode: OdrMode::Warn, ..Odr::default() };
-    assert_eq!(odr(&view, &ChangedFiles::default(), &resolved, &warn), Ok(Vec::new()));
+    assert_eq!(odr(&view, &ChangedFiles::default(), &resolved, &warn), Ok(OdrUpdate::default()));
     let (m, mut changed, d) = unreadable();
     changed.files[0].meta_units = 1;
     let view = m.view();
@@ -573,23 +573,35 @@ fn key_of(row: &DiagRow) -> SymbolId {
         .expect("a key subject")
 }
 
-/// One hop: the update's rows, with the stored rows of every key it did
-/// not recompute (U-9's union), equal the full link's of `b`; and give
-/// the full link's.
-fn hop(a: &World, b: &World) -> Vec<DiagRow> {
+/// U-9's merge by the contract (WP-220 rulings-2 §1): every stored row
+/// of a key in `got.keys` replaced by `got`'s rows, every other stays.
+fn merge(stored: Vec<DiagRow>, got: OdrUpdate) -> Vec<DiagRow> {
+    assert!(got.keys.windows(2).all(|w| w[0] < w[1]), "sorted, unique");
+    assert!(got.rows.iter().all(|r| got.keys.contains(&key_of(r))), "rows of the keys");
+    let mut out: Vec<DiagRow> =
+        stored.into_iter().filter(|r| !got.keys.contains(&key_of(r))).collect();
+    out.extend(got.rows);
+    out.sort_by_key(|r| r.key);
+    out
+}
+
+/// The update from `a` to `b` (its stored state's full rows and the
+/// update's result).
+fn update(a: &World, b: &World) -> (Vec<DiagRow>, OdrUpdate, ResolveDelta) {
     let (sa, ids_a) = stored(a);
     let (changed, d) = delta(a, b, &sa, &ids_a);
     let view = sa.view();
-    let warn = Odr::default();
-    let got = odr(&view, &changed, &d, &warn).expect("an update");
-    let affected = Now::new(&view, &changed, &d).affected().expect("rows");
-    let mut union: Vec<DiagRow> =
-        full(&sa).into_iter().filter(|r| !affected.contains(&key_of(r))).collect();
-    union.extend(got);
-    union.sort_by_key(|r| r.key);
+    let got = odr(&view, &changed, &d, &Odr::default()).expect("an update");
+    (full(&sa), got, d)
+}
+
+/// One hop: the update's rows merged by its key set into the stored ones
+/// equal the full link's of `b`; and give the full link's.
+fn hop(a: &World, b: &World) -> Vec<DiagRow> {
+    let (before, got, _) = update(a, b);
     let (sb, _) = stored(b);
     let want = full(&sb);
-    assert_eq!(union, want, "update from {a:#?}\nto {b:#?}");
+    assert_eq!(merge(before, got), want, "update from {a:#?}\nto {b:#?}");
     want
 }
 
@@ -720,7 +732,18 @@ fn odr_update_keeper_change_without_copy_change() {
         ],
     };
     let moved = with(&clean, 0, Some(vec![copy("j", "G", 4)]));
+    // The contract: k is recomputed (no copy of k changed; U-3's
+    // `affected` need not name it) and its stale row is replaced.
+    let k = SymbolId(0);
+    let (before, got, d) = update(&clean, &moved);
+    assert!(got.keys.contains(&k));
+    assert!(!d.affected.contains(&k), "only the keeper change makes k recomputed");
+    let stale: Vec<DiagRow> = before.iter().filter(|r| key_of(r) == k).cloned().collect();
+    assert_eq!(stale.len(), 1);
+    let merged = merge(before, got);
+    assert!(!merged.contains(&stale[0]), "the stale row is gone after the merge");
     let one = hop(&clean, &moved);
+    assert_eq!(merged, one);
     assert_eq!(one.len(), 1, "k's finding stays, kept elsewhere");
     let (sc, _) = stored(&clean);
     assert_ne!(full(&sc), one, "the keeper's change shows in the text");
@@ -815,10 +838,10 @@ fn unreadable() -> (MemoryState, ChangedFiles, ResolveDelta) {
     (MemoryState::default(), changed, ResolveDelta::default())
 }
 
-const META: Result<Vec<DiagRow>, IncrReason> =
+const META: Result<OdrUpdate, IncrReason> =
     Err(IncrReason::UpdateNotImplemented(Some(Unimplemented::Meta)));
 
-fn under(o: Odr) -> Result<Vec<DiagRow>, IncrReason> {
+fn under(o: Odr) -> Result<OdrUpdate, IncrReason> {
     let (m, changed, d) = unreadable();
     let view = m.view();
     odr(&view, &changed, &d, &o)
@@ -833,7 +856,7 @@ fn odr_reads_rows_under_warn() {
 // spec: incr.md IN-71d (`--odr=off`: nothing runs, nothing is read)
 #[test]
 fn odr_off_reads_nothing() {
-    assert_eq!(under(Odr { mode: OdrMode::Off, ..Odr::default() }), Ok(Vec::new()));
+    assert_eq!(under(Odr { mode: OdrMode::Off, ..Odr::default() }), Ok(OdrUpdate::default()));
 }
 
 // spec: incr.md IN-71d (fall-back from the options alone: `--odr=strict`)
