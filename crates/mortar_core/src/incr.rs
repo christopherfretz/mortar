@@ -1308,6 +1308,13 @@ pub struct LayoutInput<'a> {
     pub eh: &'a [EhFile],
     pub pieces: &'a [FilePieces],
     pub demands: &'a [FileDemands],
+    /// IN-50 (WP-228 R-1): the caller runs `mortar_incr::update::debug::place`
+    /// on the result before anything reads it; `.debug_*` sections are
+    /// left unplaced for it (listed in `files`, their old rows in
+    /// `killed`). `false` (default; every caller until G-3's join): such a
+    /// section is `update-not-implemented (debug)`. `.zdebug*` sections
+    /// are refused either way.
+    pub debug: bool,
 }
 
 /// A growth step (IN-72 item 3): an output section grown into its

@@ -45,10 +45,11 @@
 use std::sync::atomic::{AtomicBool, Ordering};
 
 use mortar_core::assignment::{Assignment, OutOf};
+use mortar_core::incr::{LiveEdge, LiveTarget};
 use mortar_core::inputs::{Inputs, Reader};
 use mortar_core::par::{Pool, SCAN_BLOCK};
 use mortar_core::resolution::{Assigned, Def, InternalDef, RefFlags, Resolution, SectionKind};
-use mortar_core::split::Split;
+use mortar_core::split::{Split, piece_offset};
 use mortar_core::{Column, FileId, Liveness, SectionId, SymbolId};
 use mortar_diag::{Diagnostic, Key, Kind, Place};
 use mortar_elf::consts::{
@@ -60,11 +61,14 @@ use mortar_elf::{Object, SectionIndex, SymbolIndex, SymbolSection, SymbolTable};
 use crate::read::{self, ReadFail};
 use crate::{LiveInputs, LiveOptions, PHASE};
 
+#[cfg(feature = "wp238-probe")]
+mod probe;
+
 /// A diagnostic with its key.
 pub(crate) type Keyed = (Key, Diagnostic);
 
 /// "Every piece of the section": a target offset no piece lookup takes.
-const WHOLE: u32 = u32::MAX;
+const WHOLE: u32 = mortar_core::split::EVERY_PIECE;
 
 /// What a reference makes live.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -77,6 +81,34 @@ enum Target {
     At(SectionId, u32),
     /// `__start_NAME` / `__stop_NAME`: the sections `named[lo..hi]`.
     Named(u32, u32),
+}
+
+/// What an edge of I-7 names, as the one edge enumerator ([`Walk::edges`])
+/// gives it, before resolution (`spec/incr.md` IN-29: an update walks the
+/// same enumerator's output, stored for unchanged files).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub(crate) enum To {
+    /// A global key, after `sym_map` and an undefined mention's `redirect`:
+    /// the section of its definition is found when the edge is walked
+    /// ([`Walk::resolve`]).
+    Key(SymbolId),
+    /// A section of the source's own file, and in a split mergeable
+    /// section the piece holding byte `at` ([`WHOLE`]: every piece).
+    Section(SectionId, u32),
+}
+
+/// How the enumerator reached an edge (I-7's kinds; IN-29's row kinds are
+/// these refined by the source's flags and the key's name).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum Via {
+    /// A relocation record of the section.
+    Record,
+    /// A relocation of one of its FDEs or of their CIEs.
+    Frame,
+    /// A `SHF_LINK_ORDER` section whose `sh_link` is the section (I-109).
+    LinkOrder,
+    /// Another member of its section group.
+    Group,
 }
 
 /// Section fact bits.
@@ -237,14 +269,73 @@ fn malformed(what: String) -> Diagnostic {
     Diagnostic::error(Kind::Malformed { what })
 }
 
-/// The mark (I-6 to I-8, I-109). `Err`: the least-keyed diagnostic of a
-/// section whose relocations could not be read.
-#[allow(clippy::too_many_lines, reason = "the four steps in order, each a few lines")]
-pub(crate) fn collect(
-    tables_in: &LiveInputs<'_, '_>,
+/// What the mark's steps 1 to 3 compute (the facts, the definitions, the
+/// frames): shared by the mark ([`collect`]), the stored rows
+/// ([`stored`]) and the capture's positions ([`positions`]), so that the
+/// three read one derivation (IN-29).
+pub(crate) struct Prep<'s> {
+    facts: Vec<u8>,
+    link_order: Vec<(SectionId, SectionId)>,
+    /// By name, then section: a name's sections are one run.
+    named: Vec<(&'s [u8], SectionId)>,
+    group_members: Vec<SectionId>,
+    /// (member, its group's span in `group_members`), by member.
+    group_of: Vec<(SectionId, u32, u32)>,
+    tables: Vec<FileFacts<'s>>,
+    /// Per key (step 2; empty when not asked for).
+    defs: Vec<(Target, bool)>,
+    /// (code section, eh row, FDE ordinal), by code section (step 3; empty
+    /// when not asked for).
+    by_code: Vec<(SectionId, u32, u32)>,
+    eh_edges: Vec<Vec<(u32, To)>>,
+}
+
+impl<'s> Prep<'s> {
+    /// A fresh set of marks over these facts.
+    fn marks<'w>(&'w self, t: &'w LiveInputs<'_, 's>) -> Marks<'w> {
+        let split = t.split;
+        Marks {
+            resolution: t.resolution,
+            split,
+            live: (0..t.resolution.sections.len()).map(|_| AtomicBool::new(false)).collect(),
+            frag: (0..split.frags.len() as usize).map(|_| AtomicBool::new(false)).collect(),
+            whole: (0..split.merge_of.len()).map(|_| AtomicBool::new(false)).collect(),
+            named: &self.named,
+            facts: &self.facts,
+        }
+    }
+
+    /// The walk over these facts, marking into `marks`.
+    fn walk<'w, 't>(&'w self, t: &'w LiveInputs<'_, 's>, marks: &'w Marks<'t>) -> Walk<'w, 't, 's> {
+        Walk {
+            inputs: t.inputs,
+            r: t.resolution,
+            split: t.split,
+            tables: &self.tables,
+            defs: &self.defs,
+            facts: &self.facts,
+            link_order: &self.link_order,
+            group_of: &self.group_of,
+            group_members: &self.group_members,
+            by_code: &self.by_code,
+            eh_edges: &self.eh_edges,
+            marks,
+            arch: t.arch,
+        }
+    }
+}
+
+/// Steps 1 to 3 of the mark (step 2 when `defs`, step 3 when `frames`).
+/// `Err`: the least-keyed diagnostic of a file or `.eh_frame` section that
+/// could not be read.
+#[allow(clippy::too_many_lines, reason = "the mark's steps 1 to 3, in order")]
+fn prepare<'s>(
+    tables_in: &LiveInputs<'_, 's>,
     options: LiveOptions,
     pool: &Pool,
-) -> Result<Liveness, Keyed> {
+    defs: bool,
+    frames: bool,
+) -> Result<Prep<'s>, Keyed> {
     let inputs = tables_in.inputs;
     let r = tables_in.resolution;
     let a = tables_in.assignment;
@@ -253,7 +344,7 @@ pub(crate) fn collect(
 
     // 1. Facts per file.
     let files = inputs.files.len() as usize;
-    let per_file: Vec<Result<FileOut<'_>, Keyed>> =
+    let per_file: Vec<Result<FileOut<'s>, Keyed>> =
         pool.unit_cost(FILE_NS).map(files, |f| file_facts(inputs, r, a, FileId(f as u32)));
     // A section no file's facts describe (not of an object, or a header
     // `mortar_elf` cannot read) is a root: the mark never drops what it
@@ -301,7 +392,7 @@ pub(crate) fn collect(
     named.sort_unstable();
 
     // 2. Definitions.
-    let keys = inputs.symbols.len() as usize;
+    let keys = if defs { inputs.symbols.len() as usize } else { 0 };
     let defs: Vec<(Target, bool)> = pool.unit_cost(KEY_NS).map(keys, |k| {
         let id = SymbolId(k as u32);
         let target = def_target(inputs, r, a, &tables, &named, id);
@@ -316,10 +407,10 @@ pub(crate) fn collect(
 
     // 3. Frames.
     let eh_rows = &split.eh_of;
-    let eh: Vec<Result<Vec<(u32, Target)>, Keyed>> = pool
-        .unit_cost(EH_NS)
-        .map(eh_rows.len(), |row| eh_edges(inputs, r, split, &tables, &defs, row));
-    let mut eh_edges_of: Vec<Vec<(u32, Target)>> = Vec::with_capacity(eh.len());
+    let n_eh = if frames { eh_rows.len() } else { 0 };
+    let eh: Vec<Result<Vec<(u32, To)>, Keyed>> =
+        pool.unit_cost(EH_NS).map(n_eh, |row| eh_edges(inputs, r, split, &tables, row));
+    let mut eh_edges_of: Vec<Vec<(u32, To)>> = Vec::with_capacity(eh.len());
     for e in eh {
         match e {
             Ok(v) => eh_edges_of.push(v),
@@ -334,7 +425,7 @@ pub(crate) fn collect(
     }
     // (code section, eh row, FDE ordinal), sorted by code section.
     let mut by_code: Vec<(SectionId, u32, u32)> = Vec::new();
-    for (row, sr) in eh_rows.iter().enumerate() {
+    for (row, sr) in eh_rows.iter().enumerate().take(n_eh) {
         for (ord, p) in split.eh_piece.get(sr.pieces.slots()).unwrap_or_default().iter().enumerate()
         {
             if let Some(code) = p.code.get()
@@ -363,55 +454,56 @@ pub(crate) fn collect(
     for &(member, _, _) in &group_of {
         flag(&mut facts, member, GROUPED);
     }
+    Ok(Prep {
+        facts,
+        link_order,
+        named,
+        group_members,
+        group_of,
+        tables,
+        defs,
+        by_code,
+        eh_edges: eh_edges_of,
+    })
+}
 
-    let new_marks = || Marks {
-        resolution: r,
-        split,
-        live: (0..sections).map(|_| AtomicBool::new(false)).collect(),
-        frag: (0..split.frags.len() as usize).map(|_| AtomicBool::new(false)).collect(),
-        whole: (0..split.merge_of.len()).map(|_| AtomicBool::new(false)).collect(),
-        named: &named,
-        facts: &facts,
-    };
+/// The mark (I-6 to I-8, I-109). `Err`: the least-keyed diagnostic of a
+/// section whose relocations could not be read.
+pub(crate) fn collect(
+    tables_in: &LiveInputs<'_, '_>,
+    options: LiveOptions,
+    pool: &Pool,
+) -> Result<Liveness, Keyed> {
+    let p = prepare(tables_in, options, pool, true, true)?;
+    let new_marks = || p.marks(tables_in);
     // 4. The rounds (I-8). With a `budget`, a worker continues on the
     // sections it marks; what it leaves (past its budget, or a section to
     // cut into blocks) is the next round's. Every live section is walked
     // once, whatever the schedule. Budget 0 is the breadth-first rounds:
     // round `k + 1` is what round `k`'s edges first marked, and the mark
     // stops after the first round with a failure.
-    let mark = |marks: &Marks<'_>, budget: usize| -> Option<Keyed> {
-        // Round 0: the roots, in section then key order.
-        let mut round: Vec<SectionId> = Vec::new();
-        for (s, &bits) in facts.iter().enumerate() {
+    // Round 0: the roots, in section then key order.
+    let roots = |marks: &Marks<'_>, round: &mut Vec<SectionId>| {
+        for (s, &bits) in p.facts.iter().enumerate() {
             if bits & ROOT != 0 {
-                marks.at(SectionId(s as u32), WHOLE, &mut round);
+                marks.at(SectionId(s as u32), WHOLE, round);
             }
         }
         for &root in tables_in.roots {
-            if let Some(&(target, _)) = defs.get(root.0 as usize) {
-                marks.target(target, &mut round);
+            if let Some(&(target, _)) = p.defs.get(root.0 as usize) {
+                marks.target(target, round);
             }
         }
-        for &(target, rooted) in &defs {
+        for &(target, rooted) in &p.defs {
             if rooted {
-                marks.target(target, &mut round);
+                marks.target(target, round);
             }
         }
-        let cx = Walk {
-            inputs,
-            r,
-            split,
-            tables: &tables,
-            defs: &defs,
-            facts: &facts,
-            link_order: &link_order,
-            group_of: &group_of,
-            group_members: &group_members,
-            by_code: &by_code,
-            eh_edges: &eh_edges_of,
-            marks,
-            arch: tables_in.arch,
-        };
+    };
+    let mark = |marks: &Marks<'_>, budget: usize| -> Option<Keyed> {
+        let mut round: Vec<SectionId> = Vec::new();
+        roots(marks, &mut round);
+        let cx = p.walk(tables_in, marks);
         let mut errors = Vec::new();
         while !round.is_empty() {
             let units = cx.units(&round);
@@ -443,10 +535,356 @@ pub(crate) fn collect(
 
     let live: Vec<bool> = marks.live.into_iter().map(AtomicBool::into_inner).collect();
     let frag_live: Vec<bool> = marks.frag.into_iter().map(AtomicBool::into_inner).collect();
+    #[cfg(feature = "wp238-probe")]
+    {
+        let fresh = new_marks();
+        let cx = p.walk(tables_in, &fresh);
+        probe::run(&cx, &new_marks, &roots, tables_in, &live, &frag_live);
+    }
     Ok(Liveness {
         live: Column::from_vec(live).unwrap_or_default(),
         frag_live: Column::from_vec(frag_live).unwrap_or_default(),
     })
+}
+
+// ---- IN-29's stored rows (WP-238 S1) and the capture's positions (S4) ----
+
+// `mortar_incr::update::rows::edge_kind` (this crate does not depend on
+// `mortar_incr`; the capture checks every row's target class against it).
+const K_RELOC: u8 = 0;
+const K_START_STOP: u8 = 1;
+const K_LOCAL: u8 = 2;
+const K_FDE_SECTION: u8 = 3;
+const K_FDE_KEY: u8 = 4;
+const K_NONALLOC_KEY: u8 = 5;
+const K_NONALLOC_SECTION: u8 = 6;
+const K_LINK_ORDER: u8 = 7;
+const K_GROUP: u8 = 8;
+const K_ROOT: u8 = 9;
+const K_NAMED: u8 = 10;
+const K_SPLIT: u8 = 11;
+const K_REFUSE: u8 = 12;
+/// `edge_kind::refuse::FDE_GLOBAL` (S5).
+const FDE_GLOBAL: u32 = 1;
+/// `edge_kind::refuse::DEF_DROPPED` (S2, F11).
+const DEF_DROPPED: u32 = 2;
+
+/// Whether key `k` is named `__start_N` or `__stop_N`, N a C identifier.
+fn start_stop(inputs: &Inputs<'_>, k: SymbolId) -> bool {
+    let name = inputs.symbols.get(k).map_or(&[][..], |s| s.name);
+    name.strip_prefix(b"__start_")
+        .or_else(|| name.strip_prefix(b"__stop_"))
+        .is_some_and(c_identifier)
+}
+
+/// The row kind of an edge (S1's table): how the enumerator reached it,
+/// what it names, the source's facts and the key's name.
+fn kind_of(inputs: &Inputs<'_>, via: Via, to: To, src_bits: u8) -> u8 {
+    let alloc = src_bits & ALLOC != 0;
+    match (via, to) {
+        (Via::Record, To::Key(_)) if !alloc => K_NONALLOC_KEY,
+        (Via::Record, To::Key(k)) if start_stop(inputs, k) => K_START_STOP,
+        (Via::Record, To::Key(_)) => K_RELOC,
+        (Via::Record, To::Section(..)) if alloc => K_LOCAL,
+        (Via::Record, To::Section(..)) => K_NONALLOC_SECTION,
+        (Via::Frame, To::Section(..)) => K_FDE_SECTION,
+        (Via::Frame, To::Key(_)) => K_FDE_KEY,
+        (Via::LinkOrder, _) => K_LINK_ORDER,
+        (Via::Group, _) => K_GROUP,
+    }
+}
+
+fn kept(r: &Resolution, s: SectionId) -> bool {
+    r.sections.get(s).is_some_and(mortar_core::resolution::SectionRow::is_kept)
+}
+
+/// S1's rows of `files`' kept sections (every file when `None`), F8
+/// applied, sorted by `(source, kind, target, offset)` and deduplicated:
+/// per kept section its `ROOT`, `NAMED` and `SPLIT` rows and the edges
+/// [`Walk::edges`] gives (the mark's one enumerator, IN-29); the group
+/// rings; `REFUSE` code 1 (S5) per FDE whose initial location a non-local,
+/// non-section symbol names; `REFUSE` code 2 (F11) per section that is
+/// not kept and holds the definition of a key whose `RESOLVED` row is
+/// `SECTION`, whatever dropped the section.
+#[allow(clippy::many_single_char_names, reason = "the mark's names: t, p, r, w")]
+pub(crate) fn stored(
+    t: &LiveInputs<'_, '_>,
+    options: LiveOptions,
+    files: Option<&[FileId]>,
+    pool: &Pool,
+) -> Result<Vec<LiveEdge>, Keyed> {
+    let p = prepare(t, options, pool, false, true)?;
+    let r = t.resolution;
+    // The enumerator marks nothing: an empty set of marks.
+    let marks = Marks {
+        resolution: r,
+        split: t.split,
+        live: Vec::new(),
+        frag: Vec::new(),
+        whole: Vec::new(),
+        named: &p.named,
+        facts: &p.facts,
+    };
+    let w = p.walk(t, &marks);
+    let n_files = t.inputs.files.len() as usize;
+    let all: Vec<FileId>;
+    let files: &[FileId] = if let Some(f) = files {
+        f
+    } else {
+        all = (0..n_files as u32).map(FileId).collect();
+        &all
+    };
+    let mut chosen = vec![false; n_files];
+    for f in files {
+        if let Some(c) = chosen.get_mut(f.0 as usize) {
+            *c = true;
+        }
+    }
+    let file_of = |s: SectionId| r.sh_index(s).map(|(f, _)| f);
+    let is_chosen = |s: SectionId| {
+        file_of(s).is_some_and(|f| chosen.get(f.0 as usize).copied().unwrap_or(false))
+    };
+    let mut named = vec![false; r.sections.len() as usize];
+    for &(_, s) in &p.named {
+        if let Some(n) = named.get_mut(s.0 as usize) {
+            *n = true;
+        }
+    }
+    let per_file: Vec<Result<Vec<LiveEdge>, Keyed>> =
+        pool.unit_cost(FILE_NS).map(files.len(), |i| file_rows(&w, &named, files[i]));
+    let mut out: Vec<LiveEdge> = Vec::new();
+    let mut errors = Vec::new();
+    for rows in per_file {
+        match rows {
+            Ok(v) => out.extend(v),
+            Err(e) => errors.push(e),
+        }
+    }
+    if let Some(e) = least(&mut errors) {
+        return Err(e);
+    }
+    // The ring (S1 kind 8): each kept member names the next of its group,
+    // in file order, the last the first.
+    let mut spans: Vec<(u32, u32)> = p.group_of.iter().map(|&(_, st, len)| (st, len)).collect();
+    spans.sort_unstable();
+    spans.dedup();
+    for (st, len) in spans {
+        let span = p.group_members.get(st as usize..(st + len) as usize).unwrap_or_default();
+        if !span.first().is_some_and(|&m| is_chosen(m)) {
+            continue;
+        }
+        for (i, &m) in span.iter().enumerate() {
+            let next = span[(i + 1) % span.len()];
+            if next != m {
+                out.push(LiveEdge {
+                    kind: K_GROUP,
+                    source: m,
+                    target: LiveTarget::Section(next),
+                    offset: 0,
+                });
+            }
+        }
+    }
+    // F11: on the outcome. A key whose definition the capture writes as
+    // `RESOLVED` `SECTION` (`mortar_incr::tables::resolved_fields` over
+    // `Assignment::def`) in a section that is not kept.
+    let keys = t.inputs.symbols.len() as usize;
+    let dropped: Vec<Option<SectionId>> = pool.unit_cost(KEY_NS).map(keys, |k| {
+        let id = SymbolId(k as u32);
+        let def = t.assignment.def(r, id).or_else(|| r.def.get(id).copied())?;
+        let Def::Defined(e) = def else { return None };
+        if !chosen.get(e.file.0 as usize).copied().unwrap_or(false) {
+            return None;
+        }
+        let table = p.tables.get(e.file.0 as usize)?.table.as_ref()?;
+        let sym = table.get(e.index).ok()?;
+        let Ok(SymbolSection::Section(i)) = table.section_of(e.index, &sym) else { return None };
+        let s = r.section_id(e.file, i)?;
+        (!kept(r, s)).then_some(s)
+    });
+    for s in dropped.into_iter().flatten() {
+        out.push(LiveEdge {
+            kind: K_REFUSE,
+            source: s,
+            target: LiveTarget::Code(DEF_DROPPED),
+            offset: 0,
+        });
+    }
+    out.sort_unstable_by_key(|e| (e.source, e.kind, e.target, e.offset));
+    out.dedup();
+    Ok(out)
+}
+
+/// One file's rows of [`stored`] but the rings and code 2.
+#[allow(clippy::many_single_char_names, reason = "the mark's names: w, r, s")]
+fn file_rows(w: &Walk<'_, '_, '_>, named: &[bool], file: FileId) -> Result<Vec<LiveEdge>, Keyed> {
+    let r = w.r;
+    let mut out = Vec::new();
+    let Some(range) = r.section_base.get(file).copied() else { return Ok(out) };
+    let split = |s: SectionId| w.facts.get(s.0 as usize).is_some_and(|b| b & MERGE != 0);
+    for sid in range.iter() {
+        if !kept(r, sid) {
+            continue;
+        }
+        let bits = w.facts.get(sid.0 as usize).copied().unwrap_or(ROOT | EDGES);
+        let mut push = |kind: u8, target: LiveTarget, offset: u32| {
+            out.push(LiveEdge { kind, source: sid, target, offset });
+        };
+        if bits & ROOT != 0 {
+            push(K_ROOT, LiveTarget::None, 0);
+        }
+        if named.get(sid.0 as usize).copied().unwrap_or(false) {
+            push(K_NAMED, LiveTarget::None, 0);
+        }
+        if bits & MERGE != 0 {
+            push(K_SPLIT, LiveTarget::None, 0);
+        }
+        let hi = w.records_of(sid);
+        w.edges(Unit { s: sid, lo: 0, hi }, &mut |via, to| {
+            // The ring is made whole, once per group (S1 kind 8).
+            if via == Via::Group {
+                return;
+            }
+            let k = kind_of(w.inputs, via, to, bits);
+            match to {
+                To::Key(id) => push(k, LiveTarget::Key(id), 0),
+                // F8: a target that is not kept is no row; a split target
+                // keeps its offset; any other target is offset 0 and no
+                // self-edge. A link-order row is offset 0 (S1).
+                To::Section(t, at) => {
+                    if !kept(r, t) {
+                        return;
+                    }
+                    if k == K_LINK_ORDER {
+                        push(k, LiveTarget::Section(t), 0);
+                    } else if split(t) {
+                        push(k, LiveTarget::Section(t), at);
+                    } else if t != sid {
+                        push(k, LiveTarget::Section(t), 0);
+                    }
+                }
+            }
+        })?;
+    }
+    // S5 (F3): an FDE of a kept `.eh_frame` whose relocation at byte 8 of
+    // its record (the initial location, S-37) names a non-local symbol
+    // that is not a section symbol.
+    let rows = &w.split.eh_of;
+    let lo = rows.partition_point(|x| x.section < range.start);
+    for sr in rows.get(lo..).unwrap_or_default() {
+        let s = sr.section;
+        if s >= range.end {
+            break;
+        }
+        if !kept(r, s) || r.sections[s].reloc.0 == 0 {
+            continue;
+        }
+        let f = &w.tables[file.0 as usize];
+        let (Some(obj), Some(table)) = (f.obj.as_ref(), f.table.as_ref()) else { continue };
+        let mut buf = Vec::new();
+        // Step 3 read these records already (a failure failed it).
+        let Ok(recs) = read::records(w.inputs, file, obj, r.sections[s].reloc, &mut buf) else {
+            continue;
+        };
+        let pieces = w.split.eh_piece.get(sr.pieces.slots()).unwrap_or_default();
+        let first = table.first_global().0;
+        for i in 0..recs.len() {
+            let Some(raw) = recs.get(i) else { continue };
+            let Ok(off) = u32::try_from(raw.r_offset) else { continue };
+            let Some(p) = w.split.eh_piece_at(s, off) else { continue };
+            if p.within != 8 || pieces.get(p.ordinal as usize).is_none_or(|x| x.is_cie()) {
+                continue;
+            }
+            if raw.r_sym >= first
+                && table.get(SymbolIndex(raw.r_sym)).is_ok_and(|y| y.sym_type() != STT_SECTION)
+            {
+                out.push(LiveEdge {
+                    kind: K_REFUSE,
+                    source: s,
+                    target: LiveTarget::Code(FDE_GLOBAL),
+                    offset: 0,
+                });
+                break;
+            }
+        }
+    }
+    Ok(out)
+}
+
+/// S4's capture side (P0-3): per live split section, the offsets the
+/// full mark marked, projected from `edges` (the link's [`stored`] rows)
+/// and the link's own definitions in memory ([`def_target`]), never from
+/// stored rows: a row's offset from a live source; the definition's
+/// value of a key a live source's row names, or a rooted key's; every
+/// piece (`u32::MAX`) for a root, and through `__start_`/`__stop_`, a
+/// group or a link order. Sorted by section; each list sorted and
+/// distinct, `[u32::MAX]` when every piece is marked.
+pub(crate) fn positions(
+    t: &LiveInputs<'_, '_>,
+    options: LiveOptions,
+    edges: &[LiveEdge],
+    liveness: &Liveness,
+    pool: &Pool,
+) -> Result<Vec<(SectionId, Vec<u32>)>, Keyed> {
+    let p = prepare(t, options, pool, true, false)?;
+    let split = |s: SectionId| p.facts.get(s.0 as usize).is_some_and(|b| b & MERGE != 0);
+    let mut at: Vec<(SectionId, u32)> = Vec::new();
+    let project = |target: Target, at: &mut Vec<(SectionId, u32)>| match target {
+        Target::None => {}
+        Target::At(s, o) => {
+            if split(s) {
+                at.push((s, o));
+            }
+        }
+        Target::Named(lo, hi) => {
+            for &(_, s) in p.named.get(lo as usize..hi as usize).unwrap_or_default() {
+                if split(s) {
+                    at.push((s, WHOLE));
+                }
+            }
+        }
+    };
+    let def = |k: SymbolId| p.defs.get(k.0 as usize).map_or(Target::None, |d| d.0);
+    for e in edges {
+        if !liveness.is_live(e.source) {
+            continue;
+        }
+        match (e.kind, e.target) {
+            (K_RELOC | K_START_STOP | K_FDE_KEY | K_NONALLOC_KEY, LiveTarget::Key(k)) => {
+                project(def(k), &mut at);
+            }
+            (K_LOCAL | K_FDE_SECTION | K_NONALLOC_SECTION, LiveTarget::Section(s)) if split(s) => {
+                at.push((s, e.offset));
+            }
+            (K_LINK_ORDER | K_GROUP, LiveTarget::Section(s)) if split(s) => at.push((s, WHOLE)),
+            (K_ROOT, _) if split(e.source) => at.push((e.source, WHOLE)),
+            _ => {}
+        }
+    }
+    for &k in t.roots {
+        project(def(k), &mut at);
+    }
+    for &(target, rooted) in &p.defs {
+        if rooted {
+            project(target, &mut at);
+        }
+    }
+    at.retain(|&(s, _)| liveness.is_live(s));
+    at.sort_unstable();
+    at.dedup();
+    let mut out: Vec<(SectionId, Vec<u32>)> = Vec::new();
+    for (s, o) in at {
+        match out.last_mut() {
+            Some((last, v)) if *last == s => v.push(o),
+            _ => out.push((s, vec![o])),
+        }
+    }
+    for (_, v) in &mut out {
+        if v.last() == Some(&WHOLE) {
+            *v = vec![WHOLE];
+        }
+    }
+    Ok(out)
 }
 
 /// The least-keyed diagnostic of a list (the list is a set: the sections
@@ -622,7 +1060,7 @@ fn def_target(
             let Ok(sym) = table.get(e.index) else { return Target::None };
             match table.section_of(e.index, &sym) {
                 Ok(SymbolSection::Section(i)) => match r.section_id(e.file, i) {
-                    Some(s) => Target::At(s, u32::try_from(sym.st_value).unwrap_or(WHOLE)),
+                    Some(s) => Target::At(s, piece_offset(sym.st_value)),
                     None => Target::None,
                 },
                 _ => Target::None,
@@ -655,42 +1093,40 @@ fn def_target(
     }
 }
 
-/// What record `raw` of `file` refers to (I-7): a local or section
-/// symbol's section, or the definition of a global's key (`sym_map`,
-/// `redirect` for an undefined mention, `def`). `None`: a record whose
-/// symbol cannot be read, which the scan reports in a live section.
-fn record_target(
+/// What record `raw` of `file` names (I-7): a local or section symbol's
+/// section, or a global's key (`sym_map`, `redirect` for an undefined
+/// mention), whose definition is resolved when walked. `None`: no edge
+/// (symbol 0), or a record whose symbol cannot be read, which the scan
+/// reports in a live section.
+fn record_to(
     inputs: &Inputs<'_>,
     r: &Resolution,
     table: &SymbolTable<'_>,
-    defs: &[(Target, bool)],
     file: FileId,
     raw: read::Raw,
-) -> Target {
+) -> Option<To> {
     if raw.r_sym == 0 {
-        return Target::None;
+        return None;
     }
     let index = SymbolIndex(raw.r_sym);
-    let Ok(sym) = table.get(index) else { return Target::None };
+    let sym = table.get(index).ok()?;
     let first = table.first_global().0;
     if raw.r_sym < first || sym.sym_type() == STT_SECTION {
         let Ok(SymbolSection::Section(i)) = table.section_of(index, &sym) else {
-            return Target::None;
+            return None;
         };
-        let Some(s) = r.section_id(file, i) else { return Target::None };
+        let s = r.section_id(file, i)?;
         let at = if sym.sym_type() == STT_SECTION {
             raw.addend
                 .and_then(|a| i64::try_from(sym.st_value).ok()?.checked_add(a))
-                .and_then(|v| u32::try_from(v).ok())
-                .unwrap_or(WHOLE)
+                .and_then(|v| u64::try_from(v).ok())
+                .map_or(WHOLE, piece_offset)
         } else {
-            u32::try_from(sym.st_value).unwrap_or(WHOLE)
+            piece_offset(sym.st_value)
         };
-        return Target::At(s, at);
+        return Some(To::Section(s, at));
     }
-    let Some(&id) = inputs.sym_map_of(file).get((raw.r_sym - first) as usize) else {
-        return Target::None;
-    };
+    let &id = inputs.sym_map_of(file).get((raw.r_sym - first) as usize)?;
     let to = r.redirect.get(id).copied().unwrap_or(id);
     let id =
         if to != id && table.section_of(index, &sym).is_ok_and(|s| s == SymbolSection::Undefined) {
@@ -698,7 +1134,7 @@ fn record_target(
         } else {
             id
         };
-    defs.get(id.0 as usize).map_or(Target::None, |d| d.0)
+    Some(To::Key(id))
 }
 
 /// The relocations of `.eh_frame` row `row`, resolved, with the ordinal of
@@ -709,9 +1145,8 @@ fn eh_edges(
     r: &Resolution,
     split: &Split,
     tables: &[FileFacts<'_>],
-    defs: &[(Target, bool)],
     row: usize,
-) -> Result<Vec<(u32, Target)>, Keyed> {
+) -> Result<Vec<(u32, To)>, Keyed> {
     let sr = split.eh_of[row];
     let s = sr.section;
     let sec = r.sections[s];
@@ -731,9 +1166,8 @@ fn eh_edges(
         let Some(raw) = recs.get(i) else { continue };
         let Ok(off) = u32::try_from(raw.r_offset) else { continue };
         let Some(p) = split.eh_piece_at(s, off) else { continue };
-        let target = record_target(inputs, r, table, defs, file, raw);
-        if target != Target::None {
-            out.push((p.ordinal, target));
+        if let Some(to) = record_to(inputs, r, table, file, raw) {
+            out.push((p.ordinal, to));
         }
     }
     out.sort_by_key(|e| e.0);
@@ -801,7 +1235,7 @@ struct Walk<'w, 't, 's> {
     group_of: &'w [(SectionId, u32, u32)],
     group_members: &'w [SectionId],
     by_code: &'w [(SectionId, u32, u32)],
-    eh_edges: &'w [Vec<(u32, Target)>],
+    eh_edges: &'w [Vec<(u32, To)>],
     marks: &'w Marks<'t>,
     arch: Option<&'w dyn mortar_arch::Arch>,
 }
@@ -872,18 +1306,37 @@ impl Walk<'_, '_, '_> {
         out.extend(marked.into_iter().map(Out::Marked));
     }
 
-    /// The edges of one unit: its records, and for a section's first unit
-    /// its FDEs', its `SHF_LINK_ORDER` dependents and its group mates.
+    /// What an edge makes live: a key's definition (I-7, through `def`),
+    /// or the section (and piece) it names.
+    fn resolve(&self, to: To) -> Target {
+        match to {
+            To::Key(id) => self.defs.get(id.0 as usize).map_or(Target::None, |d| d.0),
+            To::Section(s, at) => Target::At(s, at),
+        }
+    }
+
+    /// Marks the edges of one unit (I-8).
     fn unit(&self, u: Unit, marked: &mut Vec<SectionId>, out: &mut Vec<Out>) {
-        if let Err(e) = self.records(u, marked) {
+        let marks = self.marks;
+        if let Err(e) = self.edges(u, &mut |_, to| marks.target(self.resolve(to), marked)) {
             out.push(Out::Failed(Box::new(e)));
         }
+    }
+
+    /// THE edge enumerator of I-7 (`spec/incr.md` IN-29: there is no
+    /// second derivation of the edges): every edge of unit `u` with how it
+    /// was reached, into `sink`: its records, and for a section's first
+    /// unit its FDEs' (and their CIEs'), its `SHF_LINK_ORDER` dependents
+    /// and its group mates. A failure to read the records is returned
+    /// after the other edges are given.
+    pub(crate) fn edges(&self, u: Unit, sink: &mut impl FnMut(Via, To)) -> Result<(), Keyed> {
+        let records = self.records(u, sink);
         if u.lo != 0 {
-            return;
+            return records;
         }
         let bits = self.facts.get(u.s.0 as usize).copied().unwrap_or(0);
         if bits & FDES != 0 {
-            self.frames(u.s, marked);
+            self.frames(u.s, sink);
         }
         if bits & LINKED != 0 {
             let from = self.link_order.partition_point(|&(t, _)| t < u.s);
@@ -891,7 +1344,7 @@ impl Walk<'_, '_, '_> {
                 if t != u.s {
                     break;
                 }
-                self.marks.at(dep, WHOLE, marked);
+                sink(Via::LinkOrder, To::Section(dep, WHOLE));
             }
         }
         // I-7: the members of a section group live together.
@@ -902,13 +1355,14 @@ impl Walk<'_, '_, '_> {
             {
                 let span = start as usize..(start + len) as usize;
                 for &mate in self.group_members.get(span).unwrap_or_default() {
-                    self.marks.at(mate, WHOLE, marked);
+                    sink(Via::Group, To::Section(mate, WHOLE));
                 }
             }
         }
+        records
     }
 
-    fn records(&self, u: Unit, marked: &mut Vec<SectionId>) -> Result<(), Keyed> {
+    fn records(&self, u: Unit, sink: &mut impl FnMut(Via, To)) -> Result<(), Keyed> {
         if u.hi == 0 {
             return Ok(());
         }
@@ -946,24 +1400,31 @@ impl Walk<'_, '_, '_> {
         let mut field = Vec::new();
         for i in u.lo..u.hi {
             let Some(raw) = recs.get(i) else { continue };
-            let mut t = record_target(self.inputs, self.r, table, self.defs, file, raw);
+            let Some(mut to) = record_to(self.inputs, self.r, table, file, raw) else { continue };
             // A REL section-symbol reference into a split section: its
-            // piece by the implicit addend (I-7, X86-5).
-            if let (Target::At(s, WHOLE), None, Some(arch)) = (t, raw.addend, self.arch)
+            // piece by the implicit addend (I-7, X86-5). (A key's piece is
+            // its definition's value: the addend does not change it.)
+            if let (To::Section(s, WHOLE), None, Some(arch)) = (to, raw.addend, self.arch)
                 && self.split.merge_of.binary_search_by_key(&s, |r| r.section).is_ok()
                 && let Some(a) =
                     read::implicit(arch, self.inputs, file, obj, index, raw, &mut field)
+                && let Some(t) = record_to(
+                    self.inputs,
+                    self.r,
+                    table,
+                    file,
+                    read::Raw { addend: Some(a), ..raw },
+                )
             {
-                let raw = read::Raw { addend: Some(a), ..raw };
-                t = record_target(self.inputs, self.r, table, self.defs, file, raw);
+                to = t;
             }
-            self.marks.target(t, marked);
+            sink(Via::Record, to);
         }
         Ok(())
     }
 
     /// I-7: the edges of `code`'s live FDEs and of their CIEs.
-    fn frames(&self, code: SectionId, marked: &mut Vec<SectionId>) {
+    fn frames(&self, code: SectionId, sink: &mut impl FnMut(Via, To)) {
         let from = self.by_code.partition_point(|&(c, _, _)| c < code);
         for &(c, row, ord) in &self.by_code[from..] {
             if c != code {
@@ -976,11 +1437,11 @@ impl Walk<'_, '_, '_> {
             for want in [Some(ord), cie] {
                 let Some(want) = want else { continue };
                 let lo = edges.partition_point(|e| e.0 < want);
-                for &(o, t) in &edges[lo..] {
+                for &(o, to) in &edges[lo..] {
                     if o != want {
                         break;
                     }
-                    self.marks.target(t, marked);
+                    sink(Via::Frame, to);
                 }
             }
         }

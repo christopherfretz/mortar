@@ -255,6 +255,109 @@ fn emit(diagnostics: &Collector, seq: u64, d: Diagnostic) {
     diagnostics.emit(Key::new(PHASE, 0, seq), d);
 }
 
+/// WP-238 P0-7, the Rust oracle of the stored liveness rows: the
+/// stored-form walk (`mortar_incr::update::live::walk_stored`) over `m`,
+/// the format-5 state the capture of `f` is about to write, with the
+/// link's `OptionKeys`, compared with `f`'s full mark on sections AND live
+/// fragments, every section it marks checked KEPT (P0-2), and its hash
+/// with `META.live_hash` (S4). `Ok`: the `incremental: live-check` line
+/// (`agree`, or `refused <rule>: <detail>` for a v1 refusal by name).
+/// `Err`: the first difference.
+///
+/// # Errors
+/// The first section or fragment that differs, a marked section that is
+/// not kept, a hash that differs, or a `state-corrupt` of the walk.
+#[allow(clippy::many_single_char_names, reason = "f, m, r, s, n: the front, the state, its rows")]
+pub fn live_check(
+    f: &Front<'_>,
+    m: &mortar_incr::update::testing::MemoryState,
+) -> Result<String, String> {
+    use mortar_core::split::EVERY_PIECE;
+    let options = mortar_resolve::tables::option_keys(&f.plan, &f.inputs.link.directives);
+    let view = m.view();
+    let walk = match mortar_incr::update::live::walk_stored(&view, &options) {
+        Ok(w) => w,
+        Err((IncrReason::UpdateNotImplemented(_), detail)) => {
+            return Ok(format!("incremental: live-check refused {detail}"));
+        }
+        Err((_, detail)) => return Err(detail),
+    };
+    let r = &f.resolution;
+    let n = r.sections.len() as usize;
+    if walk.live.len() != n {
+        return Err(format!("the state has {} SECTIONS rows, the link {n}", walk.live.len()));
+    }
+    let name = |s: mortar_core::SectionId| -> String {
+        let Some((file, index)) = r.sh_index(s) else { return format!("section {}", s.0) };
+        let d = f.inputs.files[file].display();
+        let path = match d.member() {
+            Some(m) => format!("{}({m})", d.path()),
+            None => d.path().to_owned(),
+        };
+        let sec = match f.inputs.files[file].reader {
+            mortar_core::inputs::Reader::Object(o) => o
+                .section(index)
+                .ok()
+                .and_then(|x| x.name().ok())
+                .map(|x| String::from_utf8_lossy(x).into_owned())
+                .unwrap_or_default(),
+            _ => String::new(),
+        };
+        format!("section {} ({path}:{}:{sec})", s.0, index.0)
+    };
+    for (i, &w) in walk.live.iter().enumerate() {
+        let s = mortar_core::SectionId(i as u32);
+        if w && !r.sections[s].is_kept() {
+            return Err(format!("{} is marked by the walk but not kept (P0-2)", name(s)));
+        }
+        if w != f.liveness.is_live(s) {
+            return Err(format!("{}: walk live={w}, full mark live={}", name(s), !w));
+        }
+    }
+    let split = &f.merge.split;
+    let mut frag = vec![false; split.frags.len() as usize];
+    for (s, offsets) in &walk.pieces {
+        if offsets.as_slice() == [EVERY_PIECE] {
+            for &fr in split
+                .merge_pieces(*s)
+                .and_then(|span| split.piece_frag.get(span.slots()))
+                .unwrap_or_default()
+            {
+                frag[fr.0 as usize] = true;
+            }
+            continue;
+        }
+        for &o in offsets {
+            if let Some(p) = split.merge_piece_at(*s, o)
+                && let Some(&fr) = split.piece_frag.get(p.piece as usize)
+            {
+                frag[fr.0 as usize] = true;
+            }
+        }
+    }
+    let full = f.liveness.frag_live.as_slice();
+    if let Some(i) = (0..frag.len()).find(|&i| frag[i] != full.get(i).copied().unwrap_or(false)) {
+        let first = split.frags.as_slice().get(i).map(|x| x.section);
+        let at = first.map(&name).unwrap_or_default();
+        return Err(format!(
+            "fragment {i} (first in {at}): walk live={}, full mark live={}",
+            frag[i], !frag[i]
+        ));
+    }
+    let h = mortar_incr::update::live::live_hash(&view, &walk.live, &walk.pieces)
+        .map_err(|e| e.report())?;
+    if h != m.meta.live_hash {
+        return Err("META.live_hash: the stored rows do not give the stored live set".into());
+    }
+    let live = walk.live.iter().filter(|b| **b).count();
+    let frags = frag.iter().filter(|b| **b).count();
+    Ok(format!(
+        "incremental: live-check agree sections {live}/{n} fragments {frags}/{} rows {}",
+        frag.len(),
+        m.edges.len()
+    ))
+}
+
 /// The state's path: `--incremental-state`, else `<output>.mortar-state`.
 #[must_use]
 pub fn state_path(parsed: &Parsed, cwd: &Path, out_path: &Path) -> PathBuf {
@@ -916,6 +1019,7 @@ impl Session {
     /// After a successful full link: the state written and bound to the
     /// output, and the lines for standard error (the fall-back's, or the
     /// report's when it goes there).
+    #[allow(clippy::too_many_lines, reason = "the state's write, then the lines, in order")]
     pub fn finish(
         mut self,
         f: &Front<'_>,
@@ -964,10 +1068,23 @@ impl Session {
                         dry = Some(dry_run(&old, &state, f));
                     }
                     let mut t = Instant::now();
-                    let r = self.write_state(state, rows5, out_path, written, &mut stderr);
+                    let mut failed = None;
+                    let r = self.write_state(
+                        f,
+                        state,
+                        rows5,
+                        out_path,
+                        written,
+                        &mut stderr,
+                        &mut failed,
+                    );
                     lap(&self.times, &mut t, "bind, encode and write");
                     if let Err(why) = r {
                         let _ = writeln!(stderr, "incremental: no state written: {why}");
+                    }
+                    // WP-238 P0-7: the oracle's disagreement fails the link.
+                    if let Some(what) = failed {
+                        emit(diagnostics, 4, Diagnostic::error(Kind::InternalError { what }));
                     }
                 }
                 Err(why) => {
@@ -1005,13 +1122,16 @@ impl Session {
     /// is left at `S` (an older one describes an output this link
     /// replaced), except `state-busy` (another link's temporary: `S` is
     /// left as it is).
+    #[allow(clippy::too_many_arguments, reason = "the parts of the state's write")]
     fn write_state(
         &self,
+        f: &Front<'_>,
         state: State,
         rows5: Option<mortar_incr::capture::Rows5>,
         out_path: &Path,
         written: &Written,
         stderr: &mut String,
+        failed: &mut Option<String>,
     ) -> Result<(), String> {
         let mut t = Instant::now();
         let result = bind(state, out_path, written).and_then(|state| {
@@ -1022,7 +1142,7 @@ impl Session {
                     .map(|()| true)
                     .map_err(|e| format!("cannot write {}: {e}", p.display()));
             }
-            let bytes = self.state5_bytes(&state, rows5, &mut t, stderr)?;
+            let bytes = self.state5_bytes(f, &state, rows5, &mut t, stderr, failed)?;
             if let Some(p) = &self.state4_path {
                 // The side state of a testhooks build (the floor, the dry
                 // run): best effort, removed when it cannot be written.
@@ -1070,12 +1190,20 @@ impl Session {
     /// `state5_rows` + `state5_encode`); WP-244's test copy to `s5.path`
     /// and its rows sink when set. `state-collision`, `state-limit`
     /// (WP-239 R-2, S4-3) and every other failure: the error, no state.
+    /// Under `--gc-sections` (WP-238 S4) the capture's live-set hash goes
+    /// into `META` first, from the full mark's sets (P0-3); with
+    /// `MORTAR_INCR_LIVE_CHECK` P0-7's oracle then judges the stored
+    /// rows: a disagreement fills `failed` (the link fails) and no state
+    /// is written.
+    #[allow(clippy::too_many_arguments, reason = "the parts of the state's write")]
     fn state5_bytes(
         &self,
+        f: &Front<'_>,
         state: &State,
         rows5: Option<mortar_incr::capture::Rows5>,
         t: &mut Instant,
         stderr: &mut String,
+        failed: &mut Option<String>,
     ) -> Result<Vec<u8>, String> {
         let s5 = self.state5.as_ref();
         let rows = rows5.ok_or_else(|| "the link computed no format-5 data".to_owned())?;
@@ -1085,8 +1213,36 @@ impl Session {
             }
         }
         let collide = s5.is_some_and(|s| s.collide) || mortar_incr::testhook::state5_collide();
-        let made = mortar_incr::capture::state5_rows(state, rows, collide)
-            .and_then(|m| mortar_incr::capture::state5_encode(&m).map(|b| (m, b)));
+        let made = mortar_incr::capture::state5_rows(state, rows, collide).and_then(|mut m| {
+            // WP-238 S4: the capture's live-set hash, from the full mark's
+            // sets (P0-3); then P0-7's oracle when asked for. Both are
+            // timed on their own: `t` skips them.
+            if let Some(Ok((_, at))) = f.incr5.as_ref().and_then(|i| i.live_rows.as_ref()) {
+                let start = Instant::now();
+                let mut th = start;
+                let h =
+                    mortar_incr::update::live::live_hash(&m.view(), f.liveness.live.as_slice(), at)
+                        .map_err(|e| e.report())?;
+                m.meta.live_hash = h;
+                lap(&self.times, &mut th, "format 5: live-set hash");
+                if mortar_incr::testhook::live_check() {
+                    let checked = live_check(f, &m);
+                    lap(&self.times, &mut th, "format 5: live check");
+                    match checked {
+                        Ok(line) => {
+                            let _ = writeln!(stderr, "{line}");
+                        }
+                        Err(what) => {
+                            let _ = writeln!(stderr, "incremental: live-check DISAGREE {what}");
+                            *failed = Some(format!("live-check: {what}"));
+                            return Err(format!("live-check: {what}"));
+                        }
+                    }
+                }
+                *t += start.elapsed();
+            }
+            mortar_incr::capture::state5_encode(&m).map(|b| (m, b))
+        });
         let (m, bytes) = match made {
             Ok(x) => x,
             Err(e) => {
@@ -1204,8 +1360,12 @@ impl Session {
                     facts: &i5.facts,
                     slot_demand: crate::front::slot_demand,
                     copies: f.plan.diagnostics.odr.mode != mortar_core::plan::OdrMode::Off,
-                    // WP-238 seam 9: the producer's rows come in Part 2.
-                    edges: None,
+                    // WP-238 Part 2: IN-29's rows under --gc-sections.
+                    edges: match &i5.live_rows {
+                        None => None,
+                        Some(Ok((edges, _))) => Some(edges),
+                        Some(Err(why)) => return Err(why.clone()),
+                    },
                 };
                 let (s, r) = mortar_incr::capture::capture5_timed(
                     &link,

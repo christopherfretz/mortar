@@ -77,6 +77,16 @@ u16 = lambda v: struct.pack('<H', v)
 u32 = lambda v: struct.pack('<I', v)
 
 
+# The records a map writes after the incremental ones (`spec/plumb.md`
+# §3.2: the decision records, the dynamic records, the line records).
+AFTER_DEAD = {
+    'region', 'capacity', 'order', 'slot', 'redirect', 'frag', 'symblock',
+    'output', 'interp', 'runpath', 'rpath', 'bind', 'relro', 'symbolic',
+    'dynamic-list', 'version-script', 'arg', 'needed', 'copy', 'export',
+    'plt', 'iplt', 'end',
+}
+
+
 def uleb_len(v):
     n = 1
     while v >= 0x80:
@@ -428,9 +438,14 @@ def main():
                 if (f, si) in shift_map:
                     w[4] = '%x' % shift_map[(f, si)]
                     ln = ' '.join(w)
-        if w and w[0] == 'end':
+        # The `dead` lines are incremental records: they follow the
+        # existing `incremental`/`hole`/`dead` lines and come before the
+        # decision, dynamic and line records (spec/plumb.md §3.2; WP-253
+        # ruling 9, WP-228 B3-5).
+        if w and w[0] in AFTER_DEAD and new_dead is not None:
             for (name, o, size) in sorted(new_dead):
                 mo.append('dead %s %x %x neutral' % (name, o, size))
+            new_dead = None
         mo.append(ln)
     if '--keep-file' not in opts:
         mo = drop_files(mo, dead)

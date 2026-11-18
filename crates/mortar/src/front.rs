@@ -170,7 +170,15 @@ pub struct Incr5 {
     pub stack: Vec<(FileId, mortar_layout::stack::StackNote)>,
     /// `Plan::option_keys` (seam 6's `SYMBOLS.option`).
     pub option_keys: Vec<Vec<u8>>,
+    /// Under `--gc-sections` (WP-238 Part 2): IN-29's rows
+    /// (`mortar_live::stored_edges`, every file) and the full mark's
+    /// positions (`mortar_live::live_positions`), or why the producer
+    /// could not make them; `None` without `--gc-sections`.
+    pub live_rows: Option<LiveRows>,
 }
+
+/// [`Incr5::live_rows`]: the stored rows and the capture's positions.
+pub type LiveRows = Result<(Vec<mortar_core::incr::LiveEdge>, Vec<(SectionId, Vec<u32>)>), String>;
 
 /// One output section of a [`Front`]'s layout, as its section header will
 /// show it (the chunks that share a section index, `spec/layout.md` §4.4).
@@ -663,6 +671,29 @@ pub fn front<'s>(
     };
     let mut order = offsets(&pool, &merge.split, &merge.meta, &liveness.frag_live);
     timer.phase(50, "liveness");
+    // WP-238 Part 2: an incremental-mode capture under --gc-sections
+    // stores IN-29's rows and the live-set hash's positions (a plain
+    // link, and a capture without the format-5 switch, make neither).
+    let live_rows = (env.slack && env.state5 && live_options.gc_sections).then(|| {
+        let t = std::time::Instant::now();
+        let fail = |(_, d): (Key, Diagnostic)| {
+            format!("EDGES: {}", d.render(&mortar_diag::Style::plain("mortar")).trim_end())
+        };
+        let r = mortar_live::stored_edges(&live, live_options, None, &pool).map_err(fail).and_then(
+            |edges| {
+                let at = mortar_live::live_positions(&live, live_options, &edges, &liveness, &pool)
+                    .map_err(fail)?;
+                Ok((edges, at))
+            },
+        );
+        if timer.on() {
+            timer.line(format!(
+                "mortar: incremental: live rows: {:.1} ms",
+                t.elapsed().as_secs_f64() * 1e3
+            ));
+        }
+        r
+    });
 
     // 70: scan. WP-177: the owners of `.eh_frame` and
     // `.gcc_except_table` fields, asked only about references to dead
@@ -1364,6 +1395,7 @@ pub fn front<'s>(
             plan.option_keys(),
             &mortar_resolve::tables::option_keys(&plan, &inputs.link.directives),
         ),
+        live_rows,
     });
     drop(merge_eh);
     Some(Front {

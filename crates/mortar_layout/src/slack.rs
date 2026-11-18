@@ -112,13 +112,17 @@ impl Slack {
     /// A debug contribution's allotment beyond its `size` (IN-50, IN-51b):
     /// the smallest class `c = m·2^k` (`m` in 8..=15, at least 32) with
     /// `c − size` either 0 or at least `form.min` and a multiple of
-    /// `form.granule`. 0 for an empty contribution or without slack.
+    /// `form.granule`; for `.debug_abbrev` (its form, `ABBREV_FORM`,
+    /// is no other section's) the class of at least `size + size/8`
+    /// (WP-228 P2, B3-3: an added abbreviation then fits in place). 0
+    /// for an empty contribution or without slack.
     #[must_use]
     pub fn allotment(self, size: u64, form: Neutral) -> u64 {
         if !self.on || size == 0 {
             return 0;
         }
-        let mut c = class_at_least(size);
+        let at_least = if form == ABBREV_FORM { size + size / ABBREV_DIV } else { size };
+        let mut c = class_at_least(at_least);
         loop {
             let pad = c - size;
             if pad == 0 || (pad >= form.min && pad.is_multiple_of(form.granule)) {
@@ -144,6 +148,12 @@ pub fn class_at_least(n: u64) -> u64 {
     n.checked_next_multiple_of(step).unwrap_or(n)
 }
 
+/// `.debug_abbrev`'s neutral form ([`neutral`]): one zero byte, any size.
+const ABBREV_FORM: Neutral = Neutral { min: 1, granule: 1 };
+/// `.debug_abbrev`'s allotment divisor (P2: the class of at least
+/// `size + size/8`).
+const ABBREV_DIV: u64 = 8;
+
 /// A debug section's neutral form (IN-51b): the smallest neutral unit and
 /// the granule of its size.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -164,7 +174,7 @@ pub struct Neutral {
 pub fn neutral(name: &[u8]) -> Option<Neutral> {
     let (min, granule) = match name {
         b".debug_info" => (15, 1),
-        b".debug_abbrev" => (1, 1),
+        b".debug_abbrev" => (ABBREV_FORM.min, ABBREV_FORM.granule),
         b".debug_line" => (32, 1),
         b".debug_rnglists" => (12, 1),
         b".debug_str_offsets" => (8, 4),
@@ -299,6 +309,20 @@ mod tests {
             assert!(a == 0 || a >= 15, "{n}: {a}");
         }
         assert_eq!(Slack::NONE.allotment(20, info), 0);
+        // P2: `.debug_abbrev`'s form is no other section's, and its class
+        // holds an eighth more.
+        let ab = neutral(b".debug_abbrev").unwrap();
+        assert_eq!(ab, ABBREV_FORM);
+        for n in [&b".debug_info"[..], b".debug_line", b".debug_rnglists", b".debug_str_offsets"] {
+            assert_ne!(neutral(n), Some(ABBREV_FORM));
+        }
+        assert_ne!(neutral(b".debug_ranges"), Some(ABBREV_FORM));
+        for n in 1..5000u64 {
+            let a = s.allotment(n, ab);
+            assert!(a >= n / 8 && n + a == class_at_least(n + n / 8), "{n}: {a}");
+        }
+        assert_eq!(s.allotment(32, ab), 4);
+        assert_eq!(Slack::NONE.allotment(32, ab), 0);
         assert!(neutral(b".debug_loclists").is_none());
         assert!(neutral(b".debug_addr").is_none());
     }

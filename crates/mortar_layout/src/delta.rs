@@ -104,7 +104,7 @@ pub fn layout(
     // range (`eh_ranges`, seam 6), only when it runs.
     let all = || stored.eh_ranges();
     let eh = eh::item_5(stored, input.eh, &ids, &base.chunks, Some(&all))?;
-    let mut u = Update::new(&base, changes);
+    let mut u = Update::new(&base, changes, input.debug);
     for (&file, members) in &files {
         u.file(stored, file, members)?;
     }
@@ -341,8 +341,11 @@ impl Base {
 
     /// What the update does with a section of this shape (IN-72's items by
     /// kind). `placed_before`: its previous version had a place (a
-    /// `SHF_MERGE` section placed whole, synth.md S-6).
-    fn fate(&self, s: &Shape<'_>, placed_before: bool) -> Fate {
+    /// `SHF_MERGE` section placed whole, synth.md S-6). `debug`: the
+    /// caller runs the debug placement after the layout
+    /// ([`LayoutInput::debug`], IN-50); otherwise a debug section is
+    /// refused.
+    fn fate(&self, s: &Shape<'_>, placed_before: bool, debug: bool) -> Fate {
         let alloc = s.flags & SHF_ALLOC != 0;
         let name = s.name;
         // Never placed (resolve.md §10's kinds that are not placed, and
@@ -370,7 +373,11 @@ impl Base {
         }
         // Debug first: a merged `.debug_*` section has no fragments (R-1).
         if !alloc && (name.starts_with(b".debug_") || name.starts_with(b".zdebug")) {
-            return Fate::Refuse(Refusal::Debug);
+            return if debug && !name.starts_with(b".zdebug") {
+                Fate::Debug
+            } else {
+                Fate::Refuse(Refusal::Debug)
+            };
         }
         // Item 6: merged pieces. A section of this shape is placed whole
         // when its previous version had a place (synth.md S-6); otherwise
@@ -563,6 +570,10 @@ enum Fate {
     Fixed { out: OutSecId, why: Why },
     /// Merged pieces (item 6, `frags`): the section is not placed.
     Pieces,
+    /// A `.debug_*` section left to the debug placement (IN-50; only when
+    /// [`LayoutInput::debug`] says it runs): neither placed nor refused
+    /// here.
+    Debug,
     /// Placed by a part of IN-72 the update cannot do.
     Refuse(Refusal),
 }
@@ -658,6 +669,8 @@ type Touched = (Vec<(u64, u64)>, Vec<Hole>);
 struct Update<'b, 'c> {
     base: &'b Base,
     changes: &'c [SectionChange<'c>],
+    /// [`LayoutInput::debug`]: debug sections are `Fate::Debug`.
+    debug: bool,
     chunks: Column<ChunkId, Chunk>,
     /// Per change: its previous version's row (its `old`, or itself).
     prev: Vec<Option<StoredSection>>,
@@ -691,11 +704,12 @@ struct Update<'b, 'c> {
 }
 
 impl<'b, 'c> Update<'b, 'c> {
-    fn new(base: &'b Base, changes: &'c [SectionChange<'c>]) -> Self {
+    fn new(base: &'b Base, changes: &'c [SectionChange<'c>], debug: bool) -> Self {
         let n = changes.len();
         Self {
             base,
             changes,
+            debug,
             chunks: base.chunks.clone(),
             prev: vec![None; n],
             place: vec![None; n],
@@ -805,7 +819,7 @@ impl<'b, 'c> Update<'b, 'c> {
                 flags: c.sh_flags,
                 size: c.size,
             };
-            let fate = base.fate(&shape, placed_before);
+            let fate = base.fate(&shape, placed_before, self.debug);
             let here = c.live && c.kept;
             if !here {
                 continue;
@@ -814,7 +828,7 @@ impl<'b, 'c> Update<'b, 'c> {
                 return Err(not_implemented());
             }
             match fate {
-                Fate::Ignore => {}
+                Fate::Ignore | Fate::Debug => {}
                 Fate::Pieces => {
                     self.pieces.insert(c.id);
                 }
@@ -956,11 +970,13 @@ impl<'b, 'c> Update<'b, 'c> {
                 flags: p.sh_flags,
                 size: p.size,
             };
-            match base.fate(&shape, true) {
+            match base.fate(&shape, true, self.debug) {
                 Fate::Fixed { why, .. } => killed_fixed.push((p.clone(), why)),
                 // A dead `.eh_frame` section is item 5's (`eh`), a dead
                 // merged section's pieces item 6's (`frags`); a killed
                 // debug section is G-1's.
+                // With the debug placement (`Fate::Debug`) the killed
+                // debug section is listed in `killed` for it.
                 Fate::Refuse(Refusal::Debug) => return Err(Refusal::Debug.reason(&p.name)),
                 _ => {}
             }
@@ -1312,7 +1328,21 @@ impl<'b, 'c> Update<'b, 'c> {
         };
         let mut placed: BTreeSet<OutSecId> = BTreeSet::new();
         let mut lost: BTreeSet<OutSecId> = BTreeSet::new();
+        let is_debug = |shape: &Shape<'_>| base.fate(shape, true, self.debug) == Fate::Debug;
         for (i, now) in self.place.iter().enumerate() {
+            // The debug placement's output sections (IN-50) are its own,
+            // live or dead.
+            let c = &self.changes[i];
+            let shape = Shape {
+                index: c.index,
+                name: c.key.name,
+                sh_type: c.sh_type,
+                flags: c.sh_flags,
+                size: c.size,
+            };
+            if is_debug(&shape) {
+                continue;
+            }
             let now = out_of(*now);
             if self.changes[i].size > 0 {
                 placed.extend(now);
@@ -1324,7 +1354,19 @@ impl<'b, 'c> Update<'b, 'c> {
                 lost.insert(o);
             }
         }
-        lost.extend(self.orphans.iter().filter_map(|o| out_of(o.place.get())));
+        let debug_orphan = |o: &StoredSection| {
+            let shape = Shape {
+                index: o.index,
+                name: &o.name,
+                sh_type: o.sh_type,
+                flags: o.sh_flags,
+                size: o.size,
+            };
+            is_debug(&shape)
+        };
+        lost.extend(
+            self.orphans.iter().filter(|o| !debug_orphan(o)).filter_map(|o| out_of(o.place.get())),
+        );
         // Item 6: a fragment fell to 0 / one rose or was appended.
         lost.extend(self.merged.died.iter().copied());
         placed.extend(self.merged.rose.iter().copied());

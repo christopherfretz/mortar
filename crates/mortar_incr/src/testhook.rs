@@ -20,7 +20,9 @@
 //!   format-5 capture beside the format-4 state ([`state5_path`],
 //!   [`state5_collide`]);
 //! - `MORTAR_INCR_SMALL_OUTPUT=<bytes>`: `small-output`'s bound for the
-//!   process (WP-225, G-13; [`small_output_bound`]).
+//!   process (WP-225, G-13; [`small_output_bound`]);
+//! - `MORTAR_INCR_LIVE_CHECK` (set to anything): WP-238 P0-7's oracle of
+//!   the stored liveness rows ([`live_check`]).
 
 use mortar_core::incr::DirtyRange;
 
@@ -206,6 +208,25 @@ pub fn small_output_bound() -> Option<u64> {
 #[must_use]
 pub fn small_output_bound() -> Option<u64> {
     None
+}
+
+/// WP-238 P0-7's switch: with the feature and `MORTAR_INCR_LIVE_CHECK`
+/// set (to anything), an incremental-mode capture under `--gc-sections`
+/// walks the stored form it writes and compares it with the full mark
+/// (`mortar::incremental::live_check`); a disagreement fails the link.
+/// Read only on that path. Without the feature: `false`.
+#[cfg(feature = "testhooks")]
+#[must_use]
+pub fn live_check() -> bool {
+    std::env::var_os("MORTAR_INCR_LIVE_CHECK").is_some()
+}
+
+/// WP-238 P0-7's switch: without the `testhooks` feature, `false`.
+#[cfg(not(feature = "testhooks"))]
+#[inline]
+#[must_use]
+pub fn live_check() -> bool {
+    false
 }
 
 #[cfg(test)]
