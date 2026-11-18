@@ -988,6 +988,11 @@ pub enum HoleKind {
     DeadFragment,
     /// An unused CIE in `.eh_frame` (IN-3a): a padding CIE.
     DeadCie,
+    /// A retired GOT, IPLT or TLS slot (IN-3a; IN-72 item 7, S-113): the
+    /// slot's words written 0, its `SLOTS` row kept with `refs` 0 (a
+    /// revival takes it back). The map lists it as a `hole` line (zero
+    /// bytes are a data chunk's fill).
+    DeadSlot,
 }
 
 impl HoleKind {
@@ -995,7 +1000,7 @@ impl HoleKind {
     /// unit held, not slack.
     #[must_use]
     pub fn is_dead(self) -> bool {
-        matches!(self, Self::DeadDebug | Self::DeadFragment | Self::DeadCie)
+        matches!(self, Self::DeadDebug | Self::DeadFragment | Self::DeadCie | Self::DeadSlot)
     }
 }
 
