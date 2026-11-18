@@ -1,24 +1,15 @@
-# WIP: WP-228 (G-1), debug information in an incremental update
+# WIP: WP-253 (verifier: IN-51/IN-51b's neutral forms)
 
-Step 1 DONE and ruled (`/Volumes/AgentWork/mortar-helper/briefs/wp-228-rulings.md`).
-NOW: step 2, **Part A only**. Part B (R-1 commit, R-2 seam commit,
-`update/debug.rs`) waits for the supervisor's word and a new base.
+Brief: /Volumes/AgentWork/mortar-helper/briefs/wp-253.md. Scratch:
+/Volumes/AgentWork/mortar-helper/.build/target-wp-156/wp253 (build.sh, logs).
 
-Done (part A):
-- `neutral.rs`: all forms (loclists, loc, frame, addr v5 and GNU, macro,
-  macinfo, `info_addr_base` codes 3/4, `type_unit` code 2), exact-byte
-  tests, `emit_forms`.
-- WP-229's address-base forms reconciled: ONE table of four
-  abbreviations, 38 bytes (record A.1, A.2).
-- `forms.sh` run on the one-table build: 816 outputs, both targets
-  (record A.3); verifier findings per form (A.4). Logs:
-  `.build/target-wp-154/wp228/a2/keep/`.
+Done:
+- read IN-51, IN-51b, plumb.md §6.8/§3.2, WP-228 §A.2-A.6, deaddwarf.rs, dead.rs, tests/dead.rs.
 
 Next:
-1. Pre-table gate (`a2/gate.sh pre`): fmt, clippy, ci --quick, linktest,
-   census, static-identical (0 differ), incr-update.
-2. LAST commit: `git apply .build/target-wp-154/wp228/a2/one-table.patch`
-   (`neutral::ABBREV_TABLE` 37 bytes, `slack::ABBREV_TABLE` 38), commit,
-   then `a2/gate.sh post`: list static-identical's changed rows (no
-   `--update`), the lane with and without.
-3. Interim hand-back; wait for Part B.
+1. look at a real incremental map with -g: which line names the 38-byte table.
+2. spec/plumb.md §6.8 text (P-I2 list, P-I6 grammar).
+3. code: pure judgement of neutral ranges (src/neutral.rs), deaddwarf.rs calls it.
+4. table-driven tests (forms x mutations, counted); tests/dead.rs models updated.
+5. forms.sh run (CARGO_TARGET_DIR_WP=/Volumes/AgentWork/mortar-helper/.build/target-wp-156).
+6. gate; record spec/landed/plumb/WP-253.md; delete this file.
