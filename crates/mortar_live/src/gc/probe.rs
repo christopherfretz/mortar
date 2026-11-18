@@ -509,10 +509,13 @@ fn is_key_kind(k: u8) -> bool {
 /// only when the target is split, a non-split self-edge is dropped; F6: a
 /// row to a section that is not kept is dropped), the group as a ring,
 /// `ROOT`, `NAMED` (target 0, F4), `SPLIT`, and `REFUSE` (F3, F6).
+#[allow(clippy::too_many_lines)] // the probe's prototype (R-7: deleted in Part 4)
 pub(super) fn stored_rows(w: &Walk<'_, '_, '_>) -> Vec<Stored> {
     let r = w.r;
     let n = r.sections.len() as usize;
-    let kept = |s: u32| r.sections.get(SectionId(s)).is_some_and(|x| x.is_kept());
+    let kept = |s: u32| {
+        r.sections.get(SectionId(s)).is_some_and(mortar_core::resolution::SectionRow::is_kept)
+    };
     let split = |s: u32| w.facts.get(s as usize).is_some_and(|b| b & super::MERGE != 0);
     let mut out: Vec<Stored> = Vec::new();
     let named: std::collections::BTreeSet<u32> = w.marks.named.iter().map(|(_, s)| s.0).collect();
