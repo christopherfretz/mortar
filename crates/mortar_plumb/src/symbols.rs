@@ -209,6 +209,17 @@ fn held_def(e: &Engine<'_, '_>, name: &str) -> Option<String> {
             return None;
         };
         let s = o.secs.get(k.0 as usize)?;
+        // GNU ld drops a hidden definition in an empty input `.eh_frame`
+        // (x86 crtbeginT.o's shape; measured in WP-246 on
+        // tests/link/layout/eh-frame-terminator-only{,-pie}.test, x86-64,
+        // where its output `.eh_frame` has 0 bytes): not known to be held.
+        if e.format == Format::Gnu
+            && d.visibility() != 0
+            && s.name == ".eh_frame"
+            && s.shdr.sh_size == 0
+        {
+            return None;
+        }
         // A foreign map's merged section may have lost every piece (lld
         // under --gc-sections): not known to be held.
         // Placed as pieces: the piece holding the label must be live

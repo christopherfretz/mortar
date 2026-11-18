@@ -207,7 +207,7 @@ fn discarded(d: Discard, name: &str, file: bool, split: bool) -> bool {
 }
 
 /// Y6 (§6.5, WP-246): the locals of each input file in the link.
-#[allow(clippy::too_many_lines)] // the expected set, then the output's
+#[allow(clippy::too_many_lines, clippy::many_single_char_names)] // the expected set, then the output's; e, t, s, k, a: the ELF parts
 pub(crate) fn locals(e: &mut Engine<'_, '_>, map: &Map, fs: &mut Vec<Finding>) {
     let image = e.image;
     if image.symbols.is_empty() {
@@ -278,21 +278,17 @@ pub(crate) fn locals(e: &mut Engine<'_, '_>, map: &Map, fs: &mut Vec<Finding>) {
                                         .then(|| ps.iter().find(|p| p.input_offset + p.size == r))
                                         .flatten()
                                 });
-                            match p {
-                                Some(p) => {
-                                    let at = if sec.alloc() {
-                                        Where::Alloc(p.addr, p.addr + p.size)
-                                    } else {
-                                        Where::NonAlloc
-                                    };
-                                    (p.addr + (r - p.input_offset), at, true)
-                                }
-                                // S-76: its piece's fragment is not live.
-                                None => {
-                                    dropped += 1;
-                                    continue;
-                                }
-                            }
+                            // S-76: with no piece its fragment is not live.
+                            let Some(p) = p else {
+                                dropped += 1;
+                                continue;
+                            };
+                            let at = if sec.alloc() {
+                                Where::Alloc(p.addr, p.addr + p.size)
+                            } else {
+                                Where::NonAlloc
+                            };
+                            (p.addr + (r - p.input_offset), at, true)
                         }
                         Place::Discarded => {
                             dropped += 1;
@@ -330,13 +326,11 @@ pub(crate) fn locals(e: &mut Engine<'_, '_>, map: &Map, fs: &mut Vec<Finding>) {
                 continue;
             }
             let value = if s.sym_type() == STT_TLS && !matches!(at, Where::Abs) {
-                match tls {
-                    Some(start) => value.wrapping_sub(start),
-                    None => {
-                        skip(NJ_TLS, None, name);
-                        continue;
-                    }
-                }
+                let Some(start) = tls else {
+                    skip(NJ_TLS, None, name);
+                    continue;
+                };
+                value.wrapping_sub(start)
             } else {
                 value
             };
@@ -420,7 +414,10 @@ pub(crate) fn locals(e: &mut Engine<'_, '_>, map: &Map, fs: &mut Vec<Finding>) {
         let mapping = out.name.starts_with("$x") || out.name.starts_with("$d");
         let alloc = s.st_shndx != SHN_UNDEF
             && s.st_shndx < SHN_LORESERVE
-            && image.sections.get(usize::from(s.st_shndx)).is_some_and(|x| x.alloc());
+            && image
+                .sections
+                .get(usize::from(s.st_shndx))
+                .is_some_and(crate::image::OutSection::alloc);
         if linker_name(&out.name, e.format, machine).is_some()
             || e.defsym.defines(&out.name)
             || (mapping && alloc && !e.occupied_at(s.st_value))
@@ -541,6 +538,7 @@ pub(crate) fn files(e: &mut Engine<'_, '_>, fs: &mut Vec<Finding>) {
 /// every other is a finding, naming each entry of the name. So is an entry
 /// with no name (section and file symbols aside) and an undefined entry
 /// whose name no input mentions.
+#[allow(clippy::too_many_lines)] // the defined names, then the undefined ones
 fn unexplained(e: &mut Engine<'_, '_>, map: &Map, fs: &mut Vec<Finding>) {
     let image = e.image;
     let machine = image.header.e_machine;
@@ -554,6 +552,19 @@ fn unexplained(e: &mut Engine<'_, '_>, map: &Map, fs: &mut Vec<Finding>) {
         dynsym.contains(n.as_bytes())
             || n.split_once('@').is_some_and(|(b, _)| dynsym.contains(b.as_bytes()))
     };
+    // The bases of the inputs' versioned definitions (`foo` of `foo@@V`).
+    let mut versioned: HashSet<String> = HashSet::default();
+    for o in e.objs {
+        let Some(t) = &o.symtab else { continue };
+        for (_, s) in t.iter() {
+            if s.st_shndx != SHN_UNDEF
+                && let Ok(n) = t.name(&s)
+                && let Some(i) = n.iter().position(|&c| c == b'@')
+            {
+                versioned.insert(String::from_utf8_lossy(&n[..i]).into_owned());
+            }
+        }
+    }
     let names = std::mem::take(&mut e.cov.linker_defined_not_judged);
     let mut kept = Vec::new();
     for n in names {
@@ -574,15 +585,22 @@ fn unexplained(e: &mut Engine<'_, '_>, map: &Map, fs: &mut Vec<Finding>) {
         if dynamic(&n) {
             continue;
         }
-        // lld's map does not list a member whose sections are all merged
-        // (glibc's `C_name.o`, `SYS_libc.o`, `itoa-digits.o`: only
-        // `.rodata.str*`; measured in WP-246 on the corpus's `debug-gc`):
-        // a name at an address no listed input section occupies may be
-        // such a member's.
-        let unlisted = e.format == Format::Lld
+        // `foo@@V`: lld's and mold's `.symtab` name it `foo` (Y3's
+        // reading; measured in WP-246 on
+        // tests/link/dyn/dynsym/versioned-export-refused.test, `vfoo`).
+        if matches!(e.format, Format::Lld | Format::Mold) && versioned.contains(n.as_str()) {
+            continue;
+        }
+        // lld's and mold's maps do not list a member whose sections are
+        // all merged (glibc's `C_name.o`, `SYS_libc.o`, `itoa-digits.o`:
+        // only `.rodata.str*`; measured in WP-246 on the corpus's
+        // `debug-gc` (lld) and the lane's glibc links (mold)): a name at an
+        // address no listed input section occupies may be such a
+        // member's.
+        let unlisted = matches!(e.format, Format::Lld | Format::Mold)
             && image.symbols.iter().filter(|o| o.name == n).all(|o| !e.occupied_at(o.sym.st_value));
         if unlisted {
-            kept.push(format!("{n} (at no input section lld's map lists)"));
+            kept.push(format!("{n} (at no input section the map lists)"));
             continue;
         }
         for out in image.symbols.iter().filter(|o| o.name == n) {
@@ -612,7 +630,7 @@ fn unexplained(e: &mut Engine<'_, '_>, map: &Map, fs: &mut Vec<Finding>) {
         }
     }
     let mut mentioned: HashSet<&[u8]> = HashSet::default();
-    for n in &line_names {
+    for n in line_names.iter().chain(&e.roots) {
         mentioned.insert(n.as_bytes());
     }
     for o in e.objs {

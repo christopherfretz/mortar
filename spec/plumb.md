@@ -3018,6 +3018,9 @@ rules below judge the rest. Code: `src/symbols.rs`.
     without a record: a finding. Whatever its visibility V (WP-246: a
     hidden or internal definition is a local of its definer's block,
     `synth.md` S-77, GNU ld's `GLOBAL HIDDEN`, lld's and mold's `LOCAL`;
+    under GNU ld's map a hidden definition in an empty input
+    `.eh_frame` is not judged (GNU ld drops it: x86 `crtbeginT.o`'s shape,
+    measured in WP-246 on `layout/eh-frame-terminator-only{,-pie}.test`);
     before WP-246 a hidden name was not judged, and an output whose
     `.strtab` named the middle of glibc's `__libc_single_threaded`,
     `readed`, passed). A foreign map's merged section is not
@@ -3150,11 +3153,15 @@ rules below judge the rest. Code: `src/symbols.rs`.
   - a `--defsym` key (§4.4b judges it);
   - under lld's map: `__AArch64ADRPThunk_*`, `__AArch64AbsLongThunk_*`,
     `__AArch64BTIThunk_*`, `__CortexA53843419_*` and `__dso_handle`
-    (layout.md §13.1, E-24); and, listed as `<name> (at no input section
-    lld's map lists)`, a name at an address no listed input section
-    occupies: lld's map does not list a member whose sections are all
-    merged (glibc's `C_name.o`, `SYS_libc.o`, `itoa-digits.o`, only
-    `.rodata.str*`; measured in WP-246 on the corpus's `debug-gc`);
+    (layout.md §13.1, E-24);
+  - under lld's and mold's maps, listed as `<name> (at no input section
+    the map lists)`, a name at an address no listed input section
+    occupies: neither map lists a member whose sections are all merged
+    (glibc's `C_name.o`, `SYS_libc.o`, `itoa-digits.o`, only
+    `.rodata.str*`; measured in WP-246 on the corpus's `debug-gc` (lld)
+    and the lane's glibc links (mold)); and a name an input defines
+    versioned (`foo@@V`), which both write as `foo` (Y3's reading;
+    measured on `dyn/dynsym/versioned-export-refused.test`);
     under mold's: a name with `$`, `__start_EHDR`, `__start_PHDR`,
     `_PROCEDURE_LINKAGE_TABLE_` and `__dso_handle` (the not-judged list
     below; `_PROCEDURE_LINKAGE_TABLE_` measured in WP-246: mold 2.x
@@ -3174,7 +3181,9 @@ rules below judge the rest. Code: `src/symbols.rs`.
   entry whose name (or its base before `@`) no input symbol, defined or
   not, has, the line does not name (`-e`, `-u`, `--require-defined`,
   `-init`, `-fini`, `--export-dynamic-symbol`, `--wrap`'s `__wrap_X`
-  and `__real_X`) and that is none of the above; with no line such a
+  and `__real_X`, and, when the caller reads the line's files, an
+  implicit script's `ENTRY` and `EXTERN`) and that is none of the
+  above; with no line such a
   name is listed (`<name> (undefined; no line: a -u may name it)`).
   Before WP-246
   every name outside the table was "not judged": mortar's incremental
@@ -3275,7 +3284,13 @@ judged: <reason>: <n>; …".
 Tests: `tests/corpus.rs s9_1_reference_links_verify_clean` (on the glibc
 cases: more than 1000 globals, more than 300 locals and at least 9
 linker-defined symbols judged; not-judged names only from mold, §10.5) and
-`tests/mutation.rs s9_2h_symbol_table_mutations_are_found`.
+`tests/mutation.rs s9_2h_symbol_table_mutations_are_found`. WP-246's
+Y3 (hidden), Y5's closed set, Y6, Y7 and P-E3 on a renamed local:
+`tests/symnames.rs` (mortar's incremental and plain static links on
+AArch64 and x86-64, mutated by `tests/symnames/mut.py`: a name moved
+into its string, an `STT_FILE` emptied, a local dropped, two names
+swapped, a global renamed, a value moved; the evidence `inc.bad` when
+present).
 
 **x86-64 additions (WP-028c).** A common symbol (`SHN_COMMON`, or
 x86-64's `SHN_X86_64_LCOMMON`, X-55) with no non-common definition is

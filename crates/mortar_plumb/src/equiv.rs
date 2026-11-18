@@ -472,7 +472,7 @@ fn run_side<'a>(
     map: &'a Map,
 ) -> Result<Side<'a>, Report> {
     let Ok(image) = Image::read(output) else {
-        let mut r = crate::verify_static_in(output, store, m, map, None);
+        let mut r = crate::verify_static_in(output, store, m, map, None, &[]);
         crate::read_errors(store, &mut r);
         return Err(r);
     };
