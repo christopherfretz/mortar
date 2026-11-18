@@ -25,13 +25,13 @@ use mortar_merge::order::Order;
 use mortar_synth::EhSource;
 
 use crate::plan::{
-    Builder, EhSection, InputUnit, MergeSource, MergedUnit, Pattern, Plan, RecRows, RelaTable,
-    RelocSection, SynthUnit,
+    Builder, EhSection, MergeSource, MergedUnit, Pattern, Plan, RecRows, RelaTable, RelocSection,
+    SynthUnit,
 };
+use crate::rows::{Rows, SectionFront};
 use crate::target::Target;
 
-/// `SHF_ALLOC`, `SHF_EXECINSTR`, `SHT_NOBITS`, `PT_LOAD`.
-const SHF_ALLOC: u64 = 0x2;
+/// `SHF_EXECINSTR`, `SHT_NOBITS`, `PT_LOAD`.
 const SHF_EXECINSTR: u64 = 0x4;
 const SHT_NOBITS: u32 = 8;
 const SHT_RELA: u32 = 4;
@@ -204,9 +204,12 @@ fn records_in(
     Ok(out)
 }
 
-/// Builds the plan of `m`'s placement (I-27).
-pub fn from_layout(
+/// Builds the plan of `m`'s placement (I-27); each placed input
+/// section's row is [`crate::rows::row_for`] over `rows` (the same rows'
+/// placement as `m`'s).
+pub fn from_layout<R: Rows>(
     m: &Model<'_, '_>,
+    rows: &R,
     target: Target,
     extras: &Extras<'_>,
     window: u64,
@@ -257,33 +260,17 @@ pub fn from_layout(
             continue;
         };
         paths.entry(file).or_insert_with(|| file_ref(m.inputs, file));
-        let size = sec.size();
-        let name = b.name(sec.name().unwrap_or(b""));
-        let alloc = sec.flags() & SHF_ALLOC != 0;
-        let exec = sec.flags() & SHF_EXECINSTR != 0;
         let rel = m.resolution.sections[s].reloc;
-        let relocs = if rel.0 == 0 {
-            None
-        } else {
-            let rows = RecRows::Rela(table(m.inputs, file, rel)?);
-            let proof = (extras.proof)(file, index, size).into_boxed_slice();
-            Some(b.relocs(RelocSection { section: s, rows, proof }))
-        };
-        let addr = if alloc { chunk.addr.map_or(0, |a| a + off) } else { 0 };
-        let unit = InputUnit {
+        let front = SectionFront {
             file,
-            index: index.0,
-            section: s,
+            index,
+            size: sec.size(),
+            flags: sec.flags(),
             src: range.start as u64,
-            start: 0,
-            section_size: size,
-            addr,
-            alloc,
-            exec,
-            name,
-            relocs,
+            name: sec.name().unwrap_or(b""),
+            rela: if rel.0 == 0 { None } else { Some(table(m.inputs, file, rel)?) },
         };
-        b.input(chunk.offset + off, size, unit);
+        crate::rows::row_for(rows, s, (c, off), &front, extras.proof, &mut b)?;
     }
     merged(m, &mut b, &mut paths)?;
     debug_holes(m, target, &mut b)?;
@@ -303,7 +290,8 @@ pub fn from_layout(
             eh_sections(m, &mut b, &mut paths)?;
         }
     }
-    pads(m, target, extras.separate_code, &mut b);
+    let (chunk_views, seg_views) = pad_views(m);
+    pads(chunk_views, &seg_views, target, extras.separate_code, &mut b);
     for (f, p) in paths {
         b.path(f, p);
     }
@@ -484,48 +472,88 @@ fn eh_sections(
     Ok(())
 }
 
-/// I-41 / L-82 / L-83: the pad ranges whose gaps are not zero.
-fn pads(m: &Model<'_, '_>, target: Target, separate_code: bool, b: &mut Builder) {
+/// One chunk as I-41's pad pass reads it: its file offset, the end of its
+/// capacity (`spec/incr.md` IN-33: a code chunk's capacity is trap fill
+/// too), whether it is code and whether it is `.init`/`.fini`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ChunkView {
+    pub offset: u64,
+    pub end: u64,
+    pub exec: bool,
+    pub init: bool,
+}
+
+/// One `PT_LOAD` segment as I-41's pad pass reads it: its file range and
+/// whether it is executable.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct SegView {
+    pub offset: u64,
+    pub end: u64,
+    pub exec: bool,
+}
+
+/// The pad pass's views of `m`'s placement: every in-file chunk with
+/// bytes, and every `PT_LOAD` segment, in column order.
+fn pad_views(m: &Model<'_, '_>) -> (Vec<ChunkView>, Vec<SegView>) {
     let pl = &m.layout.placement;
-    let mut chunks: Vec<(u64, u64, bool, bool)> = pl
+    let chunks = pl
         .chunks
         .iter()
         .filter(|(_, c)| c.in_file() && c.size > 0)
-        .map(|(_, c)| {
-            let exec = c.flags & SHF_EXECINSTR != 0;
-            let init = matches!(c.name(m.assignment), Some(b".init" | b".fini"));
-            // spec/incr.md IN-33: a code chunk's capacity is trap fill too.
-            (c.offset, c.offset + c.capacity, exec, init)
+        .map(|(_, c)| ChunkView {
+            offset: c.offset,
+            end: c.offset + c.capacity,
+            exec: c.flags & SHF_EXECINSTR != 0,
+            init: matches!(c.name(m.assignment), Some(b".init" | b".fini")),
         })
         .collect();
-    chunks.sort_unstable_by_key(|c| c.0);
-    let segs: Vec<(u64, u64, bool)> = pl
+    let segs = pl
         .segments
         .iter()
         .filter(|(_, s)| s.p_type == PT_LOAD)
-        .map(|(_, s)| (s.offset, s.offset + s.filesz, s.flags & 1 != 0))
+        .map(|(_, s)| SegView {
+            offset: s.offset,
+            end: s.offset + s.filesz,
+            exec: s.flags & 1 != 0,
+        })
         .collect();
-    let seg_of = |off: u64| segs.iter().position(|s| s.0 <= off && off < s.1.max(s.0 + 1));
-    for (k, &(lo, hi, exec, init)) in chunks.iter().enumerate() {
-        if !exec {
+    (chunks, segs)
+}
+
+/// I-41 / L-82 / L-83: the pad ranges whose gaps are not zero, over views
+/// of the chunks and the `PT_LOAD` segments (WP-255 §9.1: a whole plan
+/// and a clip plan call this same maker, whole).
+pub fn pads(
+    mut chunks: Vec<ChunkView>,
+    segs: &[SegView],
+    target: Target,
+    separate_code: bool,
+    b: &mut Builder,
+) {
+    chunks.sort_unstable_by_key(|c| c.offset);
+    let seg_of =
+        |off: u64| segs.iter().position(|s| s.offset <= off && off < s.end.max(s.offset + 1));
+    for (k, c) in chunks.iter().enumerate() {
+        if !c.exec {
             continue;
         }
-        b.pad(lo..hi, if init { target.nop } else { target.trap });
-        if let Some(&(nlo, _, nexec, _)) = chunks.get(k + 1)
-            && nexec
-            && hi < nlo
+        let (lo, hi) = (c.offset, c.end);
+        b.pad(lo..hi, if c.init { target.nop } else { target.trap });
+        if let Some(n) = chunks.get(k + 1)
+            && n.exec
+            && hi < n.offset
             && seg_of(lo).is_some()
-            && seg_of(lo) == seg_of(nlo)
+            && seg_of(lo) == seg_of(n.offset)
         {
-            b.pad(hi..nlo, target.trap);
+            b.pad(hi..n.offset, target.trap);
         }
     }
     if separate_code {
-        let mut segs = segs.clone();
-        segs.sort_unstable_by_key(|s| s.0);
+        let mut segs = segs.to_vec();
+        segs.sort_unstable_by_key(|s| s.offset);
         for w in segs.windows(2) {
-            if w[0].2 && w[0].1 < w[1].0 {
-                b.pad(w[0].1..w[1].0, target.trap);
+            if w[0].exec && w[0].end < w[1].offset {
+                b.pad(w[0].end..w[1].offset, target.trap);
             }
         }
     }
