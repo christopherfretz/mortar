@@ -131,6 +131,7 @@ Every reader produces the same `Map`:
 | `chunks` | `kind` (`thunk`, `patch`, `synthetic`, `common`), `name`, `addr`, `size`, `target` | memory the linker made: veneers, erratum patches, merged strings, COMMON |
 | `commons` | `name`, `addr`, `size`, `align` | one common symbol's allocation (mortar's format only, §3.2's allocation records; a foreign map's COMMON is a `common` chunk) |
 | `defined` | `name`, `value` | a symbol the linker defined |
+| `decisions` | `region`, `capacity`, `order`, `slot`, `redirect`, `frag`, `symblock` rows | an incremental-mode layout's decision records (mortar's format only, §3.2; `spec/image.md` I-78a) |
 
 A section is named by its index in its file (mortar's format) or by its
 name (the foreign formats). §3.3 resolves names.
@@ -150,11 +151,20 @@ merged <file> <section> <output-section>
 discard <file> <section> gc|comdat|script|unspecified
 fold <file> <section> <into-file> <into-section>
 chunk thunk|patch|synthetic|common <name> <addr>|- <size> [<target> <addend>]
-common <name> <addr> <size> <align>
+common <name> <addr> <size> <align> [<file>]
 define <name> <value>
 incremental
 hole <output-section> <offset> <size>
 dead <output-section> <offset> <size> neutral|contribution|strings|cie
+region <file> <out> <cat> <addr> <capacity>
+capacity <out> <ordinal> <part> <addr>|- <size> <capacity>
+order <out> <n>...
+slot <kind> <key> <addr>
+slot <kind> <file> <index> <addr>
+slot tls-ld <addr>
+redirect <file> <section> <offset> <addr>
+frag <out> <class> <hash> <offset>
+symblock <file>|- <first> <count> <capacity> <strtab-off> <strtab-cap>
 output static|exec|pie|static-pie|shared|relocatable
 rplace <file> <section> <out-index> <offset> <size>
 rframe <file> <section> <input-offset> <output-offset>|-
@@ -271,7 +281,7 @@ that is not incremental writes none of them, and its map claims nothing
 | record | count | meaning |
 |---|---|---|
 | `incremental` | at most one | the link was made in incremental mode: the map claims IN-60's coverage even with no `hole` or `dead` line |
-| `hole <output-section> <offset> <size>` | any | an allocated range that holds its section's fill (IN-3): room an update left, a dead input section's or a dead constant fragment's bytes |
+| `hole <output-section> <offset> <size>` | any | an allocated range that holds its section's fill (IN-3): room an update left, a dead input section's or a dead constant fragment's bytes; or the zero file slack past the end of `.symtab` or `.strtab` (IN-49a, §6.8) |
 | `dead <output-section> <offset> <size> <kind>` | any | a dead range whose bytes are a record of its section's grammar (IN-3a check 2), by `<kind>`: `neutral` (IN-51's block unit or IN-51b's neutral form of a debug section), `contribution` (a whole dead debug contribution as its compiler wrote it, addresses tombstoned, IN-53), `strings` (dead fragments of a merged string section, kept bytes, L-147), `cie` (unused CIEs in `.eh_frame`) |
 
 All slack is listed as holes, and so is the start padding of
@@ -303,12 +313,16 @@ the map claims coverage.
 | record | count | meaning |
 |---|---|---|
 | `chunk synthetic <name> <addr> <size>` | one per linker-made `NOBITS` section | the memory of a `NOBITS` synthetic chunk that holds no allocation of its own: today `.pad.relro` (`spec/layout.md` L-64, L-156). The copy chunks (`.dynbss`, `.bss.rel.ro`'s, `spec/dyn.md` D-42) are not listed: their allocations are `copy` records. The record is the existing `chunk` form, so it has no new grammar |
-| `common <name> <addr> <size> <align>` | one per common symbol allocated | a common symbol (gABI `SHN_COMMON`, x86-64 `SHN_X86_64_LCOMMON`) the link allocated (`spec/layout.md` L-88): `<name>` its symbol, `<addr>` and `<size>` its allocation, `<align>` the alignment it was placed at. After the `chunk` records |
+| `common <name> <addr> <size> <align> [<file>]` | one per common symbol allocated | a common symbol (gABI `SHN_COMMON`, x86-64 `SHN_X86_64_LCOMMON`) the link allocated (`spec/layout.md` L-88): `<name>` its symbol, `<addr>` and `<size>` its allocation, `<align>` the alignment it was placed at; `<file>`, the id of an earlier `file` record, is the common's winning file (`spec/incr.md` IN-72 item 11), written in a map that says `incremental` and only there. After the `chunk` records |
 | `copy <name> <addr> <size> <align>` | one per `COPY` record | the copy allocation (above), with `<align>` the alignment it was placed at (`spec/dyn.md` D-42) |
 
 `<align>` is hex as every other number, a power of two (1 included). A
 `common` or `copy` record with an `<align>` that is not a power of two,
-or a wrong number of fields, is a `MapError`. A foreign map never has
+or a wrong number of fields, is a `MapError`. A `common` record has five
+fields exactly in a map that says `incremental` and four elsewhere: a
+fifth field in a plain map, its absence in an incremental-mode map, or
+a `<file>` that names no earlier `file` record is a `MapError`. A plain
+link's map is unchanged by the field (not one byte). A foreign map never has
 them (§3.4 to §3.6 do not change): GNU ld's and lld's `COMMON` and
 mold's `.common` stay `common` chunks, one per file, and their maps
 state no alignment.
@@ -331,11 +345,55 @@ version 1 by its number ("Versions" above), and a version 1 reader
 refuses version 2 the same way. Version 2 is version 1 with the
 allocation records; nothing else changes.
 
+The decision records (WP-212, `spec/image.md` I-78a) are added within
+version 2 as the incremental records were within version 1: a version 2
+reader that predates them refuses a map that has them with `MapError`
+"unknown record 'region'" (or another of their words), never skips them,
+and only an incremental-mode map has them, so no plain map changes.
+
+**The decision records** (`spec/image.md` I-78a; `spec/incr.md`
+IN-78, IN-79 (d); WP-211's §R.12, applied by WP-212) follow the
+`incremental`, `hole` and `dead` records and come before the dynamic
+records, only in a map that says `incremental`; a decision record in a
+map without `incremental` is a `MapError`. A plain map has none and is
+unchanged. They state `P_U`, the update's `Placement`, for H-1's
+judgement (d); the verifier reads them and judges only what follows.
+
+| record | count | meaning |
+|---|---|---|
+| `region <file> <out> <cat> <addr> <capacity>` | one per file region | a file's region in a hole-tolerant output section (IN-30): `<cat>` decimal (L-53's ordinal, 0 elsewhere), `<addr>` and `<capacity>` hex |
+| `capacity <out> <ordinal> <part> <addr>\|- <size> <capacity>` | one per chunk of an output section | `<ordinal>` decimal; `<part>` `b<k>`, `p<k>`, `m` or `s` (`k` decimal); `<addr>` hex or `-` (non-allocated) |
+| `order <out> <n>...` | one per output section | the chunks' ordinals (decimal) in file order; at least one |
+| `slot <kind> <key> <addr>`, `slot <kind> <file> <index> <addr>`, `slot tls-ld <addr>` | one per slot | `<kind>` `got`, `got-tprel`, `tls-gd`, `tls-desc`, `tls-ld`, `plt`, `iplt`; a global key by name, a local by file id and symbol-table index (decimal), the module slot without a key |
+| `redirect <file> <section> <offset> <addr>` | one per redirect | a site and the address of the patch it names |
+| `frag <out> <class> <hash> <offset>` | one per live fragment of a merged section | `<class>` three hex numbers joined by `,`; `<hash>` exactly 32 lower-case hex digits; `<offset>` hex |
+| `symblock <file>\|- <first> <count> <capacity> <strtab-off> <strtab-cap>` | one per `.symtab` local block | entry numbers decimal, `.strtab` offset and size hex; `-` the internal file |
+
+`<out>` and `<key>` are string tokens; `<file>` an earlier `file`
+record's id. A wrong number of fields (`slot`: 2, 3 or 4 after the
+word), a bad number, a `<part>` or `<kind>` outside its list, a `<hash>`
+of another length, or a `<file>` that names no earlier record is a
+`MapError`. **What the verifier judges**
+(§6.8, with the other incremental records): a `region` whose `<out>`
+names no output section or several, or whose `[<addr>, <addr> +
+<capacity>)` is not inside `[sh_addr, sh_addr + sh_size]` of its section,
+is P-I2. **Nothing else of these records is judged** by the verifier:
+not the capacities, the order, the slots' addresses, the redirects, the
+fragments' offsets or the symbol blocks (H-1's (d) compares them with
+the state, IN-78); the coverage line counts them (`decision records: n
+read; region judged; capacity, order, slot, redirect, frag, symblock not
+judged`, §7.2). No record name collides with another record of this
+format (§3.2's grammar) or with the formats of §3.4-§3.6 (each read
+only under its own header; their text is a table, not record words).
+
 The writer emits records in a fixed order: files by id, then places and
 pieces, the non-alloc records, discards, folds, chunks, commons and
 defined symbols, each group in the order of the map's vectors, then
 `incremental`, the `hole` and `dead` lines in the order of the map's
-vector, then the dynamic records in the order of the grammar above.
+vector, the decision records (in `region`, `capacity`, `order`, `slot`,
+`redirect`, `frag`, `symblock` order, each group in `spec/image.md`
+I-78a's order), then the dynamic records in the order of the grammar
+above.
 
 Every syntax error is a `MapError { line, message }`. Line 0 means the map
 was truncated, with no `end`. Tests:
@@ -3232,9 +3290,18 @@ stage 2. A map that claims nothing does not run them and pays nothing.
 
 **Resolving (P-I2).** A line names one output section by name; none or
 several is P-I2, and so are an empty range, one past the section's end
-and two lines that overlap. Then a range must be one its section admits:
+(but the symbol tables' file slack, below) and two lines that overlap.
+Then a range must be one its section admits:
 
-- a `hole` only in an allocated section (IN-3); not in a packed section
+- a `hole` only in an allocated section (IN-3), or as the **file slack**
+  of `.symtab` or `.strtab` in a map that says `incremental` (IN-49a;
+  WP-212 applied WP-202's §R.3): `<off>` equal to the section's
+  `sh_size` and `<off> + <size>` at most the file offset of the next
+  section in file order (or of the section header table, when none
+  follows), relative to the section's `sh_offset`. That hole holds zero
+  bytes (P-I5) and counts toward no section's coverage (P-I1 covers the
+  allocated sections only; P-E6 sees zero file padding). A `hole` in a
+  non-allocated section in any other form is P-I2. Not in a packed section
   (layout.md L-142, incr.md IN-30): `SHT_INIT_ARRAY`, `SHT_FINI_ARRAY`,
   `SHT_PREINIT_ARRAY`, `SHT_NOTE`, `.init_array`, `.fini_array`,
   `.preinit_array`, `.ctors`, `.dtors` (and their `.`-suffixed names),
@@ -3251,7 +3318,10 @@ and two lines that overlap. Then a range must be one its section admits:
   `.debug_frame`;
 - `strings` in a non-executable section holding merged strings (a live
   piece of an `SHF_MERGE|SHF_STRINGS` input; non-alloc: `.debug_str`,
-  `.debug_line_str` or a `merged` record's section);
+  `.debug_line_str` or a `merged` record's section), and in `.strtab` of
+  a map that says `incremental` (IN-49a: names no entry uses, old names
+  and the zeros of a region's slack); P-I6 judges them as other
+  `strings` ranges (each ends with a NUL);
 - `cie` in `.eh_frame` only;
 - nothing at all in `.debug_aranges` (IN-54: rewritten whole).
 
@@ -3317,6 +3387,8 @@ link that has no dead range yet): that is `incremental`.
 **Nothing live names a range (IN-3a check 1; P-I3, P-I4).** Judged by
 what a reference names (the re-review's N3):
 
+- P-I3, `.strtab`: no `.symtab` entry other than a filler (§6.9's form,
+  IN-49a) has an `st_name` inside a `.strtab` dead range (WP-202's §R.3);
 - P-I3, symbols: a defined symbol of `.symtab` or `.dynsym` (section and
   file symbols aside; thread-local ones at `PT_TLS`'s `p_vaddr` plus the
   value) whose value lies in a range of its section. An input symbol
@@ -3368,7 +3440,8 @@ what a reference names (the re-review's N3):
   pointer. A live unit the walk cannot read (an unknown form, a missing
   abbreviation) is a P-I4 finding naming it: refused, not passed.
 
-**Fill (IN-3a check 3; P-I5).** An allocated `hole` holds its section's
+**Fill (IN-3a check 3; P-I5).** The file slack `hole` of `.symtab` or
+`.strtab` (above) holds zero bytes. An allocated `hole` holds its section's
 fill: `UDF #0` (zero words) in AArch64 code, `0xcc` in x86 code, zero
 elsewhere; nothing in `NOBITS`. In `.eh_frame` a hole is **one** padding
 CIE of IN-34a, exactly: at least 16 bytes and a multiple of 4,
@@ -3432,6 +3505,10 @@ else. In the debug sections:
    the verifier only requires one word per hole.
 6. Allocated relocation sections other than the `DT_RELA` table (such
    as `.rela.plt`) take `NONE` records only.
+7. The decision records (§3.2, `spec/image.md` I-78a): only each
+   `region`'s place inside its output section is judged here (P-I2);
+   the rest is H-1's (`spec/incr.md` IN-79 (d)), named in the coverage
+   line as not judged.
 
 Tests: `tests/dead.rs` (§9.2 (p)), `map::mortar::tests::s3_2_dead_*`.
 Cost (WP-091, measured; release `xtask plumb`, 3 runs each, host load
@@ -3513,12 +3590,30 @@ record is a CIE (`CIE_id` 0) is not a unit of this rule; an FDE piece is,
 its size equal or (in `X` only) larger by 4, 8 or 12. Chunks: the
 `common` chunks by name and the `synthetic` chunks by `(name, k)` are
 the same sets, and so are the `common` records by name (an update that
-allocates a common the full link does not, or the reverse, is P-E2); `thunk` and `patch` chunks may differ (item 4). `fold`
+allocates a common the full link does not, or the reverse, is P-E2),
+and a common's `<file>` names, on both sides, the file of one identity
+(a file by its identity, as the units' files are; another winning
+file is P-E2); `thunk` and `patch` chunks may differ (item 4). `fold`
 records are the same set. Each identity of one side missing from the
 other is one finding.
 
 **P-E3, item 3: symbols.** `.symtab` of each side, symbol 0 aside:
 
+- **fillers** (`spec/incr.md` IN-49a; WP-212 applied WP-207's §R.2): in
+  a side whose map says `incremental`, an entry before `sh_info` with
+  `st_name` 0, `st_info` 0x03 (`STB_LOCAL`, `STT_SECTION`), `st_other` 0,
+  `st_shndx` 1, `st_value` equal to section 1's `sh_addr`, `st_size` 0
+  (and 0 in `.symtab_shndx` when there is one) is a **filler**: it is
+  passed over by every rule below and counted in the side's coverage
+  line (`fillers=<n>`, §7.2). A filler in a side whose map does not say
+  `incremental`, or an entry at or after `sh_info` of that form, is
+  P-E3. An entry before `sh_info` that differs from the form in exactly
+  one of these fields (a **near-filler**: `STT_SECTION` with a name,
+  another value, a size, another `st_shndx`, `st_other` set; or
+  `STT_NOTYPE`/`STB_LOCAL` with every other field of the form) is
+  reported as P-E3 naming the field: mortar writes no other
+  `STT_SECTION` entry and no other unnamed entry (`spec/synth.md`
+  S-79), so no correct writer makes one;
 - every symbol with a global, weak or unique binding is matched by name
   (a name defined twice in one table is P-E3) and has the same
   `st_info`, `st_other`, `st_size` and kind of `st_shndx` (undefined,
@@ -3530,8 +3625,9 @@ other is one finding.
   checked by identity, not only "one of the placed ones" (Y1). Without
   an input definition (the linker's symbols), the values correspond;
   an absolute symbol's values are equal;
-- the local symbols are the same multiset of `(name, st_info,
-  st_other, st_size, section name)` with corresponding values; their
+- the local symbols, fillers excluded, are the same multiset of
+  `(name, st_info, st_other, st_size, section name)` with corresponding
+  values; their
   order and indexes may differ (a moved section's locals are
   renumbered); `STT_SECTION` and `STT_FILE` symbols are compared without
   their values; the locals of `.eh_frame` are passed over (an input's
@@ -3917,7 +4013,11 @@ rule judges (`placement_not_judged`, §6.5), stage 4's `meta` (§13.2;
 with the ODR runtime also `ODR runtime: outputs, entries, imports`,
 WP-197), and for an output with a
 `.gdb_index` its version, units, address entries and names and the rules
-that judged it (`gdb index: ...`, §6.10). A stripped dynamic output
+that judged it (`gdb index: ...`, §6.10), for each side of `--equiv`
+whose map says `incremental` the fillers P-E3 passed over (`fillers=<n>`,
+§6.9), and for a map with decision records (§3.2) `decision records: n
+read; region judged; capacity, order, slot, redirect, frag, symblock not
+judged`. A stripped dynamic output
 (no `.symtab`; WP-164) adds one line, a `-r` output its `relocatable`
 and `composition` lines (§14.6), `stripped output (no .symtab),
 not judged: a; b`, naming each clause a rule could not judge without the

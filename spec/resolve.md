@@ -186,7 +186,11 @@ M1. For a key whose `def` is `Common`:
   alignment of 64 met in the second common gives a 32-aligned object):
   §16;
 - `def` is `Common{file, st_index}` of the least common mention by `≺`
-  (the identity; the size and alignment are the column's).
+  (the identity; the size and alignment are the column's). In an
+  incremental-mode output the winning common is placed as a section of
+  the file of this winning mention (`spec/incr.md` IN-72 item 11,
+  `spec/layout.md` L-88; WP-212 applied WP-211's §R.9); a plain link
+  allocates it as layout L-88 says.
 - `SHN_X86_64_LCOMMON` (large common, x86-64): accepted as a common
   symbol (`st_value` the alignment), resolved as `SHN_COMMON`; allocated
   in `.lbss` (`spec/x64.md` X-55, `spec/layout.md` L-36a); a `COMMON` and
@@ -561,6 +565,13 @@ live. Each round is a parallel map over the files of the round and a
 union of target bits; the number of rounds is the depth of the graph.
 Any order of visiting gives the same set (§12.2); tests compare a
 sequential worklist with the parallel rounds.
+
+**In an incremental update** this reachability is recomputed from
+stored rows (`spec/incr.md` IN-71b): the definition here is the only
+rule; a *lazy file* here is an archive member whether or not it is
+extracted (`first(K)`, `cfirst(K)` and the edges are over every member,
+IN-71b's *member*; only "extracted" reads `file_live`). (WP-212 applied
+WP-211's §R.9.)
 
 ### 4.2 Roots
 
@@ -1533,6 +1544,12 @@ static executable; "lld/GNU/mold" columns: defined by that linker):
 `__start_`/`__stop_` references keep the sections of `<sec>` live under
 `--gc-sections` unless `-z start-stop-gc` (`spec/live.md`). Values are
 layout's (`spec/model.md` §4.4 `defined`).
+
+This table is the one list of linker-defined symbols. An incremental
+update recomputes every row's value, and every `--defsym` key's (§7.2),
+from its layout and treats a changed one as affected (`spec/incr.md`
+IN-71c), so a row added here needs no change in `spec/incr.md`. (WP-212
+applied WP-211's §R.9.)
 
 "Defined when" in the table is decided in two steps (§5.1, finding 12):
 the rows whose condition is the output kind (`always`, `executables`,
