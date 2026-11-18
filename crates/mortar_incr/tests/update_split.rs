@@ -2,13 +2,16 @@
 //! compiled here: `update::split::classify_object` on R10's
 //! configurations, by GCC and Clang, for AArch64 and x86-64. Each row is
 //! the answer `tests/incr-design/wp229/detect.sh` recorded (WP-229's
-//! record, "Detection").
+//! record, "Detection"); `classify_rows` on stored rows.
 
 use std::path::Path;
 use std::process::Command;
 
 use mortar_core::incr::IncrReason;
-use mortar_incr::update::split::{Handled, classify_object};
+use mortar_incr::format::SectionRow;
+use mortar_incr::update::split::{Handled, classify_object, classify_rows};
+use mortar_incr::update::testing::MemoryState;
+use mortar_incr::update::view::ChangedFiles;
 use mortar_testutil::target::Arch;
 use mortar_testutil::{DEFAULT_TIMEOUT, Scratch, run_with, tool};
 
@@ -106,4 +109,45 @@ fn classify_object_clang() {
     for arch in [Arch::Aarch64, Arch::X86_64] {
         run_compiler(&format!("clang-{}", arch.name()), false, &clang, &arch.clang_args());
     }
+}
+
+/// A stored `SECTIONS` row named `name`.
+fn row(m: &mut MemoryState, name: &[u8], flags: u64, size: u64, comdat: bool) -> SectionRow {
+    SectionRow {
+        name: m.intern(name),
+        sh_type: 1,
+        sh_flags: flags,
+        size,
+        anchor_kind: u8::from(comdat),
+        ..SectionRow::default()
+    }
+}
+
+// spec: incr.md IN-55 IN-55a (WP-229 ruling 7: the old version from its
+// stored rows, names only)
+#[test]
+fn classify_rows_by_name() {
+    let mut m = MemoryState::default();
+    let skeleton = [
+        row(&mut m, b".text", 6, 16, false),
+        row(&mut m, b".debug_info", 0, 40, false),
+        row(&mut m, b".debug_addr", 0, 24, false),
+        row(&mut m, b".debug_gnu_pubnames", 0, 30, false),
+        row(&mut m, b".debug_gnu_pubtypes", 0, 0, false),
+    ];
+    let names =
+        [row(&mut m, b".debug_info", 0, 40, false), row(&mut m, b".debug_names", 0, 9, false)];
+    let types = [row(&mut m, b".debug_info", 0, 40, true)];
+    let both =
+        [row(&mut m, b".debug_types", 0, 40, false), row(&mut m, b".debug_pubnames", 0, 9, false)];
+    let alloc = [row(&mut m, b".debug_gnu_pubnames", 2, 30, false)];
+    let view = m.view();
+    let changed = ChangedFiles::default();
+    let got = classify_rows(&view, &changed, &skeleton);
+    assert_eq!(got, Ok(Handled { gnu_index: true, ..Handled::default() }));
+    assert!(matches!(classify_rows(&view, &changed, &names), Err(IncrReason::DebugNameIndex(_))));
+    assert!(matches!(classify_rows(&view, &changed, &types), Err(IncrReason::DebugUnitKind(_))));
+    // Name index before unit kind (ruling 7), whatever the row order.
+    assert!(matches!(classify_rows(&view, &changed, &both), Err(IncrReason::DebugNameIndex(_))));
+    assert_eq!(classify_rows(&view, &changed, &alloc), Ok(Handled::default()));
 }
