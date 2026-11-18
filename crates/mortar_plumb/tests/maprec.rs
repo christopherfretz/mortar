@@ -222,7 +222,7 @@ fn stated(l: &Linked) -> Map {
     c.size = size;
     for (name, align) in COMMONS {
         let (addr, size) = symbol(&l.output, name);
-        map.commons.push(CommonAlloc { name: name.into(), addr, size, align, line: 0 });
+        map.commons.push(CommonAlloc { name: name.into(), addr, size, align, file: None, line: 0 });
     }
     map
 }

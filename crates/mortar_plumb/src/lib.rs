@@ -58,6 +58,7 @@ mod store;
 mod structure;
 pub mod sweep;
 mod symbols;
+mod symfill;
 mod weakclass;
 mod wrap;
 pub mod x64;

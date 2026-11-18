@@ -21,13 +21,13 @@ use mortar_core::{ChunkId, FileId, OutSecId, SectionId, SymbolId};
 
 use super::diags::DiagRow;
 use super::rows::{
-    CommonRow, EdgeRow, FileIndexRow, FileRow, FragRow, GroupRow, HoleRow, IndexRow, KeyRefRow,
-    MentionRow, MetaRow, NameRow, OdrClassRow, OdrRefRow, RegionRow, ResolvedRow, SymbolRow,
-    SymtabKeyRow, SymtabRow,
+    CommonRow, CopyRow, EdgeRow, FileIndexRow, FileRow, FragRow, FragUseRow, GroupRow, HoleRow,
+    IndexRow, KeyRefRow, MentionRow, MetaRow, NameRow, OdrClassRow, OdrRefRow, RegionRow,
+    ResolvedRow, SlotRow, SymbolRow, SymtabKeyRow, SymtabRow,
 };
 use crate::format::{
-    ChunkRow, DefinedRow, EhRow, FragAtRow, LayoutRow, OutSecRow, PatchRow, ProbeRow, RedirectRow,
-    SectionRow, SegmentRow, SizeRow, SlotRow, StatRow, Str, SymPlaceRow,
+    ChunkRow, DefinedRow, EhRow, LayoutRow, OutSecRow, PatchRow, ProbeRow, RedirectRow, SectionRow,
+    SegmentRow, SizeRow, StatRow, Str, SymPlaceRow,
 };
 
 /// Read a row or a table, or `state-corrupt`.
@@ -44,7 +44,10 @@ pub type Rows<T> = Result<T, IncrReason>;
 /// **scan** (a key-keyed table read whole: named where IN-75a needs it).
 pub trait StateRows: Sync {
     /// Rows of table `kind` as the directory gives them (header). The
-    /// update's id space (`mortar_core::incr`) starts new ids here.
+    /// update's id space (`mortar_core::incr`) starts new ids here. For
+    /// `STRINGS` (kind 23) the count is its length in bytes: the boundary
+    /// of [`ChangedFiles::strings`] and [`StatePatch::strings`] (WP-215
+    /// seam 3).
     fn count(&self, kind: u32) -> u64;
     /// The plan hash in the header (IN-18b; header).
     fn plan_hash(&self) -> [u8; 16];
@@ -143,7 +146,9 @@ pub trait StateRows: Sync {
     /// # Errors
     /// `state-corrupt`.
     fn stat(&self, row: u32) -> Rows<StatRow>;
-    /// A string of `STRINGS` (kind 23; the blocks it spans).
+    /// A string of `STRINGS` (kind 23; the blocks it spans). Never called
+    /// on a `Str` taken from a [`ChangedFile`]: that one is read with
+    /// [`ChangedFiles::string`] (WP-215 seam 3).
     ///
     /// # Errors
     /// `state-corrupt`.
@@ -176,11 +181,11 @@ pub trait StateRows: Sync {
     /// # Errors
     /// `state-corrupt`.
     fn edges_of(&self, file: FileId) -> Rows<Vec<EdgeRow>>;
-    /// A file's `FRAG_AT` rows (kind 40; range).
+    /// A file's `FRAG_USE` rows (kind 56; range; WP-239), by key.
     ///
     /// # Errors
     /// `state-corrupt`.
-    fn frag_at_of(&self, file: FileId) -> Rows<Vec<FragAtRow>>;
+    fn frag_uses_of(&self, file: FileId) -> Rows<Vec<FragUseRow>>;
     /// A file's `EH_RECORDS` rows (kind 13; range).
     ///
     /// # Errors
@@ -205,26 +210,55 @@ pub trait StateRows: Sync {
     /// # Errors
     /// `state-corrupt`.
     fn key_refs(&self, key: SymbolId) -> Rows<Vec<KeyRefRow>>;
-    /// The `GROUPS` row of a signature (kind 44; key).
+    /// The `GROUPS` rows of a signature (kind 44; key: every row of the
+    /// signature, one per live file with a copy), in **no promised
+    /// order**, no tombstone; the keeper is [`super::rows::keeper`] of
+    /// them, by the files' current `FILES.rank` (WP-215 D2).
     ///
     /// # Errors
     /// `state-corrupt`.
-    fn group(&self, signature: &[u8]) -> Rows<Option<GroupRow>>;
-    /// An output section's `FRAGS` rows, by offset (kind 11; key).
+    fn group(&self, signature: &[u8]) -> Rows<Vec<GroupRow>>;
+    /// The `FRAGS` row of one key `(out, class, hash)`, or `None` (kind 11;
+    /// key: one binary search; WP-239 S4-1: never a whole read of an output
+    /// section's fragments).
     ///
     /// # Errors
     /// `state-corrupt`.
-    fn frags_in(&self, out: OutSecId) -> Rows<Vec<FragRow>>;
+    fn frags_of(&self, out: OutSecId, class: u32, hash: [u8; 16]) -> Rows<Option<FragRow>>;
     /// A chunk's `HOLES` rows, by offset (kind 39; key).
     ///
     /// # Errors
     /// `state-corrupt`.
     fn holes_in(&self, chunk: ChunkId) -> Rows<Vec<HoleRow>>;
-    /// A key's `COMMONS` row (kind 46; key).
+    /// A key's `COMMONS` rows (kind 46; key: one per live file with a
+    /// common mention of it), in **no promised order**, no tombstone
+    /// (WP-215 D6).
     ///
     /// # Errors
     /// `state-corrupt`.
-    fn common(&self, key: SymbolId) -> Rows<Option<CommonRow>>;
+    fn commons(&self, key: SymbolId) -> Rows<Vec<CommonRow>>;
+    /// A key's `COPIES` rows (kind 55; key: one per global definition of
+    /// it in a live COMDAT copy, `(file, index)`), in **no promised
+    /// order**, no tombstone: W1 and W2 order them by the files'
+    /// **current** `FILES.rank` (WP-220).
+    ///
+    /// # Errors
+    /// `state-corrupt`.
+    fn copies(&self, key: SymbolId) -> Rows<Vec<CopyRow>>;
+    /// A key's **stored** common as resolve.md §3.3 gives it (kind 46;
+    /// key, plus one `FILES` row per common mention):
+    /// [`super::rows::winning_common`] of [`Self::commons`] ranked by this
+    /// view's own `FILES.rank` (the winning file, the maximum size and
+    /// alignment), `None` when no live file has a common mention of it.
+    /// An update whose changed, appeared or drawn-in files have new ranks
+    /// calls `winning_common` itself with the current ranks. Provided: an
+    /// implementation does not override it (no winner is stored).
+    ///
+    /// # Errors
+    /// `state-corrupt`.
+    fn common(&self, key: SymbolId) -> Rows<Option<CommonRow>> {
+        super::rows::winning_common(&self.commons(key)?, |f| Ok(self.file(FileId(f))?.rank))
+    }
     /// An ODR key's `ODR_CLASSES` rows (kind 47; key). **PROVISIONAL
     /// (U-8's design step)**: the key's numbering and this accessor's
     /// shape follow U-8's ruling (WP-213 follow-up F-5).
@@ -320,8 +354,11 @@ pub enum Change {
     Appeared,
     /// No longer in the link (`FILES` flag `GONE`).
     Gone,
-    /// Unchanged, but read again because the update reaches it (IN-72
-    /// item 2a: a group re-elected to it; IN-71's drawn-in files).
+    /// Unchanged, but read again because the update reaches it: U-3's
+    /// [`super::resolve::Resolution::DrawIn`] (IN-71: it becomes a key's
+    /// definer or a common's winning file, IN-72 item 2a: a group is
+    /// re-elected to it). Its rows equal its stored ones; it is read for
+    /// its [`ChangedFile::values`] and section rows.
     DrawnIn,
     /// A `LAZY` member now extracted (IN-71b; set by U-3's `Extraction`,
     /// the front reads it then).
@@ -364,12 +401,30 @@ pub struct ChangedFile {
     /// state's `SECTIONS` count, in [`ChangedFiles::files`] order.
     pub first_section: SectionId,
     /// Its `SECTIONS` rows from the new bytes (place [`crate::format::NONE`]:
-    /// U-4 places them).
+    /// U-4 places them). Their `Str`s (`anchor`, which is the COMDAT
+    /// signature when `anchor_kind` is 1, and `name`) are of the update's
+    /// id space: read with [`ChangedFiles::string`]. **Names are equal by
+    /// BYTES, never by `Str` value**: the same bytes can sit at two
+    /// offsets (the state's `STRINGS` and [`ChangedFiles::strings`]).
     pub sections: Vec<SectionRow>,
     /// The keys it mentions, by name.
     pub keys: Vec<KeyName>,
-    /// Its `MENTIONS` rows, `symbol` = position in `keys`.
+    /// Its new version's `sh_info`: the index of its symbol table's first
+    /// non-local entry (WP-215 D7 for a changed file, seam 3): `mentions[k]`
+    /// (and `values[k]`) is entry `first_global + k`. U-2 writes it into
+    /// `FILE_INDEX.first_global` (IN-78); U-8 finds a new copy's group
+    /// through `mentions[index - first_global].section`. 0 for a gone or
+    /// no longer extracted file.
+    pub first_global: u32,
+    /// Its `MENTIONS` rows, `symbol` = position in `keys`; the `k`-th is
+    /// symbol-table entry `first_global + k`, none skipped (D7).
     pub mentions: Vec<MentionRow>,
+    /// The `st_value` and `st_size` of each mention, position for position
+    /// with `mentions` (WP-215 seam 3, G1): made by the capture function
+    /// that makes `mentions` (one producer). Never stored (`MENTIONS`
+    /// stays 12 bytes): U-3 writes the winners' into `RESOLVED` and
+    /// `COMMONS`. Empty for a gone or no longer extracted file.
+    pub values: Vec<MentionValue>,
     /// Its `INDEX` rows (`unit` and section targets in the new id space,
     /// key targets = position in `keys`).
     pub index: Vec<IndexRow>,
@@ -382,6 +437,35 @@ pub struct ChangedFile {
     /// It has debug sections or a split-DWARF skeleton (IN-70: the G
     /// packages' `update-not-implemented (debug)` until G-3).
     pub debug: bool,
+    /// Its non-local symbol-table entries named `foo@V` or `foo@@V` (an
+    /// `@` in the name), counted from its new bytes as the capture counts
+    /// `META.versioned` (WP-215 D8: U-3 gives `update-not-implemented
+    /// (versioned)` when it is not 0). 0 for a gone or no longer
+    /// extracted file.
+    pub versioned: u32,
+    /// Its new version's ODR rows (IN-71d; WP-220); empty for a gone or
+    /// no longer extracted file.
+    pub odr: OdrRows,
+}
+
+/// A mention's `st_value` and `st_size` ([`ChangedFile::values`]; WP-215
+/// seam 3). For a common mention `value` is its alignment, as in ELF
+/// (resolve.md §3.3: 0 is alignment 1).
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct MentionValue {
+    pub value: u64,
+    pub size: u64,
+}
+
+/// A changed file's ODR rows (IN-71d; WP-220), made by the capture's own
+/// function (`mortar_odr::foreign::definitions_in`, one producer for a
+/// full link and an update). The record families' rows come with WP-236.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct OdrRows {
+    /// Its COMDAT copies' global definitions (`COPIES`' rows), in
+    /// symbol-table order; `key` is the position in
+    /// [`ChangedFile::keys`] (as [`ChangedFile::mentions`]).
+    pub copies: Vec<CopyRow>,
 }
 
 /// U2-U4's result (WP-211 §C `ChangedFiles`). Written by the join; read by
@@ -396,6 +480,52 @@ pub struct ChangedFiles {
     /// The positional set (IN-28a, U3): files whose `POSITIONAL` flag is
     /// set, read from `FILES` (none of them changed).
     pub positional: Vec<FileId>,
+    /// The strings of the changed files' rows (section names, signatures),
+    /// ONE buffer for the update (WP-215 seam 3, G2), with
+    /// [`StatePatch::strings`]' convention: a `Str` at or past the state's
+    /// `STRINGS` length (`StateRows::count(kind::STRINGS)`) is an offset
+    /// into this buffer. [`StatePatch::strings`] BEGINS with it, unchanged
+    /// (U-2 appends new key names after it). Every update appends these
+    /// names again (no lookup by content). Read with
+    /// [`ChangedFiles::string`] only.
+    pub strings: Vec<u8>,
+}
+
+impl ChangedFiles {
+    /// The bytes of a `Str` of the update's id space: the state's
+    /// `STRINGS` below its length, this update's [`ChangedFiles::strings`]
+    /// at or past it. The one reader every package uses for a `Str` taken
+    /// from a [`ChangedFile`] (WP-215 seam 3). **Names are equal by
+    /// BYTES, never by `Str` value.**
+    ///
+    /// # Errors
+    /// `state-corrupt`: a `Str` that straddles the boundary or runs past
+    /// the buffer, or the state's own failure.
+    pub fn string(&self, view: &StateView<'_>, at: Str) -> Rows<Vec<u8>> {
+        let base = view.count(crate::format::kind::STRINGS);
+        let (off, len) = (u64::from(at.off), u64::from(at.len));
+        let end = off + len;
+        if end <= base {
+            return view.string(at);
+        }
+        if off < base {
+            return Err(IncrReason::StateCorrupt(format!(
+                "a string at {off}+{len} straddles STRINGS' end {base}"
+            )));
+        }
+        let (lo, hi) = (off - base, end - base);
+        usize::try_from(lo)
+            .ok()
+            .zip(usize::try_from(hi).ok())
+            .and_then(|(lo, hi)| self.strings.get(lo..hi))
+            .map(<[u8]>::to_vec)
+            .ok_or_else(|| {
+                IncrReason::StateCorrupt(format!(
+                    "a string at {off}+{len} runs past the update's {} bytes",
+                    self.strings.len()
+                ))
+            })
+    }
 }
 
 // ---- what W5 writes -----------------------------------------------------------
@@ -436,11 +566,16 @@ impl<R> Default for ParallelEdits<R> {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct FileRanges {
     pub file: FileId,
+    /// `FILE_INDEX.first_global` (IN-18e, IN-78), from
+    /// [`ChangedFile::first_global`]: ALWAYS given, never "keep the
+    /// stored value" (a kept value goes stale when the file's entries
+    /// move; WP-239 seam 5, U-2's F-10). 0 for a gone file.
+    pub first_global: u32,
     pub sections: Option<Vec<SectionRow>>,
     pub mentions: Option<Vec<MentionRow>>,
     pub index: Option<Vec<IndexRow>>,
     pub edges: Option<Vec<EdgeRow>>,
-    pub frag_at: Option<Vec<FragAtRow>>,
+    pub frag_uses: Option<Vec<FragUseRow>>,
     pub eh_records: Option<Vec<EhRow>>,
     pub symtab: Option<Option<SymtabRow>>,
     /// `REGIONS` (kind 51): rewritten when a region of the file was opened,
@@ -484,7 +619,10 @@ pub struct StatePatch {
     /// `STAT` rows changed in place (by `STAT` row) and appended.
     pub stat_set: Vec<(u32, StatRow)>,
     pub stat_append: Vec<StatRow>,
-    /// Bytes appended to `STRINGS`.
+    /// Bytes appended to `STRINGS`. They BEGIN with
+    /// [`ChangedFiles::strings`], unchanged (the changed files' `Str`s
+    /// keep their offsets); U-2 appends new key names after it (WP-215
+    /// seam 3).
     pub strings: Vec<u8>,
     // file-keyed
     pub ranges: Vec<FileRanges>,
@@ -494,6 +632,8 @@ pub struct StatePatch {
     pub frags: KeyEdits<FragRow>,
     pub holes: KeyEdits<HoleRow>,
     pub commons: KeyEdits<CommonRow>,
+    /// `COPIES` (kind 55; WP-220).
+    pub copies: KeyEdits<CopyRow>,
     pub odr_classes: KeyEdits<OdrClassRow>,
     pub odr_refs: KeyEdits<OdrRefRow>,
     pub diags: KeyEdits<DiagRow>,

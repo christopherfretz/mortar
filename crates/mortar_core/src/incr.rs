@@ -37,6 +37,7 @@
 
 use std::fmt;
 
+use crate::demands::DemandFlags;
 use crate::layout::{Chunk, Defined, Hole, Patch, Place, Placement, Redirect, Segment};
 use crate::layout::{SlotKind, SymPlace, Tls};
 use crate::{ChunkId, FileId, OutSecId, SectionId, SymKey, SymbolId};
@@ -75,11 +76,45 @@ pub enum Unimplemented {
     /// within O(change) (IN-75a as amended by WP-212, F-13): it is never
     /// repeated from the stored row; the update falls back.
     Diags,
+    /// A symbol-table entry named `foo@V` or `foo@@V` in the stored link
+    /// (`META.versioned` not 0) or in a changed file's new bytes
+    /// (`ChangedFile::versioned` not 0): IN-71's affected keys do not
+    /// cover the `also` key a `foo@@V` definition defines (resolve.md
+    /// §2; the old version of a file's `@@` is not stored). WP-215 (U-3);
+    /// [later] the version of a `@@` definition stored.
+    Versioned,
+    /// A link under `--gc-sections` (`OptionKeys::gc_sections`): IN-29's
+    /// stored graph and IN-71a's walk are not built (WP-215 seam 3, G3);
+    /// decided from the option alone, on every update. [later] WP-238.
+    Live,
+    /// A winning common that appears, goes, becomes a definition (or a
+    /// definition a common), or changes size or alignment (IN-72 item 11
+    /// as ruled for v1, WP-216 R-2): commons stay in the commons chunk
+    /// (layout.md L-88) in every mode and an update does not place one.
+    /// Decided by the join (U-10) from `ResolveDelta::commons` against the
+    /// stored `COMMONS` rows, before the layout is called; a winning
+    /// mention that only moves to another file is no fall-back. [later]
+    /// item 11's placing rule.
+    Common,
+    /// A `.eh_frame` range the update would move holds a CIE whose FDE
+    /// pointer, LSDA or personality encoding is not `0x1b` (pcrel sdata4)
+    /// or `0x9b` (indirect pcrel sdata4) (IN-34a as ruled by WP-239 S4-3):
+    /// its fields cannot be adjusted from the previous output's bytes.
+    /// Decided by the plan, which reads every range it will move, before
+    /// W1 (nothing is written).
+    Eh,
+    /// A fact of a key's resolution that the scan reads (the one value
+    /// `mortar_arch::SymFacts`, through `ScanTables::sym`) changes, and the
+    /// key has a referrer in an unchanged file (`KEY_REFS`): that file's
+    /// stored `KEY_REFS.demand` may be stale (IN-72 item 7 as ruled by
+    /// WP-239 R-4). Decided by the join, comparing the value before and
+    /// after.
+    Slots,
 }
 
 impl Unimplemented {
     /// Every word, in `spec/incr.md` §7's order.
-    pub const ALL: [Self; 10] = [
+    pub const ALL: [Self; 15] = [
         Self::State5,
         Self::Resolve,
         Self::Refill,
@@ -90,6 +125,11 @@ impl Unimplemented {
         Self::Meta,
         Self::Debug,
         Self::Diags,
+        Self::Versioned,
+        Self::Live,
+        Self::Common,
+        Self::Eh,
+        Self::Slots,
     ];
 
     /// The word (`spec/incr.md` §7).
@@ -106,6 +146,11 @@ impl Unimplemented {
             Self::Meta => "meta",
             Self::Debug => "debug",
             Self::Diags => "diags",
+            Self::Versioned => "versioned",
+            Self::Live => "live",
+            Self::Common => "common",
+            Self::Eh => "eh",
+            Self::Slots => "slots",
         }
     }
 }
@@ -153,6 +198,10 @@ pub enum IncrReason {
     UpdateNotImplemented(Option<Unimplemented>),
     /// `extraction-changed`: IN-71b's bound.
     ExtractionChanged(String),
+    /// `closure-iterated`: the stored link's closure ran more than one
+    /// iteration (`META.iterations`), or the full link of the update's
+    /// inputs would (resolve.md §4.1; IN-71b "Iterations"; WP-215).
+    ClosureIterated(String),
     /// `inputs-reordered`: two unchanged inputs' relative order changed.
     InputsReordered(String),
     /// `too-much-changed`: IN-16's threshold.
@@ -187,6 +236,15 @@ pub enum IncrReason {
     /// `input-changed`: a file the update read is not the file it judged
     /// (IN-28a condition 2, IN-75).
     InputChanged(String),
+    /// `state-collision`: the capture of this full link found two different
+    /// fragments with one `FRAGS` key `(out, class, hash)` (IN-18e, WP-239
+    /// R-2): no state is written and the previous one is removed; the link
+    /// itself is not affected.
+    StateCollision(String),
+    /// `state-limit`: the capture of this full link has a value a stored
+    /// column cannot hold (WP-239: a `.eh_frame` chunk past `u32` bytes,
+    /// for `FILES`' eh columns): no state is written, as `state-collision`.
+    StateLimit(String),
     /// `layout-changed`: the test path's only (WP-064a); never an update's.
     LayoutChanged(String),
     /// `resolution-changed`: the test path's only (WP-064a).
@@ -196,7 +254,7 @@ pub enum IncrReason {
 impl IncrReason {
     /// Every reason's name, in `spec/incr.md` §7's order (the spec test
     /// compares it with the table).
-    pub const NAMES: [&'static str; 29] = [
+    pub const NAMES: [&'static str; 32] = [
         "no-state",
         "state-corrupt",
         "state-version",
@@ -208,6 +266,7 @@ impl IncrReason {
         "small-output",
         "update-not-implemented",
         "extraction-changed",
+        "closure-iterated",
         "inputs-reordered",
         "too-much-changed",
         "reserve-exhausted",
@@ -224,6 +283,8 @@ impl IncrReason {
         "debug-name-index",
         "debug-unit-kind",
         "input-changed",
+        "state-collision",
+        "state-limit",
         "layout-changed",
         "resolution-changed",
     ];
@@ -243,6 +304,7 @@ impl IncrReason {
             Self::SmallOutput(_) => "small-output",
             Self::UpdateNotImplemented(_) => "update-not-implemented",
             Self::ExtractionChanged(_) => "extraction-changed",
+            Self::ClosureIterated(_) => "closure-iterated",
             Self::InputsReordered(_) => "inputs-reordered",
             Self::TooMuchChanged(_) => "too-much-changed",
             Self::ReserveExhausted(_) => "reserve-exhausted",
@@ -259,6 +321,8 @@ impl IncrReason {
             Self::DebugNameIndex(_) => "debug-name-index",
             Self::DebugUnitKind(_) => "debug-unit-kind",
             Self::InputChanged(_) => "input-changed",
+            Self::StateCollision(_) => "state-collision",
+            Self::StateLimit(_) => "state-limit",
             Self::LayoutChanged(_) => "layout-changed",
             Self::ResolutionChanged(_) => "resolution-changed",
         }
@@ -280,6 +344,7 @@ impl IncrReason {
             | Self::LockUnavailable(d)
             | Self::SmallOutput(d)
             | Self::ExtractionChanged(d)
+            | Self::ClosureIterated(d)
             | Self::InputsReordered(d)
             | Self::TooMuchChanged(d)
             | Self::ReserveExhausted(d)
@@ -296,6 +361,8 @@ impl IncrReason {
             | Self::DebugNameIndex(d)
             | Self::DebugUnitKind(d)
             | Self::InputChanged(d)
+            | Self::StateCollision(d)
+            | Self::StateLimit(d)
             | Self::LayoutChanged(d)
             | Self::ResolutionChanged(d) => d,
         }
@@ -327,6 +394,7 @@ impl IncrReason {
                 }
             }
             "extraction-changed" => Self::ExtractionChanged(d),
+            "closure-iterated" => Self::ClosureIterated(d),
             "inputs-reordered" => Self::InputsReordered(d),
             "too-much-changed" => Self::TooMuchChanged(d),
             "reserve-exhausted" => Self::ReserveExhausted(d),
@@ -343,6 +411,8 @@ impl IncrReason {
             "debug-name-index" => Self::DebugNameIndex(d),
             "debug-unit-kind" => Self::DebugUnitKind(d),
             "input-changed" => Self::InputChanged(d),
+            "state-collision" => Self::StateCollision(d),
+            "state-limit" => Self::StateLimit(d),
             "layout-changed" => Self::LayoutChanged(d),
             "resolution-changed" => Self::ResolutionChanged(d),
             _ => return None,
@@ -365,6 +435,146 @@ impl IncrReason {
 impl fmt::Display for IncrReason {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.write_str(self.name())
+    }
+}
+
+// ---- the option-given keys (passed in, never stored) -------------------------
+
+/// What the update reads of the plan (WP-215 D3-D5 and seam 3;
+/// `spec/incr.md` IN-71, IN-71a, IN-71b, IN-71c): the keys a link's
+/// options name, resolve.md §4.2's roots, `--wrap` (§7.1) and `--defsym`
+/// (§7.2), **by name**, and the one switch `--gc-sections`. Never stored: an update has the full
+/// link's options (else `options-changed`, IN-18b), so the join (U-10)
+/// builds this from the plan and the scripts' directives exactly as the
+/// full link's resolution reads them (`mortar_resolve::tables::options`
+/// and its `defsyms`: the names of `Options::entry`, `undefined`,
+/// `require_defined`, `wrap`, `defsym`), and U-3's entry points
+/// (`extract`, `resolve`, `live`) take it by reference and map each name
+/// to its key with `StateRows::find_key`. A name with no key is no root
+/// (as `Options::roots`: a root whose key the link has no row for is
+/// none). Written by the join; read by U-3.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct OptionKeys {
+    /// The entry root (§4.2): `-e SYM` or the last script `ENTRY(SYM)`,
+    /// else `_start`; `None` for an output with no entry (`-shared`,
+    /// `-r`). Its `arg` is 0 (the plan keeps `-e`'s value, not its index).
+    pub entry: Option<OptionKey>,
+    /// `-u SYM` in command-line order, then each script `EXTERN(SYM)`
+    /// (its `arg` is `mortar_resolve::options::EXTERN_ARG` plus the
+    /// directive's ordinal).
+    pub undefined: Vec<OptionKey>,
+    /// `--require-defined=SYM`, in command-line order.
+    pub require_defined: Vec<OptionKey>,
+    /// `--wrap=SYM`'s `SYM`, in the plan's order (`Plan::wraps`); several
+    /// of one symbol are one (§7.1).
+    pub wrap: Vec<Box<[u8]>>,
+    /// `--defsym=SYM=EXPR`: the last option of each `SYM`, in
+    /// command-line order of those (§7.2).
+    pub defsym: Vec<OptionDefsym>,
+    /// `--gc-sections` (`Plan::gc_sections`). Under it every update is
+    /// `update-not-implemented (live)` (WP-215 seam 3; [later] WP-238).
+    pub gc_sections: bool,
+}
+
+/// A key an option names (§4.2), by name, with the option's argument
+/// index (`Named::arg`: the `seq` of a root's pulling reference, §4.1).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct OptionKey {
+    /// The option's operand as written. Its key is found as
+    /// `mortar_resolve::tables::InputsView::key_of` finds it: split at
+    /// the first `@`; `foo@V` is `(foo, V)`, `foo@@V` is `foo` looked up
+    /// with no version, no `@` the name with no version. `foo@V` is reachable under D8
+    /// only when a shared object defines `foo@V` (`META.versioned` counts
+    /// relocatable objects and members only).
+    pub name: Box<[u8]>,
+    pub arg: u32,
+}
+
+/// One `--defsym` (§7.2): the key it defines and its expression.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct OptionDefsym {
+    /// The defined key's name.
+    pub name: Box<[u8]>,
+    pub value: DefsymOperand,
+    /// The option's argument index (the root's `arg` of its operand).
+    pub arg: u32,
+}
+
+/// A `--defsym` expression by name (`mortar_resolve::options::DefsymValue`
+/// with names for keys).
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub enum DefsymOperand {
+    /// An absolute number.
+    Number(u64),
+    /// An alias of the named key.
+    Alias(Box<[u8]>),
+    /// The named key's address plus the addend.
+    Offset(Box<[u8]>, i64),
+}
+
+impl DefsymOperand {
+    /// The key the expression names, if any (a root, §7.2).
+    #[must_use]
+    pub fn base(&self) -> Option<&[u8]> {
+        match self {
+            Self::Number(_) => None,
+            Self::Alias(b) | Self::Offset(b, _) => Some(b),
+        }
+    }
+}
+
+impl OptionKeys {
+    /// The root names with their `arg`, in `mortar_resolve::Options::roots`'
+    /// order: the entry, `-u` and `EXTERN`, `--require-defined`, then each
+    /// `--defsym` operand's base.
+    #[must_use]
+    pub fn roots(&self) -> Vec<(&[u8], u32)> {
+        let mut out: Vec<(&[u8], u32)> = Vec::new();
+        out.extend(self.entry.iter().map(|k| (&*k.name, k.arg)));
+        for k in self.undefined.iter().chain(&self.require_defined) {
+            out.push((&k.name, k.arg));
+        }
+        for d in &self.defsym {
+            if let Some(b) = d.value.base() {
+                out.push((b, d.arg));
+            }
+        }
+        out
+    }
+
+    /// The `--defsym` keys' names (the keys IN-71c makes affected).
+    pub fn defsym_names(&self) -> impl Iterator<Item = &[u8]> {
+        self.defsym.iter().map(|d| &*d.name)
+    }
+
+    /// The name an **undefined** mention of the unversioned key `name`
+    /// binds to (§7.1; `mortar_resolve::Options::redirect` by name): for
+    /// each `--wrap=S` in order, `S` binds to `__wrap_S` and `__real_S`
+    /// to `S`, the last such option deciding; `None` when no option names
+    /// it (the mention binds to its own key). A versioned key is never
+    /// redirected (`--wrap` names the unversioned key).
+    #[must_use]
+    pub fn redirect(&self, name: &[u8]) -> Option<Vec<u8>> {
+        let mut to = None;
+        for s in &self.wrap {
+            if name == &**s {
+                to = Some([b"__wrap_".as_slice(), s].concat());
+            } else if name.strip_prefix(b"__real_".as_slice()) == Some(&**s) {
+                to = Some(s.to_vec());
+            }
+        }
+        to
+    }
+
+    /// Whether any `--wrap` option names `name` as `S`, `__wrap_S` or
+    /// `__real_S` (a key whose binding a `--wrap` decides).
+    #[must_use]
+    pub fn wrapped(&self, name: &[u8]) -> bool {
+        self.wrap.iter().any(|s| {
+            name == &**s
+                || name.strip_prefix(b"__wrap_".as_slice()) == Some(&**s)
+                || name.strip_prefix(b"__real_".as_slice()) == Some(&**s)
+        })
     }
 }
 
@@ -427,22 +637,71 @@ pub struct StoredRegion {
     pub capacity: u64,
 }
 
-/// A merged-section fragment (`FRAGS`, IN-72 item 6): identity (output
-/// section, merge class, content hash), offset, reference count. Key: the
-/// identity. Read and written by U-4; read by U-6 (a fragment whose count
-/// rises from 0 is rewritten).
+/// A merged-section fragment (`FRAGS`, IN-72 item 6): identity, offset,
+/// reference count. Key: `(out, class, hash)` (IN-18e as ruled by WP-239
+/// S4-1: key-keyed, so a fragment is found by one binary search,
+/// [`LayoutRows::frags_of`]). Only fragments of split sections whose name
+/// does not start with `.debug_` have rows (WP-239 R-1). Two different
+/// fragments with one key refuse the state at the capture
+/// (`state-collision`), never the link. Read and written by U-4; read by
+/// U-6 (a fragment whose count rises from 0 is rewritten).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct StoredFrag {
     pub out: OutSecId,
-    /// The merge class (`sh_flags`, `sh_entsize`, alignment of its pieces)
-    /// as the `FRAGS.ordinal` column numbers it.
+    /// The merge class word ([`MergeClass::word`]).
     pub class: u32,
     /// L128 of the content.
     pub hash: [u8; 16],
     /// Bytes from the merged chunk's start.
     pub offset: u64,
-    /// Live pieces naming it (IN-18e `FRAGS.refs`); 0: a dead range.
+    /// The live files with a `FRAG_USE` row naming it (IN-18e
+    /// `FRAGS.refs`, counted per FILE); 0: a dead range.
     pub refs: u32,
+}
+
+/// One `FRAG_USE` row of a file (IN-18e, kind 56; file-keyed, 28 bytes;
+/// WP-239 S4-2): a fragment the file's live split pieces name, once per
+/// fragment, by the fragment's key (never a `FRAGS` row number). No row for
+/// a split section named `.debug_*` (R-1). Written by the capture and U-2
+/// (a changed file's range from its `MergedPiece`s); read by U-4 (item 6:
+/// the old version's fragments, each decrementing `FRAGS.refs`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct StoredFragUse {
+    pub file: FileId,
+    pub out: OutSecId,
+    /// The merge class word ([`MergeClass::word`]).
+    pub class: u32,
+    pub hash: [u8; 16],
+}
+
+/// A file's `.eh_frame` range in the stored output (IN-34a as ruled by
+/// WP-239 S4-3): three `u32` columns of its `FILES` row. Record sizes are
+/// not stored: a changed file's come from its new bytes (S-47), an
+/// unchanged range is moved by walking the previous output's bytes. Written
+/// by the capture (the incremental-mode full link gives each file's records
+/// a capacity of size + max(16, ceil4(size/8))) and U-2 (from
+/// `LayoutDelta::eh`); read by U-4 (item 5), U-6 (the move).
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct StoredEhRange {
+    /// Bytes from the `.eh_frame` chunk's start.
+    pub offset: u32,
+    /// Bytes: the records and the pad.
+    pub capacity: u32,
+    /// Kept records in the range.
+    pub records: u32,
+}
+
+/// One `KEY_REFS` row as the delta layout reads it (IN-18e; WP-239 S4-4):
+/// the file mentions `key`, and `demand` is the OR of the `DemandFlags`
+/// the scan raised on `key` over the file's live units (counted per FILE;
+/// empty for a mention no relocation uses). `INDEX` is never the demand.
+/// Written by the capture and U-2 (from the scan's per-file demand, S4-5);
+/// read by U-4 (item 7: what the old version demanded).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct StoredKeyRef {
+    pub key: SymbolId,
+    pub file: FileId,
+    pub demand: DemandFlags,
 }
 
 /// A GOT, PLT, IPLT or TLS slot (`SLOTS`, IN-28b, IN-72 item 7): the
@@ -455,6 +714,10 @@ pub struct StoredSlot {
     pub key: SymKey,
     /// Its position in its kind's list.
     pub index: u32,
+    /// The live files whose `KEY_REFS.demand` needs this slot (WP-239
+    /// S4-4; counted per FILE); a slot whose count falls to 0 is retired.
+    /// A local's slot (IN-28b) is its file's alone: 1.
+    pub refs: u32,
 }
 
 /// One file's `.symtab` block and `.strtab` region (`SYMTAB` table 43,
@@ -490,6 +753,12 @@ pub struct SymtabTables {
     /// `.strtab`'s `sh_size` and its slack.
     pub strtab_size: u64,
     pub strtab_slack: u64,
+}
+
+/// What a [`LayoutRows`] accessor its implementation does not give yet
+/// returns (WP-216 seam 4): a named plain link, never a guess.
+fn not_given() -> IncrReason {
+    IncrReason::UpdateNotImplemented(Some(Unimplemented::Layout))
 }
 
 /// The read side of a stored layout (WP-211 §C `StoredLayout`): the
@@ -540,11 +809,60 @@ pub trait LayoutRows: Sync {
     /// # Errors
     /// `state-corrupt`.
     fn holes_in(&self, chunk: ChunkId) -> Result<Vec<Hole>, IncrReason>;
-    /// An output section's fragments, by offset (key-keyed `FRAGS`).
+    /// The `FRAGS` row of one key `(out, class, hash)`, or `None` (key-keyed:
+    /// one binary search). Never a whole read of an output section's
+    /// fragments.
     ///
     /// # Errors
-    /// `state-corrupt`.
-    fn frags_in(&self, out: OutSecId) -> Result<Vec<StoredFrag>, IncrReason>;
+    /// `state-corrupt`; `update-not-implemented (layout)` until the
+    /// implementation gives it.
+    fn frags_of(
+        &self,
+        out: OutSecId,
+        class: u32,
+        hash: [u8; 16],
+    ) -> Result<Option<StoredFrag>, IncrReason> {
+        let _ = (out, class, hash);
+        Err(not_given())
+    }
+    /// A file's `FRAG_USE` rows (range), by key.
+    ///
+    /// # Errors
+    /// `state-corrupt`; `update-not-implemented (layout)` until given.
+    fn frag_uses_of(&self, file: FileId) -> Result<Vec<StoredFragUse>, IncrReason> {
+        let _ = file;
+        Err(not_given())
+    }
+    /// A file's `.eh_frame` range (its `FILES` row), or `None` when it has
+    /// no kept record.
+    ///
+    /// # Errors
+    /// `state-corrupt`; `update-not-implemented (layout)` until given.
+    fn eh_range_of(&self, file: FileId) -> Result<Option<StoredEhRange>, IncrReason> {
+        let _ = file;
+        Err(not_given())
+    }
+    /// A file's `KEY_REFS` rows, by key: the keys of its `MENTIONS` range,
+    /// each row found by `(key, file)` (one binary search a key; no
+    /// global keys of other files).
+    ///
+    /// # Errors
+    /// `state-corrupt`; `update-not-implemented (layout)` until given.
+    fn key_refs_of(&self, file: FileId) -> Result<Vec<StoredKeyRef>, IncrReason> {
+        let _ = file;
+        Err(not_given())
+    }
+    /// One `SECTIONS` row by id (the file's range holds it, IN-18e;
+    /// `FILE_INDEX` is not needed: the row is addressed by id), or `None`
+    /// for an id at or past the table's row count (new to the update).
+    /// [`LayoutDelta::place_of`] reads it.
+    ///
+    /// # Errors
+    /// `state-corrupt`; `update-not-implemented (layout)` until given.
+    fn section(&self, id: SectionId) -> Result<Option<StoredSection>, IncrReason> {
+        let _ = id;
+        Err(not_given())
+    }
     /// `SLOTS` (whole).
     ///
     /// # Errors
@@ -561,8 +879,8 @@ pub trait LayoutRows: Sync {
     /// # Errors
     /// `state-corrupt`.
     fn redirects(&self) -> Result<Vec<Redirect>, IncrReason>;
-    /// `SYM_PLACE` (whole): commons, copies (a common's place is a section
-    /// of its winning file in incremental mode, IN-72 item 11).
+    /// `SYM_PLACE` (whole): commons (in the commons chunk in every mode,
+    /// IN-72 item 11 as ruled for v1), copies.
     ///
     /// # Errors
     /// `state-corrupt`.
@@ -619,8 +937,9 @@ impl fmt::Debug for StoredLayout<'_> {
 
 /// [`LayoutRows`] in memory: hand-made rows for the packages' tests, and
 /// H-1's `P_U` read from an update's map (IN-78). Plain public fields;
-/// every accessor filters or copies them (no hashing, never fails). No
-/// link builds one.
+/// every accessor filters or copies them (no hashing, never fails; every
+/// accessor is given; [`LayoutRows::section`] finds a row of `sections` by
+/// its `id`). No link builds one.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct MemoryLayout {
     pub chunks: Vec<Chunk>,
@@ -631,6 +950,10 @@ pub struct MemoryLayout {
     pub regions: Vec<StoredRegion>,
     pub holes: Vec<Hole>,
     pub frags: Vec<StoredFrag>,
+    pub frag_uses: Vec<StoredFragUse>,
+    /// `(file, range)`.
+    pub eh_ranges: Vec<(FileId, StoredEhRange)>,
+    pub key_refs: Vec<StoredKeyRef>,
     pub slots: Vec<StoredSlot>,
     pub patches: Vec<Patch>,
     pub redirects: Vec<Redirect>,
@@ -671,10 +994,31 @@ impl LayoutRows for MemoryLayout {
         v.sort_by_key(|h| h.offset);
         Ok(v)
     }
-    fn frags_in(&self, out: OutSecId) -> Result<Vec<StoredFrag>, IncrReason> {
-        let mut v: Vec<StoredFrag> = self.frags.iter().filter(|f| f.out == out).copied().collect();
-        v.sort_by_key(|f| f.offset);
+    fn frags_of(
+        &self,
+        out: OutSecId,
+        class: u32,
+        hash: [u8; 16],
+    ) -> Result<Option<StoredFrag>, IncrReason> {
+        Ok(self.frags.iter().find(|f| (f.out, f.class, f.hash) == (out, class, hash)).copied())
+    }
+    fn frag_uses_of(&self, file: FileId) -> Result<Vec<StoredFragUse>, IncrReason> {
+        let mut v: Vec<StoredFragUse> =
+            self.frag_uses.iter().filter(|r| r.file == file).copied().collect();
+        v.sort();
         Ok(v)
+    }
+    fn eh_range_of(&self, file: FileId) -> Result<Option<StoredEhRange>, IncrReason> {
+        Ok(self.eh_ranges.iter().find(|(f, _)| *f == file).map(|(_, r)| *r))
+    }
+    fn key_refs_of(&self, file: FileId) -> Result<Vec<StoredKeyRef>, IncrReason> {
+        let mut v: Vec<StoredKeyRef> =
+            self.key_refs.iter().filter(|r| r.file == file).copied().collect();
+        v.sort();
+        Ok(v)
+    }
+    fn section(&self, id: SectionId) -> Result<Option<StoredSection>, IncrReason> {
+        Ok(self.sections.iter().find(|s| s.id == id).cloned())
     }
     fn slots(&self) -> Result<Vec<StoredSlot>, IncrReason> {
         Ok(self.slots.clone())
@@ -725,7 +1069,7 @@ pub struct SectionChange<'a> {
     pub old: Option<SectionId>,
     pub sh_type: u32,
     pub sh_flags: u64,
-    /// Bytes; for a common's section (IN-72 item 11) the common's size.
+    /// Bytes.
     pub size: u64,
     /// Bytes (a power of two).
     pub align: u64,
@@ -733,6 +1077,132 @@ pub struct SectionChange<'a> {
     pub live: bool,
     /// Kept by IN-71's COMDAT election (`true` outside a group).
     pub kept: bool,
+}
+
+/// The merge class of a piece (IN-72 item 6): what, with the output
+/// section and the bytes, makes a fragment's identity in the full link
+/// (`mortar_merge::merge::MergeMeta` less `out`; S-6..S-10). Two pieces
+/// share a fragment only when out, class and bytes are equal.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct MergeClass {
+    /// `SHF_STRINGS`.
+    pub strings: bool,
+    /// `sh_entsize`.
+    pub entsize: u32,
+    /// log2 of the alignment.
+    pub align: u8,
+}
+
+impl MergeClass {
+    /// The class word `FRAGS` and `FRAG_USE` store (IN-18e, WP-239 S4-1):
+    /// `strings << 31 | align << 24 | entsize` (`entsize` is at most 2^16,
+    /// S-6; `align` below 64).
+    #[must_use]
+    pub const fn word(self) -> u32 {
+        ((self.strings as u32) << 31) | ((self.align as u32 & 0x7f) << 24) | self.entsize
+    }
+}
+
+/// One merged piece of a changed or drawn-in file (IN-72 item 6) as the
+/// full link's split gives it (`mortar_merge::cut::placed_whole`, S-6, and
+/// `mortar_merge::cut::cut`, S-7..S-10; the hash as the capture's
+/// `frag_hash`, L128 by `mortar_digest::l128`). Written by the join (U-10)
+/// from the parsed file; read by U-4.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct MergedPiece {
+    /// The input section (the update's id space).
+    pub section: SectionId,
+    /// Bytes from the input section's start.
+    pub offset: u64,
+    /// Bytes.
+    pub size: u64,
+    /// The output section the section is assigned to.
+    pub out: OutSecId,
+    pub class: MergeClass,
+    /// L128 of the piece's bytes.
+    pub hash: [u8; 16],
+}
+
+/// A changed or drawn-in file's merged pieces (IN-72 item 6), every piece
+/// of every live, kept `SHF_MERGE` section, in `(section, offset)` order.
+/// A gone file, or a changed file whose new version has none, is given
+/// with no pieces (its old version's are its `FRAG_USE` rows).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct FilePieces {
+    pub file: FileId,
+    pub pieces: Vec<MergedPiece>,
+}
+
+/// One kept `.eh_frame` record of a changed or drawn-in file (IN-34a), as
+/// the full link's selection gives it: `mortar_merge::eh::parse` (the
+/// records), `mortar_synth::eh::EhPlan::select_in` with `per_file` true
+/// (S-46..S-49: the file's own CIE deduplication, which is the full
+/// link's restricted to the file in incremental mode), the size
+/// `mortar_merge::eh::Record::out_size` (S-47).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct EhRecordIn {
+    /// The input `.eh_frame` section (the update's id space).
+    pub section: SectionId,
+    /// The piece's index among that section's `.eh_frame` pieces (the
+    /// `EH_RECORDS.piece` the patch stores).
+    pub piece: u32,
+    /// Its output bytes (S-47).
+    pub size: u64,
+    /// A CIE (else an FDE).
+    pub cie: bool,
+}
+
+/// A changed, drawn-in or gone file's `.eh_frame` records (IN-34a): the
+/// kept records in S-46 order (empty for a gone file or a file whose new
+/// version has none; the old version's range is [`StoredEhRange`]), and
+/// the file's CURRENT rank (S-46's order is the
+/// load order: the stored `FILES.rank` composed with the update's ranks
+/// as `mortar_incr::update::rows::keeper`'s caller composes it; never the
+/// `FILES` row number).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct EhFile {
+    pub file: FileId,
+    pub rank: u64,
+    pub records: Vec<EhRecordIn>,
+}
+
+/// One symbol a changed or drawn-in file's live relocations demand a slot
+/// for (IN-72 item 7; IN-28b): the key (a global's `SYMBOLS` row in the
+/// update's id space, or a local by `(file, index)`) and its flags (the
+/// slot ones: GOT, PLT, IPLT, TLS; the layout ignores the others).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct SlotDemand {
+    pub key: SymKey,
+    pub flags: DemandFlags,
+}
+
+/// A changed, drawn-in or gone file's slot demand (IN-72 item 7), sorted
+/// by key, one row per key (the flags or-ed over the file's live units:
+/// counted per FILE). One producer (WP-239 S4-5): `run_unit` generic over
+/// its global sink, the plain link's sink today's atomic OR, the
+/// incremental-mode full link's and the join's a recording one whose
+/// per-file OR is this list and `KEY_REFS.demand`. The scan reads a
+/// target's resolution only through `mortar_arch::SymFacts`
+/// (`ScanTables::sym`): the join compares that value before and after for
+/// the keys unchanged files reference (`update-not-implemented (slots)`).
+/// A gone file is given with none.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct FileDemands {
+    pub file: FileId,
+    pub demands: Vec<SlotDemand>,
+}
+
+/// What the delta layout takes besides the stored layout (WP-216 seam 4):
+/// the sections (items 1-4, 8-10), and per file the `.eh_frame` records
+/// (item 5), merged pieces (item 6) and slot demand (item 7). Every list is
+/// sorted by its key (`changes` by id, the others by file) and names only
+/// files the update changed, drew in or lost.
+#[derive(Debug, Clone, Copy, Default)]
+pub struct LayoutInput<'a> {
+    pub changes: &'a [SectionChange<'a>],
+    pub eh: &'a [EhFile],
+    pub pieces: &'a [FilePieces],
+    pub demands: &'a [FileDemands],
 }
 
 /// A growth step (IN-72 item 3): an output section grown into its
@@ -749,19 +1219,79 @@ pub struct GrowthStep {
     pub step: u64,
 }
 
+/// One file's `.eh_frame` range in the update's output (IN-34a): where
+/// its records start, the bytes it holds, and each record's offset (bytes
+/// from the `.eh_frame` chunk's start, in the order of the file's
+/// [`EhFile::records`]). Written by U-4; read by U-6 (the bytes, the
+/// padding CIE, `.eh_frame_hdr`), U-2 (the patch).
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub struct EhRange {
+    pub file: FileId,
+    /// Bytes from the chunk's start.
+    pub offset: u64,
+    /// Bytes: its records and its pad (0, or a hole of at least 16 bytes
+    /// in [`LayoutDelta::holes`], `HoleKind::EhPad`; 4, 8 or 12 bytes are
+    /// absorbed into the last record).
+    pub capacity: u64,
+    pub records: Vec<u64>,
+}
+
+/// The `.eh_frame` the update writes (IN-72 item 5): the ranges it
+/// rewrites, or (`whole`) the section rewritten whole with every range.
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub struct EhLayout {
+    /// The `.eh_frame` chunk.
+    pub chunk: ChunkId,
+    /// Every file's range is in `ranges` (else only the rewritten ones).
+    pub whole: bool,
+    /// Sorted by offset.
+    pub ranges: Vec<EhRange>,
+}
+
+/// Where a section is after an update ([`LayoutDelta::place_of`]).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum PlaceNow {
+    /// Placed by this update (a section of a file of
+    /// [`LayoutDelta::files`]).
+    Here(Place),
+    /// A section of a file of [`LayoutDelta::files`] the update does not
+    /// place (dead, not kept, merged, an old version's row, a gone file's).
+    NotPlaced,
+    /// A section of no file of [`LayoutDelta::files`]: its stored place
+    /// (which may be [`Place::NONE`]: the stored link placed it nowhere).
+    Stored(Place),
+}
+
 /// The delta layout's result (WP-211 §C `LayoutDelta`; IN-72): the update's
 /// own `Placement` (`P_U`, IN-78) and what changed against the stored one.
 /// Written by U-4; read by U-3 (`recompute`, `refill_set`), U-5, U-6, U-2
 /// (the patch's decision rows), the join.
+///
+/// The placement is SPARSE (WP-216 R-3): a section's place is read through
+/// [`LayoutDelta::place_of`] and a chunk's holes through
+/// [`LayoutDelta::holes_of`], never by indexing `placement.place` or
+/// `placement.holes`. An ADDRESS is always the chunk's address in
+/// `placement.chunks` (moved by the growth steps) plus the place's offset.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct LayoutDelta {
-    /// The update's placement, of the full link's shape (`Layout::check`
-    /// accepts it), indexed by the update's id space: a section of a
-    /// changed file's old version, killed or gone, has [`Place::NONE`].
+    /// The update's placement, of the full link's shape: the whole tables
+    /// (chunks grown or moved by the growth steps, the segments derived
+    /// again, the TLS template and the entry) complete; `place` indexed by
+    /// the update's id space and meaningful only for the sections of
+    /// `files`; `holes` only the holes of `hole_chunks`; `sized` empty (no
+    /// row `LayoutRows` gives).
     pub placement: Placement,
-    /// Sections whose address changed, in any file (IN-27's moved
-    /// sections; their files' `SECTIONS` rows are rewritten, IN-78),
-    /// sorted.
+    /// The files whose sections this update places (changed, appeared,
+    /// drawn-in, newly extracted, gone), sorted.
+    pub files: Vec<FileId>,
+    /// The chunks whose holes `placement.holes` replaces, sorted; a
+    /// touched chunk with no hole left is listed.
+    pub hole_chunks: Vec<ChunkId>,
+    /// Sections whose place `(chunk, offset)` changed, in any file (IN-27's
+    /// moved sections; their files' `SECTIONS` rows are rewritten, IN-78),
+    /// sorted. A section moved only by a growth step keeps its place and
+    /// is not here (its chunk is in `placement.chunks` and the step in
+    /// `growth_steps`; WP-216 F-5).
     pub moved: Vec<SectionId>,
     /// Sections placed before and not now (dead, no longer kept, gone),
     /// sorted.
@@ -770,15 +1300,14 @@ pub struct LayoutDelta {
     /// sorted.
     pub revived: Vec<SectionId>,
     /// Holes and dead ranges this update made (IN-3, IN-3a), sorted by
-    /// `(chunk, offset)`; `placement.holes` has every hole of the output.
+    /// `(chunk, offset)`.
     pub holes: Vec<Hole>,
     /// Regions opened by this update's overflow (IN-72 item 2 phase 3).
     pub regions_opened: Vec<StoredRegion>,
     /// Growth steps, in address order (IN-72 item 3).
     pub growth_steps: Vec<GrowthStep>,
-    /// Each winning common's key and the file whose `.bss` region holds
-    /// it (IN-72 item 11; the map's `common` line names the file, U-6).
-    pub commons: Vec<(SymbolId, FileId)>,
+    /// The `.eh_frame` rewritten (IN-72 item 5); `None` when untouched.
+    pub eh: Option<EhLayout>,
     /// Fragments whose `refs` or offset changed, appended or revived
     /// (IN-72 item 6), by identity.
     pub frags: Vec<StoredFrag>,
@@ -786,6 +1315,50 @@ pub struct LayoutDelta {
     pub slots_appended: Vec<StoredSlot>,
     /// Slots now dead (written 0, IN-72 item 7).
     pub slots_dead: Vec<StoredSlot>,
+}
+
+impl LayoutDelta {
+    /// Where `id` (the update's id space) is after the update (WP-216
+    /// R-3): the one reader of `placement.place`. A section of a file of
+    /// `files` (a new id always is one) is [`PlaceNow::Here`] or
+    /// [`PlaceNow::NotPlaced`]; any other is [`PlaceNow::Stored`] with its
+    /// stored row's place. The address is the chunk's new address (in
+    /// `placement.chunks`) plus the place's offset, whichever variant.
+    ///
+    /// # Errors
+    /// What [`LayoutRows::section`] returns.
+    pub fn place_of(
+        &self,
+        stored: &StoredLayout<'_>,
+        id: SectionId,
+    ) -> Result<PlaceNow, IncrReason> {
+        if let Some(row) = stored.section(id)?
+            && self.files.binary_search(&row.file).is_err()
+        {
+            return Ok(PlaceNow::Stored(row.place));
+        }
+        Ok(match self.placement.place.get(id) {
+            Some(p) if *p != Place::NONE => PlaceNow::Here(*p),
+            _ => PlaceNow::NotPlaced,
+        })
+    }
+
+    /// A chunk's holes after the update, by offset (WP-216 R-3): the one
+    /// reader of `placement.holes`. A chunk of `hole_chunks` has this
+    /// update's (maybe none); any other has its stored ones.
+    ///
+    /// # Errors
+    /// What [`LayoutRows::holes_in`] returns.
+    pub fn holes_of(
+        &self,
+        stored: &StoredLayout<'_>,
+        chunk: ChunkId,
+    ) -> Result<Vec<Hole>, IncrReason> {
+        if self.hole_chunks.binary_search(&chunk).is_err() {
+            return stored.holes_in(chunk);
+        }
+        Ok(self.placement.holes.iter().filter(|h| h.chunk == chunk).copied().collect())
+    }
 }
 
 // ---- what U-5 gives ---------------------------------------------------------
@@ -923,6 +1496,42 @@ mod tests {
         assert!(IncrReason::from_name("full requested", "").is_none());
     }
 
+    // spec: resolve.md §7.1 (`--wrap` by name: `S` to `__wrap_S`,
+    // `__real_S` to `S`, the last option deciding), §4.2 (the roots' order)
+    #[test]
+    fn option_keys_redirect_and_roots() {
+        let k = |n: &str, arg| OptionKey { name: n.as_bytes().into(), arg };
+        let o = OptionKeys {
+            entry: Some(k("_start", 0)),
+            undefined: vec![k("u", 3)],
+            require_defined: vec![k("r", 5)],
+            wrap: vec![b"foo".as_slice().into(), b"__real_foo".as_slice().into()],
+            defsym: vec![
+                OptionDefsym {
+                    name: b"d".as_slice().into(),
+                    value: DefsymOperand::Number(1),
+                    arg: 7,
+                },
+                OptionDefsym {
+                    name: b"e".as_slice().into(),
+                    value: DefsymOperand::Offset(b"base".as_slice().into(), 4),
+                    arg: 8,
+                },
+            ],
+            gc_sections: false,
+        };
+        assert_eq!(o.redirect(b"foo"), Some(b"__wrap_foo".to_vec()));
+        // `__real_foo` is `S` of the second option, which decides.
+        assert_eq!(o.redirect(b"__real_foo"), Some(b"__wrap___real_foo".to_vec()));
+        assert_eq!(o.redirect(b"__real___real_foo"), Some(b"__real_foo".to_vec()));
+        assert_eq!(o.redirect(b"bar"), None);
+        assert!(o.wrapped(b"__wrap_foo") && !o.wrapped(b"bar"));
+        let roots: Vec<(&[u8], u32)> = o.roots();
+        let want: Vec<(&[u8], u32)> = vec![(b"_start", 0), (b"u", 3), (b"r", 5), (b"base", 8)];
+        assert_eq!(roots, want);
+        assert_eq!(o.defsym_names().collect::<Vec<_>>(), [b"d".as_slice(), b"e"]);
+    }
+
     // spec: incr.md §7 (the type has exactly the table's reasons, in its
     // order, and the update-not-implemented row names every detail word)
     #[test]
@@ -944,6 +1553,129 @@ mod tests {
             .expect("the row");
         for w in Unimplemented::ALL {
             assert!(row.contains(&format!("`{}`", w.word())), "{}", w.word());
+        }
+    }
+
+    // spec: incr.md IN-72 (WP-216 R-3: the one reader of a sparse
+    // placement), IN-18c (an accessor not given is a named plain link)
+    #[test]
+    fn place_of_and_holes_of_read_the_sparse_placement() {
+        use crate::layout::HoleKind;
+        let sec = |id: u32, file: u32, place: Place| StoredSection {
+            id: SectionId(id),
+            file: FileId(file),
+            index: id,
+            anchor_kind: 0,
+            anchor: Vec::new(),
+            name: b".text".to_vec(),
+            ordinal: 0,
+            sh_type: 1,
+            sh_flags: 6,
+            size: 16,
+            align: 16,
+            place,
+        };
+        let hole = |chunk: u32, offset: u64| Hole {
+            chunk: ChunkId(chunk),
+            offset,
+            size: 16,
+            kind: HoleKind::Fill,
+        };
+        let rows = MemoryLayout {
+            sections: vec![
+                sec(0, 1, Place::at(ChunkId(0), 0)),
+                sec(1, 2, Place::at(ChunkId(0), 16)),
+                sec(2, 3, Place::NONE),
+            ],
+            holes: vec![hole(0, 32), hole(1, 0)],
+            ..MemoryLayout::default()
+        };
+        let stored = StoredLayout::new(&rows);
+        // File 2 changed: its old row 1 is gone, its new section is id 3.
+        let mut d = LayoutDelta { files: vec![FileId(2)], ..LayoutDelta::default() };
+        d.placement.place = crate::Column::from_vec(vec![
+            Place::NONE,
+            Place::NONE,
+            Place::NONE,
+            Place::at(ChunkId(0), 48),
+        ])
+        .unwrap();
+        d.hole_chunks = vec![ChunkId(0)];
+        d.placement.holes = vec![hole(0, 16)].into();
+        let at = |id| d.place_of(&stored, SectionId(id)).unwrap();
+        assert_eq!(at(0), PlaceNow::Stored(Place::at(ChunkId(0), 0)));
+        assert_eq!(at(1), PlaceNow::NotPlaced);
+        assert_eq!(at(2), PlaceNow::Stored(Place::NONE));
+        assert_eq!(at(3), PlaceNow::Here(Place::at(ChunkId(0), 48)));
+        assert_eq!(at(4), PlaceNow::NotPlaced);
+        assert_eq!(d.holes_of(&stored, ChunkId(0)).unwrap(), [hole(0, 16)]);
+        assert_eq!(d.holes_of(&stored, ChunkId(1)).unwrap(), [hole(1, 0)]);
+        // A touched chunk with no hole left is listed, and has none.
+        d.hole_chunks = vec![ChunkId(0), ChunkId(1)];
+        assert_eq!(d.holes_of(&stored, ChunkId(1)).unwrap(), []);
+    }
+
+    // spec: incr.md IN-18c (an accessor its implementation does not give
+    // is a named plain link; WP-216 seam 4)
+    #[test]
+    fn accessors_not_given_are_a_named_plain_link() {
+        let d = LayoutDelta { files: vec![FileId(2)], ..LayoutDelta::default() };
+        let bare = StoredLayout::new(&Bare);
+        let no = Some(IncrReason::UpdateNotImplemented(Some(Unimplemented::Layout)));
+        assert_eq!(d.place_of(&bare, SectionId(0)).err(), no);
+        assert_eq!(bare.frags_of(OutSecId(0), 0, [0; 16]).err(), no);
+        assert_eq!(bare.frag_uses_of(FileId(0)).err(), no);
+        assert_eq!(bare.eh_range_of(FileId(0)).err(), no);
+        assert_eq!(bare.key_refs_of(FileId(0)).err(), no);
+    }
+
+    /// An implementation that gives none of the seam-4 accessors.
+    struct Bare;
+    impl LayoutRows for Bare {
+        fn chunks(&self) -> Result<Vec<(ChunkId, Chunk)>, IncrReason> {
+            Ok(Vec::new())
+        }
+        fn order(&self) -> Result<Vec<ChunkId>, IncrReason> {
+            Ok(Vec::new())
+        }
+        fn segments(&self) -> Result<Vec<Segment>, IncrReason> {
+            Ok(Vec::new())
+        }
+        fn outsecs(&self) -> Result<Vec<(OutSecId, Vec<u8>)>, IncrReason> {
+            Ok(Vec::new())
+        }
+        fn sections_of(&self, _: FileId) -> Result<Vec<StoredSection>, IncrReason> {
+            Ok(Vec::new())
+        }
+        fn regions_of(&self, _: FileId) -> Result<Vec<StoredRegion>, IncrReason> {
+            Ok(Vec::new())
+        }
+        fn holes_in(&self, _: ChunkId) -> Result<Vec<Hole>, IncrReason> {
+            Ok(Vec::new())
+        }
+        fn slots(&self) -> Result<Vec<StoredSlot>, IncrReason> {
+            Ok(Vec::new())
+        }
+        fn patches(&self) -> Result<Vec<Patch>, IncrReason> {
+            Ok(Vec::new())
+        }
+        fn redirects(&self) -> Result<Vec<Redirect>, IncrReason> {
+            Ok(Vec::new())
+        }
+        fn sym_place(&self) -> Result<Vec<SymPlace>, IncrReason> {
+            Ok(Vec::new())
+        }
+        fn defined(&self) -> Result<Vec<Defined>, IncrReason> {
+            Ok(Vec::new())
+        }
+        fn tls_and_entry(&self) -> Result<(Option<Tls>, Option<u64>), IncrReason> {
+            Ok((None, None))
+        }
+        fn symtab_block(&self, _: FileId) -> Result<Option<SymtabBlock>, IncrReason> {
+            Ok(None)
+        }
+        fn symtab_tables(&self) -> Result<(SymtabBlock, SymtabTables), IncrReason> {
+            Ok((SymtabBlock::default(), SymtabTables::default()))
         }
     }
 }

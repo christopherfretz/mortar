@@ -1041,8 +1041,11 @@ pub fn run_equiv(a: &EquivArgs) -> Result<bool, String> {
         coverage: mortar_plumb::Coverage::default(),
     };
     print!("{}", pe.render(&xn));
-    println!("X: {} findings, {} records", eq.x.findings.len(), eq.x.coverage.records);
-    println!("F: {} findings, {} records", eq.f.findings.len(), eq.f.coverage.records);
+    // §7.2: a side whose map says `incremental` counts its fillers.
+    for (tag, r) in [("X", &eq.x), ("F", &eq.f)] {
+        let fill = r.coverage.fillers.map_or_else(String::new, |n| format!(", fillers={n}"));
+        println!("{tag}: {} findings, {} records{fill}", r.findings.len(), r.coverage.records);
+    }
     println!("{}", eq.summary());
     print_profile();
     Ok(eq.clean())

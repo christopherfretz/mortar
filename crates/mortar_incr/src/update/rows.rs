@@ -8,8 +8,9 @@
 //! [`super::view::StatePatch`]. Tables format 5 does not change keep
 //! [`crate::format`]'s row types (`SectionRow`, `ChunkRow`, `SegmentRow`,
 //! `SlotRow`, `EhRow`, `SizeRow`, `SymPlaceRow`, `DefinedRow`, `PatchRow`,
-//! `RedirectRow`, `LayoutRow`, `FragAtRow`, `StatRow`, `ProbeRow`,
-//! `OutSecRow`).
+//! `RedirectRow`, `LayoutRow`, `StatRow`, `ProbeRow`, `OutSecRow`).
+//! `SLOTS` (WP-239: `refs`) and `FRAG_USE` (kind 56, replacing `FRAG_AT`)
+//! are format 5's own rows here.
 //!
 //! Widths: where IN-18e states a row's bytes, the fields here add up to
 //! it (the test below); elsewhere the width is the fields' sum, U-2's to
@@ -20,6 +21,7 @@
 //! reader never returns a tombstone.
 
 pub use crate::format::{Hash16, NONE, Str};
+use mortar_core::incr::IncrReason;
 
 /// `FILES.flags` in format 5 (IN-18e, IN-71b): `POSITIONAL` (IN-28a) as in
 /// format 4, plus `LAZY` (an archive member not extracted: a row, with its
@@ -65,16 +67,29 @@ pub struct FileRow {
     /// 0 for a file named on the command line; unused when `LAZY`.
     /// Written by capture and U-3 (`Extraction`); read by U-3.
     pub round: u32,
+    /// The file's `.eh_frame` range (IN-34a; WP-239 S4-3): bytes from the
+    /// `.eh_frame` chunk's start, bytes held (records and pad), kept
+    /// records (0: no range). `u32` each: a chunk past them is
+    /// `state-limit` at the capture. Written by capture and U-2 (from
+    /// `LayoutDelta::eh`); read by U-4, U-6.
+    pub eh_offset: u32,
+    pub eh_capacity: u32,
+    pub eh_records: u32,
 }
 
 /// `FILE_INDEX` (kind 41, append-only, parallel to `FILES`; IN-18d): per
-/// file the range of each file-keyed table. Key: the `FILES` row. Written
-/// by capture and U-2; read by U-2's reader only (every file-keyed
-/// accessor of `StateView` goes through it).
+/// file the range of each file-keyed table, and its symbol table's
+/// `first_global`. Key: the `FILES` row. Written by capture and U-2; read
+/// by U-2's reader (every file-keyed accessor of `StateView` goes through
+/// it) and U-3 (`first_global`: a `MENTIONS` row's entry index, IN-18e).
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct FileIndexRow {
     /// One range per file-keyed table, indexed by [`FileTable`].
     pub ranges: [RowRange; FileTable::COUNT],
+    /// The file's `.symtab` `sh_info` (its first non-local entry; 0 for a
+    /// file without one): the `k`-th row of its `MENTIONS` range is entry
+    /// `first_global + k` (IN-18e, WP-215 D7). 4 bytes.
+    pub first_global: u32,
     /// The file was removed by an update: its ranges are dead.
     pub gone: bool,
 }
@@ -97,7 +112,7 @@ pub enum FileTable {
     Mentions = 1,
     Index = 2,
     Edges = 3,
-    FragAt = 4,
+    FragUse = 4,
     EhRecords = 5,
     Symtab = 6,
     Regions = 7,
@@ -111,7 +126,7 @@ impl FileTable {
         Self::Mentions,
         Self::Index,
         Self::Edges,
-        Self::FragAt,
+        Self::FragUse,
         Self::EhRecords,
         Self::Symtab,
         Self::Regions,
@@ -125,7 +140,7 @@ impl FileTable {
             Self::Mentions => kind::MENTIONS,
             Self::Index => kind::INDEX,
             Self::Edges => kind::EDGES,
-            Self::FragAt => kind::FRAG_AT,
+            Self::FragUse => kind::FRAG_USE,
             Self::EhRecords => kind::EH_RECORDS,
             Self::Symtab => kind::SYMTAB,
             Self::Regions => kind::REGIONS,
@@ -151,9 +166,11 @@ pub mod sym_kind {
 pub type SymbolRow = crate::format::SymbolRow;
 
 /// `MENTIONS` (kind 32, file-keyed; IN-18e "Shrinking"): one row per
-/// symbol a file mentions, 12 bytes; the file is the range's. Written by
-/// capture and U-2 (a changed file's range rewritten); read by U-3
-/// (the old version's mentions, IN-71), U-8, U-9.
+/// non-local entry of the file's symbol table, **in the table's order,
+/// none skipped** (WP-215 D7): the `k`-th row of the range is entry
+/// [`FileIndexRow::first_global`]` + k`; 12 bytes; the file is the
+/// range's. Written by capture and U-2 (a changed file's range
+/// rewritten); read by U-3 (the old version's mentions, IN-71), U-8, U-9.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct MentionRow {
     /// The `SYMBOLS` row.
@@ -257,17 +274,61 @@ pub struct RegionRow {
     pub capacity: u64,
 }
 
-/// `GROUPS` (kind 44, key-keyed by signature; IN-71): a COMDAT group's
-/// signature and its keeper. Written by capture and U-2 (from
-/// `ResolveDelta`); read by U-3 (re-election, IN-72 item 2a), U-8 (a
-/// changed keeper is ODR-affected, IN-71d).
+/// `GROUPS` (kind 44, key-keyed by `(signature, file)`; IN-18e, IN-71;
+/// WP-215 D2): one row per live relocatable object's copy of a COMDAT
+/// group (a file with several groups of one signature has one row). The
+/// keeper is not stored: it is the copy whose file has the least
+/// `FILES.rank` ([`keeper`], resolve.md §6.1; never the least row
+/// number: `FILES` is append-only and an appended file's rank is not
+/// last). A file's rows are found from its `SECTIONS` anchors
+/// (`anchor_kind` 1: the anchor is the signature). Written by capture and
+/// U-2 (from `ResolveDelta`); read by U-3 (re-election, IN-72 item 2a),
+/// U-8 (a changed keeper is ODR-affected, IN-71d).
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct GroupRow {
-    /// The signature (bytes in `STRINGS`): the key.
+    /// The signature (bytes in `STRINGS`): the key's first part. Equal
+    /// by BYTES, never by `Str` value (a changed file's copy of the same
+    /// signature sits at another offset; WP-215 seam 3).
     pub signature: Str,
-    /// The keeper's `FILES` row.
-    pub keeper: u32,
+    /// The `FILES` row of the file with the copy: the key's second part.
+    pub file: u32,
     pub tomb: bool,
+}
+
+/// The keeper of a group (resolve.md §6.1: the least file in load order
+/// among the live files with a copy) from its `GROUPS` rows: the row,
+/// not a tombstone, whose file has the least `rank(file)`, or `None` when
+/// no live file has a copy. `rank` gives a `FILES` row's **current**
+/// rank: the caller composes the stored `FILES.rank` with the update's
+/// own new ranks of changed, appeared and drawn-in files (a stored rank
+/// the update replaces is never the one compared); it fails as the row
+/// read fails. The one function every package uses for it (WP-215 D2).
+///
+/// # Errors
+/// `rank`'s.
+pub fn keeper(
+    rows: &[GroupRow],
+    rank: impl Fn(u32) -> Result<u64, IncrReason>,
+) -> Result<Option<GroupRow>, IncrReason> {
+    least(rows.iter().filter(|r| !r.tomb).copied(), |r| r.file, rank)
+}
+
+/// The item whose file has the least rank (ties, which distinct files
+/// never have, by row number).
+fn least<T>(
+    items: impl Iterator<Item = T>,
+    file: impl Fn(&T) -> u32,
+    rank: impl Fn(u32) -> Result<u64, IncrReason>,
+) -> Result<Option<T>, IncrReason> {
+    let mut best: Option<((u64, u32), T)> = None;
+    for item in items {
+        let f = file(&item);
+        let key = (rank(f)?, f);
+        if best.as_ref().is_none_or(|(k, _)| key < *k) {
+            best = Some((key, item));
+        }
+    }
+    Ok(best.map(|(_, item)| item))
 }
 
 /// `KEY_REFS.flags` bits (IN-18e: the attributes resolution reads besides
@@ -301,24 +362,58 @@ pub struct KeyRefRow {
     pub typ: u8,
     /// [`key_ref_flags`].
     pub flags: u8,
+    /// The OR of the `DemandFlags` bits the scan raised on `key` over the
+    /// file's live units (WP-239 S4-4; 2 bytes: the row is 14). Never
+    /// derived from `INDEX`.
+    pub demand: u16,
     pub tomb: bool,
 }
 
-/// `FRAGS` (kind 11, key-keyed by identity; IN-72 item 6): a merged
-/// fragment's identity, offset and reference count. Written by capture
-/// and U-2 (from `LayoutDelta::frags`); read by U-4, U-6. As
-/// `mortar_core::incr::StoredFrag` (whose `class` is this `ordinal`) plus
-/// `tomb`.
+/// `FRAGS` (kind 11, key-keyed by `(out, class, hash)`; IN-72 item 6;
+/// WP-239 S4-1): a merged fragment's identity, offset and reference count
+/// (files with a `FRAG_USE` row); no `.debug_*` fragment (R-1). Written by
+/// capture and U-2 (from `LayoutDelta::frags`); read by U-4, U-6. As
+/// `mortar_core::incr::StoredFrag` plus `tomb`.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct FragRow {
     pub out: u32,
-    pub ordinal: u32,
+    /// `mortar_core::incr::MergeClass::word`.
+    pub class: u32,
     pub hash: Hash16,
     /// Bytes from the merged chunk's start.
     pub offset: u64,
     /// Live pieces naming it; 0: a dead range (IN-72 item 6).
     pub refs: u32,
     pub tomb: bool,
+}
+
+/// `FRAG_USE` (kind 56, file-keyed; IN-18e; WP-239 S4-2): one row per
+/// (file, fragment its live split pieces name), by the fragment's `FRAGS`
+/// key, 28 bytes; none for a section named `.debug_*`. Written by capture
+/// and U-2 (a changed file's range); read by U-4 (the old version's
+/// fragments).
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct FragUseRow {
+    /// The `FILES` row (the range's).
+    pub file: u32,
+    /// The `OUTSECS` row.
+    pub out: u32,
+    /// `mortar_core::incr::MergeClass::word`.
+    pub class: u32,
+    pub hash: Hash16,
+}
+
+/// `SLOTS` (kind 12, whole; IN-28b, IN-72 item 7): format 4's
+/// `format::SlotRow` plus `refs` (WP-239 S4-4: the live files whose
+/// `KEY_REFS.demand` needs the slot; a local's slot: 1). Written by capture
+/// and U-2; read by U-4.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct SlotRow {
+    /// `mortar_core::layout::SlotKind` as format 4 numbers it.
+    pub kind: u8,
+    /// The `SYMBOLS` row.
+    pub symbol: u32,
+    pub refs: u32,
 }
 
 /// `HOLES` (kind 39, key-keyed by `(chunk, offset)`; IN-3, IN-3a, IN-72):
@@ -336,21 +431,82 @@ pub struct HoleRow {
     pub tomb: bool,
 }
 
-/// `COMMONS` (kind 46, key-keyed by key; IN-71b, IN-72 item 11): each
-/// common's winning file, size and alignment. Written by capture and U-2
-/// (from `ResolveDelta`); read by U-3 (the largest common, IN-71), U-4
-/// (the common's place in its file's `.bss` region).
+/// `COPIES` (kind 55, key-keyed by `(key, file, index)`; IN-18e, IN-71d;
+/// WP-220): one row per global definition in a section of a live COMDAT
+/// copy, 24 bytes, for every input (GCC, Clang, kiln) unless `--odr=off`:
+/// what W1 and W2 compare (`mortar_odr::foreign::compare_copies`, the full
+/// link's comparator). Keyed by the symbol-table index too: one file can
+/// define one key in two groups. The copy's group is not stored: its
+/// `MENTIONS` row's section and that section's `SECTIONS.anchor`
+/// (`anchor_kind` 1: the signature). No rank is stored: the caller orders
+/// copies by the files' **current** `FILES.rank` (WP-220, WP-215 D2).
+/// Written by capture and U-2 (from `ChangedFile::odr` and U-8's
+/// result); read by U-8.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct CopyRow {
+    /// The `SYMBOLS` row: the key's first part. In
+    /// [`super::view::OdrRows::copies`]: the position in
+    /// `ChangedFile::keys`.
+    pub key: u32,
+    /// The `FILES` row: the key's second part.
+    pub file: u32,
+    /// The definition's symbol-table index in the file: the key's third
+    /// part (odr.md §9.1's seq, W's place).
+    pub index: u32,
+    /// `st_size`.
+    pub size: u64,
+    /// `st_type`.
+    pub typ: u8,
+    pub tomb: bool,
+}
+
+/// `COMMONS` (kind 46, key-keyed by `(key, file)`; IN-18e, IN-71b, IN-72
+/// item 11; WP-215 D6): one row per (key, live file with a common
+/// mention of it): that file's size and alignment (a file with several
+/// common mentions of one key: the maximum of each). The winner is not
+/// stored: [`winning_common`] computes it (resolve.md §3.3). Written by
+/// capture and U-2 (from `ResolveDelta`); read by U-3 (IN-71), U-4
+/// (through `StateRows::common`: the common's place in its file's `.bss`
+/// region).
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct CommonRow {
-    /// The `SYMBOLS` row.
+    /// The `SYMBOLS` row: the key's first part.
     pub key: u32,
-    /// The `FILES` row of the file whose common wins.
+    /// The `FILES` row of the mentioning file: the key's second part. In
+    /// [`winning_common`]'s result: the winning file.
     pub file: u32,
     /// Bytes.
     pub size: u64,
-    /// Bytes (a power of two).
+    /// Bytes (a power of two; `st_value` 0 is stored as 1, resolve.md
+    /// §3.3).
     pub align: u64,
     pub tomb: bool,
+}
+
+/// A key's common as resolve.md §3.3 computes it from its `COMMONS` rows
+/// (the live common mentions): the file of the least mention by `≺` (the
+/// row whose file has the least `rank(file)`: one row per file; `rank`
+/// as [`keeper`]'s, the **current** rank), the maximum size and the
+/// maximum alignment over the rows that are not tombstones; `None` when
+/// there is none. Whether the common is the key's definition (a `Strong`
+/// definition wins over commons) is `RESOLVED`'s kind, not this. The one
+/// function every package uses for it (WP-215 D6).
+///
+/// # Errors
+/// `rank`'s.
+pub fn winning_common(
+    rows: &[CommonRow],
+    rank: impl Fn(u32) -> Result<u64, IncrReason>,
+) -> Result<Option<CommonRow>, IncrReason> {
+    let live = || rows.iter().filter(|r| !r.tomb);
+    let Some(first) = least(live().copied(), |r| r.file, rank)? else { return Ok(None) };
+    Ok(Some(CommonRow {
+        key: first.key,
+        file: first.file,
+        size: live().map(|r| r.size).max().unwrap_or(0),
+        align: live().map(|r| r.align).max().unwrap_or(1),
+        tomb: false,
+    }))
 }
 
 /// `ODR_CLASSES` (kind 47, key-keyed by ODR key; IN-71d): one row per
@@ -476,6 +632,17 @@ pub struct MetaRow {
     pub clone_probe: Option<CloneProbe>,
     /// `.symtab`/`.strtab` sizes and slack (IN-49a).
     pub symtab: mortar_core::incr::SymtabTables,
+    /// The iterations of resolve.md §4.1's closure in the full link that
+    /// wrote the state (`Resolved::iterations`, at least 1); an update
+    /// writes the value it read, 1 (it runs only then: IN-71b
+    /// "Iterations", `closure-iterated`; WP-215 D1). 4 bytes.
+    pub iterations: u32,
+    /// Non-local symbol-table entries named `foo@V` or `foo@@V` (an `@`
+    /// in the name) over the link's relocatable objects and archive
+    /// members, extracted or not (IN-71 "Versions";
+    /// `update-not-implemented (versioned)`; WP-215 D8); an update writes
+    /// the value it read, 0. 4 bytes.
+    pub versioned: u32,
 }
 
 impl Default for MetaRow {
@@ -496,6 +663,8 @@ impl Default for MetaRow {
             compactions: 0,
             clone_probe: None,
             symtab: mortar_core::incr::SymtabTables::default(),
+            iterations: 0,
+            versioned: 0,
         }
     }
 }
@@ -513,8 +682,10 @@ mod tests {
         assert_eq!(resolved, 24);
         let index = 4 + 1 + 4;
         assert_eq!(index, 9);
-        let key_ref = 4 + 4 + 1 + 1 + 1 + 1; // tomb is a bit of flags
-        assert_eq!(key_ref, 12);
+        let key_ref = 4 + 4 + 1 + 1 + 1 + 1 + 2; // tomb is a bit of flags
+        assert_eq!(key_ref, 14);
+        let frag_use = 4 + 4 + 4 + 16;
+        assert_eq!(frag_use, 28);
         let symtab_key = 4 + 4;
         assert_eq!(symtab_key, 8);
         let odr_class = 4 + 16 + 8;
@@ -525,20 +696,53 @@ mod tests {
         assert_eq!(edge, 17);
         let name = 8 + 4;
         assert_eq!(name, 12);
+        let copy = 4 + 4 + 4 + 8 + 1 + 1 + 2; // key, file, index, size, typ, tomb, pad
+        assert_eq!(copy, 24);
         // The structs' fields are the ones counted (a field added fails
         // here first).
         let MentionRow { symbol: _, kind: _, bind: _, typ: _, other: _, section: _ } =
             MentionRow::default();
         let ResolvedRow { kind: _, typ: _, bind: _, other: _, section: _, value: _, size: _ } =
             ResolvedRow::default();
-        let KeyRefRow { key: _, file: _, def: _, bind: _, typ: _, flags: _, tomb: _ } =
+        let KeyRefRow { key: _, file: _, def: _, bind: _, typ: _, flags: _, demand: _, tomb: _ } =
             KeyRefRow::default();
+        let FragUseRow { file: _, out: _, class: _, hash: _ } = FragUseRow::default();
         let SymtabKeyRow { index: _, strtab: _ } = SymtabKeyRow::default();
         let OdrClassRow { key: _, hash: _, layout: _, tomb: _ } = OdrClassRow::default();
         let OdrRefRow { key: _, file: _, kind: _, class: _, tomb: _ } = OdrRefRow::default();
         let EdgeRow { kind: _, source: _, target: _, offset: _ } = EdgeRow::default();
         let NameRow { hash: _, row: _ } = NameRow::default();
         assert_eq!(FileTable::ALL.len(), FileTable::COUNT);
+        let GroupRow { signature: _, file: _, tomb: _ } = GroupRow::default();
+        let CommonRow { key: _, file: _, size: _, align: _, tomb: _ } = CommonRow::default();
+        let CopyRow { key: _, file: _, index: _, size: _, typ: _, tomb: _ } = CopyRow::default();
+    }
+
+    // spec: resolve.md §6.1 (the keeper is the live copy whose file has
+    // the least `FILES.rank`), §3.3 (the winning common: least rank,
+    // maximum size and alignment); incr.md IN-18e (`FILES` is
+    // append-only: an appended member's row number is last, its rank is
+    // not)
+    #[test]
+    fn keeper_and_winning_common_by_rank() {
+        // Rows 0..=5 in load order, then row 6 appended by an update with
+        // a rank between rows 1 and 2: it is before rows 2..=5.
+        let rank = |f: u32| -> Result<u64, IncrReason> {
+            match f {
+                0..=5 => Ok(u64::from(f) << 20),
+                6 => Ok((1 << 20) + (1 << 19)),
+                _ => Err(IncrReason::StateCorrupt("FILES".into())),
+            }
+        };
+        let g = |file, tomb| GroupRow { signature: Str::default(), file, tomb };
+        let k = keeper(&[g(5, false), g(3, true), g(6, false), g(4, false)], rank);
+        assert_eq!(k.unwrap().map(|r| r.file), Some(6));
+        assert_eq!(keeper(&[g(3, true)], rank), Ok(None));
+        assert!(keeper(&[g(9, false)], rank).is_err());
+        let c = |file, size, align, tomb| CommonRow { key: 9, file, size, align, tomb };
+        let w = winning_common(&[c(4, 8, 16, false), c(6, 4, 4, false), c(1, 64, 64, true)], rank);
+        assert_eq!(w, Ok(Some(c(6, 8, 16, false))));
+        assert_eq!(winning_common(&[c(1, 8, 8, true)], rank), Ok(None));
     }
 
     // spec: incr.md IN-18e (`NAMES`' hash: name, a zero byte, version)

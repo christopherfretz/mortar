@@ -5,8 +5,8 @@
 use std::fs::File;
 
 use mortar_core::incr::{
-    IncrReason, LayoutRows, StoredFrag, StoredRegion, StoredSection, StoredSlot, SymtabBlock,
-    SymtabTables, Unimplemented,
+    IncrReason, LayoutRows, StoredRegion, StoredSection, StoredSlot, SymtabBlock, SymtabTables,
+    Unimplemented,
 };
 use mortar_core::layout::{Chunk, Defined, Hole, Patch, Redirect, Segment, SymPlace, Tls};
 use mortar_core::{ChunkId, FileId, OutSecId};
@@ -78,9 +78,6 @@ impl LayoutRows for LayoutOf<'_, '_> {
             .collect())
     }
     fn holes_in(&self, _chunk: ChunkId) -> Result<Vec<Hole>, IncrReason> {
-        not_yet()
-    }
-    fn frags_in(&self, _out: OutSecId) -> Result<Vec<StoredFrag>, IncrReason> {
         not_yet()
     }
     fn slots(&self) -> Result<Vec<StoredSlot>, IncrReason> {
