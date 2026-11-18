@@ -864,6 +864,8 @@ impl Session {
                     facts: &i5.facts,
                     slot_demand: crate::front::slot_demand,
                     copies: f.plan.diagnostics.odr.mode != mortar_core::plan::OdrMode::Off,
+                    // WP-238 seam 9: the producer's rows come in Part 2.
+                    edges: None,
                 };
                 let (s, r) = mortar_incr::capture::capture5_timed(
                     &link,

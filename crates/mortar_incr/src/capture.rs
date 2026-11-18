@@ -869,6 +869,11 @@ pub struct Link5<'a> {
     pub properties: &'a [(FileId, Vec<u8>)],
     /// `mortar_core::plan::Plan::option_keys` (seam 6's `SYMBOLS.option`).
     pub option_keys: &'a [Vec<u8>],
+    /// IN-29's rows (`mortar_live::stored_edges`), sorted by source;
+    /// `None` without `--gc-sections` (no `EDGES`, `META.live_hash`
+    /// zero). WP-238 seam 9: the field only; Part 2 writes the rows and
+    /// the hash.
+    pub edges: Option<&'a [mortar_core::incr::LiveEdge]>,
 }
 
 impl std::fmt::Debug for Link5<'_> {

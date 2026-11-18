@@ -468,7 +468,7 @@ impl Rec for u8 {
 }
 
 impl Rec for MetaRow {
-    const WIDTH: usize = 208;
+    const WIDTH: usize = 224;
     fn put(&self, w: &mut W<'_>) {
         let p = self.clone_probe.unwrap_or_default();
         w.s(self.version).u16(self.machine).u8(self.class).u8(self.output_kind);
@@ -480,6 +480,7 @@ impl Rec for MetaRow {
         let t = &self.symtab;
         w.u32(t.sh_info).u32(t.tail_first).u32(t.tail_capacity).u32(self.versioned);
         w.u64(t.symtab_size).u64(t.symtab_slack).u64(t.strtab_size).u64(t.strtab_slack);
+        w.bytes(&self.live_hash);
     }
     fn get(r: &mut R<'_>) -> Self {
         let (version, machine, class, output_kind) = (r.s(), r.u16(), r.u8(), r.u8());
@@ -500,6 +501,7 @@ impl Rec for MetaRow {
             strtab_size: r.u64(),
             strtab_slack: r.u64(),
         };
+        let live_hash: [u8; 16] = r.take();
         if synced > 1 || probed > 1 || u32::from(build_id_len) > crate::format::MAX_BUILD_ID {
             r.bad_pad = true;
         }
@@ -524,6 +526,7 @@ impl Rec for MetaRow {
             versioned,
             clone_probe: (probed == 1).then_some(probe),
             symtab,
+            live_hash,
         }
     }
 }
@@ -681,16 +684,26 @@ impl Rec for IndexRow {
     }
 }
 
+/// `EDGES` (WP-238 seam 9, S1): 13 bytes. `ok`: the kind exists, a
+/// `Key`/`Zero`/`Code` row has offset 0, a `Zero` row target 0, a
+/// `REFUSE` row a known code (F4, P0-1).
 impl Rec for EdgeRow {
-    const WIDTH: usize = 17;
+    const WIDTH: usize = 13;
     fn put(&self, w: &mut W<'_>) {
-        w.u8(self.kind).u32(self.source).u32(self.target).u64(self.offset);
+        w.u8(self.kind).u32(self.source).u32(self.target).u32(self.offset);
     }
     fn get(r: &mut R<'_>) -> Self {
-        Self { kind: r.u8(), source: r.u32(), target: r.u32(), offset: r.u64() }
+        Self { kind: r.u8(), source: r.u32(), target: r.u32(), offset: r.u32() }
     }
     fn ok(&self) -> bool {
-        self.kind <= crate::update::rows::edge_kind::NONALLOC_SECTION
+        use crate::update::rows::edge_kind::{self, Target, refuse};
+        match edge_kind::target(self.kind) {
+            None => false,
+            Some(Target::Key) => self.offset == 0,
+            Some(Target::Section) => true,
+            Some(Target::Zero) => self.target == 0 && self.offset == 0,
+            Some(Target::Code) => (1..=refuse::LAST).contains(&self.target) && self.offset == 0,
+        }
     }
 }
 
@@ -1116,4 +1129,64 @@ pub(crate) fn diag_row(r: &DiagRaw, s: StrFn<'_>) -> Rows<DiagRow> {
         ref_count: r.ref_count,
         tomb: r.tomb,
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{Rec, decode_rows, encode_rows, kind};
+    use crate::update::rows::{EdgeRow, MetaRow, edge_kind};
+
+    fn reads(r: EdgeRow) -> bool {
+        decode_rows::<EdgeRow>(&encode_rows(&[r]), kind::EDGES, 0).is_ok()
+    }
+
+    // spec: WP-238 "Step 2" S1, F4, F8 and P0-1 (the reader refuses a
+    // kind that does not exist, a `REFUSE` code other than 1 and 2, and
+    // a target or an offset the kind's class forbids: `state-corrupt`)
+    #[test]
+    fn edge_row_ok() {
+        let row = |kind, target, offset| EdgeRow { kind, source: 5, target, offset };
+        assert_eq!(encode_rows(&[row(0, 0, 0)]).len(), 13);
+        // accepted: every class at its rule
+        assert!(reads(row(edge_kind::RELOC, 9, 0)));
+        assert!(reads(row(edge_kind::LOCAL, 9, 7)));
+        assert!(reads(row(edge_kind::FDE_SECTION, 9, u32::MAX)));
+        assert!(reads(row(edge_kind::GROUP, 9, 0)));
+        assert!(reads(row(edge_kind::ROOT, 0, 0)));
+        assert!(reads(row(edge_kind::REFUSE, edge_kind::refuse::FDE_GLOBAL, 0)));
+        assert!(reads(row(edge_kind::REFUSE, edge_kind::refuse::DEF_DROPPED, 0)));
+        // a kind that does not exist
+        assert!(!reads(row(edge_kind::LAST + 1, 0, 0)));
+        assert!(!reads(row(u8::MAX, 0, 0)));
+        // REFUSE: code 0 and an unknown code; an offset
+        assert!(!reads(row(edge_kind::REFUSE, 0, 0)));
+        assert!(!reads(row(edge_kind::REFUSE, edge_kind::refuse::LAST + 1, 0)));
+        assert!(!reads(row(edge_kind::REFUSE, edge_kind::refuse::FDE_GLOBAL, 1)));
+        // Zero: a target or an offset
+        for k in [edge_kind::ROOT, edge_kind::NAMED, edge_kind::SPLIT] {
+            assert!(!reads(row(k, 1, 0)), "kind {k} target");
+            assert!(!reads(row(k, 0, 1)), "kind {k} offset");
+        }
+        // Key: an offset (F8: only a split section target has one)
+        for k in [edge_kind::RELOC, edge_kind::START_STOP, edge_kind::FDE_KEY] {
+            assert!(!reads(row(k, 3, 4)), "kind {k} offset");
+        }
+        assert!(!reads(row(edge_kind::NONALLOC_KEY, 3, u32::MAX)));
+        // the bytes of a refused row are field for field what was written
+        let r = row(edge_kind::LINK_ORDER, 0x0102_0304, 0x0506_0708);
+        assert_eq!(decode_rows::<EdgeRow>(&encode_rows(&[r]), kind::EDGES, 0), Ok(vec![r]));
+    }
+
+    // spec: WP-238 "Step 2" S4 (`META.live_hash`, 16 bytes after
+    // `versioned`'s area: META is 224 bytes)
+    #[test]
+    fn meta_live_hash_is_read_back() {
+        let m = MetaRow { live_hash: *b"live-set-hash-16", ..MetaRow::default() };
+        let b = encode_rows(std::slice::from_ref(&m));
+        assert_eq!(b.len(), <MetaRow as Rec>::WIDTH);
+        assert_eq!(b.len(), 224);
+        assert_eq!(&b[208..], &m.live_hash);
+        let back = decode_rows::<MetaRow>(&b, kind::META, 0).expect("reads");
+        assert_eq!(back, vec![m]);
+    }
 }
