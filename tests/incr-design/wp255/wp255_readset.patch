@@ -1,9 +1,9 @@
 diff --git a/crates/mortar/tests/wp255_readset.rs b/crates/mortar/tests/wp255_readset.rs
 new file mode 100644
-index 00000000..f5b754b4
+index 00000000..5dcecb01
 --- /dev/null
 +++ b/crates/mortar/tests/wp255_readset.rs
-@@ -0,0 +1,401 @@
+@@ -0,0 +1,406 @@
 +//! WP-255 THROWAWAY (never committed under crates/; kept as
 +//! tests/incr-design/wp255/readset.patch): U-6's refill on a REAL workload
 +//! with one archive member edited (same size, the layout replayed), the
@@ -135,6 +135,11 @@ index 00000000..f5b754b4
 +        .files
 +        .iter()
 +        .filter(|(_, r)| r.member.is_some_and(|m| m.name == name.as_bytes()))
++        .filter(|(_, r)| {
++            let p = String::from_utf8_lossy(r.path);
++            p.ends_with(&env("WP255_ARCHIVE")) || p == env("WP255_EDITED")
++        })
++        .filter(|(id, _)| f.resolution.file_live.get(*id).is_some_and(|l| l.is_live()))
 +        .map(|(id, _)| id)
 +        .collect();
 +    assert_eq!(found.len(), 1, "member {name}: {found:?}");

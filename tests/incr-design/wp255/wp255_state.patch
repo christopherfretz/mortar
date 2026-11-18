@@ -1,9 +1,9 @@
 diff --git a/crates/mortar/tests/wp255_state.rs b/crates/mortar/tests/wp255_state.rs
 new file mode 100644
-index 00000000..2c2f41df
+index 00000000..c932967b
 --- /dev/null
 +++ b/crates/mortar/tests/wp255_state.rs
-@@ -0,0 +1,193 @@
+@@ -0,0 +1,192 @@
 +//! WP-255 THROWAWAY (never committed under crates/; kept as
 +//! tests/incr-design/wp255/state.patch): the primitives of an update's
 +//! read of a real format-5 state, timed: open, the FILES/STAT pass, the
@@ -70,7 +70,7 @@ index 00000000..2c2f41df
 +        let file = File::open(&path).unwrap();
 +        let t = Instant::now();
 +        let view: StateView<'_> = state5::open(&file, plan).unwrap();
-+        let read = |v: &StateView<'_>| state5::bytes_read(v).unwrap_or(0);
++        let read = |v: &StateView<'_>| state5::read::bytes_read(v).unwrap_or(0);
 +        row.push(("open".into(), ms(t), read(&view)));
 +        // U2: every FILES row and its STAT row (the change detection).
 +        let t = Instant::now();
@@ -162,7 +162,6 @@ index 00000000..2c2f41df
 +        let o = mortar_elf::object::Object::parse(&bytes).unwrap();
 +        let (mut ns, mut nsym, mut nrel) = (0u64, 0u64, 0u64);
 +        for s in o.sections() {
-+            let s = s.unwrap();
 +            ns += 1;
 +            let _ = s.name();
 +            if s.sh_type() == 4 {
