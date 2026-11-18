@@ -222,7 +222,8 @@ fn in49a_blocks_capacities_and_regions() {
     // aside.
     let (plain_es, _) = written(&plain, &syms, &secs, &addrs);
     let (es, str) = written(&p, &syms, &secs, &addrs);
-    let kept: Vec<&Entry> = es.iter().enumerate().filter(|(i, e)| *i == 0 || !is_filler(e)).map(|x| x.1).collect();
+    let kept: Vec<&Entry> =
+        es.iter().enumerate().filter(|(i, e)| *i == 0 || !is_filler(e)).map(|x| x.1).collect();
     assert_eq!(kept, plain_es.iter().collect::<Vec<_>>());
     // A region's slack is zeroes.
     for (_, b) in &blocks {
@@ -652,7 +653,10 @@ fn tail_reserve_exhausted_by_name() {
         match (got, want) {
             (Ok(p), Ok((first, capacity, tail_first, tail_capacity))) => {
                 assert_eq!((p.blocks[0].1.first, p.blocks[0].1.capacity), (first, capacity));
-                assert_eq!((p.tables.tail_first, p.tables.tail_capacity), (tail_first, tail_capacity));
+                assert_eq!(
+                    (p.tables.tail_first, p.tables.tail_capacity),
+                    (tail_first, tail_capacity)
+                );
             }
             (Err(IncrReason::SymtabExhausted(what)), Err(_)) => {
                 assert!(what.contains("tail reserve"), "{what}");
@@ -811,7 +815,14 @@ fn unplannable_symbols_refused_by_name() {
     // A file with no entry and no block has none.
     let none = FileSymbols { file: FileId(3), locals: vec![] };
     let p = plan(&stored, &d, &[none], &[]).unwrap();
-    assert_eq!(p, UpdatePlan { global_area: rows.global_area, tables: rows.symtab_tables, ..UpdatePlan::default() });
+    assert_eq!(
+        p,
+        UpdatePlan {
+            global_area: rows.global_area,
+            tables: rows.symtab_tables,
+            ..UpdatePlan::default()
+        }
+    );
 }
 
 // spec: incr.md IN-49a (stored rows that contradict each other)

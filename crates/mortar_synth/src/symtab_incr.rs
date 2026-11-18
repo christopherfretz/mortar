@@ -129,9 +129,10 @@ pub fn plan(
     if entsize != 16 && entsize != 24 {
         return Err(corrupt("SYMTAB: .symtab's size is not a whole number of entries"));
     }
-    if globals.iter().any(|g| {
-        matches!(g.kind, GlobalKind::Removed | GlobalKind::Demoted | GlobalKind::Changed)
-    }) {
+    if globals
+        .iter()
+        .any(|g| matches!(g.kind, GlobalKind::Removed | GlobalKind::Demoted | GlobalKind::Changed))
+    {
         return Err(not_built());
     }
     let mut order: Vec<&FileSymbols<'_>> = files.iter().collect();
@@ -361,7 +362,10 @@ impl Cx<'_, '_> {
         // Placed nowhere (merged pieces, `.eh_frame`): v1 does not plan it.
         let Some((chunk, offset)) = p.get() else { return Err(not_built()) };
         let Some(c) = self.layout.placement.chunks.get(chunk) else {
-            return Err(corrupt(format!("SECTIONS: section {} in chunk {}, which is none", id.0, chunk.0)));
+            return Err(corrupt(format!(
+                "SECTIONS: section {} in chunk {}, which is none",
+                id.0, chunk.0
+            )));
         };
         let Some(shndx) = c.shndx else {
             return Err(corrupt(format!("chunk {} has no section header", chunk.0)));
@@ -391,7 +395,8 @@ impl Cx<'_, '_> {
 /// not reach `plan` (WP-217's seam finding).
 #[must_use]
 pub fn area_after_removals(first: u32, end: u32, removed: &[u32]) -> (u32, Vec<(u32, u32)>) {
-    let mut removed: Vec<u32> = removed.iter().copied().filter(|&r| r >= first && r < end).collect();
+    let mut removed: Vec<u32> =
+        removed.iter().copied().filter(|&r| r >= first && r < end).collect();
     removed.sort_unstable();
     removed.dedup();
     // Which previous entry is at an index now, where that changed.
@@ -407,8 +412,11 @@ pub fn area_after_removals(first: u32, end: u32, removed: &[u32]) -> (u32, Vec<(
         }
         end = last;
     }
-    let mut moves: Vec<(u32, u32)> =
-        at.into_iter().filter(|&(to, from)| to < end && to != from).map(|(to, f)| (f, to)).collect();
+    let mut moves: Vec<(u32, u32)> = at
+        .into_iter()
+        .filter(|&(to, from)| to < end && to != from)
+        .map(|(to, f)| (f, to))
+        .collect();
     moves.sort_by_key(|m| m.1);
     (end, moves)
 }

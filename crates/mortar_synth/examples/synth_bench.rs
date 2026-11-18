@@ -204,7 +204,8 @@ fn symtab(n: u32) {
         for _ in 0..REPEATS {
             let diag = Collector::new(Policy::default());
             let t = Instant::now();
-            let facts = PatchFacts { thunk_size: 12, erratum_843419_size: 8, mapping: true, room: false };
+            let facts =
+                PatchFacts { thunk_size: 12, erratum_843419_size: 8, mapping: true, room: false };
             let plan = SymtabPlan::new(&cx, Class::Elf64, &[], facts, &pool, &diag).expect("plan");
             planned.push(t.elapsed());
             let t = Instant::now();
