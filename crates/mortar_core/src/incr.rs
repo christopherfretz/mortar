@@ -240,6 +240,11 @@ pub enum IncrReason {
     /// `debug-growth`: a growth step in an output that has debug sections
     /// (WP-228 R-8; v1: the refill of every debug byte is a later package).
     DebugGrowth(String),
+    /// `debug-str-limit`: an appended debug string's offset does not fit
+    /// the word that names it (a `DW_FORM_strp`/`line_strp` or a
+    /// `.debug_str_offsets` entry of a 32-bit unit: the section would
+    /// pass 2^32 bytes; WP-228 B1-5).
+    DebugStrLimit(String),
     /// `input-changed`: a file the update read is not the file it judged
     /// (IN-28a condition 2, IN-75).
     InputChanged(String),
@@ -261,7 +266,7 @@ pub enum IncrReason {
 impl IncrReason {
     /// Every reason's name, in `spec/incr.md` §7's order (the spec test
     /// compares it with the table).
-    pub const NAMES: [&'static str; 34] = [
+    pub const NAMES: [&'static str; 35] = [
         "no-state",
         "state-corrupt",
         "state-version",
@@ -291,6 +296,7 @@ impl IncrReason {
         "debug-unit-kind",
         "debug-comdat-keeper",
         "debug-growth",
+        "debug-str-limit",
         "input-changed",
         "state-collision",
         "state-limit",
@@ -331,6 +337,7 @@ impl IncrReason {
             Self::DebugUnitKind(_) => "debug-unit-kind",
             Self::DebugComdatKeeper(_) => "debug-comdat-keeper",
             Self::DebugGrowth(_) => "debug-growth",
+            Self::DebugStrLimit(_) => "debug-str-limit",
             Self::InputChanged(_) => "input-changed",
             Self::StateCollision(_) => "state-collision",
             Self::StateLimit(_) => "state-limit",
@@ -373,6 +380,7 @@ impl IncrReason {
             | Self::DebugUnitKind(d)
             | Self::DebugComdatKeeper(d)
             | Self::DebugGrowth(d)
+            | Self::DebugStrLimit(d)
             | Self::InputChanged(d)
             | Self::StateCollision(d)
             | Self::StateLimit(d)
@@ -425,6 +433,7 @@ impl IncrReason {
             "debug-unit-kind" => Self::DebugUnitKind(d),
             "debug-comdat-keeper" => Self::DebugComdatKeeper(d),
             "debug-growth" => Self::DebugGrowth(d),
+            "debug-str-limit" => Self::DebugStrLimit(d),
             "input-changed" => Self::InputChanged(d),
             "state-collision" => Self::StateCollision(d),
             "state-limit" => Self::StateLimit(d),
