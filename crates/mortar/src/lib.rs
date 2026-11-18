@@ -358,7 +358,13 @@ fn invoke_with4(
         // `--incremental=update` the error.
         incremental::Start::Update(s) => {
             let mut s = *s;
-            let ctx = update::Ctx { plan, store: &store, policy: diagnostics.policy(), pool };
+            let ctx = update::Ctx {
+                plan,
+                store: &store,
+                policy: diagnostics.policy(),
+                pool,
+                out_path: &out_path,
+            };
             let reason = match update::run(&s, &parsed, cwd, &ctx) {
                 // M2a: U5 on are not wired, so no update finishes yet; the
                 // finished one's lines go into the `Invocation` here.

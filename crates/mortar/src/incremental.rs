@@ -545,7 +545,15 @@ fn check(state: Option<&std::fs::File>, plan_hash: [u8; 16], out_path: &Path) ->
     let target = Some((meta.machine, meta.class));
     let size = Some(meta.file_size);
     let fail = |reason| Checked { reason, target, size, out: None };
-    let out = match std::fs::File::open(out_path) {
+    // IN-77a: one descriptor, read-write when it can be (the in-place
+    // path writes through it; IN-45's copy path when it cannot be: a
+    // running program's `ETXTBSY`, no write permission).
+    let opened = std::fs::OpenOptions::new()
+        .read(true)
+        .write(true)
+        .open(out_path)
+        .or_else(|_| std::fs::File::open(out_path));
+    let out = match opened {
         Ok(f) => f,
         Err(e) => return fail(IncrReason::OutputChanged(format!("cannot open the output: {e}"))),
     };
@@ -1104,7 +1112,7 @@ impl Session {
     /// The state of the link `f`, all but its output row; with the
     /// format-5 switch, format 5's own rows beside it (WP-244).
     #[allow(clippy::too_many_lines)] // the state's parts, each timed (WP-094)
-    fn state(
+    pub(crate) fn state(
         &self,
         f: &Front<'_>,
         store: &Store,

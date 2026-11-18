@@ -2574,3 +2574,76 @@ fn file_rows_are_the_whole_capture_s() {
     }
     assert!(ran == 2 || !tools_required(), "{ran} of the 2 programs built");
 }
+
+// spec: incr.md IN-70, IN-75, IN-76 (WP-225 M2a, ruling M2a-1): the first
+// real update. One object's same-size function body edit (an immediate),
+// static, no `-g`, no gc: the link is an update (the report says so), its
+// output equals the full link of the new inputs byte for byte, and a
+// second edit updates again; the program runs with the new value.
+#[test]
+fn first_update_same_size_body() {
+    let mut ran = 0;
+    for (prog, text, from) in
+        [(Prog::asm(), ASM, "mov x0, #42"), (Prog::asm_x86_64(), ASM_X86_64, "movl $42, %edi")]
+    {
+        let Some(prog) = prog else { continue };
+        ran += 1;
+        let arch = prog.arch;
+        // `--incremental=update` (it ignores `small-output`, and its
+        // write is in place at every size); the first link makes the state.
+        let env = [];
+        let inc = ["--incremental=update", "--incremental-report"];
+        let o = prog.mortar_env("o", &["--incremental"], &env);
+        assert!(o.success(), "{arch:?}: {}", o.stderr_text());
+        for imm in ["43", "44"] {
+            let src = prog.scratch.write("a.s", &text.replace(from, &from.replace("42", imm)));
+            let gcc = arch.tool("gcc").unwrap();
+            let obj = prog.path("a.o");
+            let g = run_in(
+                prog.scratch.path(),
+                &gcc,
+                &["-c".into(), src.into(), "-o".into(), obj.into()],
+                &[],
+            );
+            assert!(g.success(), "gcc: {}", g.stderr_text());
+            let o = prog.mortar_env("o", &inc, &env);
+            let err = o.stderr_text();
+            assert!(o.success(), "{arch:?} {imm}: {err}");
+            assert!(err.contains("incremental: update (InPlace)"), "{arch:?} {imm}: {err}");
+            // The full link of the new inputs (incremental mode: the same
+            // layout rules), to another output.
+            let o = prog.mortar_env("full", &["--incremental=full"], &env);
+            assert!(o.success(), "{arch:?} {imm}: {}", o.stderr_text());
+            let (got, want) = (prog.bytes("o"), prog.bytes("full"));
+            assert_eq!(got.len(), want.len(), "{arch:?} {imm}: sizes");
+            if let Some(i) = got.iter().zip(&want).position(|(a, b)| a != b) {
+                panic!("{arch:?} {imm}: the update differs from the full link at {i:#x}");
+            }
+            // In-crate judgement (d) (`state_equals_capture_of_its_placement`,
+            // ruling G-11): trivially true at M2a, the state IS the
+            // capture of path (A)'s front; (d) starts judging at M2b. Its
+            // form here: the update's state equals the full link's under
+            // IN-78's canonical form, the output's binding aside.
+            state_equals_capture_of_its_placement(&prog, arch, imm);
+            if arch == AARCH64 {
+                let (code, _) = prog.run("o");
+                assert_eq!(code, Some(imm.parse().unwrap()), "{arch:?}: the program's exit");
+            }
+        }
+    }
+    assert!(ran == 2 || !tools_required(), "{ran} of the 2 programs built");
+}
+
+fn state_equals_capture_of_its_placement(prog: &Prog, arch: Arch, hop: &str) {
+    use mortar_incr::format::kind;
+    use mortar_incr::state5::canon::{canon, compare};
+    let a = canon(&std::fs::read(prog.state_of("o")).unwrap()).unwrap();
+    let b = canon(&std::fs::read(prog.state_of("full")).unwrap()).unwrap();
+    let rows = mortar_core::incr::MemoryLayout::default();
+    let p_u = mortar_core::incr::StoredLayout::new(&rows);
+    let diffs: Vec<_> = compare(&a, &b, &p_u)
+        .into_iter()
+        .filter(|d| !matches!(d.kind, kind::META | kind::STAT))
+        .collect();
+    assert!(diffs.is_empty(), "{arch:?} {hop}: (d): {diffs:?}");
+}

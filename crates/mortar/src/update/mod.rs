@@ -36,6 +36,8 @@ use mortar_incr::update::view::StateView;
 use mortar_input::store::Store;
 
 use crate::incremental::Session;
+use mortar_incr::ops::WriteFailure;
+use mortar_incr::stamp::Tuple;
 
 /// U2 and U3's result (IN-22, IN-24, IN-28a), in the state's terms.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
@@ -63,6 +65,7 @@ pub struct Ctx<'c> {
     /// front's diagnostics twice).
     pub policy: Policy,
     pub pool: Pool,
+    pub out_path: &'c Path,
 }
 
 impl std::fmt::Debug for Ctx<'_> {
@@ -116,11 +119,190 @@ pub fn run(
     if view.file(detected.changed_files[0])?.member != 0 {
         return Err(IncrReason::UpdateNotImplemented(Some(Unimplemented::Resolve)));
     }
-    image_link(ctx, cwd, None, |_front| {
-        // U4 (the changed files' rows from path (A)'s front,
-        // `capture::file_rows`) and U5 (extract, resolve): the next
-        // lines of M2a (WIP.md).
-        Err(IncrReason::UpdateNotImplemented(Some(Unimplemented::Resolve)))
+    let file = detected.changed_files[0];
+    let out = session.out.as_ref().ok_or_else(|| IncrReason::NoState(String::new()))?;
+    // U1's tuple of the output (IN-77a), taken before the front reads.
+    let checked = Tuple::of(&out.metadata().map_err(|e| IncrReason::OutputChanged(e.to_string()))?);
+    image_link(ctx, cwd, None, |f| {
+        let reference = reference_of(session, &view, file, f, ctx, cwd, out)?;
+        write_identity(session, &view, ctx, out, checked, reference)
+    })
+}
+
+/// What the identity case writes (M2a, ruling M2a-1): the refill's
+/// ranges and leaves, and the state the update writes, which is the
+/// REFERENCE of judgement (d) (below).
+struct Reference {
+    refill: mortar_image::update::Refill,
+    size: u64,
+    state: mortar_incr::update::testing::MemoryState,
+}
+
+/// **The reference of judgement (d)** (ruling M2a-1, G-11): the capture
+/// of a full link with the update's placement, here the capture of path
+/// (A)'s front `f`, whose fresh placement is checked equal to the stored
+/// one first (the identity case of G-3: every decision row of the
+/// capture equals the stored state's under IN-78's canonical form, the
+/// output's binding, `STAT`, `LEAVES` and the changed file's `FILES` row
+/// aside; else `update-not-implemented (layout)`), with the refill's
+/// leaves and build id. M2a WRITES it whole (an M2a update is O(link)
+/// twice over: the front and the whole state); M2b writes the patch and
+/// keeps this as the in-crate (d)'s comparison.
+///
+/// The refill (U9): the changed file's sections, and every chunk that is
+/// not an input-section body rewritten whole (headers, merged and
+/// synthetic chunks: `.symtab`, `.eh_frame`, the note), so every byte of
+/// `P_U` that can differ is refilled; a range equal to the previous
+/// output's is dropped (IN-75).
+fn reference_of(
+    session: &Session,
+    view: &StateView<'_>,
+    file: FileId,
+    f: &crate::front::Front<'_>,
+    ctx: &Ctx<'_>,
+    cwd: &Path,
+    out: &std::fs::File,
+) -> Result<Reference, IncrReason> {
+    use mortar_core::incr::{LayoutDelta, RefillChunk, RefillSet, StoredLayout, SymtabPlan};
+    let layout = || IncrReason::UpdateNotImplemented(Some(Unimplemented::Layout));
+    let image = || IncrReason::UpdateNotImplemented(Some(Unimplemented::Image));
+    // U4: the front's file of that id is the state's row.
+    let row = view.file(file)?;
+    let path = view.string(row.path)?;
+    if f.inputs.files.get(file).is_none_or(|x| x.path != path.as_slice()) {
+        return Err(IncrReason::UpdateNotImplemented(Some(Unimplemented::Resolve)));
+    }
+    let meta = view.meta()?;
+    let leaves = view.leaves()?;
+    let rows = mortar_incr::state5::LayoutOf { view };
+    let stored = StoredLayout::new(&rows);
+    let delta = LayoutDelta { files: vec![file], ..LayoutDelta::default() };
+    let chunks: Vec<RefillChunk> = f
+        .layout
+        .placement
+        .chunks
+        .iter()
+        .filter(|(_, c)| !matches!(c.kind, mortar_core::layout::ChunkKind::Body(_)))
+        .map(|(chunk, _)| RefillChunk { chunk, reasons: 0 })
+        .collect();
+    let set = RefillSet { chunks, ..RefillSet::default() };
+    let (refill, size) = crate::image::with_link(f, ctx.store, &|_| {}, |l| {
+        mortar_image::update::refill(l, &delta, &SymtabPlan::default(), &set, &stored, out, &leaves)
+            .map(|u| (u, mortar_image::update::output_size(l)))
+    })
+    .map_err(|_| image())?
+    .map_err(|e| match e {
+        mortar_image::update::RefillError::Fallback(r) => r,
+        mortar_image::update::RefillError::Failed(_) => image(),
+    })?;
+    // The capture of `f` with the refill's binding parts.
+    let tree = match meta.leaf_fn {
+        0 => mortar_digest::TreeFn::L128,
+        1 => mortar_digest::TreeFn::Sha1,
+        _ => mortar_digest::TreeFn::Sha256,
+    };
+    let written = mortar_image::link::Written {
+        build_id: refill.build_id.clone(),
+        leaves: Some((tree, Vec::new())),
+        sealed: Some(meta.sealed_start..meta.sealed_end),
+        file_size: size,
+        file: None,
+        rows: 0,
+        jobs: 0,
+    };
+    let (mut state, rows5) = session.state(f, ctx.store, &written, cwd).map_err(|_| image())?;
+    state.leaves.clone_from(&refill.leaves);
+    let rows5 = rows5.ok_or_else(image)?;
+    let state = mortar_incr::capture::state5_rows(&state, rows5, false).map_err(|_| image())?;
+    // The identity check (G-3's materialization in the identity case).
+    let lock = session.lock().ok_or_else(image)?;
+    let corrupt = |e: std::io::Error| IncrReason::StateCorrupt(e.to_string());
+    let len = usize::try_from(lock.metadata().map_err(corrupt)?.len()).map_err(|_| image())?;
+    let mut bytes = vec![0u8; len];
+    std::os::unix::fs::FileExt::read_exact_at(lock, &mut bytes, 0).map_err(corrupt)?;
+    let old = mortar_incr::state5::canon::canon(&bytes)
+        .map_err(|e| IncrReason::StateCorrupt(e.to_string()))?;
+    let new = mortar_incr::state5::canon::canon_of(&state)
+        .map_err(|e| IncrReason::StateCorrupt(e.to_string()))?;
+    let diffs = mortar_incr::state5::canon::compare(&new, &old, &stored);
+    let files_rows = diffs.iter().filter(|d| d.kind == kind::FILES).count();
+    let allowed = |k: u32| matches!(k, kind::META | kind::STAT | kind::LEAVES | kind::FILES);
+    if files_rows > 1 || diffs.iter().any(|d| !allowed(d.kind)) {
+        return Err(layout());
+    }
+    Ok(Reference { refill, size, state })
+}
+
+/// U10 for the identity case: `write_with` the refill's ranges in place
+/// (IN-76, IN-77), W5 the reference state with W4's binding of the
+/// output, whole (`write_state_whole`, ruling M2a-1).
+fn write_identity(
+    session: &Session,
+    view: &StateView<'_>,
+    ctx: &Ctx<'_>,
+    out: &std::fs::File,
+    checked: Tuple,
+    r: Reference,
+) -> Result<Updated, IncrReason> {
+    let lock = session.lock().ok_or_else(|| IncrReason::NoState(String::new()))?;
+    let pair = write::Pair {
+        out,
+        out_path: ctx.out_path,
+        state: lock,
+        state_path: session.state_path(),
+        checked,
+        size: r.size,
+    };
+    // `--incremental=update` ignores `small-output` (U1): its write takes
+    // the in-place path at every size; otherwise IN-45's bound (G-13's
+    // knob in a testhooks build).
+    let bound = if session.update_mode() {
+        0
+    } else {
+        mortar_incr::testhook::small_output_bound().unwrap_or(mortar_incr::SMALL_OUTPUT)
+    };
+    let policy = mortar_incr::WritePolicy { in_place_from: bound, ..mortar_incr::WRITE_PATH };
+    let state = r.state;
+    let path = session.state_path();
+    let mut w5 = |output: &StatRow, ops: &mut dyn mortar_incr::ops::WriteOps| {
+        let mut m = state.clone();
+        m.stat.push(output.clone());
+        let bytes = mortar_incr::capture::state5_encode(&m)
+            .map_err(|e| WriteFailure::Failed { step: "W5", error: std::io::Error::other(e) })?;
+        match write::write_state_whole(path, &bytes, ops) {
+            Ok(true) => Ok(()),
+            Ok(false) => {
+                Err(WriteFailure::Failed { step: "W5", error: std::io::Error::other("state-busy") })
+            }
+            Err(error) => Err(WriteFailure::Failed { step: "W5", error }),
+        }
+    };
+    let mut ops = mortar_incr::ops::StdOps;
+    let w = write::write_with(
+        &pair,
+        view,
+        &r.refill.ranges,
+        &r.refill.bytes,
+        true,
+        &mut ops,
+        policy,
+        &mut w5,
+    )
+    .map_err(|e| match e {
+        WriteFailure::Fallback(reason) => reason,
+        WriteFailure::Failed { step, error } => {
+            IncrReason::OutputChanged(format!("{step}: {error}"))
+        }
+    })?;
+    let c = &r.refill.counts;
+    Ok(Updated {
+        lines: format!(
+            "incremental: update ({:?}{}) changed=1 ranges={} bytes={} (M2a: O(link) twice over, the front and the whole state; no time is read from it)\n",
+            w.path,
+            w.copy_because.map(|b| format!(": {b}")).unwrap_or_default(),
+            c.ranges,
+            c.dirty
+        ),
     })
 }
 
