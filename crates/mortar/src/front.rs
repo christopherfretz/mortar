@@ -520,7 +520,7 @@ pub fn front<'s>(
     let closure_only = outcome.closure_only;
     let roots = outcome.roots;
     let needed = outcome.needed;
-    let resolution = outcome.resolution;
+    let mut resolution = outcome.resolution;
 
     // 45: assignment (layout stage A). A dynamic output on an
     // architecture whose join has not landed is refused here, by name.
@@ -568,6 +568,10 @@ pub fn front<'s>(
             return None;
         }
     };
+    // spec/incr.md IN-55 option (A): an incremental session leaves the GNU name index out.
+    if env.slack {
+        mortar_layout::incr_discard::discard(&headers, &mut resolution);
+    }
     let assignment = match mortar_layout::assign::assign(
         &headers,
         &resolution,
