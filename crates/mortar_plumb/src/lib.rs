@@ -59,6 +59,7 @@ mod structure;
 pub mod sweep;
 mod symbols;
 mod symfill;
+mod symnames;
 mod weakclass;
 mod wrap;
 pub mod x64;
@@ -378,6 +379,7 @@ pub(crate) fn run_engine(
     content::check_symbols(engine);
     prof::mark("erratum, padding, content symbols");
     symbols::check(engine);
+    symnames::check(engine, map);
     prof::mark("symbols");
     let caller = engine.caller_line.clone();
     let (gdb, line) = gdbindex::check(image, objs, map, caller.as_deref());

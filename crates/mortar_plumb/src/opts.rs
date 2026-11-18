@@ -821,6 +821,23 @@ pub struct Options {
     /// The last of `-z now` (true) and `-z lazy` (false), when the line
     /// has either (§13.1: the runtime's `-z now` unless `-z lazy`).
     pub z_now: Option<bool>,
+    /// The last of `-x`, `-X` and `--discard-none` (`spec/synth.md` S-78:
+    /// which input locals `.symtab` keeps; Y6, WP-246).
+    pub discard: Discard,
+}
+
+/// `spec/synth.md` S-78: the input locals the `-x`/`-X` rule discards.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum Discard {
+    /// None of the three: the `.L` locals of split `Merge` sections.
+    #[default]
+    Default,
+    /// `-X`/`--discard-locals`: every `.L` local.
+    Locals,
+    /// `-x`/`--discard-all`: every input local, `STT_FILE` included.
+    All,
+    /// `--discard-none`: none.
+    None,
 }
 
 impl Default for Options {
@@ -845,6 +862,7 @@ impl Default for Options {
             odr_runtime: OdrRuntime::Off,
             odr_table_given: false,
             z_now: None,
+            discard: Discard::Default,
             wrap: Vec::new(),
             defsym: Vec::new(),
             unread: Vec::new(),
@@ -913,6 +931,9 @@ impl Options {
                 self.strip_all = true;
             }
             "-S" => self.strip_debug = true,
+            "-x" => self.discard = Discard::All,
+            "-X" => self.discard = Discard::Locals,
+            "--discard-none" => self.discard = Discard::None,
             "--gc-sections" => self.gc_sections = true,
             "--no-gc-sections" => self.gc_sections = false,
             "-T" | "--default-script" => self.script = true,

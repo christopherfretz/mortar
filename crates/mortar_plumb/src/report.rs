@@ -479,6 +479,19 @@ pub struct Coverage {
     /// What §6.10 made of `.gdb_index`, when the output has one.
     pub gdb_index: Option<String>,
     pub linker_defined_not_judged: Vec<String>,
+    /// Y6 (§6.5, WP-246): the input locals the rules keep (each found in
+    /// `.symtab` or a finding), those the rules drop, those missing; the
+    /// output locals no kept input local is (findings), demoted globals
+    /// (Y3's) and the linker's own (Y5's); what is not judged, by reason.
+    pub input_locals_kept: u64,
+    pub input_locals_dropped: u64,
+    pub input_locals_missing: u64,
+    pub output_locals_extra: u64,
+    pub output_locals_demoted: u64,
+    pub output_locals_own: u64,
+    pub input_locals_not_judged: Vec<(String, u64)>,
+    /// Y7 (§6.5, WP-246): `STT_FILE` entries judged.
+    pub file_symbols_judged: u64,
     /// Output sections whose placement no rule judges, by name: x86-64
     /// large sections (`SHF_X86_64_LARGE`), whose order differs by linker
     /// (spec/x64.md X-54; Y5 leaves them out of `_edata`/`_end`).
@@ -780,6 +793,26 @@ impl Report {
         }
         if let Some(n) = c.fillers {
             let _ = writeln!(s, "symbol table: fillers={n}");
+        }
+        if c.input_locals_kept + c.input_locals_dropped + c.file_symbols_judged > 0
+            || !c.input_locals_not_judged.is_empty()
+        {
+            let _ = writeln!(
+                s,
+                "input locals (Y6): kept {} (missing {}), dropped by rule {}; output locals: not a kept input's {}, demoted {}, the linker's {}; STT_FILE judged {}",
+                c.input_locals_kept,
+                c.input_locals_missing,
+                c.input_locals_dropped,
+                c.output_locals_extra,
+                c.output_locals_demoted,
+                c.output_locals_own,
+                c.file_symbols_judged
+            );
+        }
+        if !c.input_locals_not_judged.is_empty() {
+            let v: Vec<String> =
+                c.input_locals_not_judged.iter().map(|(k, n)| format!("{k}: {n}")).collect();
+            let _ = writeln!(s, "input locals not judged: {}", v.join("; "));
         }
         if !c.linker_defined_not_judged.is_empty() {
             let _ = writeln!(

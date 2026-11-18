@@ -378,14 +378,14 @@ fn globals(e: &mut Engine<'_, '_>, fs: &mut Vec<Finding>) {
         let Some(out) = image.global(name).or_else(|| image.unique(name)) else {
             // Y3 (WP-143): a name an input defines globally in a section
             // the output holds is in a `.symtab` the output has.
-            let v = vis.get(name.as_str()).copied().unwrap_or(0);
             if !image.symbols.is_empty()
                 && !image.has_name(name)
                 // `foo@@V2`: lld's and mold's `.symtab` name it `foo`;
                 // mortar's keeps the versioned name (synth S-75, WP-150).
                 && (e.format == Format::Mortar
                     || !name.split_once('@').is_some_and(|(base, _)| image.has_name(base)))
-                && rank(v) < rank(STV_HIDDEN)
+                // A hidden one is a local of its definer's block (synth.md
+                // S-77; WP-246): present all the same.
                 && let Some(why) = held_def(e, name)
             {
                 // §4.4a (WP-170): lld leaves a defined `__real_SYM` of a
