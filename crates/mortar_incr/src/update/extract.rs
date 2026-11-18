@@ -261,7 +261,12 @@ impl<'a, 's> Ctx<'a, 's> {
 
     /// The global key `(name, version)`: a stored row, a key a changed file
     /// added, or (`add`) a new one.
-    fn global(&mut self, name: &[u8], version: &[u8], add: bool) -> Result<Option<u32>, IncrReason> {
+    fn global(
+        &mut self,
+        name: &[u8],
+        version: &[u8],
+        add: bool,
+    ) -> Result<Option<u32>, IncrReason> {
         if let Some(k) = self.view.find_key(name, version)? {
             return Ok(Some(k.0));
         }
@@ -317,8 +322,8 @@ impl<'a, 's> Ctx<'a, 's> {
         let cf = self.changed_file(file);
         let facts = match cf {
             Some(c) if c.change == Change::Appeared => {
-                let member = c.row.member != 0
-                    && (c.row.flags & file_flags::LAZY != 0 || c.row.round > 0);
+                let member =
+                    c.row.member != 0 && (c.row.flags & file_flags::LAZY != 0 || c.row.round > 0);
                 Facts {
                     rank: c.row.rank,
                     kind: c.row.kind,
@@ -609,21 +614,13 @@ impl<'a, 's> Ctx<'a, 's> {
                 return Ok(Some(Vec::new()));
             }
             let ids = &self.ids[self.cf[&file]];
-            return Ok(Some(
-                c.mentions.iter().map(|m| (ids[m.symbol as usize].0, *m)).collect(),
-            ));
+            return Ok(Some(c.mentions.iter().map(|m| (ids[m.symbol as usize].0, *m)).collect()));
         }
         let f = self.facts(file)?;
         if !f.stored || !f.live_old {
             return Ok(None);
         }
-        Ok(Some(
-            self.view
-                .mentions_of(FileId(file))?
-                .into_iter()
-                .map(|m| (m.symbol, m))
-                .collect(),
-        ))
+        Ok(Some(self.view.mentions_of(FileId(file))?.into_iter().map(|m| (m.symbol, m)).collect()))
     }
 
     /// The members `file`'s mentions have an edge to (§4.1 edges 1-2), or
@@ -703,7 +700,9 @@ impl<'a, 's> Ctx<'a, 's> {
         };
         Ok(Some(
             rows.into_iter()
-                .filter(|(_, k)| matches!(*k, def_kind::SECTION | def_kind::ABSOLUTE | def_kind::COMMON))
+                .filter(|(_, k)| {
+                    matches!(*k, def_kind::SECTION | def_kind::ABSOLUTE | def_kind::COMMON)
+                })
                 .map(|(k, _)| k)
                 .collect(),
         ))
@@ -797,17 +796,15 @@ impl<'a, 's> Ctx<'a, 's> {
             }
             self.live_base(f)
         };
-        let push = |t: u32,
-                    r: u32,
-                    best: &mut BTreeMap<u32, u32>,
-                    queue: &mut BTreeSet<(u32, u32)>| {
-            if best.get(&t).is_none_or(|&b| r < b) {
-                if let Some(b) = best.insert(t, r) {
-                    queue.remove(&(b, t));
+        let push =
+            |t: u32, r: u32, best: &mut BTreeMap<u32, u32>, queue: &mut BTreeSet<(u32, u32)>| {
+                if best.get(&t).is_none_or(|&b| r < b) {
+                    if let Some(b) = best.insert(t, r) {
+                        queue.remove(&(b, t));
+                    }
+                    queue.insert((r, t));
                 }
-                queue.insert((r, t));
-            }
-        };
+            };
         for &(s, t) in &gained {
             if let Some(sr) = live1(s, &now)?
                 && live1(t, &now)?.is_none()

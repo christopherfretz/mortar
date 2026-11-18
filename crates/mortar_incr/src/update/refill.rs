@@ -160,7 +160,13 @@ impl<'a, 's> Refill<'a, 's> {
     /// A stored section that moved, died or came back: itself, its own
     /// file's references to it, the referrers of the globals it defines,
     /// its file's non-allocated units. The count of those globals.
-    fn section_moved(&mut self, s: SectionId, own: u32, refs: u32, file: u32) -> Result<u64, IncrReason> {
+    fn section_moved(
+        &mut self,
+        s: SectionId,
+        own: u32,
+        refs: u32,
+        file: u32,
+    ) -> Result<u64, IncrReason> {
         self.add(s, own);
         if s.0 >= self.sections {
             return Ok(0);
@@ -228,8 +234,8 @@ impl<'a, 's> Refill<'a, 's> {
             .layout
             .placement
             .chunks
-            .ids()
-            .filter_map(|c| self.layout.placement.chunks.get(c))
+            .as_slice()
+            .iter()
             .filter(|c| c.is_alloc())
             .map(|c| c.size)
             .sum();
