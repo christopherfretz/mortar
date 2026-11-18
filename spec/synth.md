@@ -1220,10 +1220,15 @@ gdb, lldb, perf, nm, addr2line, objdump and valgrind (§12).
   size (`arch.thunk()`); a patch is `__erratum_843419_veneer`, `st_size`
   its shape's (`arch.patch(E843419)`). (Placement of the addend:
   supervisor's ruling on WP-025.) gdb and perf then attribute a thunk to a
-  named function (lld names its thunks `__AArch64ADRPThunk_<target>` for
-  the same reason). Both forms are in the verifier's not-judged list
-  (`plumb.md` §6.5); the `$x` at an address no input occupies is Y4's
-  second exception.
+  named function (lld names its thunks `__AArch64ADRPThunk_<target>`,
+  `__AArch64AbsLongThunk_<target>` and `__AArch64BTIThunk_<target>` and
+  its erratum patches `__CortexA53843419_*`, GNU ld its erratum stubs
+  `e843419@…`, for the same reason; measured by WP-246: GNU ld's in the
+  verifier's `spie` `cxx.bfd`, entry 8136 `e843419@0035_00000326_584`,
+  lld's in its `corpus` `veneer/lld` and `mutation` `bti/lld`,
+  `__AArch64BTIThunk_padless`). Mortar's two forms are in the
+  verifier's not-judged list (`plumb.md` §6.5); the `$x` at an address
+  no input occupies is Y4's second exception.
 - **S-81 [G] (values).** `st_value` is the symbol's output address:
   `place(section) + st_value` for a symbol in a placed section; the S-19
   or S-50 value in a split section; `SHN_ABS` values unchanged; for
@@ -1288,11 +1293,15 @@ gdb, lldb, perf, nm, addr2line, objdump and valgrind (§12).
   of the same name in different files (layout L-155). A file with no
   `STT_FILE` and with kept locals gets none, as with lld: no symbol is
   invented. GNU inserts one named after the object or member (387
-  entries against lld's 3 in a static C hello). The difference is
-  cosmetic (X-32): gdb files libc's locals under the user's last source
-  file in its minimal symbols, but `break`, `break file:func`, `info
-  symbol`, `info line`, `info scope`, `list`, `print` and `info
-  functions` answer the same on both outputs.
+  entries against lld's 3 in a static C hello). GNU also writes one
+  unnamed `STT_FILE` before the linker's own locals (`_DYNAMIC`,
+  `_GLOBAL_OFFSET_TABLE_`, …); mortar writes no unnamed `STT_FILE`. The
+  verifier's Y7 holds a mortar output to that and passes over the
+  unnamed one in GNU ld's outputs only (`plumb.md` §6.5; WP-246). The
+  difference is cosmetic (X-32): gdb files libc's locals under the
+  user's last source file in its minimal symbols, but `break`,
+  `break file:func`, `info symbol`, `info line`, `info scope`, `list`,
+  `print` and `info functions` answer the same on both outputs.
 - **S-84 [C] (`-s`, `-S`).** `-s` (`--strip-all`) omits `.symtab`,
   `.strtab` and `.symtab_shndx`, and every non-allocated section that
   layout's `-S` rule removes. `-S` (`--strip-debug`) omits the debug
@@ -1354,10 +1363,14 @@ gdb, lldb, perf, nm, addr2line, objdump and valgrind (§12).
   with room to grow); with them the plan would place each file's block
   at its span instead of checking it.
   **In an incremental-mode output** (`spec/incr.md` IN-49a; WP-212
-  applied WP-207's §R.4, which closes Q8) each file's span is
-  `(first, count, capacity)` and the spans follow IN-49a's capacities
-  (a block followed by fillers up to its capacity, the local tail
-  reserve after the last block); the state's `SYMTAB` and `SYMTAB_KEYS`
+  applied WP-207's §R.4, which closes Q8) each file's span
+  (`Slots.symtab_locals`) is `(first, capacity)`: its block of `count`
+  entries and the fillers up to its capacity are the file's, and the
+  spans follow each other from entry 1 with no gap
+  (`mortar_core::check`'s contiguity rule holds). The local tail reserve
+  after the last span is no file's span: its entries are fillers,
+  counted in `sh_info`. The state's `SYMTAB` rows give `(first, count,
+  capacity)` (WP-217); the state's `SYMTAB` and `SYMTAB_KEYS`
   tables (IN-18e) replace `Slots.symtab_locals` there. A plain link is
   as above: `(first, count)`, the plan's spans only.
 - **S-89 [C] (cost).** For 10^7 symbols (240 MB of `.symtab` on ELF64,

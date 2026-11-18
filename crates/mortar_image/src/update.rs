@@ -1052,9 +1052,10 @@ fn write_symtab(
     // The moves by their new index. U-5 drops a move whose `to` `entries`
     // writes (a `Changed` global a removal moves): two writers of one index
     // are a plan that contradicts itself.
+    let written: std::collections::BTreeSet<u32> = plan.entries.iter().map(|e| e.index).collect();
     let mut from_of: BTreeMap<u32, u32> = BTreeMap::new();
     for &(from, to) in &plan.moves {
-        if from_of.insert(to, from).is_some() || plan.entries.iter().any(|e| e.index == to) {
+        if from_of.insert(to, from).is_some() || written.contains(&to) {
             return Err(RefillError::Fallback(IncrReason::StateCorrupt(format!(
                 "SYMTAB: the plan writes .symtab index {to} twice (a move and another writer)"
             ))));

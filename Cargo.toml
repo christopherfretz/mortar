@@ -67,6 +67,13 @@ cast_sign_loss = "allow"
 # measured a smaller binary with fewer start-up page faults). A panic is a
 # bug of mortar's: the process aborts, no caller catches it. Tests keep
 # unwinding (cargo ignores `panic` for test targets).
+# Line tables only in debug builds: a backtrace keeps its file and line,
+# and a worktree's target directory loses most of its size (the test
+# binaries were about 100 MB each with full debug information, 9 GB per
+# worktree).
+[profile.dev]
+debug = "line-tables-only"
+
 # The verifier runs thousands of times in every gate (L3 judges each link
 # output; the sweep judges each mutant): its own code and the readers it
 # uses are optimised in debug builds too. Debug assertions and overflow

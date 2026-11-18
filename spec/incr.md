@@ -2970,6 +2970,20 @@ objects.
     values remapped through the placement, the rest of each entry as
     read). Nothing else of the tables is read or written: neither the
     state's names nor the unchanged inputs (IN-14).
+  - **How the update writes them** (U-5's plan, `SymtabPlan`: its
+    `moves` `(from, to)`, `from` an index of the previous output and `to`
+    of the new table; its `remap` ranges; its `fillers`; its `entries`;
+    WP-217, WP-218 §E). For an index i of a remap range the source is the
+    previous output's entry at `from` when a move has `to` = i, otherwise
+    the entry at i; its value is mapped through the growth steps. The
+    writer reads every move from the previous output before it writes,
+    applies the remap over the table after the moves, then the fillers,
+    then the entries; a table that shrinks is zeroed from its new end to
+    its old end, and the update is refused (`state-corrupt`) if that
+    range reaches another section. A plan that writes one index twice
+    (two moves to one `to`, or a move and an entry at one index) is
+    refused `state-corrupt` before any write: a self-contradictory plan
+    has no reason of its own in v1, and the full link follows.
   - Cost (*estimate* from protoc's 163,381 locals and 76,402 globals,
     §1.4): about 20,000 fillers and the 64-entry reserves, 0.5 MB on 5.4
     MB of tables; on g10x WP-094 §4 measured 7 `.symtab` and 8 `.strtab`
@@ -3493,6 +3507,10 @@ a pass over a whole table of the state; **O(output)**.
      files" (IN-27), their files' `.symtab` entries are remapped (IN-49a),
      and the program and section header tables are rewritten whole
      (IN-75). The segment reserve exhausted: `reserve-exhausted`.
+     A `DEFINED` row at the end of a chunk whose size the update changes
+     moves to the chunk's new end, in the layout's `placement.defined`
+     (layout.md §13.1 as a full link writes it); a row past the old end
+     is `update-not-implemented (layout)` (WP-245).
   4. **Packed sections** (L-142, IN-34's rows) are rewritten whole in
      full-link order within their capacity; past it, a growth step; past
      the reserve: `reserve-exhausted`. A packed section whose order
@@ -3568,17 +3586,23 @@ a pass over a whole table of the state; **O(output)**.
      extra word): a slot no live file demands is dead, written 0 and a
      hole. A slot keyed by a local of a changed file is dead (IN-28b: a
      local has no identity across versions) and the new version's demand
-     appended. A file's old demand subtracts one from each slot its
-     `KEY_REFS.demand` needs, its new demand adds one; a slot at 0 is
-     retired, a new one appended. The delta carries every `SLOTS` row it
-     writes in four disjoint lists sorted by `(kind, index)`, each row as
-     it is after the update (WP-242 B, seam 6): `slots_appended` (an
+     appended. When that key (by IN-28b's identity) has a retired row,
+     the row is revived at its index (`slots_revived`); one key never has
+     two `SLOTS` rows of one kind (WP-245). A file's old demand
+     subtracts one from each slot its `KEY_REFS.demand` needs, its new
+     demand adds one; a slot at 0 is retired, a new one appended. The
+     delta carries every `SLOTS` row it writes in four disjoint lists
+     sorted by `(kind, index)`, each row as it is after the update
+     (WP-242 B, seam 6): `slots_appended` (an
      index past its kind's stored count), `slots_dead` (refs above 0 → 0),
      `slots_revived` (0 → above 0: its old index, written again) and
      `slots_recounted` (one count above 0 → another: the row only, no
      byte). "A hole" is a `HOLES` row of kind `DeadSlot` over the retired
      slot's words (plumb.md P-E5 compares the GOT's words outside the
-     update's holes); a revival removes it. (P-5) **The scan reads a target's
+     update's holes); a revival removes it. **v1** (WP-245): retiring or
+     reviving a PLT or IPLT slot, and any retire or revive in an output
+     with `.dynamic`, is `update-not-implemented (layout)`; every new slot
+     is `reserve-exhausted`. (P-5) **The scan reads a target's
      resolution only through one value, `mortar_arch::SymFacts`
      (`ScanTables::sym`, computed by `mortar_scan::view::View::facts`)**:
      when that value of a key changes and the key has a referrer in an
@@ -3753,7 +3777,11 @@ a pass over a whole table of the state; **O(output)**.
   are hashed as I-76 says (zeroed). The new leaves go to the state's
   patch. The update's map (`--mortar-map`) is the full link's map grammar
   with the update's placement, `incremental`, and its `hole`/`dead`
-  lines, written whole (IN-49): the judge reads it (IN-79 (b)). *Test
+  lines, written whole (IN-49): the judge reads it (IN-79 (b)). A
+  synthetic chunk that contains a hole is written as one chunk line per
+  part between its holes, so that every byte of the output section is
+  covered by exactly one line of the map (plumb.md P-I1); `.got` with a
+  `DeadSlot` hole is the case (WP-245). *Test
   (U-6):* the refilled windows of an update with an empty delta equal the
   old output's bytes; `dirty_ranges_cover_every_differing_byte` (the
   update's output against the previous output, byte by byte: every
@@ -4869,9 +4897,15 @@ time and of peak RSS on protoc (*target*, S1 measures it).
   fixes (the branch at each erratum site and its patch's words) from the
   final placement and slots, so no stored row is ignored and none is
   refused for differing from the computed one (the WP-061 review's F8 is
-  closed). A table the rules do not admit fails by name (in
-  `Layout::check`, or in the plan that holds it to a rule), or, for the
-  few the checks do not cover, gives an output the verifier rejects.
+  closed). A replay builds `.symtab` and `.strtab` with IN-49a's room
+  (the blocks' capacities, the tail reserve, the regions' slack, the
+  file slack), as the incremental-mode full link that wrote the state
+  did, whether or not the replaying link was asked for incremental mode
+  (`PatchFacts.room` is set by `env.slack || env.replay`); its spans are
+  held to the stored `(first, capacity)` (WP-217). A table the rules do
+  not admit fails by name (in `Layout::check`, or in the plan that
+  holds it to a rule), or, for the few the checks do not cover, gives an
+  output the verifier rejects.
   *Test:* every L10 step runs it;
   `replay_reproduces_and_each_table_matters` (with an erratum link and a
   link with range-extension thunks) changes each decision table: a valid
