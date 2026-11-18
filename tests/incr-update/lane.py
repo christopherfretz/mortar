@@ -274,6 +274,7 @@ class Run:
             senv = dict(env)
             senv['INCR_HOP'] = str(i)
             senv['MORTAR_INCR_DIRTY'] = os.path.join(H, 'dirty.txt')
+            senv.update({'MORTAR_INCR_SMALL_OUTPUT': '0', 'MORTAR_INCR_STATE4': '1'})  # WP-225: G-13; the dry run's side state (M6)
             xs, xerr = self.link(self.subject_argv(), W, pre, post,
                                  ['--incremental', '--incremental-report=' + os.path.join(H, 'rep.txt'),
                                   '--mortar-map=prog.map'], senv)

@@ -207,6 +207,32 @@ impl Prog {
         run_in(&self.built.dir, Path::new(MORTAR), &self.args(out, extra), env)
     }
 
+    /// A link in this process with WP-225's format-4 side state (the
+    /// floor's and the dry run's), that must succeed; its `incremental:`
+    /// lines.
+    fn link4(&self, out: &str, extra: &[&str]) -> String {
+        let inv = mortar::invoke_state4("mortar", &self.args(out, extra), &self.built.dir);
+        assert!(
+            matches!(inv.outcome, mortar::Outcome::Linked { .. }),
+            "mortar {extra:?}: {:?}",
+            inv.outcome
+        );
+        inv.incremental
+    }
+
+    /// [`Prog::link4`] as before WP-225's flip (no format-5 data, so no
+    /// IN-34a pads; only the format-4 side state): the format-4 replay's
+    /// tests.
+    fn link_legacy4(&self, out: &str, extra: &[&str]) -> String {
+        let inv = mortar::invoke_legacy4("mortar", &self.args(out, extra), &self.built.dir);
+        assert!(
+            matches!(inv.outcome, mortar::Outcome::Linked { .. }),
+            "mortar {extra:?}: {:?}",
+            inv.outcome
+        );
+        inv.incremental
+    }
+
     /// A link that must succeed; its standard error.
     fn link(&self, out: &str, extra: &[&str]) -> String {
         let o = self.mortar_env(out, extra, &[]);
@@ -242,8 +268,9 @@ impl Prog {
         self.path(&format!("{out}.mortar-state"))
     }
 
+    /// The FORMAT-4 side state of a [`Prog::link4`] link (WP-225's flip).
     fn read_state(&self, out: &str) -> (Vec<u8>, State) {
-        let bytes = std::fs::read(self.state_of(out)).unwrap();
+        let bytes = std::fs::read(self.path(&format!("{out}.mortar-state.format4"))).unwrap();
         let state = format::decode(&bytes, mortar::VERSION.as_bytes())
             .unwrap_or_else(|e| panic!("{}: {}", e.reason(), e.detail()));
         (bytes, state)
@@ -264,6 +291,8 @@ fn a_full_link_in_incremental_mode_lays_out_slack() {
         assert!(!prog.state_of("plain").exists(), "a plain link wrote a state");
         let err = prog.link("full", &["--incremental=full"]);
         assert!(!err.contains("incremental"), "{err}");
+        assert_eq!(std::fs::read(prog.state_of("full")).unwrap()[..8], mortar_incr::state5::MAGIC);
+        prog.link4("full", &["--incremental=full"]);
         assert!(prog.bytes("plain") != prog.bytes("full"), "no slack laid out");
         assert_eq!(prog.run("full"), prog.run("plain"), "the program runs otherwise");
         let err = prog.link("auto", &["--incremental"]);
@@ -317,26 +346,35 @@ fn fall_back_reasons() {
         "(options-changed)",
     );
     line_with(&prog.link("o", &inc), "(options-changed)");
-    // The updating flag.
+    // The updating flag (format 5's header word at 12, read before any
+    // hash: WP-225).
     let state = prog.state_of("o");
     let mut bytes = std::fs::read(&state).unwrap();
-    let at = usize::try_from(format::FLAGS_OFFSET).unwrap();
-    bytes[at..at + 4].copy_from_slice(&FLAG_UPDATING.to_le_bytes());
+    assert_eq!(bytes[..8], mortar_incr::state5::MAGIC, "format 5 at S");
+    let good = bytes.clone();
+    bytes[12..16].copy_from_slice(&FLAG_UPDATING.to_le_bytes());
     std::fs::write(&state, &bytes).unwrap();
     line_with(&prog.link("o", &inc), "(output-torn)");
     // Another mortar's state.
-    let (_, mut s) = prog.read_state("o");
-    let off = u32::try_from(s.strings.len()).unwrap();
-    s.strings.extend_from_slice(b"0.0.0-another");
-    s.meta.version = format::Str { off, len: 13 };
-    std::fs::write(&state, format::encode(&s)).unwrap();
-    line_with(&prog.link("o", &inc), "(state-version: ");
+    std::fs::write(&state, &good).unwrap();
+    let mut m = mortar_incr::state5::read::decode(&good).unwrap();
+    let off = u32::try_from(m.strings.len()).unwrap();
+    m.strings.extend_from_slice(b"0.0.0-another");
+    m.meta.version = format::Str { off, len: 13 };
+    std::fs::write(&state, mortar_incr::state5::write::encode(&m).unwrap()).unwrap();
+    line_with(&prog.link("o", &inc), "(state-version: written by mortar 0.0.0-another");
+    // A format-4 state (WP-225's flip): `state-version`, replaced.
+    prog.link4("o", &["--incremental=full"]);
+    std::fs::copy(prog.path("o.mortar-state.format4"), &state).unwrap();
+    line_with(&prog.link("o", &inc), "(state-version: format version 4 (MORTARST)");
+    assert_eq!(std::fs::read(&state).unwrap()[..8], mortar_incr::state5::MAGIC);
     // Damaged bytes.
     std::fs::write(&state, b"not a state").unwrap();
     line_with(&prog.link("o", &inc), "(state-corrupt: ");
-    // The report to a file, appended.
-    prog.link("o", &["--incremental", "--incremental-report=rep.txt"]);
-    prog.link("o", &["--incremental", "--incremental-report=rep.txt"]);
+    // The report to a file, appended; the dry run from the format-4 side
+    // state (WP-225: until M6).
+    prog.link4("o", &["--incremental", "--incremental-report=rep.txt"]);
+    prog.link4("o", &["--incremental", "--incremental-report=rep.txt"]);
     let rep = std::fs::read_to_string(prog.path("rep.txt")).unwrap();
     let lines: Vec<&str> = rep.lines().filter(|l| l.starts_with("incremental:")).collect();
     assert_eq!(lines.len(), 2, "{rep}");
@@ -465,7 +503,7 @@ impl Rng {
 #[test]
 fn every_damaged_state_is_a_named_reason() {
     let Some(prog) = Prog::asm() else { return };
-    prog.link("o", &["--incremental"]);
+    prog.link4("o", &["--incremental"]);
     let (good, _) = prog.read_state("o");
     let hook = std::panic::take_hook();
     std::panic::set_hook(Box::new(|_| {}));
@@ -920,7 +958,7 @@ fn replay_reproduces_and_each_table_matters() {
     for prog in progs.into_iter().flatten() {
         let dir = prog.built.dir.display().to_string();
         prog.link("plain", &[]);
-        prog.link("full", &["--incremental=full"]);
+        prog.link_legacy4("full", &["--incremental=full"]);
         let (_, state) = prog.read_state("full");
         // The replay reproduces the incremental-mode link (with its
         // slack and holes, IN-30), not the plain one.
@@ -1047,7 +1085,7 @@ fn padding_cies_and_dead_ranges_through_the_replay() {
     };
     let prog = Prog { scratch, built, arch: AARCH64 };
     prog.link("plain", &["--mortar-map=plain.map"]);
-    prog.link("full", &["--incremental=full", "--mortar-map=full.map"]);
+    prog.link_legacy4("full", &["--incremental=full", "--mortar-map=full.map"]);
     let expected = prog.run("plain");
     assert_eq!(prog.run("full"), expected);
     let map = std::fs::read_to_string(prog.path("full.map")).unwrap();
@@ -1183,7 +1221,7 @@ fn a_kept_equal_cie_is_followed() {
         ],
     };
     let prog = Prog { scratch, built, arch: AARCH64 };
-    prog.link("full", &["--incremental=full"]);
+    prog.link_legacy4("full", &["--incremental=full"]);
     let (_, state) = prog.read_state("full");
     let kept = |s: &State| s.eh_records.iter().filter(|r| r.piece == 0).count();
     assert_eq!(kept(&state), 2, "two CIEs that differ are both kept");
@@ -1230,9 +1268,11 @@ fn a_version_1_state_is_refused_by_name() {
             .collect();
         let o = run_in(scratch.path(), Path::new(MORTAR), &args, &[]);
         assert!(o.success(), "{dir}: {}", o.stderr_text());
-        line_with(&o.stderr_text(), "full (state-version: format version 1,");
+        // WP-225's flip: any format-4 state (version 1 included) at `S` is
+        // `state-version`, replaced by a format-5 state.
+        line_with(&o.stderr_text(), "full (state-version: format version 4 (MORTARST)");
         let bytes = std::fs::read(scratch.join("out.mortar-state")).unwrap();
-        assert!(format::decode(&bytes, mortar::VERSION.as_bytes()).is_ok(), "{dir}: not rewritten");
+        assert!(mortar_incr::state5::read::decode(&bytes).is_ok(), "{dir}: not rewritten");
     }
 }
 
@@ -1431,7 +1471,7 @@ fn the_reader_refuses_tables_that_disagree() {
     let states: Vec<State> = progs
         .iter()
         .map(|p| {
-            p.link("o", &["--incremental"]);
+            p.link4("o", &["--incremental"]);
             p.read_state("o").1
         })
         .collect();
@@ -1525,7 +1565,20 @@ fn a_target_change_at_the_same_path_is_options_changed() {
     let err = link(&a64);
     line_with(&err, "full (options-changed)");
     assert!(!err.lines().any(|l| l.starts_with("delta ")), "a dry run: {err}");
-    let err = link(&a64);
+    // The dry run reads the format-4 side state (WP-225: until M6), so
+    // this pair is linked in this process with it.
+    let args: Vec<OsString> =
+        ["in.o", "-static", "-o", "o", "--incremental", "--incremental-report"]
+            .iter()
+            .map(OsString::from)
+            .collect();
+    let link4 = || {
+        let inv = mortar::invoke_state4("mortar", &args, dir.path());
+        assert!(matches!(inv.outcome, mortar::Outcome::Linked { .. }), "{:?}", inv.outcome);
+        inv.incremental
+    };
+    link4();
+    let err = link4();
     line_with(&err, "full (small-output)");
     assert!(err.lines().any(|l| l == "delta end"), "no dry run: {err}");
 }
@@ -1788,7 +1841,7 @@ fn the_floor_update_is_the_full_link_of_the_edited_inputs() {
             std::fs::write(prog.path("c1.c.o.new"), &b).unwrap();
             std::fs::rename(prog.path("c1.c.o.new"), &obj).unwrap();
         };
-        prog.link("o", &["--incremental=full"]);
+        prog.link4("o", &["--incremental=full"]);
         let inode =
             || std::os::unix::fs::MetadataExt::ino(&std::fs::metadata(prog.path("o")).unwrap());
         let before = inode();
@@ -1840,7 +1893,9 @@ fn the_floor_update_is_the_full_link_of_the_edited_inputs() {
         let o = prog.mortar_env("o", &["--incremental=update"], &[]);
         assert!(!o.success());
         assert!(
-            o.stderr_text().contains("cannot update: update-not-implemented"),
+            // WP-225: the floor rewrote the side state; the format-5
+            // state at `S` describes the previous output.
+            o.stderr_text().contains("cannot update: output-changed"),
             "{}",
             o.stderr_text()
         );
@@ -1995,8 +2050,14 @@ impl Members {
             ["-static", "-o", "out", "--incremental", "--incremental-report=rep.txt"]
                 .map(OsString::from),
         );
-        let o = run_in(&cwd, Path::new(MORTAR), &a, &[]);
-        assert!(o.success(), "mortar {args:?}: {}", o.stderr_text());
+        // In this process with the format-4 side state: the dry run's
+        // (WP-225's flip, until M6).
+        let inv = mortar::invoke_state4("mortar", &a, &cwd);
+        assert!(
+            matches!(inv.outcome, mortar::Outcome::Linked { .. }),
+            "mortar {args:?}: {:?}",
+            inv.outcome
+        );
         std::fs::read_to_string(rep).unwrap()
     }
 }
@@ -2091,7 +2152,9 @@ fn a_small_output_is_linked_in_full_by_name() {
     let err = prog.link("o", &["--incremental"]);
     assert_eq!(err.lines().filter(|l| l.starts_with("incremental:")).count(), 1, "{err}");
     line_with(&err, "full (small-output)");
-    let err = prog.link("o", &["--incremental", "--incremental-report"]);
+    // The dry run reads the format-4 side state (WP-225: until M6).
+    prog.link4("o", &["--incremental"]);
+    let err = prog.link4("o", &["--incremental", "--incremental-report"]);
     line_with(&err, "full (small-output) changed=");
     assert_eq!(err.lines().last(), Some("delta end"), "{err}");
     let o = prog.mortar_env("o", &["--incremental=update"], &[]);
@@ -2208,14 +2271,15 @@ fn the_report_is_bounded() {
             if report {
                 a.push("--incremental-report=rep.txt".into());
             }
-            let o = run_in(&dir, Path::new(MORTAR), &a, &[]);
-            assert!(o.success(), "{}", o.stderr_text());
+            // The dry run reads the format-4 side state (WP-225, until M6).
+            let inv = mortar::invoke_state4("mortar", &a, &dir);
+            assert!(matches!(inv.outcome, mortar::Outcome::Linked { .. }), "{:?}", inv.outcome);
         };
         link(0, false);
         link(1, true);
         let rep = std::fs::read_to_string(dir.join("rep.txt")).unwrap();
         // The files of this run, before the next (about 40 MB).
-        for f in ["out", "out.mortar-state", "in.o"] {
+        for f in ["out", "out.mortar-state", "out.mortar-state.format4", "in.o"] {
             std::fs::remove_file(dir.join(f)).unwrap();
         }
         reports.push(rep);
@@ -2303,4 +2367,137 @@ fn symtab_file_slack_is_the_layout_tail() {
     for size in edges.into_iter().chain(steps) {
         assert_eq!(file_slack(size), Slack::INCREMENTAL.tail(size), "size {size}");
     }
+}
+
+// ---- WP-225 (U-10, the join): M1, the flip and the skeleton ----------------
+
+/// The `cannot update: <reason>` of `--incremental=update` on `prog`'s
+/// line to `o` with `extra` (it ignores `small-output`, so a release
+/// build's small programs reach the update).
+fn cannot_update(prog: &Prog, extra: &[&str]) -> String {
+    let mut e = vec!["--incremental=update"];
+    e.extend(extra);
+    let o = prog.mortar_env("o", &e, &[]);
+    assert!(!o.success(), "--incremental=update linked: {}", o.stderr_text());
+    let err = o.stderr_text();
+    err.lines()
+        .find_map(|l| l.split_once("cannot update: ").map(|(_, r)| r.trim_end().to_owned()))
+        .unwrap_or_else(|| panic!("no `cannot update:` in:\n{err}"))
+}
+
+/// `a.o` of an assembly program rebuilt from `text` with `flags` (a new
+/// inode, as a compiler writes it).
+fn reassemble(prog: &Prog, text: &str, flags: &[&str]) {
+    let gcc = prog.arch.tool("gcc").expect("gcc");
+    std::fs::write(prog.path("a.s"), text).unwrap();
+    let mut args: Vec<OsString> = flags.iter().map(OsString::from).collect();
+    args.extend(["-c", "a.s", "-o", "a.o.new"].map(OsString::from));
+    let o = run_in(&prog.built.dir, &gcc, &args, &[]);
+    assert!(o.success(), "gcc: {}", o.stderr_text());
+    std::fs::rename(prog.path("a.o.new"), prog.path("a.o")).unwrap();
+}
+
+// spec: incr.md IN-70 (U1: the flag read first, before any hash; then the
+// plan, the output; U2 ends with `debug` before any later step), §7 (the
+// reasons in their order: two reasons at once give the earlier, one case
+// per adjacent pair), WP-225 0.5 M1.
+#[test]
+fn u1_and_u2_reasons_in_order_on_a_format5_state() {
+    let Some(prog) = Prog::asm() else { return };
+    let inc = ["--incremental", "--incremental-report"];
+    prog.link("o", &["--incremental"]);
+    let state = prog.state_of("o");
+    let good = std::fs::read(&state).unwrap();
+    assert_eq!(good[..8], mortar_incr::state5::MAGIC, "format 5 is THE state");
+    let touch = || {
+        let f = std::fs::File::options().write(true).open(prog.path("o")).unwrap();
+        f.set_modified(std::time::SystemTime::UNIX_EPOCH + Duration::from_secs(1_000_000)).unwrap();
+    };
+    let mut flagged = good.clone();
+    flagged[12..16].copy_from_slice(&FLAG_UPDATING.to_le_bytes());
+    // (the flag, the plan): the flag first.
+    std::fs::write(&state, &flagged).unwrap();
+    line_with(
+        &prog.link("o", &["--incremental", "--incremental-report", "--gc-sections"]),
+        "(output-torn)",
+    );
+    // (the state's build, the output): `state-version` first.
+    prog.link("o", &["--incremental"]);
+    let mut m = mortar_incr::state5::read::decode(&std::fs::read(&state).unwrap()).unwrap();
+    let off = u32::try_from(m.strings.len()).unwrap();
+    m.strings.extend_from_slice(b"0.0.0-another");
+    m.meta.version = format::Str { off, len: 13 };
+    std::fs::write(&state, mortar_incr::state5::write::encode(&m).unwrap()).unwrap();
+    touch();
+    line_with(&prog.link("o", &inc), "(state-version: written by mortar 0.0.0-another");
+    // (the plan, the output): `options-changed` first.
+    prog.link("o", &["--incremental"]);
+    touch();
+    line_with(
+        &prog.link("o", &["--incremental", "--incremental-report", "--gc-sections"]),
+        "(options-changed)",
+    );
+    // (the output, small-output): `output-changed` first.
+    prog.link("o", &["--incremental"]);
+    touch();
+    line_with(&prog.link("o", &inc), "(output-changed: its stat tuple differs)");
+    line_with(&prog.link("o", &inc), "(small-output)");
+    // `--incremental=update` reaches U2 (it ignores `small-output`): the
+    // skeleton names the first step not wired.
+    assert_eq!(cannot_update(&prog, &[]), "update-not-implemented (resolve)");
+    // (U2's debug, U6's live): `debug` first; a gc link alone: `live`.
+    prog.link("o", &["--incremental", "--gc-sections"]);
+    assert_eq!(cannot_update(&prog, &["--gc-sections"]), "update-not-implemented (live)");
+    reassemble(&prog, ASM, &["-g"]);
+    assert_eq!(cannot_update(&prog, &["--gc-sections"]), "update-not-implemented (debug)");
+    // The old version's debug rows decide too (the new one has none).
+    prog.link("o", &["--incremental"]);
+    reassemble(&prog, ASM, &[]);
+    assert_eq!(cannot_update(&prog, &[]), "update-not-implemented (debug)");
+    // Nothing written by a fall-back of the update: a full link follows.
+    line_with(&prog.link("o", &inc), "(small-output)");
+}
+
+// spec: incr.md §7 `state-version` (WP-225's flip: a state of format 4 is
+// refused by name and replaced by a format-5 state)
+#[test]
+fn a_format4_state_is_state_version() {
+    let Some(prog) = Prog::asm() else { return };
+    prog.link4("o", &["--incremental=full"]);
+    let side = prog.path("o.mortar-state.format4");
+    assert_eq!(std::fs::read(&side).unwrap()[..8], format::MAGIC, "the side state is format 4");
+    std::fs::copy(&side, prog.state_of("o")).unwrap();
+    line_with(
+        &prog.link("o", &["--incremental", "--incremental-report"]),
+        "full (state-version: format version 4 (MORTARST), this mortar reads 5)",
+    );
+    assert_eq!(std::fs::read(prog.state_of("o")).unwrap()[..8], mortar_incr::state5::MAGIC);
+    assert!(mortar_incr::state5::read::decode(&std::fs::read(prog.state_of("o")).unwrap()).is_ok());
+}
+
+// spec: incr.md IN-61 (a shipped binary reads no variable): WP-225's G-13
+// knob is read by a testhooks build only.
+#[cfg(not(feature = "testhooks"))]
+#[test]
+fn the_small_output_knob_is_ignored_by_a_release_build() {
+    let Some(prog) = Prog::asm() else { return };
+    prog.link("o", &["--incremental"]);
+    let e = [("MORTAR_INCR_SMALL_OUTPUT", "0"), ("MORTAR_INCR_STATE4", "1")];
+    let o = prog.mortar_env("o", &["--incremental", "--incremental-report"], &e);
+    assert!(o.success(), "{}", o.stderr_text());
+    line_with(&o.stderr_text(), "full (small-output)");
+    assert!(!prog.path("o.mortar-state.format4").exists(), "a release build wrote format 4");
+}
+
+// spec: WP-225 G-13 (a testhooks build with the knob at 0 updates every
+// output: the skeleton's fall-back by name is the full link's reason).
+#[cfg(feature = "testhooks")]
+#[test]
+fn the_small_output_knob_reaches_the_update() {
+    let Some(prog) = Prog::asm() else { return };
+    prog.link("o", &["--incremental"]);
+    let e = [("MORTAR_INCR_SMALL_OUTPUT", "0")];
+    let o = prog.mortar_env("o", &["--incremental", "--incremental-report"], &e);
+    assert!(o.success(), "{}", o.stderr_text());
+    line_with(&o.stderr_text(), "full (update-not-implemented (resolve))");
 }

@@ -190,7 +190,12 @@ fn run(
     let plan = &parsed.plan;
     timer.phase(10, "command line");
     let out_path = cwd.join(plan.output.as_deref().unwrap_or_else(|| OsStr::new("a.out")));
-    let state_path = incremental::state_path(&parsed, cwd, &out_path);
+    // WP-225's flip: the state at `S` is format 5; the floor reads and
+    // writes the format-4 side state (`<S>.format4`, written by a full
+    // link with `crate::invoke_state4` or a testhooks build's
+    // `MORTAR_INCR_STATE4=1`). The format-5 state it leaves describes the
+    // previous output: the next link finds `output-changed` (a full link).
+    let state_path = incremental::format4_path(&incremental::state_path(&parsed, cwd, &out_path));
 
     // 1. The state, read and validated, against the plan and the output.
     let bytes =

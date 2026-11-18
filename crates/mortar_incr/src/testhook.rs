@@ -169,6 +169,25 @@ pub fn state5_collide() -> bool {
     false
 }
 
+/// WP-225's flip (format 5 is THE state): with the feature and
+/// `MORTAR_INCR_STATE4=1`, an incremental-mode full link also writes the
+/// link's FORMAT-4 state beside the state, at `<state>.format4`, for the
+/// test floor (`mortar::floor`) and the dry run of `--incremental-report`
+/// until both go (WP-225 M6). Without the feature: `false`.
+#[cfg(feature = "testhooks")]
+#[must_use]
+pub fn state4() -> bool {
+    std::env::var_os("MORTAR_INCR_STATE4").is_some_and(|v| v == "1")
+}
+
+/// WP-225's format-4 side state: without the `testhooks` feature, `false`.
+#[cfg(not(feature = "testhooks"))]
+#[inline]
+#[must_use]
+pub fn state4() -> bool {
+    false
+}
+
 /// WP-225's knob (G-13): with the feature and `MORTAR_INCR_SMALL_OUTPUT`
 /// set to a number of bytes, `small-output`'s bound (`crate::SMALL_OUTPUT`)
 /// is that number for this process (`0`: every output updates, so the
@@ -220,6 +239,6 @@ mod tests {
         crash_point("W1");
         dirty_ranges(&[DirtyRange { offset: 0, len: 1 }]);
         assert!(state5_path().is_none() && !state5_collide());
-        assert!(small_output_bound().is_none());
+        assert!(small_output_bound().is_none() && !state4());
     }
 }

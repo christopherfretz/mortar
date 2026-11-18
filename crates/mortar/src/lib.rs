@@ -161,6 +161,24 @@ pub fn invoke_state5(
     invoke_with(prog, args, cwd, None, PrintMap::Capture, Some(state5))
 }
 
+/// [`invoke_in`] with WP-225's format-4 side state on (tests of the floor
+/// and the dry run; `mortar_incr::testhook::state4` in a testhooks
+/// build): an incremental-mode full link also writes its format-4 state
+/// to `<state>.format4` (`incremental::format4_path`).
+#[must_use]
+pub fn invoke_state4(prog: &str, args: &[OsString], cwd: &Path) -> Invocation {
+    invoke_with4(prog, args, cwd, None, PrintMap::Capture, hooked_state5(), (true, false))
+}
+
+/// [`invoke_in`] as an incremental-mode link was before WP-225's flip: no
+/// format-5 data (no IN-34a pads), only the format-4 side state written
+/// (`<state>.format4`). For the format-4 replay's tests ([`replay_link`]),
+/// which go with the replay (WP-225 M6).
+#[must_use]
+pub fn invoke_legacy4(prog: &str, args: &[OsString], cwd: &Path) -> Invocation {
+    invoke_with4(prog, args, cwd, None, PrintMap::Capture, None, (false, true))
+}
+
 /// [`invoke`] as the executable runs it: `-M`'s map is written to standard
 /// output (through `mortar_diag::stream`) before the link's verdict, so a
 /// map that cannot be written fails the link by name and leaves no output
@@ -197,10 +215,10 @@ pub fn replay_link(
         let keys = mortar_incr::capture::Keys::new(link)?;
         mortar_incr::capture::replay(link, &keys, state, computed)
     };
-    invoke_with(prog, args, cwd, Some(&hook), PrintMap::Capture, None)
+    // WP-225: the replay is format 4's, in the pre-flip layout.
+    invoke_with4(prog, args, cwd, Some(&hook), PrintMap::Capture, None, (false, true))
 }
 
-#[allow(clippy::too_many_lines, reason = "the steps of spec/cli.md §4.3 in order")]
 fn invoke_with(
     prog: &str,
     args: &[OsString],
@@ -208,6 +226,20 @@ fn invoke_with(
     replay: Option<&front::Replay<'_>>,
     print_to: PrintMap,
     state5: Option<incremental::State5>,
+) -> Invocation {
+    let state4 = (mortar_incr::testhook::state4(), false);
+    invoke_with4(prog, args, cwd, replay, print_to, state5, state4)
+}
+
+#[allow(clippy::too_many_lines, reason = "the steps of spec/cli.md §4.3 in order")]
+fn invoke_with4(
+    prog: &str,
+    args: &[OsString],
+    cwd: &Path,
+    replay: Option<&front::Replay<'_>>,
+    print_to: PrintMap,
+    state5: Option<incremental::State5>,
+    state4: (bool, bool),
 ) -> Invocation {
     let parsed = mortar_cli::parse(args);
     let plan = &parsed.plan;
@@ -318,6 +350,26 @@ fn invoke_with(
         incremental::Start::Full(s) => {
             let mut s = *s;
             s.set_state5(state5);
+            s.set_state4(state4.0, state4.1);
+            Some(s)
+        }
+        // WP-225 (U-10): the update from U2 on; a fall-back before its
+        // first write is the full link with its reason, or under
+        // `--incremental=update` the error.
+        incremental::Start::Update(s) => {
+            let mut s = *s;
+            let reason = update::run(&s, &parsed, cwd);
+            if s.update_mode() {
+                let d = Diagnostic::error(mortar_diag::Kind::IncrementalUpdateFailed {
+                    reason: reason.report(),
+                });
+                diagnostics.emit(Key::new(15, 0, 2), d);
+                emit_refusals(&diagnostics);
+                return failed(diagnostics, timer.finish());
+            }
+            s.fall_back(reason);
+            s.set_state5(state5);
+            s.set_state4(state4.0, state4.1);
             Some(s)
         }
         incremental::Start::Failed => {

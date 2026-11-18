@@ -2,9 +2,19 @@
 //! the checks before a link (IN-12's unsupported modes, the stamps of
 //! IN-22a, the existing state read and validated, the fall-back reason of
 //! §7), and after a successful full link the state written beside the
-//! output and bound to it (IN-17, IN-18a, IN-21). There is no update yet:
-//! every incremental link is a full link (`small-output` below its bound,
-//! else `update-not-implemented`).
+//! output and bound to it (IN-17, IN-18a, IN-21).
+//!
+//! **WP-225 (the join).** The state at `S` is format 5 (`MORTARSR`,
+//! `mortar_incr::state5`); a format-4 state there is `state-version`.
+//! [`start`] is IN-70's U1 on it (the lock, the updating flag before any
+//! hash, `state5::open` with the plan hash, `META`'s mortar version, the
+//! output's binding, `boot_check`, `small-output`); a state that passes
+//! is [`Start::Update`], whose steps from U2 on are
+//! `crate::update::run`'s. Until those are complete every update falls
+//! back by name (`update-not-implemented (<word>)`) before its first
+//! write. Format 4 is written only by a testhooks build
+//! (`MORTAR_INCR_STATE4=1`, at `<S>.format4`) for the test floor and the
+//! dry run of `--incremental-report` (until WP-225 M6).
 //!
 //! A plain link never reaches this module (IN-11): [`start`] returns
 //! [`Start::Plain`] before it touches anything when `--incremental` is
@@ -41,6 +51,11 @@ pub enum Start {
     Plain,
     /// A full link in incremental mode, which writes a state at the end.
     Full(Box<Session>),
+    /// A format-5 state passed every check of U1 (IN-70): the update runs
+    /// (`crate::update::run`); a fall-back turns the session into a full
+    /// link ([`Session::fall_back`]) or, under `--incremental=update`, an
+    /// error.
+    Update(Box<Session>),
     /// `--incremental=update` cannot update: the error is emitted and
     /// nothing is linked or written.
     Failed,
@@ -82,8 +97,23 @@ pub struct Session {
     /// IN-77b: `state-busy` or `lock-unavailable`: this link writes no
     /// state (and, for `lock-unavailable`, removes the one at `S`).
     writes_no_state: Option<&'static str>,
-    /// WP-244: the format-5 capture written beside the format-4 state.
+    /// WP-244's switch, kept for tests after the flip (WP-225): the
+    /// format-5 state also written to its path, its rows to its sink.
     state5: Option<State5>,
+    /// WP-225: the format-4 side state (`<state>.format4`) is also written,
+    /// for the test floor and the dry run (`mortar_incr::testhook::state4`
+    /// or [`crate::invoke_state4`]; deleted at M6).
+    state4: bool,
+    state4_path: Option<PathBuf>,
+    /// WP-225: the pre-flip layout for the format-4 replay's tests
+    /// ([`crate::replay_link`], [`crate::invoke_legacy4`]): no format-5
+    /// data (so no IN-34a pads), only the format-4 side state written.
+    legacy4: bool,
+    /// `--incremental=update`: a fall-back is an error.
+    update_mode: bool,
+    /// IN-77a: the output `P`, opened once by U1 (the update's
+    /// descriptor); `None` for a full link.
+    pub(crate) out: Option<std::fs::File>,
 }
 
 /// WP-244's switch (until the join, U-10, writes format 5 as THE state):
@@ -292,37 +322,44 @@ pub fn start(parsed: &Parsed, cwd: &Path, out_path: &Path, diagnostics: &Collect
         Err(IncrReason::LockUnavailable(_)) => Some("lock-unavailable"),
         _ => None,
     };
-    let (reason, recorded_target, old) = match locked {
+    let mut out = None;
+    let (reason, recorded_target, size) = match locked {
         Err(reason) if mode != IncrementalMode::Full => (Some(reason), None, None),
         // `--incremental=full` links from scratch whatever the state says.
         _ if mode == IncrementalMode::Full => (None, None, None),
         _ => {
-            let (reason, target, old) = check(lock.as_ref(), plan_hash, out_path);
-            (Some(reason), target, old)
+            let c = check(lock.as_ref(), plan_hash, out_path);
+            out = c.out;
+            (Some(c.reason), c.target, c.size)
         }
     };
     // §7 `small-output`: a state that could be updated from, of an output
     // below the bound, is linked in full; `--incremental=update` updates
-    // whatever the size (so far: fails, `update-not-implemented`).
-    let reason = match &old {
-        Some(s)
-            if !update
-                && reason == Some(UPDATABLE)
-                && mortar_incr::small_output(s.meta.file_size) =>
-        {
+    // whatever the size. G-13: a testhooks build may move the bound.
+    let bound = mortar_incr::testhook::small_output_bound().unwrap_or(mortar_incr::SMALL_OUTPUT);
+    let reason = match size {
+        Some(size) if !update && reason == Some(UPDATABLE) && size < bound => {
             Some(IncrReason::SmallOutput(String::new()))
         }
         _ => reason,
     };
-    // The dry run (WP-063, WP-106) is computed only for a state an update
-    // could start from, and only when the report asks for it.
-    let old = old.filter(|_| report.is_some() && dry_run_wanted(reason.as_ref())).map(Box::new);
-    if update {
+    let updatable = reason == Some(UPDATABLE);
+    if update && !updatable {
         let reason = words(reason.as_ref());
         emit(diagnostics, 2, Diagnostic::error(Kind::IncrementalUpdateFailed { reason }));
         return Start::Failed;
     }
-    Start::Full(Box::new(Session {
+    let state4 = mortar_incr::testhook::state4();
+    let state4_path = state4.then(|| format4_path(&state_path));
+    // The dry run (WP-063, WP-106) is computed only for a state an update
+    // could start from, and only when the report asks for it; after the
+    // flip (WP-225) from the format-4 side state of a testhooks build.
+    let old = if report.is_some() && dry_run_wanted(reason.as_ref()) {
+        old4(&state_path, plan_hash, out_path).map(Box::new)
+    } else {
+        None
+    };
+    let session = Box::new(Session {
         state_path,
         report,
         plan_hash,
@@ -335,7 +372,31 @@ pub fn start(parsed: &Parsed, cwd: &Path, out_path: &Path, diagnostics: &Collect
         lock,
         writes_no_state,
         state5: None,
-    }))
+        state4_path,
+        state4,
+        legacy4: false,
+        update_mode: update,
+        out: if updatable { out } else { None },
+    });
+    if updatable { Start::Update(session) } else { Start::Full(session) }
+}
+
+/// The format-4 side state at `<state>.format4` (WP-225's flip), for the
+/// dry run: `None` unless it decodes and every check of format 4 accepts
+/// it against this plan and output (so a side state an update left stale
+/// is never used).
+fn old4(state_path: &Path, plan_hash: [u8; 16], out_path: &Path) -> Option<State> {
+    let bytes = std::fs::read(format4_path(state_path)).ok()?;
+    let s = format::decode(&bytes, crate::VERSION.as_bytes()).ok()?;
+    (check_state(&s, plan_hash, out_path) == UPDATABLE).then_some(s)
+}
+
+/// The format-4 side state's path (WP-225): `<state>.format4`.
+#[must_use]
+pub fn format4_path(state_path: &Path) -> PathBuf {
+    let mut s = state_path.as_os_str().to_owned();
+    s.push(".format4");
+    PathBuf::from(s)
 }
 
 /// I-58b for incremental mode's own files: `cannot-write-output` naming
@@ -399,42 +460,214 @@ pub(crate) fn target_of(f: &Front<'_>) -> (u16, u8) {
 /// The files incremental mode writes, with the option naming each.
 fn own_files<'a>(
     state_path: &'a Path,
+    state4: Option<&'a Path>,
     report: Option<&'a Report>,
 ) -> Vec<(&'static str, &'a Path)> {
     let mut v = vec![("--incremental-state", state_path)];
+    if let Some(p) = state4 {
+        v.push(("--incremental-state", p));
+    }
     if let Some(Report::File(p)) = report {
         v.push(("--incremental-report", p.as_path()));
     }
     v
 }
 
-/// The fall-back reason of an existing state, in §7's order: the state
-/// read and validated, the plan, the updating flag, the output; with the
-/// state's target, which the link's is compared with once it is known
-/// (`Session::finish`).
-fn check(
-    state: Option<&std::fs::File>,
-    plan_hash: [u8; 16],
-    out_path: &Path,
-) -> (IncrReason, Option<(u16, u8)>, Option<State>) {
-    // I-58b: a state is a regular file; anything else (a pipe through
-    // /dev/stdout, which this process would read until it writes) is not
-    // opened (`lock_state` refused it by name). IN-77b: it is read through
-    // the locked descriptor, never reopened by path.
-    let Some(mut file) = state else {
-        return (IncrReason::NoState(String::new()), None, None);
-    };
-    let mut bytes = Vec::new();
-    if let Err(e) = std::io::Read::read_to_end(&mut file, &mut bytes) {
-        let why = format!("cannot read the state: {e}");
-        return (IncrReason::StateCorrupt(why), None, None);
+/// What U1's checks of an existing state found ([`check`]).
+struct Checked {
+    reason: IncrReason,
+    /// The state's target (`META` machine and class), when read.
+    target: Option<(u16, u8)>,
+    /// `META`'s output size, when read (`small-output`).
+    size: Option<u64>,
+    /// IN-77a: the output's descriptor, opened once.
+    out: Option<std::fs::File>,
+}
+
+impl Checked {
+    fn no(reason: IncrReason) -> Self {
+        Self { reason, target: None, size: None, out: None }
     }
-    let state = match format::decode(&bytes, crate::VERSION.as_bytes()) {
-        Ok(s) => s,
-        Err(e) => return (e.into(), None, None),
+}
+
+/// U1 (IN-70) on the locked state, in §7's order (WP-225: format 5 is THE
+/// state): the updating flag read first, before any hash (review-in77
+/// m-1); the header and directory with the plan hash (`state5::open`); a
+/// format-4 state is `state-version` (a full link replaces it); `META`;
+/// the output's binding through its descriptor (IN-21); after a reboot
+/// with `output-synced` 0, the leaves (IN-77c, `boot_check`).
+fn check(state: Option<&std::fs::File>, plan_hash: [u8; 16], out_path: &Path) -> Checked {
+    // I-58b: a state is a regular file; anything else (a pipe through
+    // /dev/stdout) is not opened (`lock_state` refused it by name). IN-77b:
+    // it is read through the locked descriptor, never reopened by path.
+    let Some(file) = state else {
+        return Checked::no(IncrReason::NoState(String::new()));
     };
-    let target = Some((state.meta.machine, state.meta.class));
-    (check_state(&state, plan_hash, out_path), target, Some(state))
+    let mut head = [0u8; mortar_incr::state5::HEADER];
+    let n = read_prefix(file, &mut head);
+    if head.get(..8) == Some(&format::MAGIC[..]) {
+        return Checked::no(IncrReason::StateVersion(
+            "format version 4 (MORTARST), this mortar reads 5".to_owned(),
+        ));
+    }
+    if n == head.len()
+        && head[..8] == mortar_incr::state5::MAGIC
+        && u32::from_le_bytes([head[12], head[13], head[14], head[15]]) & format::FLAG_UPDATING != 0
+    {
+        return Checked::no(IncrReason::OutputTorn(String::new()));
+    }
+    let view = match mortar_incr::state5::open(file, plan_hash) {
+        Ok(v) => v,
+        // The report's line as format 4's (`full (options-changed)`, IN-63;
+        // L10's and the lane's expectations): the plan hash is the reason.
+        Err(IncrReason::OptionsChanged(_)) => {
+            return Checked::no(IncrReason::OptionsChanged(String::new()));
+        }
+        Err(r) => return Checked::no(r),
+    };
+    let meta = match view.meta() {
+        Ok(m) => m,
+        Err(r) => return Checked::no(r),
+    };
+    // IN-18a: a state of another build of mortar is `state-version` (as
+    // format 4's reader says; WP-247 may give it its own reason).
+    match view.string(meta.version) {
+        Ok(v) if v == crate::VERSION.as_bytes() => {}
+        Ok(v) => {
+            return Checked::no(IncrReason::StateVersion(format!(
+                "written by mortar {}, this is {}",
+                String::from_utf8_lossy(&v),
+                crate::VERSION
+            )));
+        }
+        Err(r) => return Checked::no(r),
+    }
+    let target = Some((meta.machine, meta.class));
+    let size = Some(meta.file_size);
+    let fail = |reason| Checked { reason, target, size, out: None };
+    let out = match std::fs::File::open(out_path) {
+        Ok(f) => f,
+        Err(e) => return fail(IncrReason::OutputChanged(format!("cannot open the output: {e}"))),
+    };
+    if let Err(r) = output_matches5(&view, &meta, &out) {
+        return fail(r);
+    }
+    if let Err(r) = crate::update::write::boot_check(&view, &out, crate::update::write::boot_id()) {
+        return fail(r);
+    }
+    Checked { reason: UPDATABLE, target, size, out: Some(out) }
+}
+
+/// Up to `buf.len()` bytes from the start of `file` (positioned reads):
+/// how many were read.
+fn read_prefix(file: &std::fs::File, buf: &mut [u8]) -> usize {
+    use std::os::unix::fs::FileExt as _;
+    let mut n = 0;
+    while n < buf.len() {
+        match file.read_at(&mut buf[n..], n as u64) {
+            Ok(0) | Err(_) => break,
+            Ok(k) => n += k,
+        }
+    }
+    n
+}
+
+/// IN-21 on a format-5 state, through the output's descriptor `out`: the
+/// `STAT` output row's tuple (the last row, else the first with its tag),
+/// then the build id at `META.sealed_start`, and when racy every leaf.
+fn output_matches5(
+    view: &mortar_incr::update::view::StateView<'_>,
+    meta: &mortar_incr::update::rows::MetaRow,
+    out: &std::fs::File,
+) -> Result<(), IncrReason> {
+    use mortar_incr::format::kind;
+    use std::os::unix::fs::FileExt as _;
+    let changed = IncrReason::OutputChanged;
+    let rows = u32::try_from(view.count(kind::STAT)).unwrap_or(u32::MAX);
+    let mut row = None;
+    if let Some(last) = rows.checked_sub(1) {
+        let r = view.stat(last)?;
+        if r.tag == stat_tag::OUTPUT {
+            row = Some(r);
+        } else {
+            for i in 0..last {
+                let r = view.stat(i)?;
+                if r.tag == stat_tag::OUTPUT {
+                    row = Some(r);
+                    break;
+                }
+            }
+        }
+    }
+    let row = row.ok_or_else(|| changed("the state has no output row".to_owned()))?;
+    let m = out.metadata().map_err(|e| changed(format!("cannot stat the output: {e}")))?;
+    let now = Tuple::of(&m);
+    let recorded = Tuple {
+        dev: row.dev,
+        ino: row.ino,
+        size: row.size,
+        mtime_ns: row.mtime_ns,
+        ctime_ns: row.ctime_ns,
+    };
+    match stamp::classify(&recorded, &now, Some(row.stamp_ns)) {
+        stamp::Cleanliness::Changed => Err(changed("its stat tuple differs".to_owned())),
+        stamp::Cleanliness::Clean => {
+            let len = usize::from(meta.build_id_len);
+            let want = meta
+                .build_id
+                .get(..len)
+                .ok_or_else(|| IncrReason::StateCorrupt("META: the build id is too long".into()))?;
+            if !want.is_empty() {
+                let mut id = vec![0u8; len];
+                out.read_exact_at(&mut id, meta.sealed_start)
+                    .map_err(|e| changed(format!("cannot read the output: {e}")))?;
+                if id != want {
+                    return Err(changed("its build id differs".to_owned()));
+                }
+            }
+            Ok(())
+        }
+        stamp::Cleanliness::Racy | stamp::Cleanliness::Hashed => leaves_match5(view, meta, out),
+    }
+}
+
+/// A racy output's bytes against the state's leaves (IN-21; the build id's
+/// descriptor hashed as zeros, I-73), through its descriptor.
+fn leaves_match5(
+    view: &mortar_incr::update::view::StateView<'_>,
+    m: &mortar_incr::update::rows::MetaRow,
+    out: &std::fs::File,
+) -> Result<(), IncrReason> {
+    use std::os::unix::fs::FileExt as _;
+    let changed = IncrReason::OutputChanged;
+    let f = match m.leaf_fn {
+        0 => TreeFn::L128,
+        1 => TreeFn::Sha1,
+        _ => TreeFn::Sha256,
+    };
+    let size = out.metadata().map_err(|e| changed(format!("cannot stat the output: {e}")))?.len();
+    if size != m.file_size {
+        return Err(changed("its size differs".to_owned()));
+    }
+    let leaves = view.leaves()?;
+    let mut window = Vec::new();
+    for (i, want) in leaves.iter().enumerate() {
+        let r = mortar_digest::leaf_range(m.file_size, i as u64);
+        window.clear();
+        window.resize(usize::try_from(r.end - r.start).unwrap_or(0), 0);
+        out.read_exact_at(&mut window, r.start)
+            .map_err(|e| changed(format!("cannot read the output: {e}")))?;
+        let lo = m.sealed_start.max(r.start);
+        let hi = m.sealed_end.min(r.end);
+        if lo < hi {
+            window[(lo - r.start) as usize..(hi - r.start) as usize].fill(0);
+        }
+        let leaf = mortar_digest::leaf(f, &window);
+        if leaf.as_bytes() != &want[..f.leaf_len()] {
+            return Err(changed(format!("window {i} differs from its leaf")));
+        }
+    }
+    Ok(())
 }
 
 /// The reason of a state every check of §7 accepted: an update could start
@@ -455,7 +688,9 @@ fn words(reason: Option<&IncrReason>) -> String {
 /// does not apply). Every other reason says before the delta that no
 /// update could run, and the report names it alone.
 fn dry_run_wanted(reason: Option<&IncrReason>) -> bool {
-    matches!(reason, Some(IncrReason::UpdateNotImplemented(None) | IncrReason::SmallOutput(_)))
+    // WP-225: an update's own fall-back by its word (`update-not-implemented
+    // (<word>)`) started from such a state too.
+    matches!(reason, Some(IncrReason::UpdateNotImplemented(_) | IncrReason::SmallOutput(_)))
 }
 
 pub(crate) fn check_state(state: &State, plan_hash: [u8; 16], out_path: &Path) -> IncrReason {
@@ -549,18 +784,72 @@ impl Session {
     /// (IN-17): entries of the registry of cli.md §3.14.
     #[must_use]
     pub fn written(&self) -> Vec<(&'static str, &Path)> {
-        own_files(&self.state_path, self.report.as_ref())
+        own_files(&self.state_path, self.state4_path.as_deref(), self.report.as_ref())
     }
 
-    /// WP-244: also capture the format-5 state, to `s.path`.
+    /// WP-244: also write the format-5 state to `s.path` (tests; after the
+    /// flip the state at `S` is format 5 whatever this says).
     pub fn set_state5(&mut self, s: Option<State5>) {
         self.state5 = s;
     }
 
-    /// Whether the format-5 capture is on ([`Session::set_state5`]).
+    /// WP-225: also write the format-4 side state ([`format4_path`]);
+    /// `legacy`: the pre-flip layout and ONLY that side state (the
+    /// format-4 replay's tests, until M6).
+    pub fn set_state4(&mut self, on: bool, legacy: bool) {
+        self.state4 |= on || legacy;
+        self.legacy4 |= legacy;
+        self.state4_path = self.state4.then(|| format4_path(&self.state_path));
+    }
+
+    /// Whether the front computes format 5's data (`front::Env::state5`):
+    /// always since the flip (WP-225), format 5 being THE state, except
+    /// the legacy tests' links ([`Session::set_state4`]).
     #[must_use]
     pub fn state5(&self) -> bool {
-        self.state5.is_some()
+        !self.legacy4
+    }
+
+    /// `--incremental=update`: a fall-back is an error, not a full link.
+    #[must_use]
+    pub fn update_mode(&self) -> bool {
+        self.update_mode
+    }
+
+    /// The update fell back by `reason` before its first write (IN-70):
+    /// the session becomes the full link's, with that reason; the output's
+    /// descriptor is closed. Under `--incremental=update` the caller makes
+    /// it an error instead ([`Session::update_mode`]).
+    pub fn fall_back(&mut self, reason: IncrReason) {
+        self.out = None;
+        if self.report.is_none() || !dry_run_wanted(Some(&reason)) {
+            self.old = None;
+        }
+        self.reason = Some(reason);
+    }
+
+    /// The state's path (`S`).
+    #[must_use]
+    pub fn state_path(&self) -> &Path {
+        &self.state_path
+    }
+
+    /// The plan hash (IN-18b).
+    #[must_use]
+    pub fn plan_hash(&self) -> [u8; 16] {
+        self.plan_hash
+    }
+
+    /// The locked state's descriptor (IN-77b), when one was found.
+    #[must_use]
+    pub fn lock(&self) -> Option<&std::fs::File> {
+        self.lock.as_ref()
+    }
+
+    /// The stamps this link took (IN-22a).
+    #[must_use]
+    pub fn stamps(&self) -> &[DeviceStamp] {
+        &self.stamps
     }
 
     /// The fall-back reason (for tests); `None` for `--incremental=full`.
@@ -693,6 +982,13 @@ impl Session {
         stderr
     }
 
+    /// The state written at `S` (WP-225's flip: FORMAT 5, `state5_rows`
+    /// of the bound format-4 capture and `rows5`, encoded), through
+    /// `write_state_whole` (IN-17, IN-77d). With the test switches also
+    /// the format-4 side state and WP-244's copy. On any failure no state
+    /// is left at `S` (an older one describes an output this link
+    /// replaced), except `state-busy` (another link's temporary: `S` is
+    /// left as it is).
     fn write_state(
         &self,
         state: State,
@@ -704,11 +1000,21 @@ impl Session {
         let mut t = Instant::now();
         let result = bind(state, out_path, written).and_then(|state| {
             lap(&self.times, &mut t, "bind");
-            if let Some(s5) = &self.state5 {
-                self.write_state5(s5, &state, rows5, &mut t, stderr);
+            if self.legacy4 {
+                let p = format4_path(&self.state_path);
+                return write_atomically(&p, &format::encode(&state))
+                    .map(|()| true)
+                    .map_err(|e| format!("cannot write {}: {e}", p.display()));
             }
-            let bytes = format::encode(&state);
-            lap(&self.times, &mut t, "encode");
+            let bytes = self.state5_bytes(&state, rows5, &mut t, stderr)?;
+            if let Some(p) = &self.state4_path {
+                // The side state of a testhooks build (the floor, the dry
+                // run): best effort, removed when it cannot be written.
+                if write_atomically(p, &format::encode(&state)).is_err() {
+                    let _ = mortar_image::output::remove_if_replaceable(p);
+                }
+                lap(&self.times, &mut t, "format 4 (side): encode and write");
+            }
             // I-58b: the state is replaced only where the link may replace
             // a file.
             let r = mortar_image::output::may_replace(&self.state_path)
@@ -737,44 +1043,62 @@ impl Session {
             // No state is left that the next link could accept: an older
             // one describes an output this link has replaced.
             let _ = mortar_image::output::remove_if_replaceable(&self.state_path);
+            if let Some(p) = &self.state4_path {
+                let _ = mortar_image::output::remove_if_replaceable(p);
+            }
         }
         result
     }
 
-    /// WP-244: the format-5 state of `state` (bound) and `rows5`, written
-    /// to `s5.path`; on any failure the `incremental:` line says why, no
-    /// format-5 state is written and a previous one is removed by its
-    /// name (`state-collision`, `state-limit`: WP-239 R-2, S4-3).
-    fn write_state5(
+    /// Format 5's bytes of `state` (bound) and `rows5` (WP-244's
+    /// `state5_rows` + `state5_encode`); WP-244's test copy to `s5.path`
+    /// and its rows sink when set. `state-collision`, `state-limit`
+    /// (WP-239 R-2, S4-3) and every other failure: the error, no state.
+    fn state5_bytes(
         &self,
-        s5: &State5,
         state: &State,
         rows5: Option<mortar_incr::capture::Rows5>,
         t: &mut Instant,
         stderr: &mut String,
-    ) {
-        let r =
-            rows5.ok_or_else(|| "the link computed no format-5 data".to_owned()).and_then(|rows| {
-                for n in &rows.notes {
-                    let _ = writeln!(stderr, "incremental: state5 {n}");
-                }
-                let m = mortar_incr::capture::state5_rows(state, rows, s5.collide)?;
-                let bytes = mortar_incr::capture::state5_encode(&m)?;
-                if let Some(sink) = &s5.rows
-                    && let Ok(mut g) = sink.lock()
-                {
-                    *g = Some(m);
-                }
-                lap(&self.times, t, "format 5: normalize and encode");
-                let _ = writeln!(stderr, "incremental: state5 bytes={}", bytes.len());
-                write_atomically(&s5.path, &bytes)
-                    .map_err(|e| format!("cannot write {}: {e}", s5.path.display()))
-            });
-        lap(&self.times, t, "format 5: write and sync");
-        if let Err(why) = r {
-            let _ = mortar_image::output::remove_if_replaceable(&s5.path);
-            let _ = writeln!(stderr, "incremental: no state written: {why}");
+    ) -> Result<Vec<u8>, String> {
+        let s5 = self.state5.as_ref();
+        let rows = rows5.ok_or_else(|| "the link computed no format-5 data".to_owned())?;
+        if s5.is_some() {
+            for n in &rows.notes {
+                let _ = writeln!(stderr, "incremental: state5 {n}");
+            }
         }
+        let collide = s5.is_some_and(|s| s.collide) || mortar_incr::testhook::state5_collide();
+        let made = mortar_incr::capture::state5_rows(state, rows, collide)
+            .and_then(|m| mortar_incr::capture::state5_encode(&m).map(|b| (m, b)));
+        let (m, bytes) = match made {
+            Ok(x) => x,
+            Err(e) => {
+                if let Some(s5) = s5 {
+                    let _ = mortar_image::output::remove_if_replaceable(&s5.path);
+                }
+                return Err(e);
+            }
+        };
+        if let Some(sink) = s5.and_then(|s| s.rows.as_ref())
+            && let Ok(mut g) = sink.lock()
+        {
+            *g = Some(m);
+        }
+        lap(&self.times, t, "format 5: normalize and encode");
+        if let Some(s5) = s5 {
+            let _ = writeln!(stderr, "incremental: state5 bytes={}", bytes.len());
+            if let Err(e) = write_atomically(&s5.path, &bytes) {
+                let _ = mortar_image::output::remove_if_replaceable(&s5.path);
+                let _ = writeln!(
+                    stderr,
+                    "incremental: no state written: cannot write {}: {e}",
+                    s5.path.display()
+                );
+            }
+            lap(&self.times, t, "format 5: the test copy");
+        }
+        Ok(bytes)
     }
 
     /// The state of the link `f`, all but its output row; with the
@@ -814,8 +1138,8 @@ impl Session {
         lap(&self.times, &mut t, "file hashes");
         let file_hash = |id: FileId| hashes.get(id.0 as usize).copied().flatten();
         let mut laps = mortar_incr::capture::Laps::new();
-        let (mut state, rows5) = match (&self.state5, &f.incr5) {
-            (Some(_), Some(i5)) => {
+        let (mut state, rows5) = match &f.incr5 {
+            Some(i5) => {
                 let classes: Vec<mortar_core::incr::MergeClass> = f
                     .merge
                     .meta
@@ -880,7 +1204,7 @@ impl Session {
                 )?;
                 (s, Some(r))
             }
-            _ => (
+            None => (
                 mortar_incr::capture::capture_timed(
                     &link,
                     &keys,
