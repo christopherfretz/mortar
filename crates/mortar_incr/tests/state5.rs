@@ -1800,3 +1800,29 @@ fn debug_strs_patch_puts_rows() {
     c.debug_strs.delete = vec![dstr(0, 10, 0)];
     assert!(matches!(reason(state5::plan_patch(&view, &c)), IncrReason::StateCorrupt(_)));
 }
+
+// spec: WP-247 item d (`EH_FIXED` read by the plan's check before W1: a
+// file whose range moves with the bit is `update-not-implemented (eh)`)
+// and item k (`DEBUG_EXPORTS` and `EH_FIXED` are FILES flags of format
+// 5: stored and read back)
+#[test]
+fn eh_fixed_check_reads_the_bit() {
+    let mut m = sample(&[0, 1, 2], 2);
+    m.files[1].flags |= file_flags::EH_FIXED;
+    m.files[2].flags |= file_flags::DEBUG_EXPORTS;
+    let bytes = full(&m);
+    let back = read::decode(&bytes).expect("decode");
+    assert_eq!(back.files[1].flags, file_flags::EH_FIXED);
+    assert_eq!(back.files[2].flags, file_flags::DEBUG_EXPORTS);
+    let view = read::open_bytes(bytes).expect("open");
+    assert!(read::eh_fixed_check(&view, &[FileId(0), FileId(2)]).is_ok());
+    assert_eq!(
+        read::eh_fixed_check(&view, &[FileId(0), FileId(1)]),
+        Err(IncrReason::UpdateNotImplemented(Some(mortar_core::incr::Unimplemented::Eh)))
+    );
+    assert!(matches!(read::eh_fixed_check(&view, &[FileId(9)]), Err(IncrReason::StateCorrupt(_))));
+    // a flag past ALL is refused
+    let mut m = sample(&[0, 1], 2);
+    m.files[0].flags = file_flags::ALL + 1;
+    assert!(matches!(read::decode(&full(&m)), Err(StateError::Corrupt(_))));
+}

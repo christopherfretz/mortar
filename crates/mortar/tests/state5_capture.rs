@@ -62,14 +62,19 @@ fn lines() -> Vec<Line> {
 
 /// [`lines`], compiled with `flags`.
 fn lines_by(flags: &[&str]) -> Vec<Line> {
+    lines_of(flags, support::CXX_PROGRAM)
+}
+
+/// [`lines`] of `sources`, compiled with `flags`.
+fn lines_of(flags: &[&str], sources: &[support::Source]) -> Vec<Line> {
     let mut v = Vec::new();
     let s = Scratch::new("wp244-a64");
-    match build(&s, Driver::Gxx, flags, support::CXX_PROGRAM) {
+    match build(&s, Driver::Gxx, flags, sources) {
         Some(b) => v.push(Line::of("aarch64 g++", s, b)),
         None => assert!(!tools_required(), "{} is required", Driver::Gxx.tool()),
     }
     let s = Scratch::new("wp244-x64");
-    match build_by(&s, "x86_64-linux-gnu-g++", flags, support::CXX_PROGRAM) {
+    match build_by(&s, "x86_64-linux-gnu-g++", flags, sources) {
         Some(b) => v.push(Line::of("x86-64 g++", s, b)),
         None => assert!(!tools_required(), "x86_64-linux-gnu-g++ is required"),
     }
@@ -1312,5 +1317,61 @@ fn debug_strs_name_the_output_strings() {
             "{}: rows without -g",
             line.label
         );
+    }
+}
+
+/// A hand-made object (WP-247 items d and k): a global symbol in a debug
+/// section, and a CIE whose FDE encoding is `absptr` (no FDE uses it: the
+/// link drops it, the file's bytes still hold it).
+const HAND: support::Source = support::Source {
+    name: "hand.s",
+    text: "\t.section .debug_wp247,\"\",%progbits
+\t.globl wp247_debug_export
+wp247_debug_export:
+\t.byte 1, 2, 3, 4
+\t.section .eh_frame,\"a\",%progbits
+\t.long 16
+\t.long 0
+\t.byte 1
+\t.asciz \"zR\"
+\t.byte 4, 0x78, 30, 1, 0x00
+\t.byte 0, 0, 0
+\t.long 0
+",
+};
+
+// spec: WP-247 item k (`DEBUG_EXPORTS`: a file defining a global or weak
+// symbol in a debug section; WP-229 ruling 3) and item d (`EH_FIXED`: a
+// CIE of the file's `.eh_frame` with an encoding other than 0x1b/0x9b),
+// both from the file's bytes, on a real `-g` link: the hand-made object
+// has both, GCC's objects neither
+#[test]
+fn object_flags_on_a_real_link() {
+    use mortar_incr::update::rows::file_flags::{DEBUG_EXPORTS, EH_FIXED};
+    let sources = [support::CXX_PROGRAM, &[HAND]].concat();
+    for line in lines_of(&["-O1", "-g"], &sources) {
+        let m = rows5(&line, "flags", &[]);
+        let path = |i: usize| String::from_utf8_lossy(&string(&m, m.files[i].path)).into_owned();
+        let hand = (0..m.files.len()).find(|&i| path(i).ends_with("hand.s.o"));
+        let hand = hand.unwrap_or_else(|| panic!("{}: no hand.s.o row", line.label));
+        assert_eq!(
+            m.files[hand].flags & (DEBUG_EXPORTS | EH_FIXED),
+            DEBUG_EXPORTS | EH_FIXED,
+            "{}",
+            line.label
+        );
+        let exports: Vec<String> = (0..m.files.len())
+            .filter(|&i| m.files[i].flags & DEBUG_EXPORTS != 0)
+            .map(path)
+            .collect();
+        assert_eq!(exports.len(), 1, "{}: {exports:?}", line.label);
+        // GCC's own objects (the program's, the C++ runtime's) move by a delta
+        let own: Vec<String> = (0..m.files.len())
+            .filter(|&i| i != hand && m.files[i].flags & EH_FIXED != 0 && m.files[i].member == 0)
+            .map(path)
+            .collect();
+        assert!(own.is_empty(), "{}: {own:?}", line.label);
+        let members = (0..m.files.len()).filter(|&i| m.files[i].flags & EH_FIXED != 0).count() - 1;
+        eprintln!("{}: EH_FIXED on {members} archive members besides hand.s.o", line.label);
     }
 }

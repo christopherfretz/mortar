@@ -931,10 +931,187 @@ pub struct Rows5 {
 /// (`update::rows::file_flags::EH_FIXED`).
 pub const EH_FIXED: u8 = crate::update::rows::file_flags::EH_FIXED;
 
+/// The `FILES.flags` bits that are a function of a file's bytes alone
+/// (WP-247 items d and k): `EH_FIXED` ([`eh_fixed`] over each of its
+/// `.eh_frame` sections) and `DEBUG_EXPORTS` ([`debug_exports`]); 0 for
+/// a file that is not an object. The capture writes them for every
+/// file, archive members not extracted included; an update writes them
+/// for a changed, appeared or newly extracted file's row (the join
+/// calls this on the new bytes: `StatePatch.files_set`/`files_append`
+/// take the row's flags from here and `LAZY`/`POSITIONAL`/`GONE` from
+/// the update's own decisions).
+#[must_use]
+pub fn object_flags(inputs: &Inputs<'_>, file: FileId) -> u8 {
+    use crate::update::rows::file_flags;
+    let Some(f) = inputs.files.get(file) else { return 0 };
+    let Reader::Object(object) = f.reader else { return 0 };
+    let mut flags = 0;
+    if object.symbols().ok().flatten().is_some_and(|t| debug_exports(&object, &t)) {
+        flags |= file_flags::DEBUG_EXPORTS;
+    }
+    let class64 = object.class() == mortar_elf::raw::Class::Elf64;
+    let mut buf = Vec::new();
+    for sec in object.sections() {
+        if sec.name().ok() != Some(&b".eh_frame"[..]) {
+            continue;
+        }
+        let Ok(Some(range)) = sec.file_range() else { continue }; // NOBITS: no records
+        let range = range.start as u64..range.end as u64;
+        let bytes = match inputs.resident(file, range.clone()) {
+            Some(b) => b,
+            None => {
+                buf.clear();
+                buf.resize((range.end - range.start) as usize, 0);
+                if inputs.copy_to(file, range, &mut buf).is_err() {
+                    flags |= file_flags::EH_FIXED;
+                    continue;
+                }
+                &buf[..]
+            }
+        };
+        if eh_fixed(bytes, class64) {
+            flags |= file_flags::EH_FIXED;
+        }
+    }
+    flags
+}
+
+/// Whether the `.eh_frame` bytes `eh` hold a CIE whose FDE (`R`), LSDA
+/// (`L`) or personality (`P`) pointer encoding is other than `0x1b`,
+/// `0x1b`, `0x9b` (`file_flags::EH_FIXED`): an absent `R` is `absptr`
+/// (other); an absent or `omit` `L`/`P` gives none. A record the walk
+/// cannot read is such a CIE (a 64-bit length, a length past the bytes, a
+/// CIE without a `z` augmentation but with letters, an unknown letter).
+/// Walks the records by their length words to a zero length or the end.
+#[must_use]
+pub fn eh_fixed(eh: &[u8], class64: bool) -> bool {
+    fn uleb(b: &[u8], at: &mut usize) -> Option<u64> {
+        let mut v = 0u64;
+        for shift in (0..64).step_by(7) {
+            let byte = *b.get(*at)?;
+            *at += 1;
+            v |= u64::from(byte & 0x7f) << shift;
+            if byte & 0x80 == 0 {
+                return Some(v);
+            }
+        }
+        None
+    }
+    // the pointer's size by its encoding's format (low 4 bits)
+    let size = |enc: u8| match enc & 0x0f {
+        0x0 => Some(if class64 { 8 } else { 4 }),
+        0x2 | 0xa => Some(2),
+        0x3 | 0xb => Some(4),
+        0x4 | 0xc => Some(8),
+        _ => None, // LEB pointers: not in a CIE's `P` that an update moves
+    };
+    // One CIE's body after its id: `Some(true)` fixed, `Some(false)` not.
+    let cie = |b: &[u8]| -> Option<bool> {
+        let mut at = 0;
+        let version = *b.get(at)?;
+        at += 1;
+        let aug_end = at + b.get(at..)?.iter().position(|&c| c == 0)?;
+        let aug = &b[at..aug_end];
+        at = aug_end + 1;
+        if version == 4 {
+            at += 2; // address and segment selector sizes
+        }
+        uleb(b, &mut at)?; // code alignment
+        uleb(b, &mut at)?; // data alignment (SLEB: the same bytes)
+        if version == 1 {
+            at += 1;
+        } else {
+            uleb(b, &mut at)?;
+        }
+        let (mut fde, mut lsda, mut personality) = (0u8, None, None);
+        if let Some((&b'z', letters)) = aug.split_first() {
+            let len = usize::try_from(uleb(b, &mut at)?).ok()?;
+            let end = at.checked_add(len)?;
+            for &c in letters {
+                match c {
+                    b'R' => {
+                        fde = *b.get(at)?;
+                        at += 1;
+                    }
+                    b'L' => {
+                        lsda = Some(*b.get(at)?).filter(|&e| e != 0xff);
+                        at += 1;
+                    }
+                    b'P' => {
+                        let enc = *b.get(at)?;
+                        at += 1;
+                        if enc != 0xff {
+                            personality = Some(enc);
+                            at += size(enc)?;
+                        }
+                    }
+                    b'S' | b'B' | b'G' => {}
+                    _ => return None,
+                }
+                if at > end {
+                    return None;
+                }
+            }
+        } else if !aug.is_empty() {
+            return None;
+        }
+        Some(
+            fde != 0x1b
+                || lsda.is_some_and(|e| e != 0x1b)
+                || personality.is_some_and(|e| e != 0x9b),
+        )
+    };
+    let mut at = 0usize;
+    while at + 4 <= eh.len() {
+        let len = u32::from_le_bytes([eh[at], eh[at + 1], eh[at + 2], eh[at + 3]]);
+        if len == 0 {
+            break;
+        }
+        if len == u32::MAX {
+            return true;
+        }
+        let Some(end) = (at + 4).checked_add(len as usize).filter(|&e| e <= eh.len() && len >= 4)
+        else {
+            return true;
+        };
+        let id = u32::from_le_bytes([eh[at + 4], eh[at + 5], eh[at + 6], eh[at + 7]]);
+        if id == 0 && cie(&eh[at + 8..end]) != Some(false) {
+            return true;
+        }
+        at = end;
+    }
+    false
+}
+
+/// Whether `object` defines a GLOBAL, WEAK or `GNU_UNIQUE` symbol in a
+/// non-allocated section named `.debug_*` or `.zdebug_*`
+/// (`file_flags::DEBUG_EXPORTS`; WP-229 ruling 3).
+#[must_use]
+pub fn debug_exports(
+    object: &mortar_elf::object::Object<'_>,
+    table: &mortar_elf::symbol::SymbolTable<'_>,
+) -> bool {
+    use mortar_elf::consts::{SHF_ALLOC, STB_GLOBAL, STB_GNU_UNIQUE, STB_WEAK};
+    (table.first_global().0..table.len()).any(|i| {
+        let i = mortar_elf::symbol::SymbolIndex(i);
+        let Ok(sym) = table.get(i) else { return false };
+        if !matches!(sym.binding(), STB_GLOBAL | STB_WEAK | STB_GNU_UNIQUE) {
+            return false;
+        }
+        let Ok(SymbolSection::Section(index)) = table.section_of(i, &sym) else { return false };
+        object.section(index).is_ok_and(|s| {
+            s.flags() & SHF_ALLOC == 0
+                && s.name().is_ok_and(|n| n.starts_with(b".debug") || n.starts_with(b".zdebug"))
+        })
+    })
+}
+
 /// One file's part of [`rows5`], with keys as `SymbolId`s.
 #[derive(Default)]
 struct File5<'s> {
     first_global: u32,
+    /// [`object_flags`] (WP-247).
+    flags: u8,
     versioned: u32,
     lazy: bool,
     /// Positional (IN-18e "`MENTIONS` by position"); a live object's only.
@@ -984,6 +1161,7 @@ fn rows5(
         let live = live_file(file);
         let first = table.first_global().0;
         let mut acc = File5 { first_global: first, lazy: !live, ..File5::default() };
+        acc.flags = object_flags(inputs, file);
         let globals = table.len().saturating_sub(first) as usize;
         if inputs.sym_map_of(file).len() < globals {
             return Err(format!(
@@ -1265,21 +1443,21 @@ fn rows5(
     out.files = files5
         .iter()
         .map(|f| FileCols {
-            flags: if f.lazy { crate::update::rows::file_flags::LAZY } else { 0 },
+            flags: f.flags | if f.lazy { crate::update::rows::file_flags::LAZY } else { 0 },
             first_global: f.first_global,
             ..FileCols::default()
         })
         .collect();
-    let mut fixed = 0usize;
     for e in eh {
         let [offset, capacity, records] =
             crate::state5::eh_columns(e.offset, e.capacity, u64::from(e.records))
                 .map_err(|r| r.report())?;
         let row = out.files.get_mut(e.file.0 as usize).ok_or("an .eh_frame range's file")?;
         row.eh = [offset, capacity, records, e.fdes];
+        // `!movable` (a KEPT CIE's encoding) implies the bytes' bit: or-ed
+        // as a guard, never a second definition
         if !e.movable {
             row.flags |= EH_FIXED;
-            fixed += 1;
         }
     }
     // ---- FILES.stack, FILES.properties (seam 6): 0 and empty for a LAZY
@@ -1296,6 +1474,10 @@ fn rows5(
             row.properties.clone_from(bytes);
         }
     }
+    let fixed = out.files.iter().filter(|f| f.flags & EH_FIXED != 0).count();
+    let exports =
+        out.files.iter().filter(|f| f.flags & crate::update::rows::file_flags::DEBUG_EXPORTS != 0);
+    let exports = exports.count();
     out.option_keys = extra.option_keys.to_vec();
     out.versioned = files5.iter().map(|f| f.versioned).sum();
     let debug_note;
@@ -1314,7 +1496,11 @@ fn rows5(
             out.commons.len(),
             out.copies.len()
         ),
-        format!("eh files {} (fixed encodings {fixed}), versioned {}", eh.len(), out.versioned),
+        format!(
+            "eh files {} (fixed encodings {fixed}), versioned {}, debug exports {exports}",
+            eh.len(),
+            out.versioned
+        ),
         debug_note,
     ];
     Ok(out)
@@ -1344,6 +1530,13 @@ fn debug_str_rows(
     live_frags: &[(u32, [u8; 16], u32, u64)],
 ) -> Result<(Vec<crate::update::rows::DebugStrRow>, String), String> {
     use crate::update::rows::{DebugStrRow, debug_str_class, name_hash};
+    // WP-247's measurement (WP-228 R-2.4: the capture with and without
+    // the rows, one binary): a `testhooks` build with
+    // `MORTAR_INCR_NO_DEBUG_STRS` set writes none.
+    #[cfg(feature = "testhooks")]
+    if std::env::var_os("MORTAR_INCR_NO_DEBUG_STRS").is_some() {
+        return Ok((Vec::new(), "DEBUG_STRS off (MORTAR_INCR_NO_DEBUG_STRS)".to_owned()));
+    }
     let mut classes: Vec<(u32, u8)> = Vec::new();
     for id in link.assignment.outsecs.ids().iter() {
         let Some(o) = mortar_core::identity::outsec_identity(&keys.outsecs, id) else { continue };

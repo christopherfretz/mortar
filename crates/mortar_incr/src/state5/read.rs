@@ -414,6 +414,26 @@ pub fn open(file: &File, plan_hash: [u8; 16]) -> Result<StateView<'_>, IncrReaso
     Ok(view_of(Core::open(Src::File(dup), Some(plan_hash))?))
 }
 
+/// The plan's `.eh_frame` check before W1 (WP-247 item d; IN-34a "Pad
+/// and move"): `update-not-implemented (eh)` when a file of `moved` (the
+/// files whose stored ranges the update will move from the previous
+/// output's bytes: unchanged, not gone) has `FILES.flags` `EH_FIXED`.
+/// One `FILES` row read per file. The join calls it with the delta
+/// layout's moved ranges (`EhLayout::ranges` without record offsets).
+///
+/// # Errors
+/// `update-not-implemented (eh)`; `state-corrupt` (a row past `FILES`).
+pub fn eh_fixed_check(view: &StateView<'_>, moved: &[FileId]) -> Result<(), IncrReason> {
+    for &f in moved {
+        if view.file(f)?.flags & file_flags::EH_FIXED != 0 {
+            return Err(IncrReason::UpdateNotImplemented(Some(
+                mortar_core::incr::Unimplemented::Eh,
+            )));
+        }
+    }
+    Ok(())
+}
+
 /// A view over a state's bytes in memory, the plan hash not checked
 /// (`incr_state`, tests): the same reader as [`open`].
 ///
