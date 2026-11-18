@@ -1,7 +1,7 @@
 //! U-4's tests (`spec/incr.md` IN-72). WP-213 (U-1): the entry point's
 //! "until it lands" value; U-4 replaces it.
 
-use mortar_core::incr::{IncrReason, MemoryLayout, StoredLayout, Unimplemented};
+use mortar_core::incr::{IncrReason, LayoutInput, MemoryLayout, StoredLayout, Unimplemented};
 use mortar_elf::{Class, Machine};
 use mortar_layout::delta::layout;
 use mortar_layout::target::Target;
@@ -19,7 +19,7 @@ fn layout_until_it_lands() {
         islands: None,
     };
     assert_eq!(
-        layout(&stored, &[], &target).err(),
+        layout(&stored, &LayoutInput::default(), &target).err(),
         Some(IncrReason::UpdateNotImplemented(Some(Unimplemented::Layout)))
     );
 }

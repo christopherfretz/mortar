@@ -218,11 +218,13 @@ pub trait StateRows: Sync {
     /// # Errors
     /// `state-corrupt`.
     fn group(&self, signature: &[u8]) -> Rows<Vec<GroupRow>>;
-    /// An output section's `FRAGS` rows, by offset (kind 11; key).
+    /// The `FRAGS` rows of one identity prefix `(out, hash)`, by ordinal
+    /// (kind 11; key: two binary searches; WP-216 seam 4: never a whole
+    /// read of an output section's fragments).
     ///
     /// # Errors
     /// `state-corrupt`.
-    fn frags_in(&self, out: OutSecId) -> Rows<Vec<FragRow>>;
+    fn frags_of(&self, out: OutSecId, hash: [u8; 16]) -> Rows<Vec<FragRow>>;
     /// A chunk's `HOLES` rows, by offset (kind 39; key).
     ///
     /// # Errors
