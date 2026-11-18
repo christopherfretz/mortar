@@ -876,8 +876,12 @@ fn seam5_rows_round_trip_and_patch() {
     want.sort_unstable();
     assert_eq!(uses.iter().map(|u| u.hash).collect::<Vec<_>>(), want, "by key");
     assert!(uses.iter().all(|u| u.file == FileId(1) && u.class == CLASS));
-    let eh = layout.eh_range_of(FileId(2)).expect("row").expect("a range");
-    assert_eq!((eh.offset, eh.capacity, eh.records), (128, 40, 2));
+    // WP-245 compile junction: batch 13's format 5 has no `eh_fdes`
+    // column, so a file with a range is refused (the row round-trips).
+    let eh = view.file(FileId(2)).expect("row");
+    assert_eq!((eh.eh_offset, eh.eh_capacity, eh.eh_records), (128, 40, 2));
+    let refused = IncrReason::UpdateNotImplemented(Some(mortar_core::incr::Unimplemented::Layout));
+    assert_eq!(layout.eh_range_of(FileId(2)), Err(refused));
     let refs = layout.key_refs_of(FileId(1)).expect("rows");
     assert_eq!(refs.len(), 1);
     assert_eq!(refs[0].demand.bits(), 1);
@@ -933,8 +937,12 @@ fn seam5_rows_round_trip_and_patch() {
     assert_eq!(uses.iter().map(|u| u.hash).collect::<Vec<_>>(), vec![[7; 16]]);
     let f = layout.frags_of(OutSecId(0), CLASS, [7; 16]).expect("lookup").expect("a row");
     assert_eq!(f.offset, 99);
-    let eh = layout.eh_range_of(FileId(1)).expect("row").expect("a range");
-    assert_eq!((eh.offset, eh.capacity, eh.records), (1, 2, 1));
+    // WP-245 compile junction: batch 13's format 5 has no `eh_fdes`
+    // column, so a file with a range is refused (the row round-trips).
+    let eh = v.file(FileId(1)).expect("row");
+    assert_eq!((eh.eh_offset, eh.eh_capacity, eh.eh_records), (1, 2, 1));
+    let refused = IncrReason::UpdateNotImplemented(Some(mortar_core::incr::Unimplemented::Layout));
+    assert_eq!(layout.eh_range_of(FileId(1)), Err(refused));
     assert_eq!(v.resolved(refs[0].key).expect("row").facts, 7);
     // the compaction recounts `refs` from FRAG_USE: the shared fragment
     // lost file 1
