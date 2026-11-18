@@ -28,6 +28,7 @@ use std::collections::{BTreeMap, BTreeSet, HashMap};
 use mortar_core::incr::{IncrReason, LayoutDelta, StoredLayout, StoredSection, Unimplemented};
 use mortar_core::layout::{Hole, HoleKind, Place};
 use mortar_core::{ChunkId, FileId, OutSecId, SectionId};
+use mortar_layout::slack::{self, Slack};
 
 use super::rows::{self, DebugStrRow, GroupRow, debug_str_class};
 use super::view::{Change, ChangedFile, ChangedFiles, StateView};
@@ -104,50 +105,14 @@ pub fn form(name: &[u8]) -> Option<Form> {
     Some(Form { min, granule, policy })
 }
 
-/// The smallest size class at least `n` (IN-50: `m·2^k`, `m` in 8..=15,
-/// at least 32): `mortar_layout::slack::class_at_least`, mirrored (no
-/// dependency edge `mortar_incr` -> `mortar_layout` without the
-/// supervisor's word; a test compares the values).
-#[must_use]
-pub fn class_at_least(n: u64) -> u64 {
-    if n <= 32 {
-        return 32;
-    }
-    let k = (64 - n.leading_zeros()).saturating_sub(4);
-    n.checked_next_multiple_of(1u64 << k).unwrap_or(n)
-}
-
-/// A contribution's slack beyond `size` (IN-50, IN-51b):
-/// `mortar_layout::slack::Slack::allotment` with slack on, mirrored. Only
-/// [`Policy::Allotted`] sections of `slack::neutral`'s six take slack in
-/// a full link; the update gives a contribution it places at the tail
-/// the same (none for the others).
+/// A contribution's slack beyond `size` (IN-50, IN-51b): the full
+/// link's `mortar_layout::slack::Slack::allotment` with slack on. Only
+/// the sections of `slack::neutral` take slack in a full link; the update
+/// gives a contribution it places at the tail the same (none for the
+/// others).
 #[must_use]
 pub fn slack_of(name: &[u8], size: u64) -> u64 {
-    let takes = matches!(
-        name,
-        b".debug_info"
-            | b".debug_abbrev"
-            | b".debug_line"
-            | b".debug_rnglists"
-            | b".debug_str_offsets"
-            | b".debug_ranges"
-    );
-    let Some(f) = form(name) else { return 0 };
-    if !takes || size == 0 {
-        return 0;
-    }
-    let mut c = class_at_least(size);
-    loop {
-        let pad = c - size;
-        if pad == 0 || (pad >= f.min && pad.is_multiple_of(f.granule)) {
-            return pad;
-        }
-        match class_at_least(c + 1) {
-            n if n > c => c = n,
-            _ => return 0,
-        }
-    }
+    slack::neutral(name).map_or(0, |n| Slack::INCREMENTAL.allotment(size, n))
 }
 
 /// Whether `size` bytes fit `room` leaving a remainder of 0 or one IN-51b
@@ -1075,14 +1040,20 @@ fn text(b: &[u8]) -> String {
 mod tests {
     use super::*;
 
-    // spec: incr.md IN-50 (the size classes are slack.rs's: mirrored)
+    // spec: incr.md IN-50, IN-51b (debug.rs's minima equal slack.rs's for the six)
     #[test]
-    fn classes_mirror_slack() {
-        assert_eq!(class_at_least(1), 32);
-        assert_eq!(class_at_least(33), 36);
-        assert_eq!(class_at_least(65), 72);
-        assert_eq!(class_at_least(1000), 1024);
-        // 32 - 30 = 2 < 15: the classes 36, 40, 44 leave less than 15; 48 leaves 18
+    fn forms_agree_with_slack() {
+        for n in [
+            &b".debug_info"[..],
+            b".debug_abbrev",
+            b".debug_line",
+            b".debug_rnglists",
+            b".debug_str_offsets",
+            b".debug_ranges",
+        ] {
+            let (f, s) = (form(n).unwrap(), slack::neutral(n).unwrap());
+            assert_eq!((f.min, f.granule), (s.min, s.granule), "{}", text(n));
+        }
         assert_eq!(slack_of(b".debug_info", 30), 18);
         assert_eq!(slack_of(b".debug_frame", 30), 0);
     }
