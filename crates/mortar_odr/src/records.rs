@@ -612,11 +612,11 @@ pub(crate) fn info_of<'l>(at: usize, file: FileId, u: &Unit<'l>) -> Info<'l> {
 /// The rows of `u` whose flag word sets a bit its kind reserves (MT-25:
 /// ignored, counted; WP-204), kinds 1, 2, 3 and 5.
 fn reserved_rows(u: &Unit<'_>) -> u64 {
-    let s = u.summary().iter().filter(|r| r.flags & !flags::SUMMARY_KNOWN != 0).count();
-    let d = u.definitions().iter().filter(|r| r.flags & !flags::DEF_KNOWN != 0).count();
-    let t = u.types().iter().filter(|r| r.flags & !flags::TYPE_KNOWN != 0).count();
-    let c = u.declarations().iter().filter(|r| r.flags & !flags::DECL_KNOWN != 0).count();
-    (s + d + t + c) as u64
+    let summary = u.summary().iter().filter(|r| r.flags & !flags::SUMMARY_KNOWN != 0).count();
+    let defs = u.definitions().iter().filter(|r| r.flags & !flags::DEF_KNOWN != 0).count();
+    let types = u.types().iter().filter(|r| r.flags & !flags::TYPE_KNOWN != 0).count();
+    let decls = u.declarations().iter().filter(|r| r.flags & !flags::DECL_KNOWN != 0).count();
+    (summary + defs + types + decls) as u64
 }
 
 /// (name, value, file, unit, row) of an ENFORCE kind-1 row.
