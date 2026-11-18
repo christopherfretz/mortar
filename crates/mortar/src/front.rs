@@ -30,10 +30,9 @@ use mortar_arch::{Arch, OutputCx, OutputKind};
 use mortar_core::assignment::Assignment;
 use mortar_core::check::CheckContext;
 use mortar_core::column::Column;
-use mortar_core::demands::DemandFlags;
 use mortar_core::id::{ChunkId, FileId, SectionId, SymKey};
 use mortar_core::inputs::{Inputs, Reader};
-use mortar_core::layout::{ChunkKind, Folds, Layout, Placement, Slots};
+use mortar_core::layout::{ChunkKind, Folds, Layout, Placement, SlotKind, Slots};
 use mortar_core::par::Pool;
 use mortar_core::plan::{self, Plan, Strip};
 use mortar_core::resolution::{Resolution, SectionKind};
@@ -1359,14 +1358,14 @@ fn same_slot_lists(a: &Slots, b: &Slots) -> bool {
 
 /// `Slots` from `Demands` (S-64): each kind's keys in `SymKey` order.
 fn slots_of(d: &mortar_core::Demands, resolution: &Resolution) -> Slots {
-    let list = |f: DemandFlags| -> Box<[SymKey]> { d.keys_with(f).collect() };
+    let list = |k: SlotKind| -> Box<[SymKey]> { d.keys_with(k.demand()).collect() };
     Slots {
-        got: list(DemandFlags::GOT),
-        plt: list(DemandFlags::PLT | DemandFlags::CANON_PLT),
-        iplt: list(DemandFlags::IPLT),
-        tls_desc: list(DemandFlags::TLS_DESC),
-        tls_gd: list(DemandFlags::TLS_GD),
-        tls_ie: list(DemandFlags::GOT_TPREL),
+        got: list(SlotKind::Got),
+        plt: list(SlotKind::Plt),
+        iplt: list(SlotKind::Iplt),
+        tls_desc: list(SlotKind::TlsDesc),
+        tls_gd: list(SlotKind::TlsGd),
+        tls_ie: list(SlotKind::TlsIe),
         tls_ld: d.output.contains(mortar_core::demands::GlobalFlags::TLS_LD),
         symtab_locals: Column::filled(resolution.file_live.len(), mortar_core::Span::default()),
         ..Slots::default()
