@@ -156,7 +156,8 @@ pub fn canon_of(m: &MemoryState) -> Result<Canon, StateError> {
         (kind::RESOLVED, rows(&n.resolved)),
         (kind::INDEX, per_file!(n.index)),
         (kind::HOLES, sorted(&n.holes, s)?),
-        // normalized: `first_global` only (the ranges are the writer's)
+        // normalized: `first_global` and `locals` (recomputed from the
+        // sorted tail); the ranges are the writer's
         (kind::FILE_INDEX, rows(&n.file_index)),
         (kind::EDGES, per_file!(n.edges)),
         (kind::SYMTAB, per_file!(n.symtab)),

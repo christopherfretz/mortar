@@ -33,8 +33,8 @@ use crate::format::{
 use crate::update::diags::{DiagRow, Subject};
 use crate::update::rows::{
     CloneProbe, CommonRow, CopyRow, EdgeRow, FileIndexRow, FileRow, FileTable, FragRow, FragUseRow,
-    GroupRow, HoleRow, IndexRow, KeyRefRow, MentionRow, MetaRow, NameRow, RegionRow, ResolvedRow,
-    RowRange, SlotRow, SymbolRow, SymtabKeyRow, SymtabRow, key_ref_flags,
+    GroupRow, HoleRow, IndexRow, KeyRefRow, LocalRange, MentionRow, MetaRow, NameRow, RegionRow,
+    ResolvedRow, RowRange, SlotRow, SymbolRow, SymtabKeyRow, SymtabRow, key_ref_flags, sym_kind,
 };
 use crate::update::view::Rows;
 
@@ -411,7 +411,6 @@ same_as_format4!(
     StatRow,
     ProbeRow,
     OutSecRow,
-    SymbolRow,
     SectionRow,
     ChunkRow,
     u32,
@@ -424,6 +423,39 @@ same_as_format4!(
     LayoutRow,
     [u8; 32]
 );
+
+/// `SYMBOLS` (format 4's 36 bytes) with `option` in byte 1, one of format
+/// 4's three pad bytes (WP-214 seam 6, ruling 2: 0 or 1; another value,
+/// or a set byte 2 or 3, is refused).
+impl Rec for SymbolRow {
+    const WIDTH: usize = 36;
+    fn put(&self, w: &mut W<'_>) {
+        w.u8(self.kind).u8(u8::from(self.option)).pad(2).u32(self.file).u32(self.ordinal);
+        w.s(self.name).s(self.version).u32(self.at_file).u32(self.at_index);
+    }
+    fn get(r: &mut R<'_>) -> Self {
+        let kind = r.u8();
+        let option = r.u8();
+        r.pad(2);
+        if option > 1 {
+            r.bad_pad = true;
+        }
+        Self {
+            kind,
+            file: r.u32(),
+            ordinal: r.u32(),
+            name: r.s(),
+            version: r.s(),
+            at_file: r.u32(),
+            at_index: r.u32(),
+            option: option == 1,
+        }
+    }
+    fn ok(&self) -> bool {
+        // the bit is a global's (a local, a `GONE` row: never set)
+        !self.option || matches!(self.kind, sym_kind::GLOBAL | sym_kind::VERSIONED)
+    }
+}
 
 impl Rec for u8 {
     const WIDTH: usize = 1;
@@ -496,13 +528,17 @@ impl Rec for MetaRow {
     }
 }
 
+/// `FILES`: format 4's columns, the `.eh_frame` range (WP-239), then
+/// seam 6's `eh_fdes` (`u32`), `stack` (`u8`, `file_stack`) and
+/// `properties` (`Str`, `rows::encode_properties`): 97 bytes.
 impl Rec for FileRow {
-    const WIDTH: usize = 84;
+    const WIDTH: usize = 97;
     fn put(&self, w: &mut W<'_>) {
         w.u8(self.kind).u8(self.member).u8(self.flags).pad(1).s(self.path).u32(self.mention);
         w.s(self.member_name).u32(self.member_ordinal).u64(self.base).u64(self.len);
         w.bytes(&self.hash).u64(self.rank).u32(self.round);
         w.u32(self.eh_offset).u32(self.eh_capacity).u32(self.eh_records);
+        w.u32(self.eh_fdes).u8(self.stack).s(self.properties);
     }
     fn get(r: &mut R<'_>) -> Self {
         let (kind, member, flags) = (r.u8(), r.u8(), r.u8());
@@ -523,28 +559,31 @@ impl Rec for FileRow {
             eh_offset: r.u32(),
             eh_capacity: r.u32(),
             eh_records: r.u32(),
-            // Seam 6's columns are not in batch 13's format 5 (U-2's format
-            // side): 0 and empty (WP-245 compile junction; never read by
-            // an update: `eh_range_of` refuses a range).
-            eh_fdes: 0,
-            stack: 0,
-            properties: Str::default(),
+            eh_fdes: r.u32(),
+            stack: r.u8(),
+            properties: r.s(),
         }
     }
     fn ok(&self) -> bool {
         self.flags & !crate::update::rows::file_flags::ALL == 0
             && self.member <= 1
             && (self.eh_records == 0 || self.eh_capacity > 0)
+            && self.eh_fdes <= self.eh_records
+            && self.stack <= crate::update::rows::file_stack::EXEC
     }
 }
 
+/// `FILE_INDEX`: per file-keyed table `(first, count, capacity)`, then
+/// `first_global`, `gone` (pad 3) and seam 6's `locals` (`first`,
+/// `count`).
 impl Rec for FileIndexRow {
-    const WIDTH: usize = FileTable::COUNT * 12 + 8;
+    const WIDTH: usize = FileTable::COUNT * 12 + 16;
     fn put(&self, w: &mut W<'_>) {
         for r in &self.ranges {
             w.u32(r.first).u32(r.count).u32(r.capacity);
         }
         w.u32(self.first_global).u8(u8::from(self.gone)).pad(3);
+        w.u32(self.locals.first).u32(self.locals.count);
     }
     fn get(r: &mut R<'_>) -> Self {
         let mut row = Self::default();
@@ -558,11 +597,13 @@ impl Rec for FileIndexRow {
             r.bad_pad = true;
         }
         row.gone = gone == 1;
+        row.locals = LocalRange { first: r.u32(), count: r.u32() };
         row
     }
     fn ok(&self) -> bool {
         self.ranges.iter().all(|r| r.count <= r.capacity)
             && self.ranges[FileTable::EhRecords as usize] == RowRange::default()
+            && self.locals.first.checked_add(self.locals.count).is_some()
     }
 }
 
@@ -751,11 +792,13 @@ impl Rec for KeyRefRow {
     }
 }
 
+/// `FRAGS`: key `(out, class, hash)`, `offset`, seam 6's `size`, `refs`,
+/// the tomb: 41 bytes.
 impl Rec for FragRow {
-    const WIDTH: usize = 37;
+    const WIDTH: usize = 41;
     fn put(&self, w: &mut W<'_>) {
-        w.u32(self.out).u32(self.class).bytes(&self.hash).u64(self.offset).u32(self.refs);
-        w.u8(u8::from(self.tomb));
+        w.u32(self.out).u32(self.class).bytes(&self.hash).u64(self.offset).u32(self.size);
+        w.u32(self.refs).u8(u8::from(self.tomb));
     }
     fn get(r: &mut R<'_>) -> Self {
         Self {
@@ -763,8 +806,7 @@ impl Rec for FragRow {
             class: r.u32(),
             hash: r.h(),
             offset: r.u64(),
-            // Not in batch 13's format 5 (WP-245 compile junction).
-            size: 0,
+            size: r.u32(),
             refs: r.u32(),
             tomb: tomb(r),
         }
@@ -783,7 +825,7 @@ impl Rec for HoleRow {
         Self { chunk, kind, offset: r.u64(), size: r.u64(), tomb: t }
     }
     fn ok(&self) -> bool {
-        self.kind <= crate::format::hole_kind::DEAD_CIE
+        self.kind <= crate::format::hole_kind::DEAD_SLOT
     }
 }
 
