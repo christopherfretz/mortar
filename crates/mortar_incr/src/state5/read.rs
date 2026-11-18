@@ -38,9 +38,9 @@ use crate::format::{
 };
 use crate::update::diags::DiagRow;
 use crate::update::rows::{
-    CommonRow, EdgeRow, FileIndexRow, FileRow, FileTable, FragRow, GroupRow, HoleRow, IndexRow,
-    KeyRefRow, MentionRow, MetaRow, NameRow, OdrClassRow, OdrRefRow, RegionRow, ResolvedRow,
-    SymbolRow, SymtabKeyRow, SymtabRow, sym_kind,
+    CommonRow, CopyRow, EdgeRow, FileIndexRow, FileRow, FileTable, FragRow, GroupRow, HoleRow,
+    IndexRow, KeyRefRow, MentionRow, MetaRow, NameRow, OdrClassRow, OdrRefRow, RegionRow,
+    ResolvedRow, SymbolRow, SymtabKeyRow, SymtabRow, sym_kind,
 };
 use crate::update::testing::MemoryState;
 use crate::update::view::{Rows, StateRows, StateView};
@@ -526,11 +526,9 @@ impl StateRows for Reader {
     fn key_refs(&self, key: SymbolId) -> Rows<Vec<KeyRefRow>> {
         self.core.keyed::<KeyRefRow>(kind::KEY_REFS, &(key.0, 0), &|k| k.0 == key.0)
     }
-    fn group(&self, signature: &[u8]) -> Rows<Option<GroupRow>> {
-        let lo = signature.to_vec();
-        let mut v =
-            self.core.keyed::<GroupRow>(kind::GROUPS, &lo, &|k| k.as_slice() == signature)?;
-        Ok(v.pop())
+    fn group(&self, signature: &[u8]) -> Rows<Vec<GroupRow>> {
+        let lo = (signature.to_vec(), 0);
+        self.core.keyed::<GroupRow>(kind::GROUPS, &lo, &|k| k.0.as_slice() == signature)
     }
     fn frags_in(&self, out: OutSecId) -> Rows<Vec<FragRow>> {
         let mut v =
@@ -541,8 +539,11 @@ impl StateRows for Reader {
     fn holes_in(&self, chunk: ChunkId) -> Rows<Vec<HoleRow>> {
         self.core.keyed::<HoleRow>(kind::HOLES, &(chunk.0, 0), &|k| k.0 == chunk.0)
     }
-    fn common(&self, key: SymbolId) -> Rows<Option<CommonRow>> {
-        Ok(self.core.keyed::<CommonRow>(kind::COMMONS, &key.0, &|k| *k == key.0)?.pop())
+    fn commons(&self, key: SymbolId) -> Rows<Vec<CommonRow>> {
+        self.core.keyed::<CommonRow>(kind::COMMONS, &(key.0, 0), &|k| k.0 == key.0)
+    }
+    fn copies(&self, key: SymbolId) -> Rows<Vec<CopyRow>> {
+        self.core.keyed::<CopyRow>(kind::COPIES, &(key.0, 0, 0), &|k| k.0 == key.0)
     }
     fn odr_classes(&self, odr_key: u32) -> Rows<Vec<OdrClassRow>> {
         // Format 5 holds no ODR record table (WP-220 R-1, WP-236).
@@ -732,6 +733,7 @@ pub(crate) fn decode_core(c: &Core) -> Rows<MemoryState> {
         frags: c.all(kind::FRAGS)?,
         holes: c.all(kind::HOLES)?,
         commons: c.all(kind::COMMONS)?,
+        copies: c.all(kind::COPIES)?,
         names: c.all(kind::NAMES)?,
         ..MemoryState::default()
     };
@@ -751,6 +753,7 @@ pub(crate) fn decode_core(c: &Core) -> Rows<MemoryState> {
     check_sorted::<FragRow>(c, kind::FRAGS, &m.frags, s)?;
     check_sorted::<HoleRow>(c, kind::HOLES, &m.holes, s)?;
     check_sorted::<CommonRow>(c, kind::COMMONS, &m.commons, s)?;
+    check_sorted::<CopyRow>(c, kind::COPIES, &m.copies, s)?;
     check_sorted::<DiagRaw>(c, kind::DIAGS, &raw, s)?;
     check_sorted::<NameRow>(c, kind::NAMES, &m.names, s)?;
     // The file-keyed tables: per live file its range; ranges in bounds and

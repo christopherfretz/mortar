@@ -10,8 +10,8 @@ use mortar_incr::format::{FragAtRow, SectionRow, StatRow, StateError, Str, kind,
 use mortar_incr::ops::{StdOps, WriteFailure};
 use mortar_incr::state5::{self, compact, read, write};
 use mortar_incr::update::rows::{
-    FileRow, FragRow, KeyRefRow, MentionRow, NameRow, ResolvedRow, SymbolRow, SymtabKeyRow,
-    file_flags, sym_kind,
+    CommonRow, CopyRow, FileIndexRow, FileRow, FragRow, GroupRow, KeyRefRow, MentionRow, NameRow,
+    ResolvedRow, SymbolRow, SymtabKeyRow, file_flags, sym_kind,
 };
 use mortar_incr::update::testing::MemoryState;
 use mortar_incr::update::view::{FileRanges, KeyEdits, StatePatch};
@@ -82,7 +82,23 @@ fn sample(ids: &[u32], sections: u32) -> MemoryState {
             ..FragRow::default()
         });
         m.frag_at.push((FileId(f), FragAtRow { section: first, offset: 0, frag }));
+        // WP-215/WP-220 rows: every file has a copy of one group (its own
+        // `Str` of the same bytes), a common mention and a COMDAT copy of
+        // the unmentioned key (row 0 below), and its `sh_info`.
+        let signature = add(&mut pool, b"grp");
+        m.groups.push(GroupRow { signature, file: f, tomb: false });
+        m.commons.push(CommonRow {
+            key: 0,
+            file: f,
+            size: 8 * u64::from(id + 1),
+            align: 8,
+            tomb: false,
+        });
+        m.copies.push(CopyRow { key: 0, file: f, index: 2, size: 16, typ: 2, tomb: false });
+        m.file_index.push(FileIndexRow { first_global: 2 + id, ..FileIndexRow::default() });
     }
+    m.meta.iterations = 1;
+    m.meta.versioned = 3;
     // an unmentioned key (a --defsym), early
     let dname = add(&mut pool, b"defsym");
     m.symbols.insert(
@@ -387,6 +403,9 @@ fn remove_file_1(m: &MemoryState) -> StatePatch {
         }
     }
     p.frags.delete.push(*m.frags.iter().find(|f| f.ordinal == 1).expect("its frag"));
+    p.groups.delete.extend(m.groups.iter().filter(|g| g.file == 1).copied());
+    p.commons.delete.extend(m.commons.iter().filter(|g| g.file == 1).copied());
+    p.copies.delete.extend(m.copies.iter().filter(|g| g.file == 1).copied());
     p
 }
 
@@ -553,4 +572,53 @@ fn patch_and_compact_on_a_file() {
     );
     assert!(state5::open(&file, [8; 16]).is_err(), "another plan hash: options-changed");
     let _ = NameRow::default();
+}
+
+// spec: incr.md IN-18e's GROUPS (44, by (signature, file)), COMMONS (46, by
+// (key, file)), COPIES (55, by (key, file, index)), META's `iterations` and
+// `versioned`, FILE_INDEX's `first_global` (WP-215, WP-220): written, read
+// back by accessor and decode, kept by a patch and by the compaction
+#[test]
+fn seam_rows_round_trip_and_patch() {
+    let bytes = full(&sample(&[0, 1, 2], 2));
+    let view = read::open_bytes(bytes.clone()).expect("open");
+    let mut files: Vec<u32> = view.group(b"grp").expect("rows").iter().map(|g| g.file).collect();
+    files.sort_unstable();
+    assert_eq!(files, vec![0, 1, 2], "one GROUPS row per copy, no keeper");
+    assert!(view.group(b"grq").expect("rows").is_empty());
+    let key = view.find_key(b"defsym", b"").expect("lookup").expect("defsym");
+    assert_eq!(view.commons(key).expect("rows").len(), 3);
+    let win = view.common(key).expect("rows").expect("a winner");
+    assert_eq!((win.file, win.size), (0, 24), "least rank, largest size");
+    let copies = view.copies(key).expect("rows");
+    assert_eq!(copies.len(), 3);
+    assert!(copies.iter().all(|c| c.size == 16 && c.typ == 2 && c.index == 2));
+    let m = read::decode(&bytes).expect("decode");
+    assert_eq!((m.meta.iterations, m.meta.versioned), (1, 3));
+    let fg: Vec<u32> = m.file_index.iter().map(|i| i.first_global).collect();
+    assert_eq!(fg, vec![2, 3, 4]);
+    // in place: file 2's copy goes, a new one of file 0 at index 5
+    let mut p = StatePatch::default();
+    p.copies.delete.extend(m.copies.iter().filter(|c| c.file == 2).copied());
+    p.copies.put.push(CopyRow { key: key.0, file: 0, index: 5, size: 4, typ: 1, tomb: false });
+    let plan = state5::plan_patch(&view, &p).expect("plan");
+    assert!(!plan.compacts(), "{}", plan.reason());
+    let patched = write::patched_bytes(&bytes, &plan, &output_of(&bytes)).expect("in place");
+    let v = read::open_bytes(patched.clone()).expect("open");
+    let mut got: Vec<(u32, u32)> =
+        v.copies(key).expect("rows").iter().map(|c| (c.file, c.index)).collect();
+    got.sort_unstable();
+    assert_eq!(got, vec![(0, 2), (0, 5), (1, 2)]);
+    let d = read::decode(&patched).expect("decode");
+    assert_eq!(d.file_index.iter().map(|i| i.first_global).collect::<Vec<_>>(), fg);
+    // compaction: file 1 goes; its GROUPS, COMMONS and COPIES rows with it
+    let plan = state5::plan_patch(&view, &remove_file_1(&m)).expect("plan");
+    assert!(plan.compacts(), "{}", plan.reason());
+    let c = compact::plan_bytes(&plan, &output_of(&bytes)).expect("compacted");
+    let d = read::decode(&c).expect("decode");
+    assert_eq!(d.groups.len(), 2);
+    assert_eq!(d.commons.iter().map(|r| r.file).collect::<Vec<_>>(), vec![0, 1]);
+    assert_eq!(d.copies.len(), 2);
+    assert_eq!(d.file_index.iter().map(|i| i.first_global).collect::<Vec<_>>(), vec![2, 4]);
+    assert_eq!((d.meta.iterations, d.meta.versioned), (1, 3));
 }

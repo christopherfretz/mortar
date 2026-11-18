@@ -169,6 +169,8 @@ pub fn canon_of(m: &MemoryState) -> Result<Canon, StateError> {
         (kind::INDEX, per_file!(n.index)),
         (kind::HOLES, sorted(&n.holes, s)?),
         (kind::FRAG_AT, per_file!(frag_at)),
+        // normalized: `first_global` only (the ranges are the writer's)
+        (kind::FILE_INDEX, rows(&n.file_index)),
         (kind::EDGES, per_file!(n.edges)),
         (kind::SYMTAB, per_file!(n.symtab)),
         (kind::GROUPS, sorted(&n.groups, s)?),
@@ -178,6 +180,7 @@ pub fn canon_of(m: &MemoryState) -> Result<Canon, StateError> {
         (kind::SYMTAB_KEYS, rows(&n.symtab_keys)),
         (kind::REGIONS, per_file!(n.regions)),
         (kind::NAMES, sorted(&n.names, s)?),
+        (kind::COPIES, sorted(&n.copies, s)?),
     ];
     Ok(Canon { tables })
 }

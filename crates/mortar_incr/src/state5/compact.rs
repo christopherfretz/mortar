@@ -93,6 +93,7 @@ pub fn apply(m: &mut MemoryState, p: &StatePatch, frags_aux: usize) -> Rows<()> 
     }
     keyed(&mut m.holes, &p.holes, s, 0, |_| {})?;
     keyed(&mut m.commons, &p.commons, s, 0, |_| {})?;
+    keyed(&mut m.copies, &p.copies, s, 0, |_| {})?;
     keyed(&mut m.names, &p.names, s, 0, |_| {})?;
     if !(p.odr_classes.put.is_empty()
         && p.odr_classes.delete.is_empty()
@@ -425,7 +426,13 @@ pub fn normalize(m: &MemoryState) -> Result<MemoryState, StateError> {
             ..r.clone()
         });
     }
-    n.file_index = vec![FileIndexRow::default(); live.len()];
+    n.file_index = live
+        .iter()
+        .map(|&f| FileIndexRow {
+            first_global: m.file_index.get(f).map_or(0, |i| i.first_global),
+            ..FileIndexRow::default()
+        })
+        .collect();
     for r in &m.probes {
         n.probes.push(crate::format::ProbeRow { path: intern(r.path)?, ..r.clone() });
     }
@@ -587,7 +594,11 @@ pub fn normalize(m: &MemoryState) -> Result<MemoryState, StateError> {
     n.regions = per_file(&m.regions, &fid, &gone, |r| Ok(*r))?;
     // Key-keyed: tombstones dropped, references mapped (encode sorts).
     for r in m.groups.iter().filter(|r| !r.tomb) {
-        n.groups.push(crate::update::rows::GroupRow { signature: intern(r.signature)?, ..*r });
+        n.groups.push(crate::update::rows::GroupRow {
+            signature: intern(r.signature)?,
+            file: file(r.file)?,
+            ..*r
+        });
     }
     for r in m.key_refs.iter().filter(|r| !r.tomb()) {
         n.key_refs.push(KeyRefRow { key: sym(r.key)?, file: file(r.file)?, ..*r });
@@ -598,6 +609,9 @@ pub fn normalize(m: &MemoryState) -> Result<MemoryState, StateError> {
             file: file(r.file)?,
             ..*r
         });
+    }
+    for r in m.copies.iter().filter(|r| !r.tomb) {
+        n.copies.push(crate::update::rows::CopyRow { key: sym(r.key)?, file: file(r.file)?, ..*r });
     }
     n.holes = m.holes.iter().filter(|r| !r.tomb).copied().collect();
     for d in m.diags.iter().filter(|d| !d.tomb) {

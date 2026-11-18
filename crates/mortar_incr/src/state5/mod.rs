@@ -33,9 +33,9 @@ use crate::format::{
 };
 use crate::update::diags::{DiagRow, Subject};
 use crate::update::rows::{
-    CloneProbe, CommonRow, EdgeRow, FileIndexRow, FileRow, FileTable, FragRow, GroupRow, HoleRow,
-    IndexRow, KeyRefRow, MentionRow, MetaRow, NameRow, RegionRow, ResolvedRow, RowRange, SymbolRow,
-    SymtabKeyRow, SymtabRow, key_ref_flags,
+    CloneProbe, CommonRow, CopyRow, EdgeRow, FileIndexRow, FileRow, FileTable, FragRow, GroupRow,
+    HoleRow, IndexRow, KeyRefRow, MentionRow, MetaRow, NameRow, RegionRow, ResolvedRow, RowRange,
+    SymbolRow, SymtabKeyRow, SymtabRow, key_ref_flags,
 };
 use crate::update::view::Rows;
 
@@ -77,7 +77,7 @@ pub enum Class {
 /// width. A kind not here is `state-corrupt` (IN-18e). `ODR_CLASSES` (47)
 /// and `ODR_REFS` (48) are not written (supervisor's ruling on WP-220,
 /// R-1: provisional until WP-236; kinds 53 and 54 reserved for it).
-pub const TABLES: [(u32, Class, usize); 37] = [
+pub const TABLES: [(u32, Class, usize); 38] = [
     (kind::META, Class::Whole, MetaRow::WIDTH),
     (kind::STAT, Class::AppendOnly, <StatRow as Rec>::WIDTH),
     (kind::FILES, Class::AppendOnly, FileRow::WIDTH),
@@ -115,6 +115,7 @@ pub const TABLES: [(u32, Class, usize); 37] = [
     (kind::SYMTAB_KEYS, Class::KeyParallel, SymtabKeyRow::WIDTH),
     (kind::REGIONS, Class::FileKeyed, RegionRow::WIDTH),
     (kind::NAMES, Class::KeyKeyed, NameRow::WIDTH),
+    (kind::COPIES, Class::KeyKeyed, CopyRow::WIDTH),
 ];
 
 /// The position of `kind` in [`TABLES`].
@@ -139,6 +140,7 @@ pub fn name(k: u32) -> &'static str {
         kind::SYMTAB_KEYS => "SYMTAB_KEYS",
         kind::REGIONS => "REGIONS",
         kind::NAMES => "NAMES",
+        kind::COPIES => "COPIES",
         k => kind::name(k),
     }
 }
@@ -431,10 +433,10 @@ impl Rec for MetaRow {
         w.u8(self.leaf_fn).u8(self.build_id_len).u8(u8::from(self.output_synced));
         w.u8(u8::from(self.clone_probe.is_some()));
         w.u64(self.file_size).u64(self.sealed_start).u64(self.sealed_end);
-        w.bytes(&self.build_id).bytes(&self.boot_id).u32(self.compactions).pad(4);
+        w.bytes(&self.build_id).bytes(&self.boot_id).u32(self.compactions).u32(self.iterations);
         w.u64(p.dev).bytes(&p.fs_type).u64(p.copy_ns_per_mib);
         let t = &self.symtab;
-        w.u32(t.sh_info).u32(t.tail_first).u32(t.tail_capacity).pad(4);
+        w.u32(t.sh_info).u32(t.tail_first).u32(t.tail_capacity).u32(self.versioned);
         w.u64(t.symtab_size).u64(t.symtab_slack).u64(t.strtab_size).u64(t.strtab_slack);
     }
     fn get(r: &mut R<'_>) -> Self {
@@ -443,11 +445,10 @@ impl Rec for MetaRow {
         let (file_size, sealed_start, sealed_end) = (r.u64(), r.u64(), r.u64());
         let build_id: [u8; 64] = r.take();
         let boot_id: [u8; 16] = r.take();
-        let compactions = r.u32();
-        r.pad(4);
+        let (compactions, iterations) = (r.u32(), r.u32());
         let probe = CloneProbe { dev: r.u64(), fs_type: r.take(), copy_ns_per_mib: r.u64() };
         let (sh_info, tail_first, tail_capacity) = (r.u32(), r.u32(), r.u32());
-        r.pad(4);
+        let versioned = r.u32();
         let symtab = mortar_core::incr::SymtabTables {
             sh_info,
             tail_first,
@@ -477,6 +478,8 @@ impl Rec for MetaRow {
             boot_id,
             output_synced: synced == 1,
             compactions,
+            iterations,
+            versioned,
             clone_probe: (probed == 1).then_some(probe),
             symtab,
         }
@@ -514,18 +517,19 @@ impl Rec for FileRow {
 }
 
 impl Rec for FileIndexRow {
-    const WIDTH: usize = FileTable::COUNT * 12 + 4;
+    const WIDTH: usize = FileTable::COUNT * 12 + 8;
     fn put(&self, w: &mut W<'_>) {
         for r in &self.ranges {
             w.u32(r.first).u32(r.count).u32(r.capacity);
         }
-        w.u8(u8::from(self.gone)).pad(3);
+        w.u32(self.first_global).u8(u8::from(self.gone)).pad(3);
     }
     fn get(r: &mut R<'_>) -> Self {
         let mut row = Self::default();
         for x in &mut row.ranges {
             *x = RowRange { first: r.u32(), count: r.u32(), capacity: r.u32() };
         }
+        row.first_global = r.u32();
         let gone = r.u8();
         r.pad(3);
         if gone > 1 {
@@ -649,10 +653,24 @@ fn tomb(r: &mut R<'_>) -> bool {
 impl Rec for GroupRow {
     const WIDTH: usize = 13;
     fn put(&self, w: &mut W<'_>) {
-        w.s(self.signature).u32(self.keeper).u8(u8::from(self.tomb));
+        w.s(self.signature).u32(self.file).u8(u8::from(self.tomb));
     }
     fn get(r: &mut R<'_>) -> Self {
-        Self { signature: r.s(), keeper: r.u32(), tomb: tomb(r) }
+        Self { signature: r.s(), file: r.u32(), tomb: tomb(r) }
+    }
+}
+
+impl Rec for CopyRow {
+    const WIDTH: usize = 24;
+    fn put(&self, w: &mut W<'_>) {
+        w.u32(self.key).u32(self.file).u32(self.index).u64(self.size).u8(self.typ);
+        w.u8(u8::from(self.tomb)).pad(2);
+    }
+    fn get(r: &mut R<'_>) -> Self {
+        let (key, file, index, size, typ) = (r.u32(), r.u32(), r.u32(), r.u64(), r.u8());
+        let row = Self { key, file, index, size, typ, tomb: tomb(r) };
+        r.pad(2);
+        row
     }
 }
 
@@ -862,12 +880,13 @@ macro_rules! keyed {
 keyed!(KeyRefRow, (u32, u32), |x| (x.key, x.file));
 keyed!(FragRow, (u32, Hash16, u32), |x| (x.out, x.hash, x.ordinal));
 keyed!(HoleRow, (u32, u64), |x| (x.chunk, x.offset));
-keyed!(CommonRow, u32, |x| x.key);
+keyed!(CommonRow, (u32, u32), |x| (x.key, x.file));
+keyed!(CopyRow, (u32, u32, u32), |x| (x.key, x.file, x.index));
 
 impl Keyed for GroupRow {
-    type K = Vec<u8>;
-    fn key(&self, s: StrFn<'_>) -> Rows<Vec<u8>> {
-        s(self.signature)
+    type K = (Vec<u8>, u32);
+    fn key(&self, s: StrFn<'_>) -> Rows<(Vec<u8>, u32)> {
+        Ok((s(self.signature)?, self.file))
     }
     fn tomb(&self) -> bool {
         self.tomb

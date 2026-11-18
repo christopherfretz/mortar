@@ -146,6 +146,7 @@ pub fn encode(m: &MemoryState) -> Result<Vec<u8>, StateError> {
     for (f, r) in m.files.iter().enumerate() {
         ranges[f].gone =
             r.flags & file_flags::GONE != 0 || m.file_index.get(f).is_some_and(|i| i.gone);
+        ranges[f].first_global = m.file_index.get(f).map_or(0, |i| i.first_global);
     }
     // SECTIONS first: every other table's section references follow it.
     let live = m.sections.iter().enumerate().filter(|(_, r)| r.file != NONE);
@@ -313,6 +314,7 @@ pub fn encode(m: &MemoryState) -> Result<Vec<u8>, StateError> {
         (kind::SYMTAB_KEYS, body(&symtab_keys, Class::KeyParallel)),
         (kind::REGIONS, reg_body),
         (kind::NAMES, keyed_body(&sorted(&m.names, s)?.0)),
+        (kind::COPIES, keyed_body(&sorted(&m.copies, s)?.0)),
     ];
     debug_assert!(bodies.iter().zip(TABLES).all(|((k, _), t)| *k == t.0));
     Ok(assemble(&mut bodies, m.plan_hash, 0))
@@ -896,6 +898,7 @@ fn plan_in_place(core: &Arc<Core>, p: &StatePatch) -> Plan<InPlace> {
     ed.keyed(kind::FRAGS, &p.frags, true)?;
     ed.keyed(kind::HOLES, &p.holes, false)?;
     ed.keyed(kind::COMMONS, &p.commons, false)?;
+    ed.keyed(kind::COPIES, &p.copies, false)?;
     if !(p.odr_classes.put.is_empty()
         && p.odr_classes.delete.is_empty()
         && p.odr_refs.put.is_empty()
