@@ -10,7 +10,20 @@ puts in backticks, the tables the row changes). The last column is the
 second resolved into tables: a FILES flag (`POSITIONAL`, `LAZY`) is a
 change of FILES, and a cell's words that name a class of tables instead of
 a table ("its ranges gone", "its key-keyed rows deleted") are spelled out
-from IN-18e's class table (WORDS below says which).
+from IN-18e's class table (WORDS below says which). A cell's
+`TABLE.field` names its table (`FILE_INDEX.first_global` is a change of
+FILE_INDEX). A cell may name a table only to say the cause does NOT change
+it ("its `COPIES` rows change only with their files", "the keeper is the
+copy whose file has the least `FILES.rank`, not stored"): NOT_CHANGED lists
+those, with the spec's words, and the test holds them out of the row.
+
+The table as it reads after WP-215 seam 3 and WP-220's seam: GROUPS
+(per (signature, file), no keeper stored) and COMMONS (per (key, file), no
+winner stored) and the new COPIES (55, per (key, file, symbol index)) are
+a changed file's rows and a gone file's key-keyed rows; a re-elected group
+has no row of its own (its drawn-in files are `changed`); an ODR-affected
+key's DIAGS rows are the key's; ODR_REFS and ODR_CLASSES are PROVISIONAL
+(not written until WP-236) and no cause names them.
 """
 
 import os
@@ -26,29 +39,35 @@ KINDS = {
     'DEFINED': 17, 'PATCHES': 18, 'REDIRECTS': 19, 'SIZED': 20, 'LAYOUT': 21, 'LEAVES': 22, 'STRINGS': 23,
     'MENTIONS': 32, 'RESOLVED': 33, 'INDEX': 34, 'HOLES': 39, 'FRAG_AT': 40, 'FILE_INDEX': 41, 'EDGES': 42,
     'SYMTAB': 43, 'GROUPS': 44, 'KEY_REFS': 45, 'COMMONS': 46, 'ODR_CLASSES': 47, 'ODR_REFS': 48, 'DIAGS': 49,
-    'SYMTAB_KEYS': 50, 'REGIONS': 51, 'NAMES': 52,
+    'SYMTAB_KEYS': 50, 'REGIONS': 51, 'NAMES': 52, 'COPIES': 55,
 }
 NAMES = {k: n for n, k in KINDS.items()}
 FLAGS = {'POSITIONAL': 'FILES', 'LAZY': 'FILES'}      # FILES flags the cells name
 FILE_KEYED = ('SECTIONS', 'MENTIONS', 'INDEX', 'EDGES', 'FRAG_AT', 'EH_RECORDS', 'SYMTAB', 'REGIONS')
-# the key-keyed tables with a file in their key or row (a gone file's rows)
-FILE_KEY_ROWS = ('KEY_REFS', 'COMMONS', 'ODR_REFS', 'DIAGS')
+# the key-keyed tables with a file in their key or row (a gone file's rows;
+# ODR_REFS is PROVISIONAL, not written until WP-236)
+FILE_KEY_ROWS = ('KEY_REFS', 'GROUPS', 'COMMONS', 'COPIES', 'DIAGS')
+# a cell's names that say what the cause does NOT change
+NOT_CHANGED = {
+    'key': {'COPIES': 'its `COPIES` rows change only with their files, WP-220'},
+    'group': {'FILES': 'the keeper is the copy whose file has the least `FILES.rank`, not stored'},
+}
 
 WORDS = {
-    'gone': 'its row marked gone (FILES), its ranges gone (every file-keyed table), its key-keyed rows '
-            'deleted (the key-keyed tables whose rows name a file)',
+    'gone': 'its row marked gone (FILES; FILE_INDEX.gone), its ranges gone (every file-keyed table), its '
+            'key-keyed rows deleted (the key-keyed tables whose rows name a file)',
     'device': 'the device rows of STAT',
 }
 
 DUTY = (
     ('changed', 'a changed, appeared, drawn-in or newly extracted file',
      ('FILES', 'POSITIONAL', 'STAT', 'SECTIONS', 'MENTIONS', 'INDEX', 'EDGES', 'FRAG_AT', 'EH_RECORDS', 'SYMTAB',
-      'KEY_REFS', 'COMMONS', 'ODR_REFS', 'DIAGS'),
-     ('FILES', 'STAT', 'SECTIONS', 'MENTIONS', 'INDEX', 'EDGES', 'FRAG_AT', 'EH_RECORDS', 'SYMTAB', 'KEY_REFS',
-      'COMMONS', 'ODR_REFS', 'DIAGS')),
+      'FILE_INDEX', 'KEY_REFS', 'GROUPS', 'COMMONS', 'COPIES', 'DIAGS'),
+     ('FILES', 'STAT', 'SECTIONS', 'MENTIONS', 'INDEX', 'EDGES', 'FRAG_AT', 'EH_RECORDS', 'SYMTAB', 'FILE_INDEX',
+      'KEY_REFS', 'GROUPS', 'COMMONS', 'COPIES', 'DIAGS')),
     ('gone', 'a gone or no longer extracted file',
      ('LAZY',),
-     ('FILES',) + FILE_KEYED + FILE_KEY_ROWS),
+     ('FILES', 'FILE_INDEX') + FILE_KEYED + FILE_KEY_ROWS),
     ('touched', 'an input `stat`ed again but hashed equal (touched)',
      ('STAT',),
      ('STAT',)),
@@ -56,11 +75,11 @@ DUTY = (
      ('STAT',),
      ('STAT',)),
     ('key', 'an affected key',
-     ('SYMBOLS', 'RESOLVED', 'KEY_REFS', 'NAMES'),
-     ('SYMBOLS', 'RESOLVED', 'KEY_REFS', 'NAMES')),
+     ('SYMBOLS', 'RESOLVED', 'KEY_REFS', 'NAMES', 'DIAGS', 'COPIES'),
+     ('SYMBOLS', 'RESOLVED', 'KEY_REFS', 'NAMES', 'DIAGS')),
     ('group', 'a re-elected group',
-     ('GROUPS',),
-     ('GROUPS',)),
+     ('FILES',),
+     ()),
     ('moved', 'a section moved, killed or revived (IN-72 items 1-5, 11), in any file',
      ('SECTIONS', 'REGIONS'),
      ('SECTIONS', 'REGIONS')),
@@ -120,8 +139,17 @@ def spec_rows(path=SPEC):
         cells = [c.strip() for c in s.strip('|').split('|')]
         if set(cells[0]) <= {'-'}:
             continue
-        rows.append((cells[0], sorted(set(re.findall(r'`([A-Z][A-Z_]+)`', cells[1])))))
+        rows.append((cells[0], sorted(set(re.findall(r'`([A-Z][A-Z_]+)(?:\.[a-z_]+)?`', cells[1])))))
     return rows
+
+
+def cause_cell(path, cause):
+    """The spec's cell of rows for `cause`, as text."""
+    for line in open(path):
+        cells = [c.strip() for c in line.strip().strip('|').split('|')]
+        if line.strip().startswith('|') and cells[0] == cause and len(cells) >= 2:
+            return cells[1]
+    return ''
 
 
 def spec_kinds(path=SPEC):
@@ -151,9 +179,17 @@ def check_spec(path=SPEC):
     for (cause, names), d in zip(spec, DUTY):
         if sorted(names) != sorted(d[2]):
             problems.append('%s: the spec names %s, duty.py %s' % (d[0], names, sorted(d[2])))
+        held_out = NOT_CHANGED.get(d[0], {})
+        for n, words in held_out.items():
+            if n not in names:
+                problems.append('%s: %s is held out as not changed, but the spec does not name it' % (d[0], n))
+            elif words not in cause_cell(path, cause):
+                problems.append('%s: the spec no longer says %r' % (d[0], words))
+            if n in d[3]:
+                problems.append('%s: %s is held out as not changed and also among its tables' % (d[0], n))
         for n in names:
             t = FLAGS.get(n, n)
-            if t not in d[3]:
+            if t not in d[3] and n not in held_out:
                 problems.append('%s: %s named by the spec is not among its tables' % (d[0], n))
         for t in d[3]:
             if t not in KINDS:

@@ -6,5 +6,6 @@ edit: c.cc
 link: main.o c.o u.o
 cflags: -ffunction-sections
 options: --gc-sections
+expect-full: update-not-implemented (live): an update under --gc-sections is that named full link by rule (IN-71a, WP-215 seam 3; WP-238 later lifts it), so no hop expects a gc UPDATE: a hop that updates fails, a hop that falls back earlier (no-state, small-output) is n/a
 compilers: gcc kiln
 also-reversed: the first link never places u_helper (WP-207 §D: "also with the first link never placing it")

@@ -1,6 +1,6 @@
 """The judge's units, tested without a link (the lane's --self-test and
 --quick run them; H-1, WP-223): the dirty-range rule, the stderr
-comparison, elflint's four allow patterns, the (d) machinery around the
+comparison, elflint's five allow patterns, the (d) machinery around the
 stub of `incr_state canon`, and the duty table against the spec."""
 
 import os
@@ -15,35 +15,48 @@ import duty  # noqa: E402
 import judge  # noqa: E402
 
 
-def tiny_elf(mach, plt_types, c64=True):
+def tiny_elf(mach, plt_types, c64=True, note=None, note_name=b'.note.stapsdt'):
     """An ELF file with a `.rela.plt` (`.rel.plt` for i386) of the given
-    relocation types and a `.shstrtab`: enough for the elflint check."""
+    relocation types and a `.shstrtab`, and with `note` given a third
+    section of those bytes named `note_name`: enough for the elflint
+    check."""
     rela = mach != 3
-    name = b'.rela.plt' if rela else b'.rel.plt'
-    shstr = b'\0' + name + b'\0.shstrtab\0'
-    if c64:
-        recs = b''.join(struct.pack('<QQq', 0, t, 0) for t in plt_types)
-    else:
-        recs = b''.join(struct.pack('<II', 0, t) for t in plt_types)
+    secs = [(b'.rela.plt' if rela else b'.rel.plt', 4 if rela else 9, 2,
+             b''.join(struct.pack('<QQq', 0, t, 0) for t in plt_types) if c64 else
+             b''.join(struct.pack('<II', 0, t) for t in plt_types), 8 if c64 else 4, (24 if c64 else 8))]
+    if note is not None:
+        secs.append((note_name, 7, 0, note, 4, 0))
+    shstr = b'\0' + b''.join(n + b'\0' for n, *_ in secs) + b'.shstrtab\0'
     ehsize, shent = (64, 64) if c64 else (52, 40)
-    rel_off = ehsize
-    str_off = rel_off + len(recs)
-    shoff = (str_off + len(shstr) + 7) & ~7
+    off, body, nm = ehsize, b'', 1
+    rows = [(0, 0, 0, 0, 0, 0, 0)]
+    for n, ty, fl, data, al, es in secs:
+        pad = (-(off + len(body))) % al
+        body += bytes(pad)
+        rows.append((nm, ty, fl, ehsize + len(body), len(data), al, es))
+        body += data
+        nm += len(n) + 1
+    rows.append((nm, 3, 0, ehsize + len(body), len(shstr), 1, 0))
+    body += shstr
+    shoff = (ehsize + len(body) + 7) & ~7
+    body += bytes(shoff - ehsize - len(body))
+    n_sh, strndx = len(rows), len(rows) - 1
     if c64:
         eh = b'\x7fELF' + bytes([2, 1, 1]) + bytes(9) + struct.pack('<HHIQQQIHHHHHH', 2, mach, 1, 0, 0, shoff, 0,
-                                                                     ehsize, 56, 0, shent, 3, 2)
-        sh = [struct.pack('<IIQQQQIIQQ', 0, 0, 0, 0, 0, 0, 0, 0, 0, 0),
-              struct.pack('<IIQQQQIIQQ', 1, 4, 2, 0, rel_off, len(recs), 0, 0, 8, 24),
-              struct.pack('<IIQQQQIIQQ', 1 + len(name) + 1, 3, 0, 0, str_off, len(shstr), 0, 0, 1, 0)]
+                                                                     ehsize, 56, 0, shent, n_sh, strndx)
+        sh = [struct.pack('<IIQQQQIIQQ', a, t, f, 0, o, z, 0, 0, al, es) for a, t, f, o, z, al, es in rows]
     else:
         eh = b'\x7fELF' + bytes([1, 1, 1]) + bytes(9) + struct.pack('<HHIIIIIHHHHHH', 2, mach, 1, 0, 0, shoff, 0,
-                                                                     ehsize, 32, 0, shent, 3, 2)
-        sh = [struct.pack('<IIIIIIIIII', 0, 0, 0, 0, 0, 0, 0, 0, 0, 0),
-              struct.pack('<IIIIIIIIII', 1, 9, 2, 0, rel_off, len(recs), 0, 0, 4, 8),
-              struct.pack('<IIIIIIIIII', 1 + len(name) + 1, 3, 0, 0, str_off, len(shstr), 0, 0, 1, 0)]
-    body = eh + recs + shstr
-    body += bytes(shoff - len(body))
-    return body + b''.join(sh)
+                                                                     ehsize, 32, 0, shent, n_sh, strndx)
+        sh = [struct.pack('<IIIIIIIIII', a, t, f, 0, o, z, 0, 0, al, es) for a, t, f, o, z, al, es in rows]
+    return eh + body + b''.join(sh)
+
+
+def note(owner, ntype, desc):
+    """One ELF note."""
+    name = owner + b'\0'
+    return (struct.pack('<III', len(name), len(desc), ntype) + name + bytes(-len(name) % 4) + desc
+            + bytes(-len(desc) % 4))
 
 
 class FakeCanon:
@@ -107,7 +120,7 @@ def units(log=print):
     case('stderr-order', stderr('b\na\n', 'a\nb\n'), lambda r: r.startswith('FAIL') and 'line 1' in r)
     case('stderr-not-normalised', stderr(w.replace('c.o', 'd.o'), w), lambda r: r.startswith('FAIL'))
 
-    # elflint's four allow patterns (harness.md "Checks")
+    # elflint's five allow patterns (harness.md "Checks")
     a64 = tiny_elf(183, [1032, 1026])
     x64 = tiny_elf(62, [37])
     i386 = tiny_elf(3, [42], c64=False)
@@ -121,7 +134,24 @@ def units(log=print):
     case('elflint-irelative-x64', judge.elflint_complaints(rt + '\n' + rs, x64), [])
     case('elflint-irelative-i386', judge.elflint_complaints(rt.replace('.rela.plt', '.rel.plt'), i386), [])
     case('elflint-variant-pcs-a64-only', judge.elflint_complaints(pcs, x64), lambda r: len(r) == 1)
-    case('elflint-fifth-pattern', judge.elflint_complaints(
+    # the fifth: a probe note held to its section, owner and type (elflint
+    # names the offset just past the note it read)
+    sdt = note(b'stapsdt', 3, bytes(52)) + note(b'stapsdt', 3, bytes(50))
+    st = "section [ 2] '.note.stapsdt': unknown object file note type 3 with owner name 'stapsdt' at offset %d"
+    case('elflint-stapsdt-allowed', judge.elflint_complaints('%s\n%s' % (st % 72, st % 144),
+                                                             tiny_elf(183, [], note=sdt)), [])
+    case('elflint-stapsdt-x64', judge.elflint_complaints(st % 72, tiny_elf(62, [], note=sdt)), [])
+    case('elflint-stapsdt-not-a-note-end', judge.elflint_complaints(st % 70, tiny_elf(183, [], note=sdt)),
+         lambda r: len(r) == 1)
+    case('elflint-stapsdt-other-owner', judge.elflint_complaints(
+        st % 72, tiny_elf(183, [], note=note(b'stapsdx', 3, bytes(52)))), lambda r: len(r) == 1)
+    case('elflint-stapsdt-other-type', judge.elflint_complaints(
+        st % 72, tiny_elf(183, [], note=note(b'stapsdt', 4, bytes(52)))), lambda r: len(r) == 1)
+    case('elflint-stapsdt-other-section', judge.elflint_complaints(
+        st % 72, tiny_elf(183, [], note=sdt, note_name=b'.note.stapsdx')), lambda r: len(r) == 1)
+    case('elflint-stapsdt-wrong-index', judge.elflint_complaints(
+        st.replace('[ 2]', '[ 1]') % 72, tiny_elf(183, [], note=sdt)), lambda r: len(r) == 1)
+    case('elflint-sixth-pattern', judge.elflint_complaints(
         "section [ 5] '.comment': has wrong flags: expected none, is MERGE|STRINGS", a64), lambda r: len(r) == 1)
 
     # (d): the stub, and the machinery around it with a live comparator
@@ -148,8 +178,45 @@ def units(log=print):
     case('duty-by-kind', dut(FakeCanon([(7, 'u.o:7', 'x')])), 'pass (1 rows differ)')
     case('duty-no-cause', dut(FakeCanon([('ODR_CLASSES', 'K', 'x')])),
          lambda r: r.startswith('FAIL ODR_CLASSES row K differs') and 'no cause' in r)
-    case('duty-not-this-update', dut(FakeCanon([('GROUPS', 'g', 'x')]), causes={'changed', 'output'}),
+    case('duty-not-this-update', dut(FakeCanon([('DEFINED', 'k', 'x')]), causes={'changed', 'output'}),
+         lambda r: r.startswith('FAIL DEFINED row k differs') and 'not this update' in r)
+    # IN-78 after WP-215 seam 3 and WP-220: GROUPS, COMMONS and COPIES rows are
+    # a changed file's; a re-elected group alone changes no row; a key's
+    # COPIES rows change only with their files
+    case('duty-groups-copies-are-a-changed-files', dut(FakeCanon([('GROUPS', 'g', 'x'), (55, 'k', 'x'),
+                                                                  ('COMMONS', 'c', 'x')]), causes={'changed'}),
+         'pass (3 rows differ)')
+    case('duty-group-alone-changes-no-row', dut(FakeCanon([('GROUPS', 'g', 'x')]), causes={'group', 'key'}),
          lambda r: r.startswith('FAIL GROUPS row g differs') and 'not this update' in r)
+    case('duty-copies-not-a-keys', dut(FakeCanon([('COPIES', 'k', 'x')]), causes={'key'}),
+         lambda r: r.startswith('FAIL COPIES row k differs') and 'not this update' in r)
+    case('duty-odr-refs-provisional', dut(FakeCanon([('ODR_REFS', 'k', 'x')])),
+         lambda r: r.startswith('FAIL ODR_REFS row k differs') and 'no cause' in r)
+
+    # the report's detail word and a scenario's `expect-full:` (an update
+    # under --gc-sections is `update-not-implemented (live)` by rule)
+    import tempfile
+    with tempfile.TemporaryDirectory(prefix='incr-update-selftest-') as d:
+        rp = os.path.join(d, 'rep.txt')
+
+        def detail(line):
+            with open(rp, 'w') as fh:
+                fh.write(line + '\nchanged=0 refilled=0 bytes=0 time=0\n')
+            return judge.report_reason(rp), judge.report_detail(rp)
+        case('report-detail-live', detail('incremental: full (update-not-implemented (live))'),
+             ('update-not-implemented', 'live'))
+        case('report-detail-none', detail('incremental: full (small-output)'), ('small-output', None))
+        case('report-detail-update', detail('incremental: update'), ('update', None))
+
+    def expect(reason, det):
+        v = _verdict(reason)
+        judge.expect_full(v, ('update-not-implemented', 'live'), det)
+        return v.checks[0][1]
+    case('expect-full-named', expect('update-not-implemented', 'live'), 'pass (update-not-implemented (live))')
+    case('expect-full-update-fails', expect('update', None), lambda r: r.startswith('FAIL an update'))
+    case('expect-full-other-detail', expect('update-not-implemented', 'versioned'),
+         lambda r: r.startswith('FAIL') and '(versioned)' in r)
+    case('expect-full-earlier-fallback', expect('small-output', None), lambda r: r.startswith('n/a'))
     return out
 
 

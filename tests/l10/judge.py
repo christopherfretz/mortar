@@ -46,7 +46,7 @@ IN-79's checks (hop given), in order (IN79_CHECKS; spec/harness.md
            output lies inside a range of the subject's MORTAR_INCR_DIRTY
            file; the ranges are sorted, disjoint and inside the file
   elflint  (b) `eu-elflint --gnu-ld` on x's output: every complaint is one
-           of harness.md's four allow patterns (ELFLINT_ALLOW). Before
+           of harness.md's five allow patterns (ELFLINT_ALLOW). Before
            verify: the outside tool speaks first (every corruption elflint
            was seen to reject, verify rejects too; WP-223's record)
   verify   as L10's
@@ -60,7 +60,8 @@ IN-79's checks (hop given), in order (IN79_CHECKS; spec/harness.md
            canon(S) and canon(C(U)) differ is a table of a cause of
            IN-78's derived table (tests/incr-update/duty.py); same stub
 and the report's first line is the step's REASON (`update`, or the
-fall-back's name).
+fall-back's name). The lane adds `expect` (expect_full) after a hop of a
+scenario that says `expect-full:`.
 """
 
 import bisect
@@ -168,6 +169,33 @@ def report_reason(path):
     if t[1] == 'full' and len(t) >= 3:
         return t[2].strip('():')
     return None
+
+
+def report_detail(path):
+    """The fall-back's detail word (`live` of `incremental: full
+    (update-not-implemented (live))`; spec/incr.md §7), or None."""
+    t = report_line(path)
+    if t is None or t[1] != 'full' or len(t) < 4 or not t[2].startswith('(') or t[2].endswith(')'):
+        return None
+    return t[3].strip('():') if t[3].startswith('(') else None
+
+
+def expect_full(v, want, detail):
+    """A scenario's `expect-full:` (tests/incr-update): a hop that may not
+    be an update by rule (an update under `--gc-sections` is
+    `update-not-implemented (live)`, IN-71a, WP-215 seam 3) is that named
+    full link or another fall-back that comes first (`no-state`,
+    `small-output`, ...); `update` fails, and so does `want` with another
+    detail word."""
+    reason, wr, wd = v.reason, want[0], want[1]
+    if reason == 'update':
+        v.add('expect', 'FAIL an update where the rule says `full (%s (%s))`' % (wr, wd))
+    elif reason == wr and detail != wd:
+        v.add('expect', 'FAIL `full (%s (%s))` where the rule says `(%s)`' % (wr, detail, wd))
+    elif reason == wr:
+        v.add('expect', 'pass (%s (%s))' % (wr, wd))
+    else:
+        v.add('expect', 'n/a (full link: %s, before the rule)' % reason)
 
 
 def _run(argv, cwd, timeout):
@@ -367,14 +395,19 @@ def _verify(v, tools, x):
 
 # harness.md "Checks", `check elflint`: the four complaints every static
 # glibc output gets from `eu-elflint --gnu-ld`, for mortar, GNU ld and lld
-# alike (review-in72 T-1). Each is held to what the text says it is: an
-# IRELATIVE record of the PLT's relocation section, the symbol
-# `__ehdr_start`, and the variant PCS bit of an AArch64 output.
+# alike (review-in72 T-1), and a fifth for an output that keeps a
+# SystemTap probe note (the AArch64 host's static libstdc++.a carries them,
+# on its exception paths; WP-223's record). Each is held to what the text says it is: an IRELATIVE record of
+# the PLT's relocation section, the symbol `__ehdr_start`, the variant PCS
+# bit of an AArch64 output, and a note of owner `stapsdt`, type 3, in a
+# section named `.note.stapsdt`.
 ELFLINT_ALLOW = (
     ('irelative-type', re.compile(r"^section \[ *\d+\] '(\.rela?\.plt)': relocation (\d+): invalid type$")),
     ('irelative-symbol', re.compile(r"^section \[ *\d+\] '(\.rela?\.plt)': relocation (\d+): invalid symbol index$")),
     ('ehdr-start', re.compile(r"^section \[ *\d+\] '\.symtab': symbol \d+ \(__ehdr_start\): st_value out of bounds$")),
     ('variant-pcs', re.compile(r"^section \[ *\d+\] '\.symtab': symbol \d+ \([^)]*\): unknown bit set in st_other$")),
+    ('stapsdt', re.compile(r"^section \[ *(\d+)\] '\.note\.stapsdt': unknown object file note type 3 with owner name "
+                           r"'stapsdt' at offset (\d+)$")),
 )
 IRELATIVE = {183: 1032, 62: 37, 3: 42}   # e_machine -> R_*_IRELATIVE
 
@@ -394,6 +427,28 @@ def _plt_types(data):
                 types.append(info & 0xffffffff if c64 else info & 0xff)
             out[s['name']] = types
     return mach, out
+
+
+def stapsdt_note_ends_at(data, index, end):
+    """True when section `index` of the output is named `.note.stapsdt`
+    and holds a note of owner `stapsdt` and type 3 that ends at byte `end`
+    of the section (elflint names the offset just past the note it read)."""
+    _c64, _mach, S, _P = oracle.elf(data)
+    if index >= len(S) or S[index]['name'] != '.note.stapsdt':
+        return False
+    s = S[index]
+    sec = data[s['off']:s['off'] + s['size']]
+    o = 0
+    while o + 12 <= len(sec):
+        namesz, descsz, ntype = (int.from_bytes(sec[o + 4 * k:o + 4 * k + 4], 'little') for k in range(3))
+        name = sec[o + 12:o + 12 + namesz]
+        nxt = o + 12 + ((namesz + 3) & ~3) + ((descsz + 3) & ~3)
+        if nxt > len(sec):
+            return False
+        if nxt == end:
+            return ntype == 3 and name == b'stapsdt\0'
+        o = nxt
+    return False
 
 
 def elflint_complaints(text, data):
@@ -418,6 +473,8 @@ def elflint_complaints(text, data):
                 ok = i < len(types) and types[i] == IRELATIVE.get(mach)
             elif name == 'variant-pcs':
                 ok = mach == 183
+            elif name == 'stapsdt':
+                ok = stapsdt_note_ends_at(data, int(m.group(1)), int(m.group(2)))
             else:
                 ok = True
             break

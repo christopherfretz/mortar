@@ -869,8 +869,20 @@ A check tool that does not exit with status 0 fails the step, except
   ld and lld alike (review-in72 T-1): `IRELATIVE` records in `.rela.plt`
   reported as an invalid type and as an invalid symbol index,
   `__ehdr_start`'s `st_value out of bounds`, and `unknown bit set in
-  st_other` (AArch64's variant PCS bit); `incr-update` adds them to
-  every elflint check; other outputs of mortar need none, its RELRO
+  st_other` (AArch64's variant PCS bit); an output that keeps a SystemTap
+  probe note needs a fifth, `section [N] '.note.stapsdt': unknown object
+  file note type 3 with owner name 'stapsdt' at offset <o>`: elflint
+  knows no note of that owner, and the note is the input's, copied
+  (the AArch64 host's static `libstdc++.a` carries three, the probes of
+  its exception paths; `eh_frame_overflow_then_edit_unchanged_file`,
+  which throws, links them in on gcc-a64 and kiln-a64; WP-223, the
+  supervisor's ruling 2026-11-18). These five
+  are all: `incr-update` adds them to every elflint check, each held to
+  what it says (an `IRELATIVE` record by the record's type at that index;
+  the symbol `__ehdr_start`; the variant PCS bit on AArch64 only; a note
+  in section `N` named `.note.stapsdt` whose owner is `stapsdt` and type 3
+  ends at `<o>`, the offset elflint names being the one just past the note
+  it read); other outputs of mortar need none, its RELRO
   padding being named `.pad.relro`, `spec/layout.md` L-156; WP-212
   applied WP-207's §R.6). A check with no other expectation is valid.
 - `check ldd <program>`: the architecture's dynamic loader, `<system
@@ -1916,13 +1928,14 @@ Its checks, in this order, each `pass`, `FAIL <why>` or `n/a <why>`:
 | `exit` | (d) | X's exit status equals F's; a failed X leaves the state it found (IN-48); with `--fatal-warnings` the update fails as F fails |
 | `stderr` | (d) | X's standard error equals F's line for line, in order, after dropping X's lines that begin with `incremental:` (the report line, which a full link does not print); nothing else is normalised: F links the same file names in its own directory, so the texts agree byte for byte (IN-75a). A failure names the lines dropped, repeated or added and the first differing line |
 | `dirty` | IN-75 | every byte in which X's output differs from the previous output lies in a range of `dirty.txt`; the ranges are sorted, disjoint and inside the file. `n/a (full link: <reason>)` for a full link and for the floor; `incremental: update` without `dirty.txt` is a FAIL |
-| `elflint` | (b) | `eu-elflint --gnu-ld`: every complaint matches one of "Checks"'s four allow patterns, each held to what it says (an `IRELATIVE` record of `.rela.plt`/`.rel.plt` by its type; `__ehdr_start`; the variant PCS bit only on AArch64). A fifth pattern is a finding for the supervisor, never an addition. Before `verify`: no corruption was found that elflint refuses and `verify` accepts (WP-223), so the outside tool speaks first |
+| `elflint` | (b) | `eu-elflint --gnu-ld`: every complaint matches one of "Checks"'s five allow patterns, each held to what it says (an `IRELATIVE` record of `.rela.plt`/`.rel.plt` by its type; `__ehdr_start`; the variant PCS bit only on AArch64; a note of owner `stapsdt`, type 3, in a section named `.note.stapsdt`, ending at the offset named). A sixth pattern is a finding for the supervisor, never an addition. Before `verify`: no corruption was found that elflint refuses and `verify` accepts (WP-223), so the outside tool speaks first |
 | `verify` | (b) | `xtask plumb <output> --map <the update's map>` |
 | `equiv` | (b) | `xtask plumb --equiv` of X's map and F's |
 | `run` | (a) | the program's status and output equal F's |
 | `oracle` | (c) | IN-63a between the previous hop's G and this hop's, against X's report; `n/a` without a previous full link or without a dry run's prediction |
 | `state` | (d) | `state_equals_capture_of_its_placement` (IN-78): `canon(S')` against `canon(C(U))`, `C(U)` at `h<i>/capture.mortar-state`, the first differing row printed as `<table> row <key>: <what>` |
-| `duty` | (d) | `duty_list_covers_differences` (IN-78): every row in which `canon(S)` and `canon(C(U))` differ is a table of a cause of IN-78's derived table, held as data in `tests/incr-update/duty.py` (a unit test checks it against this spec's table) |
+| `duty` | (d) | `duty_list_covers_differences` (IN-78): every row in which `canon(S)` and `canon(C(U))` differ is a table of a cause of IN-78's derived table, held as data in `tests/incr-update/duty.py` (a unit test checks it against this spec's table, a name a cell gives only to say the cause does not change it held out by the spec's own words) |
+| `expect` | §7 | only in a scenario with `expect-full: <reason> (<detail>): <why>`, after hop 0: a hop that may not be an update by rule is that named full link (`pass`) or a fall-back that comes first (`n/a`, e.g. `small-output`); `update` or the reason with another detail word is a FAIL. The `--gc-sections` scenarios say `update-not-implemented (live)` (IN-71a, WP-215 seam 3; WP-238 lifts it): no scenario expects a gc UPDATE |
 
 Until U-2 lands `state` and `duty` are a stub that reports `n/a (d) not
 run (canon: U-2)` and fails nothing (IN-78); until V-1 and U-6 land,
@@ -1941,25 +1954,31 @@ directory is removed when it passes unless `--keep`. Under
 error.
 
 **`--self-test`.** The judge's units (no link: the dirty-range rule, the
-stderr comparison, the four allow patterns, the (d) machinery with a
-live comparator, the duty table against the spec), then one wrong
+stderr comparison, the five allow patterns, the (d) machinery with a
+live comparator, the duty table against the spec, `expect`), then one wrong
 subject per check (`tests/incr-update/subjects/`), each a wrapper of the
 testhooks mortar wrong at one hop, which must be found by its check at
 that hop and by no earlier one: an exit status (`exit`); a warning
 dropped, a warning repeated (`stderr`); a byte written outside every
 range, a ranges file missing a range, no ranges file (`dirty`); an
 output elflint rejects (`elflint`); a word of `.text` flipped, a
-`.symtab` local moved (`verify`); the previous hop's output and map
-handed back (`verify`: the old map describes inputs that changed); a
-program that cannot run (`run`); a report that leaves out a change
-(`oracle`).
+`.symtab` local moved (`verify`); a program that cannot run (`run`); a
+report that leaves out a change (`oracle`). The previous hop's output
+and map handed back (`prev_output`) is caught by `verify`, not by
+`dirty` or `equiv`: the old map describes inputs that changed, and
+`verify` runs first (the supervisor's ruling, 2026-11-18).
 
 **`--quick`** is one target (the host's), GCC, five scenarios (`QUICK`
-in `lane.py`), and the units; measured 5 s warm (20 hops at `-j 4`, 12 shared cores at a load of
-about 11; WP-223), so it adds well under the 60 s a `ci --quick` step may add. The gate runs it
-after L10's smoke in its `linktest` step, quick and full alike; the
-full matrix (36 scenarios, 108 runs, 426 hops: 164 s at `-j 4`) is not a gate step until the `.note.stapsdt`
-finding of WP-223 is ruled. `--crash` (H-2) will run each update once
+in `lane.py`), and the units; measured 5 s warm (20 hops at `-j 4`, 12
+shared cores at a load of about 11; WP-223), so it adds well under the
+60 s a `ci --quick` step may add. The gate runs `--quick` after L10's
+smoke in its `linktest` step, in `ci --quick` and full `ci` alike (the
+supervisor's ruling, 2026-11-18). The full matrix (36 scenarios, 108
+runs, 426 hops on AArch64 and x86-64, GCC and kiln) is not a `ci` step:
+it runs in the supervisor's batch gate script, `cargo xtask incr-update`
+with no option. It takes 164 s warm at `-j 4` on the 12 shared cores of
+the AArch64 container at a 1-minute load of about 11 (WP-223's
+record). `--crash` (H-2) will run each update once
 per `MORTAR_INCR_CRASH` point (IN-77's list, the points between a
 write and its sync included) and then the next link.
 

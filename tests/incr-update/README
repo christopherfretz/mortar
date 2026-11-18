@@ -10,7 +10,7 @@ Files
   lane.py        the lane: scenarios, hops, the three links (F, G, X), the summary
   ../l10/judge.py  the ONE judge: judge_step(tools, x, f, base, new, hop=Hop)
   duty.py        IN-78's derived table as data, and the test that it agrees with the spec
-  selftest.py    the judge's units (no link): dirty, stderr, elflint, (d), duty
+  selftest.py    the judge's units (no link): dirty, stderr, elflint, (d), duty, expect
   subjects/      deliberately wrong subjects for --self-test (one per check)
   scenarios/<name>/scenario   key: value lines (below); sources beside it
   scenarios/_common/          headers every scenario may include (asm.h, print_exit.h)
@@ -26,6 +26,10 @@ A scenario
   compilers: gcc [kiln]         targets: a64 x64 [i386]       not <compiler|target>: <why>
   nolibc: yes                   (no libc: `-static -m <emulation>`, entry _start)
   also-reversed: <why>          (the series again from the edited side)
+  expect-full: <reason> (<detail>): <why>
+                                (no hop after the first may be an update by rule: check
+                                `expect`; the --gc-sections scenarios say
+                                `update-not-implemented (live)`, WP-215 seam 3, WP-238 later)
 
 Configurations are tests/l10/build.py's `<gcc|kiln>-<a64|x64|i386>-O0-nog-nofs-static`.
 By the operator's ruling (2026-11-17) AArch64 and x86-64 are required; i386

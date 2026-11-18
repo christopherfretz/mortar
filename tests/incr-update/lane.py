@@ -22,7 +22,9 @@ incremental-mode full link (`--incremental=full`, IN-63a's link); X, the
 SUBJECT (`--incremental --incremental-report=`, in the directory that
 keeps its output and state from hop to hop). tests/l10/judge.py's
 judge_step(..., hop=Hop) judges X: exit, stderr, dirty, verify, elflint,
-equiv, run, oracle, state, duty. The work directory is <W>/run/<scenario>.
+equiv, run, oracle, state, duty; and `expect` after hop 0 when the
+scenario says `expect-full:` (judge.expect_full). The work directory is
+<W>/run/<scenario>.
 <configuration> (removed when the run passes unless --keep).
 """
 
@@ -54,7 +56,7 @@ DEFAULT_HOPS = '-, EDIT, -, EDIT'
 QUICK = ('gc_section_dies_then_revives', 'init_array_grows_then_shrinks', 'warning_mktemp_reference',
          'growth_step_moves_unchanged_then_edit_referrer', 's1_section_permute')
 KEYS = ('proves', 'source', 'edit', 'hops', 'link', 'archive', 'thin-archive', 'options', 'cflags', 'compilers',
-        'targets', 'not', 'nolibc', 'also-reversed')
+        'targets', 'not', 'nolibc', 'also-reversed', 'expect-full')
 
 
 # ------------------------------------------------------------- scenarios --
@@ -74,6 +76,7 @@ class Scenario:
         self.hops_text = DEFAULT_HOPS
         self.nolibc = False
         self.reversed_why = None
+        self.expect_full = None   # (reason, detail) no later hop may be an update
         for n, line in enumerate(open(os.path.join(self.dir, 'scenario')), 1):
             line = line.strip()
             if not line or line.startswith('#'):
@@ -113,6 +116,14 @@ class Scenario:
                 self.nolibc = value == 'yes'
             elif word == 'also-reversed':
                 self.reversed_why = value
+            elif word == 'expect-full':
+                # `expect-full: <reason> (<detail>): <why>`: no hop after the
+                # first may be an update (judge.expect_full)
+                head, sep, why = value.partition('): ')
+                r, _sp, d = head.partition(' (')
+                if not sep or not d or not why:
+                    raise ValueError('%s/scenario:%d: `expect-full: <reason> (<detail>): <why>`' % (name, n))
+                self.expect_full = (r, d)
         if not self.proves or not self.source or not self.link:
             raise ValueError('%s/scenario: `proves:`, `source:` and `link:` are required' % name)
         self.hops = [frozenset() if h.strip() == '-' else frozenset(h.strip().split('+'))
@@ -275,6 +286,8 @@ class Run:
             hop = judge.Hop(prev=prev_out, ranges=os.path.join(H, 'dirty.txt'), state=state,
                             state_before=state_before, scratch=H)
             v = judge.judge_step(tools, x, f, prev, new, hop)
+            if self.sc.expect_full and i > 0:
+                judge.expect_full(v, self.sc.expect_full, judge.report_detail(x.report))
             reason = v.reason or ('link-failed' if xs != 0 else 'no-report')
             res['reasons'][reason] = res['reasons'].get(reason, 0) + 1
             for c, r in v.checks:
