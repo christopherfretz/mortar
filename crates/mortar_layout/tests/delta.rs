@@ -1013,13 +1013,13 @@ fn debug_section_refused_unless_debug_placement_runs() {
         let stored = StoredLayout::new(&s0.mem);
         let old = s0.world.sid(1, 4);
         let at = s0.placed.placement.place[old].get().expect("the full link places .debug_info");
-        let changed = {
+        let grown = {
             let mut f = s0.files();
             f[0][3] = debug(64);
             Edit::new(f).changed(&[1])
         };
-        let killed = Edit::new(s0.files()).changed(&[1]).dead(&[(1, 4)]);
-        for edit in [&changed, &killed] {
+        let died = Edit::new(s0.files()).changed(&[1]).dead(&[(1, 4)]);
+        for edit in [&grown, &died] {
             let (changes, ids2) = changes_of(&s0, edit);
             let e = layout(&stored, &input(&changes), t).err();
             assert_eq!(
