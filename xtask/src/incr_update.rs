@@ -82,7 +82,9 @@ fn hooked_binary() -> Result<PathBuf, String> {
         .env("CARGO_PROFILE_DEV_DEBUG", "0");
     match process::run_step(&mut command, true) {
         Ok((status, _)) if status.success() => {}
-        Ok((status, _)) => return Err(format!("cannot build mortar --features testhooks: cargo build: {status}")),
+        Ok((status, _)) => {
+            return Err(format!("cannot build mortar --features testhooks: cargo build: {status}"));
+        }
         Err(e) => return Err(format!("cannot build mortar --features testhooks: {e}")),
     }
     let p = dir.join("debug").join("mortar");
@@ -162,7 +164,8 @@ mod tests {
     // --mortar are ours.
     #[test]
     fn arguments() {
-        let a = Args::parse(&s(&["--quick", "--only", "s1_section_permute", "-j", "2", "--keep"])).unwrap();
+        let a = Args::parse(&s(&["--quick", "--only", "s1_section_permute", "-j", "2", "--keep"]))
+            .unwrap();
         assert_eq!(a.jobs, 2);
         assert_eq!(a.pass, s(&["--quick", "--only", "s1_section_permute", "--keep"]));
         assert_eq!(Args::parse(&[]).unwrap().jobs, 4);
