@@ -3,18 +3,26 @@
 //! tail reserve, the global area kept dense. Not `crate::symtab::SymtabPlan`
 //! (the full link's). WP-213 (U-1): the types [`FileSymbols`],
 //! [`LocalSymbol`], [`GlobalChange`] and the entry point [`plan`];
-//! **filled by U-5** (the function only).
+//! **filled by U-5**. WP-217's second part (the supervisor's rulings 1 to
+//! 3 and items 5 to 7): [`GlobalChange::stored`] and [`GlobalPlace`],
+//! [`moved_keys`], [`FileSymbols::eh`] and [`FileSymbols::pieces`].
 
 use std::collections::HashMap;
 
+use mortar_core::column::Column;
 use mortar_core::incr::{
-    IncrReason, LayoutDelta, PlaceNow, StoredLayout, SymtabBlock, SymtabEntry, SymtabPlan,
-    SymtabTables, Unimplemented,
+    EhRange, EhRecordIn, IncrReason, LayoutDelta, MergedPiece, PlaceNow, StoredFrag, StoredLayout,
+    SymtabBlock, SymtabEntry, SymtabPlan, SymtabTables, Unimplemented,
 };
-use mortar_core::{FileId, SectionId, SymbolId};
-use mortar_elf::consts::{SHN_ABS, STT_TLS};
+use mortar_core::layout::{Chunk, ChunkKind, DefValue, Defined};
+use mortar_core::{ChunkId, FileId, OutSecId, SectionId, SymbolId};
+use mortar_merge::EhFrames;
+use mortar_merge::refs::eh_ref;
 
-use crate::symtab::{block_room, fixed_name};
+use crate::eh::{EhValue, EhWho};
+use crate::symtab::{
+    InternalValue, SymAddrs, Where, block_room, fixed_name, is_mapping, resolve_at,
+};
 
 /// One local entry of a file's block (S-74), as read from the file's
 /// symbol table by the join. Bytes and indices as ELF gives them.
@@ -34,14 +42,43 @@ pub struct LocalSymbol<'a> {
     pub size: u64,
 }
 
+/// A changed or drawn-in file's `.eh_frame` as the join read it for the
+/// delta layout (IN-72 item 5; WP-217 ruling 5): what [`plan`] needs to
+/// give a local of an input `.eh_frame` (an AArch64 `$d` at a record's
+/// start, S-76) the value S-50 gives it in the full link, by the full
+/// link's own function (`mortar_merge::refs::eh_ref`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct FileEh<'a> {
+    /// `mortar_merge::eh::parse` of the file's `.eh_frame` sections: the
+    /// frames its `EhFile` was made from (`sections[s].section` in the
+    /// update's id space; record `j` of a section is its `EhRecordIn::piece`
+    /// `j`).
+    pub frames: &'a EhFrames,
+    /// Its `EhFile::records`: the kept records in S-46 order, the order of
+    /// its `EhRange::records` in `LayoutDelta::eh`.
+    pub kept: &'a [EhRecordIn],
+}
+
 /// A file whose block is rewritten (IN-49a: changed, or drawn-in by IN-72
 /// item 2a), with its local entries in S-74's order. Written by the join;
 /// read by U-5. Key: `file`.
+///
+/// `locals` are the entries S-76 and S-78 keep in the full link, decided
+/// by the join as the full link's keep rule decides them (`STT_SECTION`
+/// dropped, a dead section's locals dropped, `-x`/`-X`, a `.L` local of a
+/// split merge section dropped), with ONE exception that only the update's
+/// layout decides: a local of an input `.eh_frame` is given as read, and
+/// [`plan`] drops it when S-50 does (a mapping symbol of a removed record).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct FileSymbols<'a> {
     /// Its `FILES` row (the update's id space).
     pub file: FileId,
     pub locals: Vec<LocalSymbol<'a>>,
+    /// Its `.eh_frame` (`None`: it has none, or no local in it).
+    pub eh: Option<FileEh<'a>>,
+    /// Its merged pieces: `LayoutInput::pieces`' row of the file, in
+    /// `(section, offset)` order (empty: no local in a split section).
+    pub pieces: &'a [MergedPiece],
 }
 
 /// What happens to a global's entry (IN-49a).
@@ -51,13 +88,42 @@ pub enum GlobalKind {
     Added,
     /// Removed: the area's last entry takes its index.
     Removed,
-    /// Demoted to a local of its definer's block (S-74).
+    /// Demoted to a local of its definer's block (S-74): it leaves the
+    /// area as a removed one does; the join gives it among its definer's
+    /// [`FileSymbols::locals`].
     Demoted,
     /// Promoted back to the area (appended).
     Promoted,
-    /// Same index, new value, section, size, binding or name.
+    /// Same key, same index: a new value, section, size, type, binding or
+    /// visibility. The name is the key's and does not change; the entry
+    /// keeps its stored `.strtab` offset.
     Changed,
 }
+
+/// Where a global is defined (WP-217 ruling 3), as the join reads it from
+/// the resolution's `def_kind` (`spec/synth.md`'s `SymDef`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum GlobalPlace {
+    /// `GlobalChange::value` bytes into this input section (the update's id
+    /// space).
+    Section(SectionId),
+    /// `SHN_ABS`, `GlobalChange::value` as is.
+    Absolute,
+    /// Undefined (a referenced weak undefined): `SHN_UNDEF`, 0.
+    Undefined,
+    /// A common symbol. An update does not place a common in v1 (R-2 of
+    /// WP-216's rulings: the layout answers `update-not-implemented
+    /// (common)` before [`plan`] is called); one that reaches [`plan`] is
+    /// refused, `update-not-implemented (symtab)`.
+    Common,
+    /// Linker-defined (layout §13): the value the update's placement gives
+    /// it (`Placement::defined`, IN-71c).
+    Linker,
+}
+
+/// A key with no `.symtab` global entry in `SYMTAB_KEYS`' index column
+/// (`mortar_incr::update::rows::SymtabKeyRow`'s `NONE`).
+pub const NO_ENTRY: u32 = u32::MAX;
 
 /// A global whose `.symtab` entry the update changes (IN-49a; WP-213 added
 /// it to `plan`'s inputs: WP-211 §C gave U-5 no globals). Written by the
@@ -70,10 +136,17 @@ pub struct GlobalChange<'a> {
     pub name: &'a [u8],
     pub info: u8,
     pub other: u8,
-    /// Its definition's section in the update's id space, or `None`.
-    pub section: Option<SectionId>,
+    /// Where it is defined (WP-217 ruling 3).
+    pub place: GlobalPlace,
     pub value: u64,
     pub size: u64,
+    /// Its stored `SYMTAB_KEYS` row (IN-18e): `(.symtab index, .strtab
+    /// offset)`, the index [`NO_ENTRY`] for a key the previous output has
+    /// no global entry for (WP-217 ruling 1). The join reads it through
+    /// `mortar_incr::update::view`'s `symtab_key(key)`. `None` for `Added`
+    /// and `Promoted`; required for `Removed`, `Demoted` and `Changed` (a
+    /// `None` there is `state-corrupt`, naming the key).
+    pub stored: Option<(u32, u32)>,
 }
 
 /// Plan the update's `.symtab` and `.strtab` writes (WP-211 §C; IN-49a).
@@ -81,10 +154,14 @@ pub struct GlobalChange<'a> {
 ///
 /// What it reads (IN-49a "what an update reads and writes"): the stored
 /// global area and table sizes once (`symtab_tables`), the `SYMTAB` row of
-/// each file of `files` (`symtab_block`), and the place of each section
-/// its locals name (`LayoutDelta::place_of`, once a section); nothing
-/// else of the state, never the previous output (U-6 copies and remaps
-/// what [`SymtabPlan::moves`] and [`SymtabPlan::remap`] name).
+/// each file of `files` (`symtab_block`), the place of each section its
+/// entries name (`LayoutDelta::place_of`, once a section), the `FRAGS` row
+/// of each fragment a local of a split section lies in (`frags_of`, once a
+/// fragment, when `LayoutDelta::frags` does not have it); the placement's
+/// whole chunk table once when an entry has a section (each output
+/// section's start and size, as the full link's image derives them);
+/// nothing else of the state, never the previous output (U-6 copies and
+/// remaps what [`SymtabPlan::moves`] and [`SymtabPlan::remap`] name).
 ///
 /// - Each file of `files` gets its block rewritten from its start: in
 ///   place when its entries fit the block's capacity (the rest of it
@@ -94,26 +171,45 @@ pub struct GlobalChange<'a> {
 ///   region when they fit its capacity, else to a new region at the
 ///   table's end with `max(16, len/8)` slack; what no entry names of a
 ///   region is a dead range. A file with no entry and no block has none.
-/// - `Added` and `Promoted` globals are appended to the global area, in
-///   key order, their names at `.strtab`'s end.
-/// - Every growth step makes the rest of both areas a [`remap`] range.
+/// - Every entry's `st_shndx` and `st_value` come from the full link's
+///   `SymtabPlan::resolve` (S-81, S-82, S-122 to S-124) over this update's
+///   placement: a section's place (allocated: its chunk's address; not
+///   allocated: the chunk's offset in its output section, as the full
+///   link's image gives it), a local of an input `.eh_frame` by S-50
+///   (`eh_ref`, its file's records as the update places them, dropped
+///   when S-50 drops it), a local of a split merge section by S-19 (its
+///   piece's fragment), a linker-defined global by the placement's
+///   `defined`.
+/// - The global area: `Removed` and `Demoted` globals leave it, each
+///   taken by the area's last entry ([`area_after_removals`]; the moves
+///   are [`SymtabPlan::moves`], copies from the previous output; their
+///   keys' `SYMTAB_KEYS` rows are [`moved_keys`]', which the caller
+///   appends to [`SymtabPlan::globals`]); a `Changed` global is rewritten
+///   at its index (or where a move puts it), its name where it is; `Added`
+///   and `Promoted` globals are appended, in key order, their names at
+///   `.strtab`'s end. [`SymtabPlan::globals`] has a row for each global
+///   whose index or name offset changed, a removed or demoted one with
+///   [`NO_ENTRY`] and 0.
+/// - Every growth step makes the rest of both areas a [`remap`] range
+///   (a moved entry's new index included: U-6 copies the moves, then
+///   remaps).
 ///
-/// Not built (v1, `update-not-implemented (symtab)`, by name): a global
-/// that is `Removed`, `Demoted` or `Changed` (its stored `.symtab` index
-/// and `.strtab` offset, its `SYMTAB_KEYS` row, reach `plan` through
-/// neither `StoredLayout` nor `GlobalChange`: WP-217's seam finding; the
-/// removal rule itself is [`area_after_removals`]); a symbol whose section
-/// has no place (merged pieces, `.eh_frame`) or no address (a
-/// non-allocated chunk); a global with no section (absolute, undefined
-/// and common are not told apart by `GlobalChange`).
+/// Not built (v1, `update-not-implemented (symtab)`, by name): a local
+/// whose section the update does not place (dead, not kept; the join
+/// drops a dead section's locals, S-76); a local of an `.eh_frame` whose
+/// file's records this update does not place, or whose S-50 value is the
+/// next file's record, or whose fate depends on a relocation (rule 4); a
+/// local of a split section whose fragment has no row (`.debug_*`, WP-239
+/// R-1) or no live user; a global in an `.eh_frame` or a split section; a
+/// common.
 ///
 /// [`remap`]: SymtabPlan::remap
 ///
 /// # Errors
 /// `symtab-exhausted` (the tail reserve, `.symtab`'s or `.strtab`'s file
 /// slack), `state-corrupt` (stored rows that contradict each other, a
-/// chunk the placement does not have), `update-not-implemented (symtab)`
-/// (above).
+/// chunk the placement does not have, a `SYMTAB_KEYS` row missing or
+/// outside the global area), `update-not-implemented (symtab)` (above).
 pub fn plan(
     stored: &StoredLayout<'_>,
     layout: &LayoutDelta,
@@ -129,19 +225,62 @@ pub fn plan(
     if entsize != 16 && entsize != 24 {
         return Err(corrupt("SYMTAB: .symtab's size is not a whole number of entries"));
     }
-    if globals
-        .iter()
-        .any(|g| matches!(g.kind, GlobalKind::Removed | GlobalKind::Demoted | GlobalKind::Changed))
-    {
+    let old_end =
+        u32::try_from(entries).map_err(|_| corrupt("SYMTAB: a global area past 2^32 entries"))?;
+    let mut keys: Vec<SymbolId> = globals.iter().map(|g| g.key).collect();
+    keys.sort_unstable();
+    if keys.windows(2).any(|w| w[0] == w[1]) {
+        debug_assert!(false, "a global given twice");
         return Err(not_built());
     }
+    // WP-217 ruling 1: the stored rows of the kinds that have an entry.
+    let mut removed = Vec::new();
+    let mut changed: Vec<(&GlobalChange<'_>, u32, u32)> = Vec::new();
+    for g in globals {
+        if g.kind != GlobalKind::Removed && g.kind != GlobalKind::Demoted {
+            if g.place == GlobalPlace::Common {
+                return Err(not_built());
+            }
+        }
+        match (g.kind, g.stored) {
+            (GlobalKind::Added | GlobalKind::Promoted, None) => {}
+            (GlobalKind::Added | GlobalKind::Promoted, Some(_)) => {
+                debug_assert!(false, "an appended global with a stored row");
+                return Err(not_built());
+            }
+            (_, None) => {
+                return Err(corrupt(format!("SYMTAB_KEYS: key {} has no row", g.key.0)));
+            }
+            (GlobalKind::Removed | GlobalKind::Demoted, Some((NO_ENTRY, _))) => {}
+            (GlobalKind::Changed, Some((NO_ENTRY, _))) => {
+                return Err(corrupt(format!(
+                    "SYMTAB_KEYS: key {} is changed and has no .symtab entry",
+                    g.key.0
+                )));
+            }
+            (_, Some((i, _))) if i < area.first || i >= old_end => {
+                return Err(corrupt(format!(
+                    "SYMTAB_KEYS: key {}'s index {i} is outside the global area [{}, {old_end})",
+                    g.key.0, area.first
+                )));
+            }
+            (GlobalKind::Changed, Some((i, name))) => changed.push((g, i, name)),
+            (_, Some((i, _))) => removed.push(i),
+        }
+    }
+    let mut taken: Vec<u32> = removed.iter().copied().chain(changed.iter().map(|c| c.1)).collect();
+    taken.sort_unstable();
+    if taken.windows(2).any(|w| w[0] == w[1]) {
+        return Err(corrupt("SYMTAB_KEYS: two keys have one .symtab index"));
+    }
+    let (kept_end, mut moves) = area_after_removals(area.first, old_end, &removed);
     let mut order: Vec<&FileSymbols<'_>> = files.iter().collect();
     order.sort_by_key(|f| f.file);
     if order.windows(2).any(|w| w[0].file == w[1].file) {
         debug_assert!(false, "a file given twice");
         return Err(not_built());
     }
-    let mut cx = Cx { stored, layout, places: HashMap::new() };
+    let mut cx = Cx::new(stored, layout);
     let mut out = SymtabPlan::default();
     let mut tail = (tables.tail_first, tables.tail_capacity);
     let str_limit = tables.strtab_size.saturating_add(tables.strtab_slack);
@@ -149,14 +288,46 @@ pub fn plan(
     for fs in order {
         rewrite_file(&mut cx, fs, &mut out, &mut tail, &mut str_end, str_limit)?;
     }
-    // The global area: appended globals, in key order.
+    // The global area: removed and demoted entries left it; changed ones
+    // in place (or where the move of their entry puts them).
+    changed.sort_by_key(|c| c.1);
+    let mut written: Vec<(u32, u32)> = Vec::new();
+    for (g, i, name) in changed {
+        let to = match moves.iter().position(|m| m.0 == i) {
+            Some(k) => moves.remove(k).1,
+            None => i,
+        };
+        let at = cx.global_where(g)?;
+        let (shndx, value) = cx.resolve(g.name, g.info, at)?;
+        out.entries.push(SymtabEntry {
+            index: to,
+            name,
+            info: g.info,
+            other: g.other,
+            shndx,
+            value,
+            size: g.size,
+        });
+        written.push((to, to + 1));
+        if to != i {
+            out.globals.push((g.key, to, name));
+        }
+    }
+    for g in globals {
+        if matches!(g.kind, GlobalKind::Removed | GlobalKind::Demoted)
+            && g.stored.is_some_and(|s| s.0 != NO_ENTRY)
+        {
+            out.globals.push((g.key, NO_ENTRY, 0));
+        }
+    }
+    out.moves = moves;
+    // Appended globals, in key order.
     let mut appended: Vec<&GlobalChange<'_>> = globals
         .iter()
         .filter(|g| matches!(g.kind, GlobalKind::Added | GlobalKind::Promoted))
         .collect();
     appended.sort_by_key(|g| g.key);
-    let old_end = area.first + area.count;
-    let mut end = old_end;
+    let mut end = kept_end;
     let names_at = str_end;
     let buf = append_globals(&mut cx, &appended, &mut out, &mut end, names_at)?;
     str_end = names_at.saturating_add(buf.len() as u64);
@@ -192,16 +363,51 @@ pub fn plan(
     out.fillers = merged(std::mem::take(&mut out.fillers));
     out.strtab.sort_by_key(|w| w.0);
     out.strtab_dead.sort_unstable();
+    out.globals.sort_unstable();
     // IN-49a: a growth step moves sections of files this update does not
     // read; their entries' values are remapped through the placement.
     if !layout.growth_steps.is_empty() {
-        let mut written: Vec<(u32, u32)> =
-            out.blocks.iter().map(|(_, b)| (b.first, b.first + b.capacity)).collect();
+        written.extend(out.blocks.iter().map(|(_, b)| (b.first, b.first + b.capacity)));
         written.extend(out.fillers.iter().copied());
-        written.push((old_end, end));
+        written.push((kept_end, end));
         out.remap = complement(merged(written), 1, end);
     }
     Ok(out)
+}
+
+/// The `SYMTAB_KEYS` rows of the entries [`plan`] moved (WP-217 ruling 2;
+/// review-in77 M-6): for each move `(from, to)` of `moves`, the previous
+/// output's entry at `from` as the caller read it, `(from, st_name, name
+/// bytes)` in `read` (U-6 reads it for the copy), the key `find_key` gives
+/// for the name, which must have the stored row `symtab_key` gives, exactly
+/// `(from, st_name)`; the row `(key, to, st_name)` to append to
+/// [`SymtabPlan::globals`]. No reverse table is stored and none is scanned:
+/// one name lookup and one row read a move.
+///
+/// # Errors
+/// `update-not-implemented (symtab)` when the name does not identify the
+/// entry (no key by that name: a versioned pair, a name no key has; a key
+/// whose stored row is another), decided before the first write; what
+/// `find_key` and `symtab_key` return; `state-corrupt` when `read` has no
+/// entry at a move's `from`.
+pub fn moved_keys(
+    moves: &[(u32, u32)],
+    read: &[(u32, u32, &[u8])],
+    mut find_key: impl FnMut(&[u8]) -> Result<Option<SymbolId>, IncrReason>,
+    mut symtab_key: impl FnMut(SymbolId) -> Result<(u32, u32), IncrReason>,
+) -> Result<Vec<(SymbolId, u32, u32)>, IncrReason> {
+    let mut rows = Vec::with_capacity(moves.len());
+    for &(from, to) in moves {
+        let Some(&(_, st_name, name)) = read.iter().find(|e| e.0 == from) else {
+            return Err(corrupt(format!(".symtab entry {from}: not read for its move")));
+        };
+        let Some(key) = find_key(name)? else { return Err(not_built()) };
+        if symtab_key(key)? != (from, st_name) {
+            return Err(not_built());
+        }
+        rows.push((key, to, st_name));
+    }
+    Ok(rows)
 }
 
 /// One file's block of an update (IN-49a): in place or in the tail
@@ -218,7 +424,8 @@ fn rewrite_file(
     let mut names = Vec::new();
     let mut rows = Vec::with_capacity(fs.locals.len());
     for l in &fs.locals {
-        let (shndx, value) = cx.value(l.section, l.value, l.info)?;
+        let Some(at) = cx.local_where(fs, l)? else { continue };
+        let (shndx, value) = cx.resolve(l.name, l.info, at)?;
         let name = fixed_name(l.name).map_or_else(
             || {
                 let at = names.len() as u64;
@@ -324,8 +531,8 @@ fn append_globals(
 ) -> Result<Vec<u8>, IncrReason> {
     let mut buf: Vec<u8> = Vec::new();
     for g in appended {
-        let Some(_) = g.section else { return Err(not_built()) };
-        let (shndx, value) = cx.value(g.section, g.value, g.info)?;
+        let at = cx.global_where(g)?;
+        let (shndx, value) = cx.resolve(g.name, g.info, at)?;
         let name = if let Some(o) = fixed_name(g.name) {
             o
         } else {
@@ -357,25 +564,98 @@ enum Name {
     Region(u64),
 }
 
-/// What [`plan`] reads of the placement, with each section's place read
-/// once.
+/// S-50's "after" when the next kept record is not the file's: no value of
+/// an update (a symbol that takes it is refused).
+const AFTER_THE_FILE: u64 = u64::MAX;
+
+/// What [`plan`] reads of the placement, each row once.
 struct Cx<'s, 'a> {
     stored: &'s StoredLayout<'a>,
     layout: &'s LayoutDelta,
     places: HashMap<SectionId, PlaceNow>,
+    /// `LayoutDelta::eh`'s range of a file, by file (built on first need).
+    eh_ranges: Option<HashMap<FileId, &'s EhRange>>,
+    /// `LayoutDelta::frags` by key (built on first need).
+    new_frags: Option<HashMap<(OutSecId, u32, [u8; 16]), StoredFrag>>,
+    stored_frags: HashMap<(OutSecId, u32, [u8; 16]), Option<StoredFrag>>,
+    addrs: Addrs<'s>,
 }
 
-impl Cx<'_, '_> {
-    /// `(st_shndx, st_value)` of `value` bytes into `section` after the
-    /// update (S-81, S-82): its chunk's new address plus its place's
-    /// offset; `SHN_ABS` and the value for no section.
-    fn value(
+impl<'s, 'a> Cx<'s, 'a> {
+    fn new(stored: &'s StoredLayout<'a>, layout: &'s LayoutDelta) -> Self {
+        Self {
+            stored,
+            layout,
+            places: HashMap::new(),
+            eh_ranges: None,
+            new_frags: None,
+            stored_frags: HashMap::new(),
+            addrs: Addrs {
+                chunks: &layout.placement.chunks,
+                defined: &layout.placement.defined,
+                tls: layout.placement.tls.map(|t| t.start),
+                out: None,
+                bases: HashMap::new(),
+                merged: HashMap::new(),
+                eh: None,
+            },
+        }
+    }
+
+    /// `(st_shndx, st_value)` of an entry of kind `at` (prepared by
+    /// [`Cx::local_where`] or [`Cx::global_where`]): the full link's
+    /// `SymtabPlan::resolve` over the update's placement.
+    fn resolve(&mut self, name: &[u8], info: u8, at: Where) -> Result<(u32, u64), IncrReason> {
+        if !matches!(at, Where::Absolute(_) | Where::Undefined) {
+            self.addrs.out_sections();
+        }
+        // Every place was checked when prepared: what `resolve` refuses
+        // here is S-122, a TLS symbol without a template, or a linker
+        // symbol without a value: the full link would stop on it too.
+        resolve_at(&self.addrs, name, info, at).map_err(|_| not_built())
+    }
+
+    /// A local's kind (S-76, S-50, S-19), or `None` when S-50 drops it.
+    fn local_where(
         &mut self,
-        section: Option<SectionId>,
-        value: u64,
-        info: u8,
-    ) -> Result<(u32, u64), IncrReason> {
-        let Some(id) = section else { return Ok((u32::from(SHN_ABS), value)) };
+        fs: &FileSymbols<'_>,
+        l: &LocalSymbol<'_>,
+    ) -> Result<Option<Where>, IncrReason> {
+        let Some(id) = l.section else { return Ok(Some(Where::Absolute(l.value))) };
+        if let Some(eh) = fs.eh
+            && let Some(s) = eh.frames.sections.iter().position(|x| x.section == id)
+        {
+            return self.eh_where(fs.file, eh, s, l);
+        }
+        let lo = fs.pieces.partition_point(|p| p.section < id);
+        let hi = fs.pieces.partition_point(|p| p.section <= id);
+        if lo < hi {
+            return self.merged_where(id, &fs.pieces[lo..hi], l.value).map(Some);
+        }
+        self.placed(id)?;
+        Ok(Some(Where::Section { section: id, value: l.value }))
+    }
+
+    /// A global's kind (S-81, layout §13).
+    fn global_where(&mut self, g: &GlobalChange<'_>) -> Result<Where, IncrReason> {
+        Ok(match g.place {
+            GlobalPlace::Section(id) => {
+                self.placed(id)?;
+                Where::Section { section: id, value: g.value }
+            }
+            GlobalPlace::Absolute => Where::Absolute(g.value),
+            GlobalPlace::Undefined => Where::Undefined,
+            GlobalPlace::Linker => Where::Internal(g.key),
+            GlobalPlace::Common => return Err(not_built()),
+        })
+    }
+
+    /// Records the place of a section placed whole (S-81): its chunk and
+    /// offset after the update.
+    fn placed(&mut self, id: SectionId) -> Result<(), IncrReason> {
+        if self.addrs.bases.contains_key(&id) {
+            return Ok(());
+        }
         let place = if let Some(p) = self.places.get(&id) {
             *p
         } else {
@@ -383,8 +663,9 @@ impl Cx<'_, '_> {
             self.places.insert(id, p);
             p
         };
+        // Placed nowhere (dead, not kept; a split section has pieces):
+        // v1 does not plan it.
         let (PlaceNow::Here(p) | PlaceNow::Stored(p)) = place else { return Err(not_built()) };
-        // Placed nowhere (merged pieces, `.eh_frame`): v1 does not plan it.
         let Some((chunk, offset)) = p.get() else { return Err(not_built()) };
         let Some(c) = self.layout.placement.chunks.get(chunk) else {
             return Err(corrupt(format!(
@@ -392,19 +673,281 @@ impl Cx<'_, '_> {
                 id.0, chunk.0
             )));
         };
-        let Some(shndx) = c.shndx else {
+        if c.shndx.is_none() {
             return Err(corrupt(format!("chunk {} has no section header", chunk.0)));
-        };
-        // A non-allocated chunk's offset is not its section's (v1).
-        let Some(addr) = c.addr else { return Err(not_built()) };
-        let Some(at) = addr.checked_add(offset).and_then(|a| a.checked_add(value)) else {
-            return Err(corrupt(format!("section {}: an address past 2^64", id.0)));
-        };
-        if info & 0xf == STT_TLS {
-            let Some(tls) = self.layout.placement.tls else { return Err(not_built()) };
-            return Ok((shndx, at.wrapping_sub(tls.start)));
         }
-        Ok((shndx, at))
+        self.addrs.bases.insert(id, (chunk, offset));
+        Ok(())
+    }
+
+    /// S-50 for a local of input `.eh_frame` section row `s` of the file's
+    /// frames: `mortar_merge::refs::eh_ref`, the full link's function
+    /// (`EhPlan::value`), with the kept records' offsets this update gives
+    /// them (`LayoutDelta::eh`).
+    fn eh_where(
+        &mut self,
+        file: FileId,
+        eh: FileEh<'_>,
+        s: usize,
+        l: &LocalSymbol<'_>,
+    ) -> Result<Option<Where>, IncrReason> {
+        let layout = self.layout;
+        // The file's records are not placed by this update.
+        let Some(layout_eh) = &layout.eh else { return Err(not_built()) };
+        let ranges = self.eh_ranges.get_or_insert_with(|| {
+            layout_eh.ranges.iter().map(|r| (r.file, r)).collect::<HashMap<_, _>>()
+        });
+        let Some(range) = ranges.get(&file).copied() else { return Err(not_built()) };
+        if range.records.len() != eh.kept.len() {
+            return Err(corrupt(format!(
+                ".eh_frame: file {}'s range has {} records, its file {}",
+                file.0,
+                range.records.len(),
+                eh.kept.len()
+            )));
+        }
+        let sec = &eh.frames.sections[s];
+        let first = sec.records.start;
+        let kept = |g: u32| {
+            let piece = g.checked_sub(first)?;
+            let k = eh.kept.iter().position(|r| r.section == sec.section && r.piece == piece)?;
+            range.records.get(k).copied()
+        };
+        // S-50 rule 3's "next kept record after E's records in output
+        // order": the file's next one, when E has a kept record and a
+        // later section of the file has one; else not this update's to give.
+        let after = eh
+            .kept
+            .iter()
+            .rposition(|r| r.section == sec.section)
+            .and_then(|k| range.records.get(k + 1).copied())
+            .unwrap_or(AFTER_THE_FILE);
+        let Ok(r) = i64::try_from(l.value) else { return Err(not_built()) };
+        let value = |who| eh_ref(eh.frames, s, r, who, kept, after).map_err(|_| not_built());
+        let v = if is_mapping(l.name) {
+            value(EhWho::Mapping)?
+        } else {
+            // S-50 rule 4 drops a local no relocation refers to; the join
+            // does not say: refused when that decides it.
+            let v = value(EhWho::Symbol { droppable: true })?;
+            if v != value(EhWho::Symbol { droppable: false })? {
+                return Err(not_built());
+            }
+            v
+        };
+        let o = match v {
+            EhValue::Dropped => return Ok(None),
+            EhValue::Offset(AFTER_THE_FILE) => return Err(not_built()),
+            EhValue::Offset(o) => o,
+        };
+        let Some(c) = layout.placement.chunks.get(layout_eh.chunk) else {
+            return Err(corrupt(format!(".eh_frame: chunk {} is none", layout_eh.chunk.0)));
+        };
+        let (Some(shndx), Some(addr)) = (c.shndx, c.addr) else {
+            return Err(corrupt(format!(".eh_frame: chunk {} has no address", layout_eh.chunk.0)));
+        };
+        self.addrs.eh = Some((shndx, addr));
+        Ok(Some(Where::Eh(o)))
+    }
+
+    /// S-19 for a named local at `v` of a split merge section, `pieces`
+    /// its pieces (`(section, offset)` order): the piece holding byte `v`
+    /// (the last when `v` is the section's size, as
+    /// `mortar_merge::refs::named_symbol`), its fragment's place.
+    fn merged_where(
+        &mut self,
+        id: SectionId,
+        pieces: &[MergedPiece],
+        v: u64,
+    ) -> Result<Where, IncrReason> {
+        let Some(last) = pieces.last() else { return Err(not_built()) };
+        let size = last.offset.saturating_add(last.size);
+        let p = if v == size {
+            last
+        } else {
+            let k = pieces.partition_point(|p| p.offset <= v);
+            match k.checked_sub(1).map(|k| &pieces[k]) {
+                Some(p) if v < p.offset.saturating_add(p.size) => p,
+                // Outside the section (the full link refuses it) or in no
+                // piece.
+                _ => return Err(not_built()),
+            }
+        };
+        let within = v - p.offset;
+        let key = (p.out, p.class.word(), p.hash);
+        let new = self.new_frags.get_or_insert_with(|| {
+            self.layout.frags.iter().map(|f| ((f.out, f.class, f.hash), *f)).collect()
+        });
+        let frag = if let Some(f) = new.get(&key) {
+            Some(*f)
+        } else if let Some(f) = self.stored_frags.get(&key) {
+            *f
+        } else {
+            let f = self.stored.frags_of(key.0, key.1, key.2)?;
+            self.stored_frags.insert(key, f);
+            f
+        };
+        self.addrs.out_sections();
+        let Some(chunk) = self.addrs.merged_chunk(p.out) else {
+            return Err(corrupt(format!("output section {} has no merged chunk", p.out.0)));
+        };
+        let Some(frag) = frag else {
+            // A `.debug_*` split section's fragments have no row (WP-239
+            // R-1): v1 does not plan its locals.
+            if self.addrs.chunks.get(chunk).is_some_and(|c| c.addr.is_none()) {
+                return Err(not_built());
+            }
+            return Err(corrupt(format!(
+                "FRAGS: no row for a piece of section {} (output section {})",
+                id.0, p.out.0
+            )));
+        };
+        if frag.refs == 0 {
+            return Err(not_built());
+        }
+        let Some(at) = frag.offset.checked_add(within).and_then(|o| self.addrs.chunk_at(chunk, o))
+        else {
+            return Err(corrupt(format!("FRAGS: a fragment of chunk {} has no place", chunk.0)));
+        };
+        self.addrs.merged.insert((id, v), at);
+        Ok(Where::Section { section: id, value: v })
+    }
+}
+
+/// An output section as the full link's image derives it from the chunks
+/// (`mortar_image::link`'s `out_sections`, L-86): its first chunk's
+/// address (0 when not allocated) and file offset, the size to the end of
+/// its last chunk's `size`.
+#[derive(Debug, Clone, Copy, Default)]
+struct OutRow {
+    addr: u64,
+    offset: u64,
+    size: u64,
+}
+
+/// [`SymAddrs`] over an update's placement: the answers the full link's
+/// image gives (`mortar_image::link`'s `LinkTables`), for the entries
+/// [`Cx`] prepared.
+struct Addrs<'s> {
+    chunks: &'s Column<ChunkId, Chunk>,
+    defined: &'s [Defined],
+    tls: Option<u64>,
+    /// The output sections by index, and the merged chunks by output
+    /// section (one pass over the chunks, on first need).
+    out: Option<(Vec<Option<OutRow>>, HashMap<OutSecId, ChunkId>)>,
+    /// A section placed whole: its chunk and offset.
+    bases: HashMap<SectionId, (ChunkId, u64)>,
+    /// A local of a split section at `(section, value)`: its place.
+    merged: HashMap<(SectionId, u64), (u32, u64)>,
+    /// The `.eh_frame` chunk's section index and address.
+    eh: Option<(u32, u64)>,
+}
+
+impl Addrs<'_> {
+    /// Builds [`Addrs::out`] (once): `mortar_image::link`'s
+    /// `out_sections`, the same fold over the chunks.
+    fn out_sections(&mut self) {
+        if self.out.is_some() {
+            return;
+        }
+        let mut rows: Vec<Option<OutRow>> = Vec::new();
+        let mut ends: Vec<u64> = Vec::new();
+        let mut merged = HashMap::new();
+        for (id, c) in self.chunks.iter() {
+            if let ChunkKind::Merged(o) = c.kind {
+                merged.entry(o).or_insert(id);
+            }
+            let Some(n) = c.shndx else { continue };
+            let n = n as usize;
+            if rows.len() <= n {
+                rows.resize(n + 1, None);
+                ends.resize(n + 1, 0);
+            }
+            let start = c.addr.unwrap_or(c.offset);
+            let end = start.saturating_add(c.size);
+            match &mut rows[n] {
+                Some(s) => {
+                    let first = if c.addr.is_some() { s.addr } else { s.offset };
+                    if start < first {
+                        s.addr = c.addr.unwrap_or(0);
+                        s.offset = c.offset;
+                    }
+                    ends[n] = ends[n].max(end);
+                    let first = if c.addr.is_some() { s.addr } else { s.offset };
+                    s.size = ends[n] - first;
+                }
+                slot @ None => {
+                    *slot =
+                        Some(OutRow { addr: c.addr.unwrap_or(0), offset: c.offset, size: c.size });
+                    ends[n] = end;
+                }
+            }
+        }
+        self.out = Some((rows, merged));
+    }
+
+    fn merged_chunk(&self, out: OutSecId) -> Option<ChunkId> {
+        self.out.as_ref()?.1.get(&out).copied()
+    }
+
+    /// `mortar_image::link`'s `chunk_at`: the section index and value of
+    /// `offset` bytes into chunk `c` (allocated: its address; not: its
+    /// offset in its output section).
+    fn chunk_at(&self, c: ChunkId, offset: u64) -> Option<(u32, u64)> {
+        let chunk = self.chunks.get(c)?;
+        let shndx = match chunk.kind {
+            ChunkKind::FileHeader | ChunkKind::ProgramHeaders => 1,
+            _ => chunk.shndx?,
+        };
+        let base = if let Some(a) = chunk.addr {
+            a
+        } else {
+            let sec = (*self.out.as_ref()?.0.get(shndx as usize)?)?;
+            chunk.offset.checked_sub(sec.offset)?
+        };
+        Some((shndx, base.checked_add(offset)?))
+    }
+}
+
+impl SymAddrs for Addrs<'_> {
+    fn section(&self, section: SectionId, value: u64) -> Option<(u32, u64)> {
+        if let Some(at) = self.merged.get(&(section, value)) {
+            return Some(*at);
+        }
+        let (c, at) = *self.bases.get(&section)?;
+        self.chunk_at(c, at.checked_add(value)?)
+    }
+
+    fn eh_frame(&self) -> Option<(u32, u64)> {
+        self.eh
+    }
+
+    fn common(&self, _: SymbolId) -> Option<(u32, u64)> {
+        None
+    }
+
+    fn internal(&self, id: SymbolId) -> Option<InternalValue> {
+        let at = self.defined.binary_search_by_key(&id, |row| row.symbol).ok()?;
+        Some(match self.defined[at].value {
+            DefValue::Absolute(v) => InternalValue::Absolute(v),
+            DefValue::At { chunk, offset } => {
+                let (shndx, addr) = self.chunk_at(chunk, offset)?;
+                InternalValue::At { shndx, addr }
+            }
+        })
+    }
+
+    fn patch(&self, _: usize) -> Option<(u32, u64)> {
+        None
+    }
+
+    fn tls_start(&self) -> Option<u64> {
+        self.tls
+    }
+
+    fn section_range(&self, shndx: u32) -> Option<(u64, u64)> {
+        let s = (*self.out.as_ref()?.0.get(shndx as usize)?)?;
+        (shndx > 0).then_some((s.addr, s.size))
     }
 }
 
@@ -415,9 +958,8 @@ impl Cx<'_, '_> {
 /// removals are applied from the highest index down, so every move reads
 /// an entry the previous output has where it was; a removed entry that is
 /// the last is dropped without a move.
-///
-/// `plan` does not call it yet: the removed globals' stored indices do
-/// not reach `plan` (WP-217's seam finding).
+/// [`plan`] calls it with the stored indices of its `Removed` and
+/// `Demoted` globals (WP-217 ruling 1).
 #[must_use]
 pub fn area_after_removals(first: u32, end: u32, removed: &[u32]) -> (u32, Vec<(u32, u32)>) {
     let mut removed: Vec<u32> =

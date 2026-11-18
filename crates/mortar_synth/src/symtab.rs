@@ -329,9 +329,10 @@ pub const FILLER_INFO: u8 = STT_SECTION;
 /// A filler's `st_shndx` (IN-49a: section 1).
 pub const FILLER_SHNDX: u16 = 1;
 
-/// One output symbol, before addresses.
+/// One output symbol, before addresses. `crate::symtab_incr` plans an
+/// update's entries in these kinds and resolves them by [`resolve_at`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum Where {
+pub(crate) enum Where {
     Section {
         section: SectionId,
         value: u64,
@@ -1517,6 +1518,20 @@ type Counted = (Vec<(u32, u64)>, Vec<(FileId, SymbolId, u64)>, Vec<FileCount>, b
 
 /// Whether a row is a GNU extension of the gABI that `EI_OSABI` must
 /// announce (`STT_GNU_IFUNC`, `STB_GNU_UNIQUE`; image.md I-40's OS/ABI).
+/// The output section index and value of an entry of kind `at` (S-81,
+/// S-82, S-122 to S-124): [`SymtabPlan::resolve`], the one function the
+/// full link writes every entry's `st_shndx`/`st_value` with, for an
+/// update's planned entry (`crate::symtab_incr`, IN-49a; WP-217 rulings 3,
+/// 5, 6). `name` is for the diagnostics only.
+pub(crate) fn resolve_at(
+    addrs: &dyn SymAddrs,
+    name: &[u8],
+    info: u8,
+    at: Where,
+) -> Result<(u32, u64), SynthError> {
+    SymtabPlan::resolve(addrs, &Row { name: name.into(), info, other: 0, size: 0, at })
+}
+
 fn is_gnu(info: u8) -> bool {
     info & 0xf == 10 || info >> 4 == 10
 }

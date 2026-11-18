@@ -9,30 +9,35 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Mutex;
 
 use common::{Addrs, Secs, Syms, collector};
+use mortar_core::incr::{EhLayout, EhRange, EhRecordIn, MergeClass, MergedPiece};
 use mortar_core::incr::{
     GrowthStep, IncrReason, LayoutDelta, LayoutRows, MemoryLayout, StoredEhRange, StoredFrag,
     StoredFragUse, StoredKeyRef, StoredLayout, StoredRegion, StoredSection, StoredSlot,
     SymtabBlock, SymtabEntry, SymtabPlan as UpdatePlan, SymtabTables, Unimplemented,
 };
+use mortar_core::layout::DefValue;
 use mortar_core::layout::{
     Chunk, ChunkKind, Defined, Hole, Part, Patch, PatchKind, Place, Placement, Redirect, Segment,
     SymPlace, ThunkTarget, Tls,
 };
 use mortar_core::par::Pool;
 use mortar_core::plan::Discard;
-use mortar_core::{ChunkId, Column, FileId, OutSecId, SectionId, SymKey, SymbolId};
+use mortar_core::{ChunkId, Column, FileId, OutSecId, SectionId, Span, SymKey, SymbolId};
 use mortar_elf::Class;
 use mortar_elf::consts::{
     SHF_ALLOC, SHF_EXECINSTR, SHF_TLS, SHF_WRITE, SHN_ABS, SHT_PROGBITS, STB_GLOBAL, STB_LOCAL,
     STT_FILE, STT_FUNC, STT_NOTYPE, STT_OBJECT, STT_SECTION, STT_TLS, STV_HIDDEN,
 };
+use mortar_merge::EhFrames;
+use mortar_merge::eh::{Cie, Code, EhSection, Fde, Kind, Record};
 use mortar_synth::out::Window;
 use mortar_synth::symtab::{
     GlobalIn, InternalValue, LocalIn, PatchFacts, SymCtx, SymDef, SymtabPlan, block_room,
     file_slack, tail_room,
 };
 use mortar_synth::symtab_incr::{
-    FileSymbols, GlobalChange, GlobalKind, LocalSymbol, area_after_removals, plan,
+    FileEh, FileSymbols, GlobalChange, GlobalKind, GlobalPlace, LocalSymbol, NO_ENTRY,
+    area_after_removals, moved_keys, plan,
 };
 
 // ---- the full link in incremental mode ------------------------------------
@@ -265,10 +270,10 @@ fn n2_visibility_demotes_unchanged_definer() {
         (b.first..b.first + b.count).map(|i| es[i as usize].name.as_str()).collect();
     assert_eq!(names, ["s2", "hid"]);
     // The update: c.o declares `pub2` hidden, so `pub2` (unchanged b.c's)
-    // leaves the global area for b.c's block. Its stored index (the area
-    // entry to take back) reaches `plan` through neither the state's rows
-    // nor `GlobalChange` (WP-217's seam finding): refused by name.
-    let rows = layout();
+    // leaves the global area for b.c's block. Its stored `SYMTAB_KEYS` row
+    // (WP-217 ruling 1) gives the area entry to take back: 80, taken by
+    // the area's last (83).
+    let rows = Counting::new(layout());
     let stored = StoredLayout::new(&rows);
     let pub2 = GlobalChange {
         key: SymbolId(3),
@@ -276,16 +281,30 @@ fn n2_visibility_demotes_unchanged_definer() {
         name: b"pub2",
         info: STB_LOCAL << 4 | STT_OBJECT,
         other: STV_HIDDEN,
-        section: Some(SectionId(3)),
+        place: GlobalPlace::Section(SectionId(3)),
         value: 0x10,
         size: 8,
+        stored: Some((80, 110)),
     };
-    let b_c = FileSymbols {
-        file: FileId(2),
-        locals: vec![lsym(b"s2", STT_OBJECT, Some(3), 0), lsym(b"pub2", STT_OBJECT, Some(3), 0x10)],
-    };
-    let d = delta(&rows, &[2]);
-    assert_eq!(plan(&stored, &d, &[b_c], &[pub2]), Err(not_built()));
+    let b_c = fsyms(
+        2,
+        vec![lsym(b"s2", STT_OBJECT, Some(3), 0), lsym(b"pub2", STT_OBJECT, Some(3), 0x10)],
+    );
+    let d = delta(&rows.rows, &[2]);
+    let p = plan(&stored, &d, &[b_c], &[pub2]).unwrap();
+    rows.assert_o_change(1);
+    assert_eq!(
+        p.entries[..2],
+        [entry(10, 68, STT_OBJECT, 1, 0x40_0800), entry(11, 71, STT_OBJECT, 1, 0x40_0810)]
+    );
+    assert_eq!(p.moves, [(83, 80)]);
+    assert_eq!(p.globals, [(SymbolId(3), NO_ENTRY, 0)]);
+    assert_eq!(p.global_area.count, AREA_END - SH_INFO - 1);
+    assert_eq!(p.tables.symtab_size, u64::from(AREA_END - 1) * 24);
+}
+
+fn fsyms(file: u32, locals: Vec<LocalSymbol<'static>>) -> FileSymbols<'static> {
+    FileSymbols { file: FileId(file), locals, eh: None, pieces: &[] }
 }
 
 // ---- an update's plan ------------------------------------------------------
@@ -420,9 +439,10 @@ fn added(key: u32, name: &'static [u8], section: u32) -> GlobalChange<'static> {
         name,
         info: STB_GLOBAL << 4 | STT_FUNC,
         other: 0,
-        section: Some(SectionId(section)),
+        place: GlobalPlace::Section(SectionId(section)),
         value: 0x20,
         size: 8,
+        stored: None,
     }
 }
 
@@ -557,15 +577,15 @@ fn entry(index: u32, name: u32, typ: u8, shndx: u32, value: u64) -> SymtabEntry 
 fn changed_file_rewritten_in_place() {
     let rows = Counting::new(layout());
     let stored = StoredLayout::new(&rows);
-    let a_c = FileSymbols {
-        file: FileId(1),
-        locals: vec![
+    let a_c = fsyms(
+        1,
+        vec![
             lsym(b"a.c", STT_FILE, None, 0),
             lsym(b"s1", STT_FUNC, Some(0), 4),
             lsym(b"tl", STT_TLS, Some(1), 8),
             lsym(b"s1b", STT_FUNC, Some(0), 0x40),
         ],
-    };
+    );
     let p = plan(&stored, &delta(&rows.rows, &[1]), &[a_c], &[]).unwrap();
     rows.assert_o_change(1);
     assert_eq!(
@@ -599,12 +619,9 @@ fn grown_block_and_region_move() {
         .iter()
         .map(|n| lsym(*n, STT_FUNC, Some(0), 0))
         .collect();
-    let a_c = FileSymbols { file: FileId(1), locals: seven };
+    let a_c = fsyms(1, seven);
     let long = b"a_rather_long_name_19";
-    let b_c = FileSymbols {
-        file: FileId(2),
-        locals: vec![lsym(long, STT_FUNC, Some(3), 0), lsym(long, STT_FUNC, Some(3), 4)],
-    };
+    let b_c = fsyms(2, vec![lsym(long, STT_FUNC, Some(3), 0), lsym(long, STT_FUNC, Some(3), 4)]);
     let files = [b_c.clone(), a_c.clone()];
     let d = delta(&rows.rows, &[1, 2]);
     let p = plan(&stored, &d, &files, &[]).unwrap();
@@ -644,7 +661,7 @@ fn grown_block_and_region_move() {
 fn tail_reserve_exhausted_by_name() {
     let seven: Vec<LocalSymbol<'static>> =
         (0..7).map(|_| lsym(b"x", STT_FUNC, Some(0), 0)).collect();
-    let a_c = FileSymbols { file: FileId(1), locals: seven };
+    let a_c = fsyms(1, seven);
     for (cap, want) in [(8, Ok((14, 8, 22, 0))), (6, Err("tail"))] {
         let mut rows = layout();
         rows.symtab_tables.tail_capacity = cap;
@@ -674,10 +691,7 @@ fn file_slack_exhausted_by_name() {
     rows.symtab_tables.strtab_slack = 40;
     let stored = StoredLayout::new(&rows);
     let long = b"a_rather_long_name_19";
-    let b_c = FileSymbols {
-        file: FileId(2),
-        locals: vec![lsym(long, STT_FUNC, Some(3), 0), lsym(long, STT_FUNC, Some(3), 4)],
-    };
+    let b_c = fsyms(2, vec![lsym(long, STT_FUNC, Some(3), 0), lsym(long, STT_FUNC, Some(3), 4)]);
     match plan(&stored, &delta(&rows, &[2]), &[b_c], &[]) {
         Err(IncrReason::SymtabExhausted(what)) => assert!(what.contains(".strtab"), "{what}"),
         got => panic!("{got:?}"),
@@ -732,7 +746,7 @@ fn growth_step_remaps_the_rest() {
     let stored = StoredLayout::new(&rows);
     let mut d = delta(&rows, &[1]);
     d.growth_steps = vec![GrowthStep { out: OutSecId(0), step: 0x1000 }];
-    let a_c = FileSymbols { file: FileId(1), locals: vec![lsym(b"s1", STT_FUNC, Some(0), 0)] };
+    let a_c = fsyms(1, vec![lsym(b"s1", STT_FUNC, Some(0), 0)]);
     let p = plan(&stored, &d, std::slice::from_ref(&a_c), &[added(9, b"g", 3)]).unwrap();
     // File 1's block (4..10) and the appended global (84) are written.
     assert_eq!(p.remap, [(1, 4), (10, 84)]);
@@ -754,10 +768,8 @@ fn gc_revived_section_has_its_locals() {
     place[4] = Place::at(ChunkId(0), 0xc00);
     d.placement.place = Column::from_vec(place).unwrap();
     d.revived = vec![SectionId(4)];
-    let b_c = FileSymbols {
-        file: FileId(2),
-        locals: vec![lsym(b"s2", STT_OBJECT, Some(3), 0), lsym(b"rev", STT_FUNC, Some(4), 8)],
-    };
+    let b_c =
+        fsyms(2, vec![lsym(b"s2", STT_OBJECT, Some(3), 0), lsym(b"rev", STT_FUNC, Some(4), 8)]);
     let p = plan(&stored, &d, std::slice::from_ref(&b_c), &[]).unwrap();
     rows.assert_o_change(1);
     assert_eq!(
@@ -790,14 +802,155 @@ fn global_removed_twice_last_moved() {
         area_after_removals(SH_INFO, AREA_END, &[78, 79, 80]),
         (81, vec![(81, 78), (82, 79), (83, 80)])
     );
-    // `plan` refuses a removal by name until the seam carries the removed
-    // global's stored index (WP-217's seam finding).
+    // `plan` with the stored rows (WP-217 ruling 1): G1 (key 5) at 79.
+    let rows = Counting::new(layout());
+    let stored = StoredLayout::new(&rows);
+    let d = delta(&rows.rows, &[]);
+    let gone =
+        GlobalChange { kind: GlobalKind::Removed, stored: Some((79, 100)), ..added(5, b"g1", 3) };
+    let p = plan(&stored, &d, &[], &[gone]).unwrap();
+    rows.assert_o_change(0);
+    assert_eq!(p.moves, [(83, 79)]);
+    assert_eq!(p.globals, [(SymbolId(5), NO_ENTRY, 0)]);
+    assert!(p.entries.is_empty() && p.remap.is_empty());
+    assert_eq!(p.global_area.count, 5);
+    assert_eq!((p.tables.symtab_size, p.tables.symtab_slack), (83 * 24, 4096 + 24));
+    // A key the previous output has no global entry for (a removed weak
+    // undefined never referenced): nothing to take back, no row change.
+    let none = GlobalChange { stored: Some((NO_ENTRY, 0)), ..gone };
+    let p = plan(&stored, &d, &[], &[none]).unwrap();
+    assert!(p.moves.is_empty() && p.globals.is_empty());
+    assert_eq!(p.global_area, layout().global_area);
+    // Its row missing: state-corrupt, naming the key.
+    for kind in [GlobalKind::Removed, GlobalKind::Demoted, GlobalKind::Changed] {
+        let g = GlobalChange { kind, stored: None, ..gone };
+        match plan(&stored, &d, &[], &[g]) {
+            Err(IncrReason::StateCorrupt(what)) => assert!(what.contains("key 5"), "{what}"),
+            got => panic!("{kind:?}: {got:?}"),
+        }
+    }
+}
+
+// spec: incr.md IN-49a (a changed global rewritten at its index, its name
+// where it is; WP-217 ruling 1)
+#[test]
+fn changed_global_rewritten_at_its_index() {
+    let rows = Counting::new(layout());
+    let stored = StoredLayout::new(&rows);
+    let d = delta(&rows.rows, &[]);
+    // G (key 7) at 81, its name at 110: a new value and size.
+    let g = GlobalChange {
+        kind: GlobalKind::Changed,
+        stored: Some((81, 110)),
+        size: 0x30,
+        ..added(7, b"g", 3)
+    };
+    let p = plan(&stored, &d, &[], &[g]).unwrap();
+    rows.assert_o_change(0);
+    let at = |index, name| SymtabEntry {
+        index,
+        name,
+        info: STB_GLOBAL << 4 | STT_FUNC,
+        other: 0,
+        shndx: 1,
+        value: 0x40_0820,
+        size: 0x30,
+    };
+    assert_eq!(p.entries, [at(81, 110)]);
+    assert!(p.globals.is_empty() && p.moves.is_empty() && p.strtab.is_empty());
+    assert_eq!(p.global_area, layout().global_area);
+    assert_eq!(p.tables, layout().symtab_tables);
+    // The area's last (83) changed while 79 is removed: written at 79 (its
+    // move replaced by the write), its row the new index.
+    let last = GlobalChange { stored: Some((83, 120)), ..g };
+    let gone =
+        GlobalChange { kind: GlobalKind::Removed, stored: Some((79, 100)), ..added(5, b"g1", 3) };
+    let p = plan(&stored, &d, &[], &[last, gone]).unwrap();
+    assert_eq!(p.entries, [at(79, 120)]);
+    assert!(p.moves.is_empty());
+    assert_eq!(p.globals, [(SymbolId(5), NO_ENTRY, 0), (SymbolId(7), 79, 120)]);
+    assert_eq!(p.global_area.count, 5);
+    // A changed one another move does not touch stays where it is.
+    let p = plan(&stored, &d, &[], &[g, gone]).unwrap();
+    assert_eq!(p.entries, [at(81, 110)]);
+    assert_eq!(p.moves, [(83, 79)]);
+    assert_eq!(p.globals, [(SymbolId(5), NO_ENTRY, 0)]);
+    // Rows that contradict the stored tables: state-corrupt.
+    let bad = [
+        GlobalChange { stored: Some((NO_ENTRY, 0)), ..g },
+        GlobalChange { stored: Some((SH_INFO - 1, 0)), ..g },
+        GlobalChange { stored: Some((AREA_END, 0)), ..g },
+    ];
+    for b in bad {
+        assert!(matches!(plan(&stored, &d, &[], &[b]), Err(IncrReason::StateCorrupt(_))), "{b:?}");
+    }
+    let twice = GlobalChange { stored: Some((81, 0)), ..gone };
+    assert!(matches!(plan(&stored, &d, &[], &[g, twice]), Err(IncrReason::StateCorrupt(_))));
+}
+
+// spec: incr.md IN-49a, review-in77 M-6 (a moved entry's `SYMTAB_KEYS`
+// row: its key by name, checked against the stored row; WP-217 ruling 2)
+#[test]
+fn moved_keys_by_name_checked() {
+    let moves = [(83, 79), (82, 80)];
+    let read: [(u32, u32, &[u8]); 2] = [(82, 130, b"b"), (83, 140, b"a")];
+    let keys = BTreeMap::from([(b"a".as_slice(), SymbolId(11)), (b"b".as_slice(), SymbolId(12))]);
+    let rows = BTreeMap::from([(SymbolId(11), (83, 140)), (SymbolId(12), (82, 130))]);
+    let find = |n: &[u8]| Ok(keys.get(n).copied());
+    let row = |k: SymbolId| Ok(rows[&k]);
+    assert_eq!(
+        moved_keys(&moves, &read, find, row),
+        Ok(vec![(SymbolId(11), 79, 140), (SymbolId(12), 80, 130)])
+    );
+    assert_eq!(moved_keys(&[], &[], find, row), Ok(vec![]));
+    // No key by that name (a versioned pair, a name no key has).
+    let nobody = |_: &[u8]| Ok(None);
+    assert_eq!(moved_keys(&moves, &read, nobody, row), Err(not_built()));
+    // The key by that name has another entry (another version of it).
+    let other = |k: SymbolId| Ok(if k == SymbolId(12) { (81, 130) } else { rows[&k] });
+    assert_eq!(moved_keys(&moves, &read, find, other), Err(not_built()));
+    let other_name = |k: SymbolId| Ok(if k == SymbolId(12) { (82, 131) } else { rows[&k] });
+    assert_eq!(moved_keys(&moves, &read, find, other_name), Err(not_built()));
+    // The caller did not read a move's entry.
+    assert!(matches!(moved_keys(&moves, &read[..1], find, row), Err(IncrReason::StateCorrupt(_))));
+}
+
+// spec: synth.md S-81, S-82 (a global's place: absolute, undefined,
+// linker-defined; a common refused; WP-217 ruling 3)
+#[test]
+fn global_places() {
     let rows = layout();
     let stored = StoredLayout::new(&rows);
-    let gone = GlobalChange { kind: GlobalKind::Removed, ..added(5, b"g1", 3) };
-    assert_eq!(plan(&stored, &delta(&rows, &[]), &[], &[gone]), Err(not_built()));
-    let changed = GlobalChange { kind: GlobalKind::Changed, ..added(5, b"g1", 3) };
-    assert_eq!(plan(&stored, &delta(&rows, &[]), &[], &[changed]), Err(not_built()));
+    let mut d = delta(&rows, &[]);
+    d.placement.defined = vec![
+        Defined { symbol: SymbolId(20), value: DefValue::At { chunk: ChunkId(0), offset: 0x40 } },
+        Defined { symbol: SymbolId(21), value: DefValue::Absolute(0x1234) },
+    ]
+    .into();
+    let abs = GlobalChange { place: GlobalPlace::Absolute, value: 0x99, ..added(9, b"abs", 0) };
+    let undef = GlobalChange { place: GlobalPlace::Undefined, ..added(10, b"und", 0) };
+    let lnk = GlobalChange { place: GlobalPlace::Linker, ..added(20, b"lnk", 0) };
+    let lnk_abs = GlobalChange { place: GlobalPlace::Linker, ..added(21, b"lab", 0) };
+    let p = plan(&stored, &d, &[], &[abs, undef, lnk, lnk_abs]).unwrap();
+    let got: Vec<(u32, u32, u64)> = p.entries.iter().map(|e| (e.index, e.shndx, e.value)).collect();
+    assert_eq!(
+        got,
+        [
+            (84, u32::from(SHN_ABS), 0x99),
+            (85, 0, 0),
+            (86, 1, 0x40_0040),
+            (87, u32::from(SHN_ABS), 0x1234)
+        ]
+    );
+    // A linker symbol the placement has no value for: the full link stops
+    // on it too.
+    let lost = GlobalChange { place: GlobalPlace::Linker, ..added(22, b"lost", 0) };
+    assert_eq!(plan(&stored, &d, &[], &[lost]), Err(not_built()));
+    // A common (WP-216 R-2: the layout refuses it first): refused.
+    let common = GlobalChange { place: GlobalPlace::Common, ..added(23, b"com", 0) };
+    assert_eq!(plan(&stored, &d, &[], &[common]), Err(not_built()));
+    let changed = GlobalChange { kind: GlobalKind::Changed, stored: Some((80, 0)), ..common };
+    assert_eq!(plan(&stored, &d, &[], &[changed]), Err(not_built()));
 }
 
 // spec: incr.md IN-49a (what v1 does not plan: refused by name)
@@ -806,14 +959,11 @@ fn unplannable_symbols_refused_by_name() {
     let rows = layout();
     let stored = StoredLayout::new(&rows);
     let d = delta(&rows, &[1]);
-    // A local in a non-allocated section (`.comment`, chunk 2).
-    let a_c = FileSymbols { file: FileId(1), locals: vec![lsym(b"c", STT_OBJECT, Some(2), 0)] };
+    // A local of a dead section (the join drops them, S-76).
+    let a_c = fsyms(1, vec![lsym(b"c", STT_OBJECT, Some(4), 0)]);
     assert_eq!(plan(&stored, &d, &[a_c], &[]), Err(not_built()));
-    // A global with no section (absolute, undefined, common untold).
-    let abs = GlobalChange { section: None, ..added(9, b"abs", 0) };
-    assert_eq!(plan(&stored, &d, &[], &[abs]), Err(not_built()));
     // A file with no entry and no block has none.
-    let none = FileSymbols { file: FileId(3), locals: vec![] };
+    let none = fsyms(3, vec![]);
     let p = plan(&stored, &d, &[none], &[]).unwrap();
     assert_eq!(
         p,
@@ -835,4 +985,219 @@ fn contradicting_tables_are_state_corrupt() {
         plan(&stored, &delta(&rows, &[]), &[], &[]),
         Err(IncrReason::StateCorrupt(_))
     ));
+}
+
+// ---- WP-217 items 5 to 7: locals the full link places by other rules -----
+
+// spec: synth.md S-81 (a local of a non-allocated section: its offset in
+// its output section, as `mortar_image::link`'s `chunk_at`); WP-217 item 6
+#[test]
+fn non_allocated_local_is_its_output_section_offset() {
+    // `.comment` (output section 2, `.symtab` section 3) in two chunks:
+    // chunk 2 at file offset 0x3000, chunk 3 at 0x3400; a.c's section 2
+    // at chunk 3 + 0x10.
+    let mut rows = layout();
+    let mut second = chunk(2, 0, None, 3);
+    second.kind = ChunkKind::Body(Part::first(OutSecId(2)));
+    second.offset = 0x3400;
+    rows.chunks.push(second);
+    rows.sections[2].place = Place::at(ChunkId(3), 0x10);
+    let stored = StoredLayout::new(&rows);
+    let a_c =
+        fsyms(1, vec![lsym(b"$d", STT_NOTYPE, Some(2), 0), lsym(b"c", STT_OBJECT, Some(2), 8)]);
+    let p = plan(&stored, &delta(&rows, &[1]), &[a_c], &[]).unwrap();
+    let got: Vec<(u32, u64)> = p.entries.iter().map(|e| (e.shndx, e.value)).collect();
+    assert_eq!(got, [(3, 0x410), (3, 0x418)]);
+}
+
+/// File 1's `.eh_frame` (section 5): a CIE at 0 (0x14 bytes), FDEs at
+/// 0x14 and 0x2c (0x18 bytes each); the update keeps the CIE and the
+/// first FDE, at 0x100 and 0x114 of the `.eh_frame` chunk (3, at
+/// 0x48_0000, `.symtab` section 4).
+fn eh_frames() -> EhFrames {
+    let cie = Cie {
+        class: 0,
+        version: 1,
+        fde_enc: 0x1b,
+        lsda_enc: None,
+        personality: None,
+        signal: false,
+        z: true,
+    };
+    let fde = Fde {
+        cie: 0,
+        code: Code::Section { section: SectionId(0), offset: 0 },
+        range: 4,
+        lsda: None,
+    };
+    let rec = |offset, len, kind| Record { offset, len, relocs: Span { start: 0, len: 0 }, kind };
+    EhFrames {
+        sections: vec![EhSection {
+            section: SectionId(5),
+            size: 0x44,
+            records: Span { start: 0, len: 3 },
+            terminator: None,
+        }]
+        .into(),
+        records: vec![
+            rec(0, 0x10, Kind::Cie(cie)),
+            rec(0x14, 0x14, Kind::Fde(fde)),
+            rec(0x2c, 0x14, Kind::Fde(Fde { code: Code::Dropped, ..fde })),
+        ]
+        .into(),
+        classes: 1,
+    }
+}
+
+const EH_KEPT: [EhRecordIn; 2] = [
+    EhRecordIn { section: SectionId(5), piece: 0, size: 0x14, cie: true },
+    EhRecordIn { section: SectionId(5), piece: 1, size: 0x18, cie: false },
+];
+
+fn eh_delta(rows: &MemoryLayout) -> LayoutDelta {
+    let mut d = delta(rows, &[1]);
+    let mut chunks: Vec<Chunk> = rows.chunks.clone();
+    chunks.push(chunk(3, SHF_ALLOC, Some(0x48_0000), 4));
+    d.placement.chunks = Column::from_vec(chunks).unwrap();
+    d.eh = Some(EhLayout {
+        chunk: ChunkId(3),
+        whole: false,
+        ranges: vec![EhRange {
+            file: FileId(1),
+            offset: 0x100,
+            capacity: 0x40,
+            records: vec![0x100, 0x114],
+        }],
+    });
+    d
+}
+
+// spec: synth.md S-50 (a local of an input `.eh_frame`, by `eh_ref`: a
+// mapping symbol follows its record, dropped with it), S-111; WP-217 item 5
+#[test]
+fn eh_frame_locals_follow_their_records() {
+    // Hand-made `EhFrames`/`EhLayout` values: WP-243 (the join's
+    // `.eh_frame` input) is not on this base.
+    let rows = layout();
+    let stored = StoredLayout::new(&rows);
+    let frames = eh_frames();
+    let eh = Some(FileEh { frames: &frames, kept: &EH_KEPT });
+    let d = eh_delta(&rows);
+    let locals = vec![
+        lsym(b"$d", STT_NOTYPE, Some(5), 0),
+        lsym(b"$d", STT_NOTYPE, Some(5), 0x14),
+        // In the record the update drops: S-50 drops the mapping symbol.
+        lsym(b"$d", STT_NOTYPE, Some(5), 0x2c),
+        // A named local inside a kept record, and one at the section's
+        // start: S-50 gives it the output `.eh_frame`'s start (as the full
+        // link gives `__EH_FRAME_BEGIN__`), not its record's place.
+        lsym(b"in", STT_NOTYPE, Some(5), 0x18),
+        lsym(b"start", STT_NOTYPE, Some(5), 0),
+    ];
+    let a_c = FileSymbols { eh, ..fsyms(1, locals) };
+    let p = plan(&stored, &d, std::slice::from_ref(&a_c), &[]).unwrap();
+    let got: Vec<(u32, u32, u64)> = p.entries.iter().map(|e| (e.index, e.shndx, e.value)).collect();
+    assert_eq!(got, [(4, 4, 0x48_0100), (5, 4, 0x48_0114), (6, 4, 0x48_0118), (7, 4, 0x48_0000)]);
+    assert_eq!(p.blocks[0].1.count, 4);
+    // Not built: a named local whose S-50 value depends on whether a
+    // relocation names it (rule 4, inside a removed record), or that
+    // takes the next file's record (rule 3 at a removed record's start).
+    for v in [0x30, 0x2c] {
+        let a_c = FileSymbols { eh, ..fsyms(1, vec![lsym(b"x", STT_NOTYPE, Some(5), v)]) };
+        assert_eq!(plan(&stored, &d, &[a_c], &[]), Err(not_built()), "{v:#x}");
+    }
+    // The update does not place the file's records: not built.
+    let mut none = d.clone();
+    none.eh = None;
+    assert_eq!(plan(&stored, &none, std::slice::from_ref(&a_c), &[]), Err(not_built()));
+    let mut other = d.clone();
+    other.eh.as_mut().unwrap().ranges[0].file = FileId(2);
+    assert_eq!(plan(&stored, &other, std::slice::from_ref(&a_c), &[]), Err(not_built()));
+    // A range whose records are not the file's kept records: state-corrupt.
+    let mut short = d;
+    short.eh.as_mut().unwrap().ranges[0].records.pop();
+    assert!(matches!(plan(&stored, &short, &[a_c], &[]), Err(IncrReason::StateCorrupt(_))));
+}
+
+const CLASS: MergeClass = MergeClass { strings: true, entsize: 1, align: 0 };
+
+fn piece(offset: u64, size: u64, hash: u8) -> MergedPiece {
+    MergedPiece {
+        section: SectionId(6),
+        offset,
+        size,
+        out: OutSecId(5),
+        class: CLASS,
+        hash: [hash; 16],
+    }
+}
+
+/// File 1's split section 6 (pieces at 0 and 4, 4 and 6 bytes) in output
+/// section 5's merged chunk (4: at 0x46_0000 when `alloc`, `.symtab`
+/// section 5); the first piece's fragment stored at 0x10, the second's
+/// placed by the update at 0x30.
+fn merge_rows(alloc: bool, refs: u32) -> (MemoryLayout, LayoutDelta) {
+    let mut rows = layout();
+    let mut c3 = chunk(3, SHF_ALLOC, Some(0x48_0000), 4);
+    c3.kind = ChunkKind::Body(Part::first(OutSecId(3)));
+    let mut c4 = chunk(5, if alloc { SHF_ALLOC } else { 0 }, alloc.then_some(0x46_0000), 5);
+    c4.kind = ChunkKind::Merged(OutSecId(5));
+    rows.chunks.extend([c3, c4]);
+    let frag = |hash, offset| StoredFrag {
+        out: OutSecId(5),
+        class: CLASS.word(),
+        hash: [hash; 16],
+        offset,
+        refs,
+    };
+    rows.frags = vec![frag(1, 0x10)];
+    let mut d = delta(&rows, &[1]);
+    d.frags = vec![frag(2, 0x30)];
+    (rows, d)
+}
+
+// spec: synth.md S-19 (a named local of a split section: its piece's
+// fragment), IN-49a (a `FRAGS` row read once); WP-217 item 7
+#[test]
+fn merged_locals_at_their_fragments() {
+    let pieces = [piece(0, 4, 1), piece(4, 6, 2)];
+    let locals = vec![
+        lsym(b"$d", STT_NOTYPE, Some(6), 0),
+        lsym(b"m1", STT_OBJECT, Some(6), 1),
+        lsym(b"m2", STT_OBJECT, Some(6), 7),
+        // The section's end: the last piece's end.
+        lsym(b"end", STT_OBJECT, Some(6), 10),
+    ];
+    let a_c = FileSymbols { pieces: &pieces, ..fsyms(1, locals) };
+    let (rows, d) = merge_rows(true, 1);
+    let rows = Counting::new(rows);
+    let stored = StoredLayout::new(&rows);
+    let p = plan(&stored, &d, std::slice::from_ref(&a_c), &[]).unwrap();
+    let got: Vec<(u32, u64)> = p.entries.iter().map(|e| (e.shndx, e.value)).collect();
+    assert_eq!(got, [(5, 0x46_0010), (5, 0x46_0011), (5, 0x46_0033), (5, 0x46_0036)]);
+    // The stored fragment's row read once; the update's from the delta.
+    let reads = rows.reads();
+    assert_eq!(reads.get("frags_of"), Some(&1), "{reads:?}");
+    // A local outside the section: refused.
+    let out =
+        FileSymbols { pieces: &pieces, ..fsyms(1, vec![lsym(b"x", STT_OBJECT, Some(6), 11)]) };
+    assert_eq!(plan(&stored, &d, &[out], &[]), Err(not_built()));
+    // A fragment no live file uses (refs 0): refused.
+    let (rows, d) = merge_rows(true, 0);
+    let stored = StoredLayout::new(&rows);
+    assert_eq!(plan(&stored, &d, std::slice::from_ref(&a_c), &[]), Err(not_built()));
+    // A fragment with no row: in a non-allocated (`.debug_*`) output
+    // section, refused (WP-239 R-1: no `FRAGS` rows); in an allocated
+    // one, state-corrupt.
+    for (alloc, corrupt) in [(false, false), (true, true)] {
+        let (mut rows, d) = merge_rows(alloc, 1);
+        rows.frags.clear();
+        let stored = StoredLayout::new(&rows);
+        let got = plan(&stored, &d, std::slice::from_ref(&a_c), &[]);
+        if corrupt {
+            assert!(matches!(got, Err(IncrReason::StateCorrupt(_))), "{got:?}");
+        } else {
+            assert_eq!(got, Err(not_built()));
+        }
+    }
 }
