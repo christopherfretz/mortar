@@ -1,0 +1,9 @@
+# tests/incr-review w-archive.sh A2: two members named m.o in a regular archive; x.o edited (its constant) (edit, inverse, edit).
+proves: both same-named members keep their identity across the hops (want K, U, K)
+source: tests/incr-review/w-archive.sh, case A2
+edit: x.S
+link: x.o lib.a
+archive lib.a: d1m=m.o d2m=m.o
+compilers: gcc
+not kiln: assembly (.S): kiln compiles C++ only; the shape is written in the assembly
+nolibc: yes

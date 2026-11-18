@@ -1,0 +1,8 @@
+# tests/incr-review w-meaning.sh W11: x.o (first) leaves group G1 (renamed G2, same length, its h weak so the link has one strong h): a.o's copy keeps (edit, inverse, edit).
+proves: the keeper moves to unchanged a.o and back; both copies return 2 (want L at every hop)
+source: tests/incr-review/w-meaning.sh, case W11
+edit: x.S
+link: x.o a.o c.o
+compilers: gcc
+not kiln: assembly (.S): kiln compiles C++ only; the shape is written in the assembly
+nolibc: yes

@@ -1,0 +1,10 @@
+# WP-207 §D: g.o's global g_first is removed (IN-49a: the last global
+# takes its .symtab index), then the global that moved is removed too
+# (g_last, the last of g.o's), then g_last comes back.
+proves: SYMTAB_KEYS of the moved entry was rewritten at hop 1, so its own removal at hop 2 empties the right slot
+source: WP-207 §D, the two- and three-hop series
+edit DROP1: g.cc
+edit DROPLAST: g.cc
+hops: -, DROP1, DROP1+DROPLAST, DROP1
+link: main.o g.o
+compilers: gcc kiln

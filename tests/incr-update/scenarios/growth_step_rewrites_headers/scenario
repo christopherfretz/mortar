@@ -1,0 +1,7 @@
+# WP-207 §D: g.o's function grows past its output section's tail (a
+# growth step: the sections after it move), shrinks, grows again.
+proves: the headers (sh_addr, sh_offset, the program headers) were right after a growth step that is not undone at hop 2, so the second growth writes them as a full link does
+source: WP-207 §D, the two- and three-hop series
+edit: g.cc
+link: main.o g.o u.o
+compilers: gcc kiln

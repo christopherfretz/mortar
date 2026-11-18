@@ -1,0 +1,9 @@
+# WP-211 (review-r2 B-2): g.o grows (a growth step moves unchanged u.o);
+# then r.o, which calls into u.o, is edited; then r.o is edited back.
+proves: the growth step of hop 1 wrote u.o's moved SECTIONS rows (IN-78), so hop 2's edit of r.o, which reads them, calls u_fn at its new address
+source: WP-211 B-2 (spec/landed/incr/WP-211.md), H-1
+edit GROW: g.cc
+edit REF: r.cc
+hops: -, GROW, GROW+REF, GROW
+link: main.o g.o u.o r.o
+compilers: gcc kiln

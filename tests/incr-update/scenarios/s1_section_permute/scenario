@@ -1,0 +1,12 @@
+# tests/incr-review S1 (IN-28a B1): a.o's two sections are permuted at the
+# same size (A); then c.o, another file, is edited (C); then a.o back.
+proves: the permutation's SECTIONS rows were rewritten at hop 1, so hop 2's update of c.o calls f and not g (want K, U: f()+10, f()+20)
+source: tests/incr-review/s1-section-permute.sh, s1x-section-permute.sh
+edit A: a.S
+edit C: c.S
+hops: -, A, A+C, C
+link: a.o c.o
+
+compilers: gcc
+not kiln: assembly (.S): kiln compiles C++ only; the shape is written in the assembly
+nolibc: yes

@@ -1,0 +1,8 @@
+# WP-207 §D: c.o starts calling k_fn, defined strongly by the member m.o of
+# lib.a and weakly by w.o after the archive; stops; starts again.
+proves: the member's round and LAZY flag were true after extraction and removal, so the second call extracts m.o again and its strong k_fn wins
+source: WP-207 §D, the two- and three-hop series
+edit: c.cc
+link: main.o c.o lib.a w.o
+archive lib.a: m.o
+compilers: gcc kiln

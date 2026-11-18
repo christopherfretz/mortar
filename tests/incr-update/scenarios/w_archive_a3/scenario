@@ -1,0 +1,11 @@
+# tests/incr-review w-archive.sh A3: the same as a thin archive; x.o edited (its constant) (edit, inverse, edit).
+# The members are named d1m.o and d2m.o, not both m.o: the lane installs
+# a thin archive's members in one directory (w-archive.sh used d1/ and d2/).
+proves: the thin archive's members keep their identity across the hops (want K, U, K)
+source: tests/incr-review/w-archive.sh, case A3
+edit: x.S
+link: x.o lib.a
+thin-archive lib.a: d1m d2m
+compilers: gcc
+not kiln: assembly (.S): kiln compiles C++ only; the shape is written in the assembly
+nolibc: yes

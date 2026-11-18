@@ -1,0 +1,9 @@
+# WP-207 §D: c.o starts referring to u.o's only common symbol, stops,
+# starts again (C, -fcommon).
+proves: the common's section of u.o and its COMMONS rows were true after the reference went away, so the second reference resolves to the same place
+source: WP-207 §D, the two- and three-hop series
+edit: c.c
+link: main.o c.o u.o
+cflags: -fcommon
+compilers: gcc
+not kiln: C (`-fcommon`): kiln compiles C++ only, and C++ has no common symbols

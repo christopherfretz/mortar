@@ -1,0 +1,8 @@
+# IN-75a with --fatal-warnings: c.o starts referring to mktemp, stops,
+# starts. The full link fails at hops 1 and 3; the update must fail alike.
+proves: with --fatal-warnings the update fails as the full link fails (exit status, diagnostics, no state written) and recovers at hop 2
+source: IN-75a ("--fatal-warnings"); WP-211 M-5 (`fatal_warnings_update_fails_like_full_link`); U-9
+edit: c.cc
+link: main.o c.o
+options: --fatal-warnings
+compilers: gcc kiln

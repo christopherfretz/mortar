@@ -1,0 +1,8 @@
+# WP-207 §D: c.o, the first file with the inline function `shared` (its
+# COMDAT group's keeper), drops it; the keeper moves to unchanged u.o;
+# back; dropped again.
+proves: GROUPS and both files' rows followed the keeper at hop 2, so the second move to u.o places u.o's copy
+source: WP-207 §D, the two- and three-hop series
+edit: c.cc
+link: main.o c.o u.o
+compilers: gcc kiln

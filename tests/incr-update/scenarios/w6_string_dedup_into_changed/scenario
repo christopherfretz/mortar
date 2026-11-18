@@ -1,0 +1,8 @@
+# tests/incr-review w-meaning.sh W6: x.o (first) gains a.o's string "foo" at the same size, loses it, gains it (edit, inverse, edit).
+proves: a.o's write of "foo" reads the deduplicated fragment wherever it lives (want foo and L at every hop)
+source: tests/incr-review/w-meaning.sh, case W6
+edit: x.S
+link: x.o a.o
+compilers: gcc
+not kiln: assembly (.S): kiln compiles C++ only; the shape is written in the assembly
+nolibc: yes

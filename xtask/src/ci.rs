@@ -251,7 +251,9 @@ pub fn run(args: &Args) -> bool {
             // Any exit status but 0 fails the gate ("Link tests", "Exit
             // status").
             None if name == LINKTEST => {
-                crate::linktest::main(&linktest_args(args.quick)) == 0 && crate::l10::ci(args.quick)
+                crate::linktest::main(&linktest_args(args.quick)) == 0
+                    && crate::l10::ci(args.quick)
+                    && crate::incr_update::ci(args.quick)
             }
             #[cfg(unix)]
             None if name == CENSUS => crate::census::main(&census_args(args.quick)) == 0,

@@ -1,0 +1,8 @@
+# tests/incr-review w-meaning.sh W10: x.o: local f=2 becomes global f=2; a.o weak f=1; c.o calls f (edit, inverse, edit).
+proves: c.o's call follows the definition that wins (want K, L, K)
+source: tests/incr-review/w-meaning.sh, case W10
+edit: x.S
+link: a.o x.o c.o
+compilers: gcc
+not kiln: assembly (.S): kiln compiles C++ only; the shape is written in the assembly
+nolibc: yes

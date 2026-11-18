@@ -1,0 +1,9 @@
+# WP-207 §D: the common `buf` of a.o grows from 4 to 256 bytes, back to 4,
+# to 256 again (C, -fcommon).
+proves: a.o's .bss region was true after growth and shrink, so the second growth places buf as a full link does
+source: WP-207 §D, the two- and three-hop series
+edit: a.c
+link: main.o a.o
+cflags: -fcommon
+compilers: gcc
+not kiln: C (`-fcommon`): kiln compiles C++ only, and C++ has no common symbols

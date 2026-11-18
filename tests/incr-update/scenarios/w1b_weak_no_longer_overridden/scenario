@@ -1,0 +1,8 @@
+# tests/incr-review w-meaning.sh W1B: x.o global f=2 becomes weak f=2: a.o's weak f=1 wins (edit, inverse, edit).
+proves: the winner follows st_info both ways (want L, K, L)
+source: tests/incr-review/w-meaning.sh, case W1B
+edit: x.S
+link: a.o x.o c.o
+compilers: gcc
+not kiln: assembly (.S): kiln compiles C++ only; the shape is written in the assembly
+nolibc: yes

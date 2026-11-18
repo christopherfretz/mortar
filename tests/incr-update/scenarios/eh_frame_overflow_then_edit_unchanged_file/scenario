@@ -1,0 +1,10 @@
+# WP-207 §D: big.o gains a function with a large LSDA (.eh_frame and
+# .gcc_except_table outgrow their ranges); then later.o, unchanged until
+# now, is edited; then big.o loses the function again.
+proves: the whole-section rewrite of .eh_frame at hop 1 left every file's EH_RECORDS true, so the edit of later.o at hop 2 unwinds through every file
+source: WP-207 §D, the two- and three-hop series
+edit BIG: big.cc
+edit LATER: later.cc
+hops: -, BIG, BIG+LATER, LATER
+link: main.o big.o later.o
+compilers: gcc kiln
