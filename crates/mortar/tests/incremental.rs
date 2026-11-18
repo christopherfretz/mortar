@@ -2545,7 +2545,7 @@ fn file_rows_are_the_whole_capture_s() {
             capture(&link, &keys, &f.layout, &mut strings, &|_| Some([0; 16]), f.arch.get())
                 .unwrap();
         let all: Vec<mortar_core::FileId> =
-            (0..f.inputs.files.len()).map(|i| mortar_core::FileId(i as u32)).collect();
+            (0..f.inputs.files.len()).map(mortar_core::FileId).collect();
         let rows = file_rows(&link, &keys, &f.layout, &mut strings, &all).unwrap();
         assert_eq!(rows.len(), all.len());
         let (mut sections, mut mentions) = (0usize, 0usize);
