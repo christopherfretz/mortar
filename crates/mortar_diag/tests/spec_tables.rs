@@ -2,6 +2,7 @@
 //! is the list of ids, and a kind cannot be added to one and not the
 //! other.
 
+use mortar_diag::subject::SubjectKind;
 use mortar_diag::{IncompatibleReason, Kind, RefusalClass, Relation};
 
 const SPEC: &str = include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/../../spec/diag.md"));
@@ -45,49 +46,6 @@ fn kind_ids_match_the_spec_table() {
     assert!(!is_kebab_case("Undefined-symbol") && !is_kebab_case("a--b") && !is_kebab_case("a_b"));
 }
 
-/// The kinds the linker raises as a warning, by default or under an
-/// option or a condition: the code's side, read by WP-212 from where each
-/// is raised, compared with diag.md §3.1's severity column both ways until
-/// U-9's `mortar_diag::subject::subjects` replaces it.
-const WARNING_KINDS: &[&str] = &[
-    "skipped-incompatible",
-    "ignored-member",
-    "duplicate-soname",
-    "needed-not-found",
-    "cet-report",
-    "malformed-input",
-    "unknown-property",
-    "archive-backref",
-    "archive-choice",
-    "common-alignment",
-    "common-larger-than-definition",
-    "common-overridden",
-    "copy-of-locally-bound-definition",
-    "entry-not-found",
-    "gnu-warning",
-    "multiple-common",
-    "undefined-symbol",
-    "version-reassigned",
-    "version-script-undefined-name",
-    "versioned-definition-hidden",
-    "meta-malformed",
-    "odr-abi-mismatch",
-    "odr-archive-shadow",
-    "odr-contents-mismatch",
-    "odr-declaration-mismatch",
-    "odr-internal-reference",
-    "odr-isa-mismatch",
-    "odr-size-mismatch",
-    "odr-strong-and-comdat",
-    "odr-symbol-type-mismatch",
-    "odr-type-mismatch",
-    "odr-violation",
-    "odr-vtable-rtti-mismatch",
-    "executable-stack",
-    "incremental-not-reproducible",
-    "incremental-unsupported",
-];
-
 /// The subjects of one row of §3.1's table: `None` for `—`, else its
 /// words, each of the closed set.
 fn subjects(cell: &str) -> Option<Vec<&str>> {
@@ -111,25 +69,31 @@ fn can_be_a_warning(cell: &str) -> Option<bool> {
 }
 
 // spec: diag.md §3.1 (the severity column, the subjects column), incr.md
-// IN-75a: the column's warning kinds are the code's, both ways; each has
-// subjects from {file, key, output section, link}; an `error` kind has `—`
+// IN-75a: the column's subjects are `mortar_diag::subject::subjects`'s,
+// both ways, word for word (WP-221, U-9; it replaces WP-212's
+// `WARNING_KINDS`): a kind can be a warning exactly when it has subjects,
+// each of {file, key, output section, link}; an `error` kind has `—` and
+// none in the code
 #[test]
 fn warning_kinds_have_subjects() {
     const SET: [&str; 4] = ["file", "key", "output section", "link"];
+    let word = |k: SubjectKind| match k {
+        SubjectKind::File => "file",
+        SubjectKind::Key => "key",
+        SubjectKind::OutputSection => "output section",
+        SubjectKind::Link => "link",
+    };
     let rows = table("### 3.1 ");
-    for id in WARNING_KINDS {
-        assert!(Kind::IDS.contains(id), "{id} is not a kind");
-        assert!(rows.iter().any(|row| row[0] == *id), "{id} has no row");
-    }
     for row in &rows {
         let id = row[0].as_str();
         assert_eq!(row.len(), 6, "{id}: the severity or the subjects column is missing");
         let warning = can_be_a_warning(&row[4])
             .unwrap_or_else(|| panic!("{id}: severity '{}' is not one of the three forms", row[4]));
+        let code: Vec<&str> = mortar_diag::subject::subjects(id).iter().map(|&k| word(k)).collect();
         assert_eq!(
             warning,
-            WARNING_KINDS.contains(&id),
-            "{id}: the severity column and WARNING_KINDS disagree"
+            !code.is_empty(),
+            "{id}: the severity column and mortar_diag::subject::subjects disagree"
         );
         match subjects(&row[5]) {
             None => assert!(!warning, "{id} can be a warning: it needs subjects"),
@@ -140,9 +104,12 @@ fn warning_kinds_have_subjects() {
                     assert!(SET.contains(word), "{id}: '{word}' is not a subject");
                     assert!(!words[..i].contains(word), "{id}: '{word}' twice");
                 }
+                assert_eq!(words, code, "{id}: the subjects column and the code disagree");
             }
         }
     }
+    // The code names no subject for anything that is not a row.
+    assert!(mortar_diag::subject::subjects("no-such-kind").is_empty());
     // The checkers themselves.
     assert_eq!(can_be_a_warning("error"), Some(false));
     assert_eq!(can_be_a_warning("warning"), Some(true));

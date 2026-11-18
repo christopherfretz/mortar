@@ -23,7 +23,7 @@ use mortar_core::incr::{IncrReason, Unimplemented};
 use mortar_core::inputs::Reader;
 use mortar_core::plan::{Odr, OdrMode};
 use mortar_core::{FileId, Inputs, Resolution, SectionId, SymbolId};
-use mortar_diag::{FileRef, Style};
+use mortar_diag::FileRef;
 use mortar_elf::SymbolIndex;
 use mortar_elf::consts::STB_WEAK;
 use mortar_odr::foreign::{
@@ -647,12 +647,9 @@ impl<'a, 'v> Now<'a, 'v> {
     }
 
     /// A finding as a `DIAGS` row: §9.1's key with the unit as the `FILES`
-    /// row, the subjects the key and each file named (IN-75a, WP-220).
-    /// **PROVISIONAL** (WP-220 rulings-2 §5): `code` and `text` must be
-    /// byte-equal to the full link's capture's row, made by the capture's
-    /// own function; no capture writes `DIAGS` yet (U-2's format 5), and
-    /// `text` here is `render(Style::plain("mortar"))`, which freezes a
-    /// program name the link takes from `argv[0]` (record §M).
+    /// row, the subjects the key and each file named (IN-75a, WP-220),
+    /// made by [`super::diags::row`], capture's own function (WP-221 seam
+    /// 7, F-8).
     ///
     /// # Errors
     /// `state-corrupt`: a file named without its row.
@@ -667,14 +664,9 @@ impl<'a, 'v> Now<'a, 'v> {
         let (key, d, s) = diagnostic(&display, finding);
         let mut subjects = vec![Subject::Key(s.symbol)];
         subjects.extend(s.files.into_iter().map(Subject::File));
-        subjects.sort();
-        Ok(DiagRow {
-            subjects,
-            code: d.id().to_owned(),
-            text: d.render(&Style::plain("mortar")),
-            key,
-            tomb: false,
-        })
+        // WP-221 seam 7 (F-8): the one row function capture uses too.
+        super::diags::row(key, &d, subjects, Vec::new())
+            .ok_or_else(|| corrupt("an ODR finding that is not a warning"))
     }
 }
 

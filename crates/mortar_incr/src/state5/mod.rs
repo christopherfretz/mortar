@@ -30,7 +30,7 @@ use crate::format::{
     ChunkRow, DefinedRow, Hash16, LayoutRow, OutSecRow, PatchRow, ProbeRow, R, RedirectRow, Row,
     SectionRow, SegmentRow, SizeRow, StatRow, StateError, Str, SymPlaceRow, W, kind,
 };
-use crate::update::diags::{DiagRow, Subject};
+use crate::update::diags::{DiagRef, DiagRow, Subject};
 use crate::update::rows::{
     CloneProbe, CommonRow, CopyRow, EdgeRow, FileIndexRow, FileRow, FileTable, FragRow, FragUseRow,
     GroupRow, HoleRow, IndexRow, KeyRefRow, LocalRange, MentionRow, MetaRow, NameRow, RegionRow,
@@ -860,8 +860,9 @@ impl Rec for NameRow {
 }
 
 /// A `DIAGS` row as stored (WP-213 §P: its variable-length fields in
-/// `STRINGS`): the diagnostic's key, the tomb, and three strings (the
-/// subjects, tag-encoded; the code; the text). 39 bytes.
+/// `STRINGS`): the diagnostic's key, the tomb, and four strings (the
+/// subjects, tag-encoded; the code; the text; the references,
+/// [`refs_bytes`]), then the reference count (WP-221 seam 7). 55 bytes.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct DiagRaw {
     pub phase: u16,
@@ -871,13 +872,15 @@ pub struct DiagRaw {
     pub subjects: Str,
     pub code: Str,
     pub text: Str,
+    pub refs: Str,
+    pub ref_count: u64,
 }
 
 impl Rec for DiagRaw {
-    const WIDTH: usize = 39;
+    const WIDTH: usize = 55;
     fn put(&self, w: &mut W<'_>) {
         w.u16(self.phase).u32(self.unit).u64(self.seq).u8(u8::from(self.tomb));
-        w.s(self.subjects).s(self.code).s(self.text);
+        w.s(self.subjects).s(self.code).s(self.text).s(self.refs).u64(self.ref_count);
     }
     fn get(r: &mut R<'_>) -> Self {
         Self {
@@ -888,8 +891,40 @@ impl Rec for DiagRaw {
             subjects: r.s(),
             code: r.s(),
             text: r.s(),
+            refs: r.s(),
+            ref_count: r.u64(),
         }
     }
+}
+
+/// A `DIAGS` row's references' bytes (WP-221 seam 7): per reference its
+/// file (`u32`), seq and offset (`u64` each), 20 bytes, in the row's
+/// (sorted) order.
+#[must_use]
+pub fn refs_bytes(refs: &[DiagRef]) -> Vec<u8> {
+    let mut v = Vec::with_capacity(refs.len() * 20);
+    let mut w = W(&mut v);
+    for r in refs {
+        w.u32(r.file.0).u64(r.seq).u64(r.offset);
+    }
+    v
+}
+
+/// [`refs_bytes`]' inverse, or `None` for bytes it does not make or
+/// references not strictly sorted.
+#[must_use]
+pub fn refs_of(b: &[u8]) -> Option<Vec<DiagRef>> {
+    if !b.len().is_multiple_of(20) {
+        return None;
+    }
+    let refs: Vec<DiagRef> = b
+        .chunks_exact(20)
+        .map(|c| {
+            let mut r = R::new(c);
+            DiagRef { file: mortar_core::FileId(r.u32()), seq: r.u64(), offset: r.u64() }
+        })
+        .collect();
+    refs.windows(2).all(|w| w[0] < w[1]).then_some(refs)
 }
 
 /// The subjects' bytes: per subject a tag byte (0 file, 1 key, 2 ODR key,
@@ -1057,6 +1092,8 @@ pub(crate) fn diag_raw(d: &DiagRow, add: &mut dyn FnMut(&[u8]) -> Str) -> DiagRa
         subjects: add(&subjects_bytes(&d.subjects)),
         code: add(d.code.as_bytes()),
         text: add(d.text.as_bytes()),
+        refs: add(&refs_bytes(&d.refs)),
+        ref_count: d.ref_count,
     }
 }
 
@@ -1066,11 +1103,17 @@ pub(crate) fn diag_row(r: &DiagRaw, s: StrFn<'_>) -> Rows<DiagRow> {
     let text = |x: Str| -> Rows<String> {
         String::from_utf8(s(x)?).map_err(|_| corrupt("DIAGS: a string is not UTF-8"))
     };
+    let refs = refs_of(&s(r.refs)?).ok_or_else(|| corrupt("DIAGS: references"))?;
+    if (refs.len() as u64) > r.ref_count {
+        return Err(corrupt("DIAGS: more references than the count"));
+    }
     Ok(DiagRow {
         subjects,
         code: text(r.code)?,
         text: text(r.text)?,
         key: mortar_diag::Key { phase: r.phase, unit: r.unit, seq: r.seq },
+        refs,
+        ref_count: r.ref_count,
         tomb: r.tomb,
     })
 }

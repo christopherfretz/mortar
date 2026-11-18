@@ -1266,3 +1266,59 @@ fn option_only_key_survives_compaction() {
         assert!(c.symbols.iter().any(|r| r.option && s(&c, r.name) == n), "{}", n.escape_ascii());
     }
 }
+
+/// A warning's `DIAGS` row with `refs` and `ref_count` (WP-221 seam 7).
+fn diag_with_refs(
+    refs: Vec<(u32, u64, u64)>,
+    ref_count: u64,
+) -> mortar_incr::update::diags::DiagRow {
+    use mortar_incr::update::diags::{DiagRef, DiagRow, Subject};
+    DiagRow {
+        subjects: vec![Subject::File(FileId(1)), Subject::Key(SymbolId(0))],
+        code: "gnu-warning".to_owned(),
+        text: "a stored form".to_owned(),
+        key: mortar_diag::Key { phase: 70, unit: 1, seq: 3 << 32 },
+        refs: refs
+            .into_iter()
+            .map(|(f, seq, offset)| DiagRef { file: FileId(f), seq, offset })
+            .collect(),
+        ref_count,
+        tomb: false,
+    }
+}
+
+// spec: incr.md IN-18e (DIAGS, kind 49; WP-221 seam 7: a reference-site
+// warning's references and count round-trip; references not sorted, or
+// fewer counted than stored, are state-corrupt)
+#[test]
+fn diags_references_round_trip() {
+    let mut m = sample(&[0, 1, 2], 3);
+    m.diags = vec![
+        diag_with_refs(vec![(0, 1 << 32, 0x10), (1, 3 << 32, 0x1c), (1, (3 << 32) + 4, 0x30)], 5),
+        diag_with_refs(Vec::new(), 0),
+    ];
+    m.diags[1].key.seq = 7;
+    let bytes = full(&m);
+    let back = read::decode(&bytes).expect("decode");
+    let mut want = compact::normalize(&m).expect("normalize").diags;
+    want.sort_by_key(|d| d.key);
+    assert_eq!(want[1].refs.len(), 3, "the references kept");
+    let mut got = back.diags.clone();
+    got.sort_by_key(|d| d.key);
+    assert_eq!(got, want);
+    let view = read::open_bytes(bytes).expect("open");
+    let mut got = view.diags().expect("diags");
+    got.sort_by_key(|d| d.key);
+    assert_eq!(got, want);
+    for bad in [
+        diag_with_refs(vec![(1, 3 << 32, 0x1c), (0, 1 << 32, 0x10)], 2),
+        diag_with_refs(vec![(0, 1 << 32, 0x10), (0, 1 << 32, 0x10)], 2),
+        diag_with_refs(vec![(0, 1 << 32, 0x10), (1, 3 << 32, 0x1c)], 1),
+    ] {
+        let mut m = compact::normalize(&sample(&[0, 1, 2], 3)).expect("normalize");
+        m.diags = vec![bad.clone()];
+        let bytes = write::encode(&m).expect("encode");
+        let err = read::decode(&bytes).expect_err("decoded");
+        assert!(format!("{err:?}").contains("DIAGS"), "{bad:?}: {err:?}");
+    }
+}
