@@ -1974,11 +1974,11 @@ shared cores at a load of about 11; WP-223), so it adds well under the
 60 s a `ci --quick` step may add. The gate runs `--quick` after L10's
 smoke in its `linktest` step, in `ci --quick` and full `ci` alike (the
 supervisor's ruling, 2026-11-18). The full matrix (36 scenarios, 108
-runs, 426 hops on AArch64 and x86-64, GCC and kiln) is not a `ci` step:
+runs, 432 hops on AArch64 and x86-64, GCC and kiln) is not a `ci` step:
 it runs in the supervisor's batch gate script, `cargo xtask incr-update`
 with no option. It takes 164 s warm at `-j 4` on the 12 shared cores of
-the AArch64 container at a 1-minute load of about 11 (WP-223's
-record). `--crash` (H-2) will run each update once
+the AArch64 container at a 1-minute load of about 11, and 112 s at a
+load of about 14 (WP-223's record; 432 hops). `--crash` (H-2) will run each update once
 per `MORTAR_INCR_CRASH` point (IN-77's list, the points between a
 write and its sync included) and then the next link.
 
