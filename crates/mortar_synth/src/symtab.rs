@@ -1498,12 +1498,15 @@ impl SymtabPlan {
             if before >= out.end() {
                 break;
             }
-            let Some((_, _, row)) = walk.next()? else { break };
+            let Some((_, st_name, row)) = walk.next()? else { break };
             if fixed_name(&row.name).is_some() {
                 continue;
             }
-            out.put(before, &row.name);
-            out.zero(before + row.name.len() as u64, 1);
+            // The entry's own offset: past a block's fillers the walk
+            // skips the region's slack (IN-49a) before naming it.
+            let at = if self.facts.room { u64::from(st_name) } else { before };
+            out.put(at, &row.name);
+            out.zero(at + row.name.len() as u64, 1);
         }
         Ok(())
     }
