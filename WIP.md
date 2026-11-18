@@ -22,14 +22,29 @@ conflicts in favour of the seam; report what conflicted. Report size with re-key
 - FRAGS: an insert into the area that would move an existing area row (FRAG_AT.frag names rows) => compaction.
 - Canon: decode → normalize → Debug rendering with Str replaced by bytes; FILES.round → support bool.
 
-## Done
-- (see git log)
+## Rulings received
+- WP-220 R-1 (supervisor): ODR_CLASSES (47) and ODR_REFS (48) NOT written: removed from TABLES (37 tables);
+  reader returns none; encode/plan refuse rows. COPIES (55) comes with U-8's seam commit (after U-3's).
+  Cherry-pick U-3's hash first, then U-8's; report COPIES' and re-keyed GROUPS' sizes separately.
+
+## Done (commits on the branch)
+- codec + lazy verified reader (read.rs), writer `encode`, `plan_patch` (in-place editor `Ed`, overflow -> compaction),
+  `patch`, `patched_bytes`; compact.rs `apply` (in memory, same placement), `normalize`, `compact`, `plan_bytes`;
+  canon.rs `canon`, `canon_of`, `compare`; `size_report`, `refuse_updating`; decode verifies every block;
+  rank ties compact; gone files' STAT rows dropped.
+- tests/state5.rs: 14 tests pass (named ones: compaction_equals_full_link_capture, compaction_reads_every_block,
+  rank_midpoint_exhausted_compacts, patched_block_is_verified_first, key_refs_single_mentioner, state5_size_report,
+  incr_state_refuses_flag_set, update_reads_only_touched_blocks (state 3.4 MB, plan read 43,296 B, 5 blocks written),
+  symbols_row_order_is_the_stated_one).
+- examples/incr_state.rs (convert/canon/compare/size).
 
 ## Next
-1. write.rs: encode(MemoryState) [verbatim, slotting], plan_patch/patch.
-2. compact.rs: apply patch in memory, normalize, compact.
-3. canon.rs; tests/state5.rs (replace "until it lands"); example incr_state.
-4. capture SYMBOLS order; new capture rows; size gate; gates; record spec/landed/incr/WP-214.md.
+1. size gate: `.build/target-wp-116/wp214/size.sh cxx-medium-g-static` (protoc), then cxx-large-g (delete the 1 GB output).
+2. Seam commits (U-3, then U-8) when hashes arrive: cherry-pick, adapt GROUPS/COMMONS/META/FILE_INDEX/MENTIONS, COPIES.
+3. Not done: capture.rs SYMBOLS order (normalize applies it in the format-5 writer instead; format-4 bytes unchanged),
+   new capture rows (REGIONS, NAMES rebuilt by normalize, EDGES, COMMONS, lazy members, FILES rank/round),
+   file_mentions `continue` (after the seam).
+4. Gates; record spec/landed/incr/WP-214.md; delete WIP.md.
 
 ## Resume
 cargo: `( cd <worktree> && unset CARGO_TARGET_DIR && source scripts/env.sh && ulimit -c 0 && cargo ... )`,
