@@ -378,7 +378,7 @@ fn records<'b>(
 }
 
 #[allow(clippy::too_many_arguments)]
-fn index_file(
+pub(crate) fn index_file(
     inputs: &Inputs<'_>,
     link: &Link<'_, '_>,
     file: FileId,
