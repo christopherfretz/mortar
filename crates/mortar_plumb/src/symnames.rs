@@ -20,10 +20,10 @@
 
 use std::collections::BTreeMap;
 
+use mortar_elf::SymbolSection;
 use mortar_elf::consts::{
     SHN_ABS, SHN_LORESERVE, SHN_UNDEF, STB_LOCAL, STT_FILE, STT_SECTION, STT_TLS,
 };
-use mortar_elf::SymbolSection;
 
 use crate::hasher::{HashMap, HashSet};
 use crate::locate::Place;
@@ -52,8 +52,7 @@ fn c_identifier(s: &str) -> bool {
 /// `__<target>[+0x<a>|-0x<a>][@plt]_veneer` or `__erratum_843419_veneer`
 /// (GNU ld's AArch64 form, which mortar writes).
 fn veneer(name: &str) -> bool {
-    name.len() > "___veneer".len() && name.starts_with("__")
-        && name.ends_with("_veneer")
+    name.len() > "___veneer".len() && name.starts_with("__") && name.ends_with("_veneer")
 }
 
 /// The closed set of names a linker writes into `.symtab` that no input
@@ -64,12 +63,30 @@ pub(crate) fn linker_name(name: &str, format: Format, machine: u16) -> Option<&'
     let aarch64 = machine == mortar_elf::consts::EM_AARCH64;
     // spec/resolve.md §8.1, the one list (with layout.md L-99, L-105).
     let common = match name {
-        "_GLOBAL_OFFSET_TABLE_" | "_DYNAMIC" | "__ehdr_start" | "__executable_start" | "_etext"
-        | "etext" | "__etext" | "_edata" | "edata" | "__bss_start" | "_end" | "end"
-        | "__init_array_start" | "__init_array_end" | "__preinit_array_start"
-        | "__preinit_array_end" | "__fini_array_start" | "__fini_array_end"
-        | "__rela_iplt_start" | "__rela_iplt_end" | "__rel_iplt_start" | "__rel_iplt_end"
-        | "_TLS_MODULE_BASE_" | "__GNU_EH_FRAME_HDR" => Some("resolve.md §8.1"),
+        "_GLOBAL_OFFSET_TABLE_"
+        | "_DYNAMIC"
+        | "__ehdr_start"
+        | "__executable_start"
+        | "_etext"
+        | "etext"
+        | "__etext"
+        | "_edata"
+        | "edata"
+        | "__bss_start"
+        | "_end"
+        | "end"
+        | "__init_array_start"
+        | "__init_array_end"
+        | "__preinit_array_start"
+        | "__preinit_array_end"
+        | "__fini_array_start"
+        | "__fini_array_end"
+        | "__rela_iplt_start"
+        | "__rela_iplt_end"
+        | "__rel_iplt_start"
+        | "__rel_iplt_end"
+        | "_TLS_MODULE_BASE_"
+        | "__GNU_EH_FRAME_HDR" => Some("resolve.md §8.1"),
         "__data_start" | "__end__" | "__bss_start__" | "__bss_end__" | "_bss_end__" if aarch64 => {
             Some("resolve.md §8.1 (AArch64)")
         }
@@ -281,7 +298,9 @@ pub(crate) fn locals(e: &mut Engine<'_, '_>, map: &Map, fs: &mut Vec<Finding>) {
                             dropped += 1;
                             continue;
                         }
-                        Place::Absent if map.format == Format::Mortar && !sec.empty_unrecorded() => {
+                        Place::Absent
+                            if map.format == Format::Mortar && !sec.empty_unrecorded() =>
+                        {
                             // §4.4 step 0: no place, so not in the output
                             // (S-76; P-1).
                             dropped += 1;
@@ -391,9 +410,10 @@ pub(crate) fn locals(e: &mut Engine<'_, '_>, map: &Map, fs: &mut Vec<Finding>) {
         // A local named as one not judged, in the section such a local
         // would be in, before the linker's mapping symbols: those are the
         // linker's only at an allocated address no input section occupies.
-        if unjudged.get(&out.name).is_some_and(|v| {
-            v.iter().any(|x| x.is_none_or(|k| usize::from(s.st_shndx) == k))
-        }) {
+        if unjudged
+            .get(&out.name)
+            .is_some_and(|v| v.iter().any(|x| x.is_none_or(|k| usize::from(s.st_shndx) == k)))
+        {
             extra_nj += 1;
             continue;
         }

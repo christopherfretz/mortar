@@ -51,7 +51,11 @@ fn read_map(path: &Path) -> Map {
 }
 
 fn link(d: &Path, out: &str, map: &str) -> Link {
-    Link { dir: d.to_path_buf(), out: std::fs::read(d.join(out)).unwrap(), map: read_map(&d.join(map)) }
+    Link {
+        dir: d.to_path_buf(),
+        out: std::fs::read(d.join(out)).unwrap(),
+        map: read_map(&d.join(map)),
+    }
 }
 
 /// The verifier on one link.
@@ -112,7 +116,10 @@ fn fixtures() -> Vec<(String, Link)> {
     let mut v = Vec::new();
     for a in ARCHS {
         for base in ["x", "f"] {
-            v.push((format!("{base}-{a}"), link(&d, &format!("{base}-{a}"), &format!("{base}-{a}.map"))));
+            v.push((
+                format!("{base}-{a}"),
+                link(&d, &format!("{base}-{a}"), &format!("{base}-{a}.map")),
+            ));
         }
     }
     v
@@ -150,7 +157,11 @@ fn wp246_good_links_are_clean() {
         assert_eq!(c.output_locals_extra, 0, "{label}");
         assert!(c.output_locals_demoted >= 1, "{label}: hidden_b not demoted");
         assert_eq!(c.file_symbols_judged, 3, "{label}");
-        assert!(c.linker_defined_not_judged.is_empty(), "{label}: {:?}", c.linker_defined_not_judged);
+        assert!(
+            c.linker_defined_not_judged.is_empty(),
+            "{label}: {:?}",
+            c.linker_defined_not_judged
+        );
     }
 }
 
@@ -163,7 +174,11 @@ fn wp246_y5_name_in_the_middle_of_a_string() {
     each(
         "mid=other_helper_a:6",
         false,
-        &[("Y4", "'helper_a' is not where"), ("Y6", "entry {i} ('helper_a'"), ("Y6", "'other_helper_a'")],
+        &[
+            ("Y4", "'helper_a' is not where"),
+            ("Y6", "entry {i} ('helper_a'"),
+            ("Y6", "'other_helper_a'"),
+        ],
     );
     // `greeting_a` + 3 = `eting_a`: no input has it: Y5 and Y6.
     each(
@@ -211,11 +226,7 @@ fn wp246_y6_names_swapped() {
 // Y3, Y5: a global renamed to a name no input has.
 #[test]
 fn wp246_y3_y5_global_renamed() {
-    each(
-        "gmid=afun:1",
-        false,
-        &[("Y5", ".symtab entry {i} ('fun')"), ("Y3", "symbol 'afun'")],
-    );
+    each("gmid=afun:1", false, &[("Y5", ".symtab entry {i} ('fun')"), ("Y3", "symbol 'afun'")]);
     // The demoted hidden global: before WP-246 Y3 judged no hidden name
     // missing.
     each("mid=hidden_b:2", false, &[("Y3", "symbol 'hidden_b'"), ("Y5", "('dden_b')")]);
@@ -246,7 +257,8 @@ fn wp246_p_e3_a_local_renamed_on_one_side() {
         let inputs: Vec<Input<'_>> =
             files.iter().map(|(p, b)| Input { path: p, bytes: b }).collect();
         let e = mortar_plumb::equiv::check(&xm.out, &xm.map, &f.out, &f.map, &inputs);
-        let got: Vec<String> = e.findings.iter().map(|f| format!("{} {}", f.rule.id(), f.message)).collect();
+        let got: Vec<String> =
+            e.findings.iter().map(|f| format!("{} {}", f.rule.id(), f.message)).collect();
         assert!(
             got.iter().any(|l| l.starts_with("P-E3 ") && l.contains("eting_a")),
             "{a}: want P-E3 naming 'eting_a', got {got:#?}"
@@ -268,8 +280,7 @@ fn evidence(s: &Scratch) -> Option<PathBuf> {
         || PathBuf::from("/Volumes/AgentWork/mortar-helper/.build/target-wp-140/wp217/t1"),
         PathBuf::from,
     );
-    let names =
-        ["inc.bad", "inc.bad.map", "inc", "inc.map", "plain", "plain.map", "a.o", "b.o"];
+    let names = ["inc.bad", "inc.bad.map", "inc", "inc.map", "plain", "plain.map", "a.o", "b.o"];
     if !names.iter().all(|n| from.join(n).is_file()) {
         eprintln!("SKIP wp246 evidence: {} is absent", from.display());
         return None;

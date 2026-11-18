@@ -229,7 +229,9 @@ fn near_filler_reported() {
                 assert!(
                     xl.len() == 2
                         && xl.iter().any(|l| l.starts_with("Y5 ") && l.contains("has no name"))
-                        && xl.iter().any(|l| l.starts_with("Y6 ") && l.contains("('', st_info 0x0")),
+                        && xl
+                            .iter()
+                            .any(|l| l.starts_with("Y6 ") && l.contains("('', st_info 0x0")),
                     "{arch} {field}: {xl:#?}"
                 );
             } else {
