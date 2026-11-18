@@ -10,8 +10,9 @@ use mortar_incr::format::{SectionRow, StatRow, StateError, Str, kind, stat_tag};
 use mortar_incr::ops::{StdOps, WriteFailure};
 use mortar_incr::state5::{self, compact, read, write};
 use mortar_incr::update::rows::{
-    CommonRow, CopyRow, FileIndexRow, FileRow, FragRow, FragUseRow, GroupRow, KeyRefRow,
-    LocalRange, MentionRow, NameRow, ResolvedRow, SymbolRow, SymtabKeyRow, file_flags, sym_kind,
+    CommonRow, CopyRow, EdgeRow, FileIndexRow, FileRow, FragRow, FragUseRow, GroupRow, KeyRefRow,
+    LocalRange, MentionRow, NameRow, ResolvedRow, SymbolRow, SymtabKeyRow, edge_kind, file_flags,
+    sym_kind,
 };
 use mortar_incr::update::testing::MemoryState;
 use mortar_incr::update::view::{FileRanges, KeyEdits, StatePatch};
@@ -1321,4 +1322,311 @@ fn diags_references_round_trip() {
         let err = read::decode(&bytes).expect_err("decoded");
         assert!(format!("{err:?}").contains("DIAGS"), "{bad:?}: {err:?}");
     }
+}
+
+// ---- WP-238 seam 9: `EDGES` of every kind, `META.live_hash` ----------------------------
+
+/// The row of the symbol named `name` in `m` (before or after normalize).
+fn key_named(m: &MemoryState, name: &str) -> u32 {
+    let at = m.symbols.iter().position(|r| s(m, r.name) == name.as_bytes());
+    u32::try_from(at.expect("the key")).expect("small")
+}
+
+/// One row of every `edge_kind` (0 to `LAST`) for the file at position
+/// `f` of `m` (made by `sample` with at least 3 sections; its id `id`):
+/// key targets of its own global and local, of another file's global
+/// (`g0`) and of the option-only key; section targets within the file,
+/// split ones at an offset and at `u32::MAX`; both `REFUSE` codes.
+#[allow(clippy::many_single_char_names)] // the rows of one file, named as in WP-238 S1
+fn add_edges(m: &mut MemoryState, f: u32, id: u32) {
+    let first = m.sections.iter().position(|r| r.file == f).expect("its sections");
+    let s = |k: usize| u32::try_from(first + k).expect("small");
+    let (g0, defsym) = (key_named(m, "g0"), key_named(m, "defsym"));
+    let (g, l) = (key_named(m, &format!("g{id}")), key_named(m, &format!("l{id}")));
+    let row = |kind, source, target, offset| EdgeRow { kind, source, target, offset };
+    let rows = [
+        row(edge_kind::RELOC, s(0), g0, 0),
+        row(edge_kind::START_STOP, s(1), defsym, 0),
+        row(edge_kind::LOCAL, s(0), s(2), 7),
+        row(edge_kind::FDE_SECTION, s(1), s(2), u32::MAX),
+        row(edge_kind::FDE_KEY, s(1), g, 0),
+        row(edge_kind::NONALLOC_KEY, s(2), l, 0),
+        row(edge_kind::NONALLOC_SECTION, s(2), s(0), 0),
+        row(edge_kind::LINK_ORDER, s(0), s(1), 0),
+        row(edge_kind::GROUP, s(0), s(1), 0),
+        row(edge_kind::GROUP, s(1), s(0), 0),
+        row(edge_kind::ROOT, s(0), 0, 0),
+        row(edge_kind::NAMED, s(1), 0, 0),
+        row(edge_kind::SPLIT, s(2), 0, 0),
+        row(edge_kind::REFUSE, s(0), edge_kind::refuse::FDE_GLOBAL, 0),
+        row(edge_kind::REFUSE, s(2), edge_kind::refuse::DEF_DROPPED, 0),
+    ];
+    let kinds: std::collections::BTreeSet<u8> = rows.iter().map(|r| r.kind).collect();
+    assert_eq!(kinds.len(), usize::from(edge_kind::LAST) + 1, "every kind");
+    m.edges.extend(rows.into_iter().map(|r| (FileId(f), r)));
+}
+
+/// `m`'s `EDGES` rows by name, independent of ids: (file path, kind,
+/// source section name, target, offset); a `Key` target by its key's
+/// name, a `Section` target by the section's name, `Zero` and `Code` as
+/// the number.
+/// (file path, kind, source name, target, offset).
+type NamedEdge = (Vec<u8>, u8, Vec<u8>, Vec<u8>, u32);
+
+fn edges_by_name(m: &MemoryState) -> Vec<NamedEdge> {
+    use edge_kind::Target;
+    let sec = |r: u32| s(m, m.sections[r as usize].name);
+    m.edges
+        .iter()
+        .map(|(f, r)| {
+            let target = match edge_kind::target(r.kind).expect("a kind") {
+                Target::Key => s(m, m.symbols[r.target as usize].name),
+                Target::Section => sec(r.target),
+                Target::Zero | Target::Code => r.target.to_le_bytes().to_vec(),
+            };
+            (s(m, m.files[f.0 as usize].path), r.kind, sec(r.source), target, r.offset)
+        })
+        .collect()
+}
+
+fn sorted<T: Ord>(mut v: Vec<T>) -> Vec<T> {
+    v.sort();
+    v
+}
+
+const LIVE_HASH: [u8; 16] = *b"live-set-hash-16";
+
+// spec: WP-238 "Step 2" S1, S7 (seam 9: `EDGES` of 13 bytes, a row of
+// every kind 0 to 12 written and read back field for field, ids by the
+// writer's renumbering), S4 (`META.live_hash` read back); IN-18c (a
+// full link's state is a fixpoint of decode and encode)
+#[test]
+fn edges_round_trip_every_kind() {
+    let mut m = sample(&[0, 1, 2], 3);
+    add_edges(&mut m, 0, 0);
+    add_edges(&mut m, 2, 2);
+    m.meta.live_hash = LIVE_HASH;
+    let bytes = full(&m);
+    let back = read::decode(&bytes).expect("decode");
+    assert_eq!(back.edges.len(), 2 * 15);
+    assert_eq!(sorted(edges_by_name(&back)), sorted(edges_by_name(&m)));
+    assert_eq!(back.meta.live_hash, LIVE_HASH);
+    assert_eq!(full(&back), bytes, "a fixpoint");
+    // The rows a file's range gives (the update's `edges_of`) are that
+    // file's, `Zero` and `Code` targets and the offsets as written.
+    let view = read::open_bytes(bytes).expect("open");
+    let f2 = back.files.iter().position(|r| s(&back, r.path) == b"f2.o").expect("f2");
+    let rows = view.edges_of(FileId(u32::try_from(f2).expect("small"))).expect("rows");
+    let want: Vec<EdgeRow> =
+        back.edges.iter().filter(|(f, _)| f.0 as usize == f2).map(|r| r.1).collect();
+    assert_eq!(rows, want);
+    let offsets: Vec<u32> = rows.iter().map(|r| r.offset).collect();
+    assert!(offsets.contains(&7) && offsets.contains(&u32::MAX));
+    let codes: Vec<u32> =
+        rows.iter().filter(|r| r.kind == edge_kind::REFUSE).map(|r| r.target).collect();
+    assert_eq!(codes, [edge_kind::refuse::FDE_GLOBAL, edge_kind::refuse::DEF_DROPPED]);
+    assert!(rows.iter().filter(|r| r.kind == edge_kind::ROOT).all(|r| r.target == 0));
+}
+
+// spec: WP-238 "Step 2" S7 (compaction renumbers `Key` targets through
+// the keys and `Section` targets through the sections, and copies `Zero`
+// and `Code` targets; F4) and S4 (compaction copies `META.live_hash`);
+// IN-18f (the compaction's bytes equal the full link's of the same
+// inputs, but META's history fields)
+#[test]
+fn edges_compaction_every_kind() {
+    let mut base = sample(&[0, 1, 2], 3);
+    for (f, id) in [(0, 0), (1, 1), (2, 2)] {
+        add_edges(&mut base, f, id);
+    }
+    base.meta.live_hash = LIVE_HASH;
+    let bytes = full(&base);
+    // hop 1: in place (as `compaction_equals_full_link_capture`)
+    let view = read::open_bytes(bytes.clone()).expect("open");
+    let m = read::decode(&bytes).expect("decode");
+    let mut p1 = StatePatch::default();
+    p1.stat_set.push((0, StatRow { size: 99, ..m.stat[0].clone() }));
+    let plan = state5::plan_patch(&view, &p1).expect("plan");
+    assert!(!plan.compacts());
+    let bytes = write::patched_bytes(&bytes, &plan, &output_of(&bytes)).expect("in place");
+    // hop 2: file 1 (before file 2's rows) goes: the compaction
+    let view = read::open_bytes(bytes.clone()).expect("open");
+    let old = read::decode(&bytes).expect("decode");
+    let plan = state5::plan_patch(&view, &remove_file_1(&old)).expect("plan");
+    assert!(plan.compacts(), "{}", plan.reason());
+    let got = compact::plan_bytes(&plan, &output_of(&bytes)).expect("compacted");
+    // the full link of files 0 and 2, with the same rows
+    let mut want = sample(&[0, 2], 3);
+    add_edges(&mut want, 0, 0);
+    add_edges(&mut want, 1, 2);
+    want.meta.live_hash = LIVE_HASH;
+    want.stat[0].size = 99;
+    let n = want.stat.len();
+    want.stat[n - 1].size = 4242;
+    let mut want = compact::normalize(&want).expect("normalize");
+    want.meta.output_synced = true;
+    want.meta.compactions = 1;
+    let want = write::encode(&want).expect("encode");
+    assert_eq!(state5::canon(&got).expect("c"), state5::canon(&want).expect("c"));
+    assert!(got == want, "compacted bytes differ from the full link's");
+    // and explicitly, per class, against the state before
+    let new = read::decode(&got).expect("decode");
+    assert_eq!(new.meta.live_hash, LIVE_HASH);
+    let by_name = |m: &MemoryState, path: &[u8]| {
+        sorted(edges_by_name(m).into_iter().filter(|e| e.0 == path).collect::<Vec<_>>())
+    };
+    assert!(by_name(&new, b"f1.o").is_empty(), "the gone file's rows");
+    for path in [b"f0.o".as_slice(), b"f2.o"] {
+        assert_eq!(by_name(&new, path), by_name(&old, path), "{}", String::from_utf8_lossy(path));
+    }
+    let raw = |m: &MemoryState, path: &[u8]| -> Vec<EdgeRow> {
+        let f = m.files.iter().position(|r| s(m, r.path) == path).expect("file");
+        m.edges.iter().filter(|(g, _)| g.0 as usize == f).map(|r| r.1).collect()
+    };
+    let (before, after) = (raw(&old, b"f2.o"), raw(&new, b"f2.o"));
+    assert_eq!(before.len(), after.len());
+    // f2's first `SECTIONS` row before and after (ranges with slack)
+    let first = |m: &MemoryState| {
+        let f = m.files.iter().position(|r| s(m, r.path) == b"f2.o").expect("file");
+        let at = m.sections.iter().position(|r| r.file as usize == f).expect("its sections");
+        u32::try_from(at).expect("small")
+    };
+    let (was, now) = (first(&old), first(&new));
+    assert!(now < was, "file 1's sections were before f2's: {now} {was}");
+    let mut moved = [0usize; 2];
+    for (b, a) in before.iter().zip(&after) {
+        assert_eq!((b.kind, b.offset), (a.kind, a.offset));
+        assert_eq!(a.source - now, b.source - was);
+        match edge_kind::target(b.kind).expect("a kind") {
+            edge_kind::Target::Section => {
+                assert_eq!(a.target - now, b.target - was);
+                moved[0] += 1;
+            }
+            edge_kind::Target::Key => {
+                assert_eq!(s(&new, new.symbols[a.target as usize].name), {
+                    s(&old, old.symbols[b.target as usize].name)
+                });
+                moved[1] += usize::from(a.target != b.target);
+            }
+            edge_kind::Target::Zero | edge_kind::Target::Code => assert_eq!(a.target, b.target),
+        }
+    }
+    assert_eq!(moved[0], 6, "every Section-target row renumbered");
+    assert!(moved[1] > 0, "some Key target renumbered (the gone keys)");
+}
+
+// spec: WP-238 "Step 2" S4 (`META.live_hash`: zero by default, written
+// and read back; an in-place update's META carries the new value)
+#[test]
+fn meta_live_hash_round_trip() {
+    let m = sample(&[0, 1], 3);
+    assert_eq!(m.meta.live_hash, [0; 16], "zero without --gc-sections");
+    let bytes = full(&m);
+    assert_eq!(read::decode(&bytes).expect("decode").meta.live_hash, [0; 16]);
+    // an update writes its new walk's hash through META
+    let view = read::open_bytes(bytes.clone()).expect("open");
+    let mut p = StatePatch::default();
+    let mut meta = read::decode(&bytes).expect("decode").meta;
+    meta.live_hash = LIVE_HASH;
+    p.meta = Some(meta);
+    let plan = state5::plan_patch(&view, &p).expect("plan");
+    assert!(!plan.compacts());
+    let patched = write::patched_bytes(&bytes, &plan, &output_of(&bytes)).expect("in place");
+    assert_eq!(read::decode(&patched).expect("decode").meta.live_hash, LIVE_HASH);
+}
+
+// spec: WP-238 "Step 2" S1, P0-1 (the reader refuses a row its class
+// forbids: `state-corrupt`, never a panic), end to end through a state
+#[test]
+fn edges_bad_row_is_state_corrupt() {
+    let bad = [
+        EdgeRow { kind: edge_kind::ROOT, source: 0, target: 1, offset: 0 },
+        EdgeRow { kind: edge_kind::NAMED, source: 0, target: 0, offset: 4 },
+        EdgeRow { kind: edge_kind::REFUSE, source: 0, target: 0, offset: 0 },
+        EdgeRow { kind: edge_kind::REFUSE, source: 0, target: 3, offset: 0 },
+        EdgeRow { kind: edge_kind::RELOC, source: 0, target: 1, offset: 8 },
+    ];
+    for r in bad {
+        let mut m = sample(&[0, 1], 3);
+        m.edges.push((FileId(0), r));
+        let bytes = full(&m);
+        assert!(matches!(read::decode(&bytes), Err(StateError::Corrupt(_))), "{r:?}");
+    }
+    // a kind with no class is refused by normalize and by the writer
+    let row = EdgeRow { kind: edge_kind::LAST + 1, ..EdgeRow::default() };
+    let mut m = sample(&[0, 1], 3);
+    m.edges.push((FileId(0), row));
+    assert!(matches!(compact::normalize(&m), Err(StateError::Corrupt(_))));
+    let mut n = compact::normalize(&sample(&[0, 1], 3)).expect("normalize");
+    n.edges.push((FileId(0), row));
+    assert!(matches!(write::encode(&n), Err(StateError::Corrupt(_))));
+}
+
+// spec: WP-238 "Step 2" S7, P0-4 (format 5 stays; seam 6's rule: the
+// directory records each table's row width, and a reader whose width
+// differs refuses the state `state-corrupt`, so an older state, META of
+// 208 bytes or EDGES of 17, is refused and replaced, never read)
+#[test]
+fn older_row_widths_are_refused() {
+    let bytes = full(&sample(&[0, 1], 3));
+    let dir_end = state5::HEADER + state5::TABLES.len() * state5::ENTRY;
+    let h = state5::Header::parse(&bytes).expect("h");
+    let dir = state5::parse_directory(&h, &bytes[state5::HEADER..dir_end]).expect("dir");
+    for (k, old) in [(kind::META, 208), (kind::EDGES, 17)] {
+        let mut d = dir.clone();
+        d[state5::table_index(k).expect("t")].width = old;
+        let db = state5::directory_bytes(&d);
+        let h2 = state5::Header { dir_hash: mortar_digest::l128(&db), ..h };
+        let mut b = bytes.clone();
+        b[..state5::HEADER].copy_from_slice(&h2.bytes());
+        b[state5::HEADER..dir_end].copy_from_slice(&db);
+        match read::decode(&b) {
+            Err(StateError::Corrupt(why)) => {
+                assert!(why.contains(&format!("of width {old}")), "{why}");
+            }
+            other => panic!("{k}: {other:?}"),
+        }
+    }
+}
+
+// spec: incr.md IN-18c with seam 9's widths (every flipped byte of a
+// state with `EDGES` rows of every kind and a `META.live_hash` is
+// `state-corrupt`)
+#[test]
+fn every_flipped_byte_with_edges_is_state_corrupt() {
+    let mut m = sample(&[0, 1], 3);
+    add_edges(&mut m, 1, 1);
+    m.meta.live_hash = LIVE_HASH;
+    let bytes = full(&m);
+    assert!(read::decode(&bytes).is_ok(), "clean");
+    let dir_end = state5::HEADER + state5::TABLES.len() * state5::ENTRY;
+    let dir = state5::parse_directory(
+        &state5::Header::parse(&bytes).expect("h"),
+        &bytes[state5::HEADER..dir_end],
+    )
+    .expect("dir");
+    let edges = &dir[state5::table_index(kind::EDGES).expect("t")];
+    let meta = &dir[state5::table_index(kind::META).expect("t")];
+    assert_eq!(edges.width, 13);
+    assert_eq!(meta.width, 224);
+    let mut flipped = 0;
+    let mut check = |at: usize| {
+        let mut b = bytes.clone();
+        b[at] ^= 0x41;
+        assert!(read::decode(&b).is_err(), "byte {at} flipped: decoded");
+        flipped += 1;
+    };
+    // META's `live_hash` (its last 16 bytes), every byte
+    let meta_at = usize::try_from(meta.body).expect("small");
+    for at in meta_at + 208..meta_at + 224 {
+        check(at);
+    }
+    // EDGES' body (rows and slack), every fifth byte and its last (a
+    // decode per byte is slow in a debug build)
+    let start = usize::try_from(edges.body).expect("small");
+    let len = usize::try_from(edges.body_len()).expect("small");
+    for at in (start..start + len).step_by(5).chain([start + len - 1]) {
+        check(at);
+    }
+    assert!(flipped > 16 + 15 * 13 / 5, "{flipped}");
 }

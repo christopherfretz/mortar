@@ -202,11 +202,12 @@ pub fn encode(m: &MemoryState) -> Result<Vec<u8>, StateError> {
     }
     let mut edges = Vec::with_capacity(m.edges.len());
     for (f, r) in &m.edges {
-        let target = match r.kind {
-            edge_kind::LOCAL | edge_kind::FDE_SECTION | edge_kind::NONALLOC_SECTION => {
-                sec(r.target)?
+        let target = match edge_kind::target(r.kind) {
+            Some(edge_kind::Target::Section) => sec(r.target)?,
+            Some(edge_kind::Target::Key | edge_kind::Target::Zero | edge_kind::Target::Code) => {
+                r.target
             }
-            _ => r.target,
+            None => return Err(state_corrupt(format!("EDGES: kind {}", r.kind))),
         };
         edges.push((*f, crate::update::rows::EdgeRow { source: sec(r.source)?, target, ..*r }));
     }

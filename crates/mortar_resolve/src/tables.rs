@@ -707,6 +707,9 @@ pub fn option_keys(
         wrap: plan.wraps().into_iter().map(Into::into).collect(),
         defsym,
         gc_sections: plan.shaping.gc_sections,
+        init: plan.dynamic.init.as_ref().map(|s| key(s.as_encoded_bytes(), 0)),
+        fini: plan.dynamic.fini.as_ref().map(|s| key(s.as_encoded_bytes(), 0)),
+        gc_keep_exported: plan.shaping.gc_keep_exported,
     }
 }
 

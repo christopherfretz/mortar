@@ -597,11 +597,11 @@ pub fn normalize(m: &MemoryState) -> Result<MemoryState, StateError> {
         Ok(crate::format::IndexRow { unit: sec(r.unit)?, target, ..*r })
     })?;
     n.edges = per_file(&m.edges, &fid, &gone, |r| {
-        let target = match r.kind {
-            edge_kind::LOCAL | edge_kind::FDE_SECTION | edge_kind::NONALLOC_SECTION => {
-                sec(r.target)?
-            }
-            _ => sym(r.target)?,
+        let target = match edge_kind::target(r.kind) {
+            Some(edge_kind::Target::Section) => sec(r.target)?,
+            Some(edge_kind::Target::Key) => sym(r.target)?,
+            Some(edge_kind::Target::Zero | edge_kind::Target::Code) => r.target,
+            None => return Err(state_corrupt(format!("EDGES: kind {}", r.kind))),
         };
         Ok(crate::update::rows::EdgeRow { source: sec(r.source)?, target, ..*r })
     })?;

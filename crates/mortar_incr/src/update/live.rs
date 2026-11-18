@@ -2,8 +2,8 @@
 //! U6). WP-213 (U-1): the type [`LiveDelta`] and the entry point [`live`];
 //! **filled by U-3** (the function only).
 
-use mortar_core::SectionId;
 use mortar_core::incr::{IncrReason, OptionKeys, Unimplemented};
+use mortar_core::{FileId, SectionId};
 
 use super::resolve::ResolveDelta;
 use super::view::{ChangedFiles, StateView};
@@ -18,6 +18,16 @@ pub struct LiveDelta {
     pub now_live: Vec<SectionId>,
     /// Live before, dead now (sorted).
     pub now_dead: Vec<SectionId>,
+    /// Unchanged files with a section in `now_live`/`now_dead` or whose
+    /// split sections' marked offsets changed (sorted): the join reads
+    /// each as `Change::DrawnIn` (IN-72 item 2a, R-4) before U-4.
+    pub drawn_in: Vec<FileId>,
+    /// Per live split section of a changed or drawn-in file, the offsets
+    /// the new walk marked (sorted; `u32::MAX`: every piece): U-4 item 6,
+    /// `FRAG_USE` (WP-239).
+    pub pieces: Vec<(SectionId, Vec<u32>)>,
+    /// The new walk's live-set hash (S4), for `META.live_hash`.
+    pub live_hash: [u8; 16],
 }
 
 /// The update's liveness (WP-211 §C; IN-71a). Called by the join after
