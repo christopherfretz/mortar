@@ -846,7 +846,14 @@ order of the output sections themselves is in §10.
   (E-1, review; §21).
 - **L-72 [C]** Non-allocated chunks follow the last allocated chunk's
   file end, each at `align_up(offset, align)`, with no address (rank
-  9-11). The section header table is aligned to the word size.
+  9-11). The section header table is aligned to the word size. In
+  incremental mode (the rank-10 non-allocated tail), `.symtab` and
+  `.strtab` are each followed by **file slack** of max(4 KiB, size/16)
+  bytes, zero-filled, before the next section's offset (or the section
+  header table's) (`spec/incr.md` IN-49a, IN-33's row; the map's `hole`
+  past the section's end, `spec/plumb.md` §6.8); "follow the file end"
+  above then means the end of that slack. A plain link places them as
+  without it (WP-212 applied WP-202's §R.5).
 - **L-73 [C]** An address, an end address or an offset that does not fit
   the class (ELFCLASS32: an end beyond 2³²; ELFCLASS64: beyond 2⁶⁴) is
   refused by name, `output-too-large` (§20.4), never a wrapped value.
@@ -1010,7 +1017,12 @@ order of the output sections themselves is in §10.
 
 - **L-88 [C]** A common symbol that resolution chose is allocated in
   `.bss` (`sym_place`), after the `.bss` input sections, in `SymbolId`
-  order, each aligned to its `st_value` (the common alignment). GNU ld
+  order, each aligned to its `st_value` (the common alignment). In an
+  incremental-mode output each winning common is instead a section of
+  its winning file (the file of its winning mention, `spec/resolve.md`
+  §3.3) in that file's `.bss` region (`spec/incr.md` IN-72 item 11),
+  not part of a commons chunk; a plain link is unchanged (WP-212 applied
+  WP-207's §R.5b, with WP-211's "winning mention"). GNU ld
   allocates commons per file, in the `COMMON` section of the file that
   holds each (the first common of the largest size), in input order of
   those files and, inside one, in the order of its symbol hash table
@@ -1528,7 +1540,10 @@ must make possible, so that M1 does not foreclose it.
   (holes only at the end, since TLS offsets are baked into code) and
   `.gcc_except_table` accept holes between sections. A hole is inside
   `sh_size`, filled as L-82 says; nothing parses these sections as a
-  sequence.
+  sequence. The hole-tolerant list is closed: every other allocated
+  section, except the TLS sections and notes, is packed (L-142), as
+  `mortar_layout`'s `slack.rs` `class()` does (`spec/incr.md` IN-30;
+  WP-212 applied WP-207's §R.5b).
 - **L-147 [C] [M7] (merged chunks, append-only)** A `Merged` chunk
   grows by appending: a new piece goes after the last piece, into the
   chunk's capacity, and `size` advances over it. A piece no longer used
@@ -1549,7 +1564,11 @@ must make possible, so that M1 does not foreclose it.
   referrers; (4) a full link with the reason `reserve-exhausted`. A
   packed chunk (L-142) skips (1) and (2): it is rewritten whole within
   its capacity, then (3), then (4). Each step yields a valid layout or
-  reports why it gave up (`spec/incr.md` IN-32).
+  reports why it gave up (`spec/incr.md` IN-32). The growth step's size
+  and rounding are `spec/incr.md` IN-72 item 3's. The delta layout of an
+  update is IN-72 (from the stored layout, never a fresh one); this
+  spec's own rules apply to its result, which `Layout::check` accepts
+  (WP-212 applied WP-202's §R.5 and WP-207's §R.5b).
 - **L-145 [C] [M7]** Step 4 reruns stage D: a sequential O(chunks) pass
   that recomputes every address, alignment gap, 843419 start padding
   and the `.pad.relro` size from the stage C output and the patch

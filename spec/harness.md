@@ -865,9 +865,14 @@ A check tool that does not exit with status 0 fails the step, except
   output and error together. Every non-blank line that is not `No errors`
   must match an `allow` line that applies to the linker, whatever its exit
   status; `allow` lines are a test's allow-list for the other linkers
-  (mortar's outputs need none since its RELRO padding is named
-  `.pad.relro`, `spec/layout.md` L-156). A check with no other
-  expectation is valid.
+  (a static glibc executable needs four allow patterns, for mortar, GNU
+  ld and lld alike (review-in72 T-1): `IRELATIVE` records in `.rela.plt`
+  reported as an invalid type and as an invalid symbol index,
+  `__ehdr_start`'s `st_value out of bounds`, and `unknown bit set in
+  st_other` (AArch64's variant PCS bit); `incr-update` adds them to
+  every elflint check; other outputs of mortar need none, its RELRO
+  padding being named `.pad.relro`, `spec/layout.md` L-156; WP-212
+  applied WP-207's §R.6). A check with no other expectation is valid.
 - `check ldd <program>`: the architecture's dynamic loader, `<system
   root><interpreter> --list ./<program>`, natively or under the
   architecture's qemu, with the run's `LD_LIBRARY_PATH` ("Runs"): what
@@ -1741,6 +1746,28 @@ gate. The lane's own sensitivity (WP-093, a scratch build of mortar with
 tests differ (262 under `dyn/`); in static-pies only, 38 links of 22
 tests (34 under `dyn/`); without the dynamic cases the same lane saw 1
 and 4.
+
+## incr-update
+
+**[planned: H-1, `spec/landed/incr/WP-207.md` §C; the text is WP-207's
+§R.6, applied by WP-212.]** For each scenario of `tests/incr-update/`
+and `tests/incr-review/`, a first link in incremental mode and a series
+of updates, each judged by `spec/incr.md` IN-79's four ways: (a) the
+program's run; (b) `plumb --equiv` with the update's own map and `check
+elflint` (with the four allow patterns of "Checks"); (c) the
+two-full-link oracle (IN-63a); (d) the state against the capture of its
+`Placement` (IN-78; `P_U` read from the update's map, its decision
+records, `spec/image.md` I-78a) and the diagnostics against the full
+link's (IN-75a). Each update also gets the dirty-range check (IN-75)
+against the previous output, and a second and a third update follow
+every first. `--crash` (H-2) runs each update once per
+`MORTAR_INCR_CRASH` point (IN-77's list, the points between a write and
+its sync included) and then the next link. Three targets (AArch64,
+x86-64 and i386, the last two under qemu). It is part of the full gate,
+and its quick subset (one target, no crash series) of `ci --quick`;
+until H-1 lands it is in neither, and `ci`'s step table above does not
+list it. Until U-2 lands, (d) is H-1's stub that reports "(d) not run"
+and fails no test (IN-78).
 
 ## Hosted CI
 

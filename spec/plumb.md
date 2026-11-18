@@ -131,6 +131,7 @@ Every reader produces the same `Map`:
 | `chunks` | `kind` (`thunk`, `patch`, `synthetic`, `common`), `name`, `addr`, `size`, `target` | memory the linker made: veneers, erratum patches, merged strings, COMMON |
 | `commons` | `name`, `addr`, `size`, `align` | one common symbol's allocation (mortar's format only, §3.2's allocation records; a foreign map's COMMON is a `common` chunk) |
 | `defined` | `name`, `value` | a symbol the linker defined |
+| `decisions` | `region`, `capacity`, `order`, `slot`, `redirect`, `frag`, `symblock` rows | an incremental-mode layout's decision records (mortar's format only, §3.2; `spec/image.md` I-78a) |
 
 A section is named by its index in its file (mortar's format) or by its
 name (the foreign formats). §3.3 resolves names.
@@ -155,6 +156,15 @@ define <name> <value>
 incremental
 hole <output-section> <offset> <size>
 dead <output-section> <offset> <size> neutral|contribution|strings|cie
+region <file> <out> <cat> <addr> <capacity>
+capacity <out> <ordinal> <part> <addr>|- <size> <capacity>
+order <out> <n>...
+slot <kind> <key> <addr>
+slot <kind> <file> <index> <addr>
+slot tls-ld <addr>
+redirect <file> <section> <offset> <addr>
+frag <out> <class> <hash> <offset>
+symblock <file>|- <first> <count> <capacity> <strtab-off> <strtab-cap>
 output static|exec|pie|static-pie|shared|relocatable
 rplace <file> <section> <out-index> <offset> <size>
 rframe <file> <section> <input-offset> <output-offset>|-
@@ -331,11 +341,55 @@ version 1 by its number ("Versions" above), and a version 1 reader
 refuses version 2 the same way. Version 2 is version 1 with the
 allocation records; nothing else changes.
 
+The decision records (WP-212, `spec/image.md` I-78a) are added within
+version 2 as the incremental records were within version 1: a version 2
+reader that predates them refuses a map that has them with `MapError`
+"unknown record 'region'" (or another of their words), never skips them,
+and only an incremental-mode map has them, so no plain map changes.
+
+**The decision records** (`spec/image.md` I-78a; `spec/incr.md`
+IN-78, IN-79 (d); WP-211's §R.12, applied by WP-212) follow the
+`incremental`, `hole` and `dead` records and come before the dynamic
+records, only in a map that says `incremental`; a decision record in a
+map without `incremental` is a `MapError`. A plain map has none and is
+unchanged. They state `P_U`, the update's `Placement`, for H-1's
+judgement (d); the verifier reads them and judges only what follows.
+
+| record | count | meaning |
+|---|---|---|
+| `region <file> <out> <cat> <addr> <capacity>` | one per file region | a file's region in a hole-tolerant output section (IN-30): `<cat>` decimal (L-53's ordinal, 0 elsewhere), `<addr>` and `<capacity>` hex |
+| `capacity <out> <ordinal> <part> <addr>\|- <size> <capacity>` | one per chunk of an output section | `<ordinal>` decimal; `<part>` `b<k>`, `p<k>`, `m` or `s` (`k` decimal); `<addr>` hex or `-` (non-allocated) |
+| `order <out> <n>...` | one per output section | the chunks' ordinals (decimal) in file order; at least one |
+| `slot <kind> <key> <addr>`, `slot <kind> <file> <index> <addr>`, `slot tls-ld <addr>` | one per slot | `<kind>` `got`, `got-tprel`, `tls-gd`, `tls-desc`, `tls-ld`, `plt`, `iplt`; a global key by name, a local by file id and symbol-table index (decimal), the module slot without a key |
+| `redirect <file> <section> <offset> <addr>` | one per redirect | a site and the address of the patch it names |
+| `frag <out> <class> <hash> <offset>` | one per live fragment of a merged section | `<class>` three hex numbers joined by `,`; `<hash>` exactly 32 lower-case hex digits; `<offset>` hex |
+| `symblock <file>\|- <first> <count> <capacity> <strtab-off> <strtab-cap>` | one per `.symtab` local block | entry numbers decimal, `.strtab` offset and size hex; `-` the internal file |
+
+`<out>` and `<key>` are string tokens; `<file>` an earlier `file`
+record's id. A wrong number of fields (`slot`: 2, 3 or 4 after the
+word), a bad number, a `<part>` or `<kind>` outside its list, a `<hash>`
+of another length, or a `<file>` that names no earlier record is a
+`MapError`. **What the verifier judges**
+(§6.8, with the other incremental records): a `region` whose `<out>`
+names no output section or several, or whose `[<addr>, <addr> +
+<capacity>)` is not inside `[sh_addr, sh_addr + sh_size]` of its section,
+is P-I2. **Nothing else of these records is judged** by the verifier:
+not the capacities, the order, the slots' addresses, the redirects, the
+fragments' offsets or the symbol blocks (H-1's (d) compares them with
+the state, IN-78); the coverage line counts them (`decision records: n
+read; region judged; capacity, order, slot, redirect, frag, symblock not
+judged`, §7.2). No record name collides with another record of this
+format (§3.2's grammar) or with the formats of §3.4-§3.6 (each read
+only under its own header; their text is a table, not record words).
+
 The writer emits records in a fixed order: files by id, then places and
 pieces, the non-alloc records, discards, folds, chunks, commons and
 defined symbols, each group in the order of the map's vectors, then
 `incremental`, the `hole` and `dead` lines in the order of the map's
-vector, then the dynamic records in the order of the grammar above.
+vector, the decision records (in `region`, `capacity`, `order`, `slot`,
+`redirect`, `frag`, `symblock` order, each group in `spec/image.md`
+I-78a's order), then the dynamic records in the order of the grammar
+above.
 
 Every syntax error is a `MapError { line, message }`. Line 0 means the map
 was truncated, with no `end`. Tests:
@@ -3361,6 +3415,10 @@ else. In the debug sections:
    the verifier only requires one word per hole.
 6. Allocated relocation sections other than the `DT_RELA` table (such
    as `.rela.plt`) take `NONE` records only.
+7. The decision records (§3.2, `spec/image.md` I-78a): only each
+   `region`'s place inside its output section is judged here (P-I2);
+   the rest is H-1's (`spec/incr.md` IN-79 (d)), named in the coverage
+   line as not judged.
 
 Tests: `tests/dead.rs` (§9.2 (p)), `map::mortar::tests::s3_2_dead_*`.
 Cost (WP-091, measured; release `xtask plumb`, 3 runs each, host load
@@ -3862,11 +3920,11 @@ rule judges (`placement_not_judged`, §6.5), stage 4's `meta` (§13.2;
 with the ODR runtime also `ODR runtime: outputs, entries, imports`,
 WP-197), and for an output with a
 `.gdb_index` its version, units, address entries and names and the rules
-that judged it (`gdb index: ...`, §6.10), and for each side of `--equiv`
+that judged it (`gdb index: ...`, §6.10), for each side of `--equiv`
 whose map says `incremental` the fillers P-E3 passed over (`fillers=<n>`,
-§6.9) and the decision records §3.2 read (`decision records: n read,
-syntax and region judged, the rest not judged`, §3.2's "decision
-records"). A stripped dynamic output
+§6.9), and for a map with decision records (§3.2) `decision records: n
+read; region judged; capacity, order, slot, redirect, frag, symblock not
+judged`. A stripped dynamic output
 (no `.symtab`; WP-164) adds one line, a `-r` output its `relocatable`
 and `composition` lines (§14.6), `stripped output (no .symtab),
 not judged: a; b`, naming each clause a rule could not judge without the

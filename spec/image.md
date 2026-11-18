@@ -1283,6 +1283,16 @@ Opening a running executable for writing fails with `ETXTBSY` on Linux
   Permission denied`. The lock is held until the rename (I-60). NFS and
   SMB shares were not available to test; `flock` on NFSv4 is emulated
   with byte-range locks, and the probe decides at run time either way.
+  **In incremental mode** (`spec/incr.md` IN-77b; WP-212 applied
+  WP-207's §R.8) the lock that serializes links is IN-77b's `flock` on
+  the state file `S`; `T0`'s lock still guards the temporary. The
+  update's temporaries, the aside name `dir(P)/.<base(P)>.mortar-torn`
+  and the compaction's `dir(S)/.<base(S)>.mortar-compact`, follow
+  `T0`'s naming (no pid in the name), are `flock`ed by their creator,
+  and are removed under IN-77d's rule (by the holder of `S`'s lock, by
+  exact name, after a `try_lock` on each succeeds). Where this probe
+  says `flock` is not enforced on `S`'s file system, no update is
+  attempted (`lock-unavailable`, IN-77b).
 - **I-60 [M1]** After a successful fill and sealing (§8), `T` is renamed
   to `P` (`std::fs::rename`) and then the descriptor is closed: the lock
   of I-59 covers the rename, so no other link can take `T0` for stale
@@ -1323,7 +1333,13 @@ Opening a running executable for writing fails with `ETXTBSY` on Linux
 - **I-61 [M1]** No `fsync` of `T` or of the directory: a linker's output
   is a build artifact, re-creatable, and an `fsync` of a 2 GB debug
   output would wait for the device. (Whether the references sync was not
-  measured, E14.)
+  measured, E14.) Two exceptions, both in incremental mode only
+  (`spec/incr.md`; WP-212 applied WP-207's §R.8): an incremental-mode
+  full link records the boot id and `output-synced` 0 in the state
+  (IN-77c), and where the boot id cannot be read it `fdatasync`s `T`
+  before the rename (and records `output-synced` 1); an update syncs
+  the output and its directory as IN-77's write order says (W2-W4,
+  C1, C3). A plain link syncs nothing.
 - **I-62 [M1] [C] The output is an input: refused (WP-087).** An output
   `P` that is, following symbolic links, the same file (device and inode)
   as a file the link read (an object, an archive, a thin archive's member,
@@ -1385,6 +1401,14 @@ Opening a running executable for writing fails with `ETXTBSY` on Linux
   target, unless its target is not a regular file or it is a descriptor
   alias (I-58a: `-o /dev/stdout`); a non-regular `P` is left alone; only a
   path I-58b says may be replaced is ever removed. Accepted by the coordinator (Q4).
+  **An incremental update** (`spec/incr.md` IN-77e; WP-212 applied
+  WP-211's §R.8) that fails after its first write removes the torn
+  output at its aside name `A` (in place, W2-W4), or at `P` and at `A`
+  after W4's link; by copy, it removes `T` and keeps `P` (the old or
+  the new file, each whole). Before its first write it removes nothing
+  (the old output and state are a valid pair). W4 puts the output back
+  with `link`, never `rename`, so a file another link wrote at `P`
+  meanwhile is kept (IN-77 W4, `output-changed`).
 - **I-67 [M1]** A link killed by a signal leaves `T` (and possibly `A`)
   behind: safe Rust installs no handler. On a file system that enforces
   `flock`, the next link to the same `P` reuses `T0` (I-59) and replaces
@@ -1755,6 +1779,81 @@ random input's).
   - Not yet written: `fold` (M2). `chunk common` is not written: the
     commons are placed in `.bss` (layout §12.2) and each is a `common`
     record.
+- **I-78a [M7] The decision records of an incremental-mode map**
+  (`spec/incr.md` IN-78, IN-79 (d); WP-211's §R.12, applied by WP-212).
+  A map that says `incremental` (the first link in incremental mode,
+  every fall-back's full link in that mode, every update) carries, after
+  its `incremental`, `hole` and `dead` records and before the dynamic
+  records, one record per row of IN-78's decision list, so that the
+  update's `Placement` `P_U` can be read from the map and never from the
+  state. **A plain-mode map has none, and its bytes do not change.** The
+  grammar and the reader's checks are `spec/plumb.md` §3.2's "decision
+  records"; the records are, in this group order, each group in the
+  order given:
+  - `region <file> <out> <cat> <addr> <capacity>`: per file region
+    (IN-30: a file's contribution to a hole-tolerant output section and
+    category, then its slack), in `<file>` order, then by the output
+    section's place in file order, then `<cat>`. `<file>` the map's file
+    id (an earlier `file` record), `<out>` the output section's name,
+    `<cat>` the category (decimal: its ordinal 1-6 in `spec/layout.md`
+    L-53's list in a section L-53 groups, 0 in every other output
+    section), `<addr>` the region's first byte, `<capacity>` its size
+    with its slack (IN-33);
+  - `capacity <out> <ordinal> <part> <addr> <size> <capacity>`: per
+    chunk of an output section (not the header chunks), by output
+    section in file order, then `<ordinal>`: `<ordinal>` the chunk's
+    position (decimal, from 0) among the chunks of `<out>` in `ChunkId`
+    (creation) order, `<part>` its kind and part (`b<k>` the body part
+    `k`, `p<k>` the island after part `k`, `m` the merged chunk, `s` a
+    synthetic chunk; `k` decimal), `<addr>` its address or `-` for a
+    non-allocated chunk, `<size>` and `<capacity>` its `size` and
+    `capacity` (`CHUNKS`; the tail reserve is `capacity − size`);
+  - `order <out> <n>...`: per output section, in file order of the
+    sections, the `<ordinal>`s of its chunks (decimal) in file order
+    (`Placement.order`, `ORDER`);
+  - `slot <kind> <key> <addr>`: per slot (`SLOTS`), by kind in this
+    list's order, then index: `<kind>` `got`, `got-tprel`, `tls-gd`,
+    `tls-desc`, `tls-ld`, `plt` or `iplt` (model.md §4.3); `<key>` the
+    key's name (`name` or `name@version`, as `plt` records name it); a
+    slot keyed by a local is written `slot <kind> <file> <index> <addr>`
+    (the local's file id and symbol-table index, decimal: IN-78's
+    canonical name of a local), the module slot `slot tls-ld <addr>`;
+    `<addr>` the slot's address (a GOT slot's first word, a PLT or IPLT
+    entry's start);
+  - `redirect <file> <section> <offset> <addr>`: per redirect
+    (`Placement.patches`' redirect list, `REDIRECTS`), in its order: the
+    site, `(file, section index, offset in the section)`, and the
+    address of the patch it names (a `chunk thunk` or `chunk patch`
+    record's address);
+  - `frag <out> <class> <hash> <offset>`: per live fragment of a merged
+    output section (`FRAGS`), by `<out>` in file order, then `<class>`,
+    `<hash>`, then `FragId`: `<class>` the merge class
+    `<flags>,<entsize>,<align>` (three lower-case hex numbers, IN-72
+    item 6), `<hash>` the content hash (L128, 32 lower-case hex digits),
+    `<offset>` from the output section's start. Several records of one
+    identity are its fragments at several offsets, in `FragId` order
+    (`FRAGS`' ordinal);
+  - `symblock <file> <first> <count> <capacity> <strtab-off> <strtab-cap>`:
+    per `.symtab` local block (IN-49a), in `.symtab` order: `<file>` the
+    map's file id or `-` for the internal file (`FileId` 0, S-74's first
+    block), `<first>`, `<count>`, `<capacity>` entry numbers (decimal),
+    `<strtab-off>` and `<strtab-cap>` its `.strtab` region's offset and
+    size with slack (hex).
+
+  The names follow IN-78's `canon` where the map can give them: a key by
+  its name, a local by (file, symbol-table index), a section by (file,
+  section index), a fragment by its identity, a chunk by (output
+  section, ordinal, part). A file is the map's file id, whose `file`
+  record gives its identity (path, member); IN-78's canonical name (the
+  load-order position) is the file's `FILES.rank` position, which H-1
+  takes from the capture `C(U)` by that identity (the map lists live
+  files only, so a map id is not a rank position). **The writer is U-6**
+  (`mortar_image::map::update_map` and the full link's map,
+  `crates/mortar_image/src/map.rs`, WP-211 §C); the reader of `P_U` is
+  **H-1** (IN-79 (d)); the verifier (V-1) checks only their syntax and
+  that each `region` lies in its output section (`spec/plumb.md` §3.2,
+  §6.8). Until U-6 writes them, (d) compares the decision rows the map
+  has and reports the others "not compared" (IN-79).
 - **I-79 [M1]** The map is a function of the tables and the file names,
   written after layout and independent of fill. Each record group is
   formatted in parallel per file (`map_collect`, rule 3) and the buffers
