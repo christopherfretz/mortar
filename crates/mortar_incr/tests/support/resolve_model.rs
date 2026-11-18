@@ -447,7 +447,7 @@ impl Link {
                 at_index,
             });
         }
-        m.resolved = vec![Default::default(); keys.len()];
+        m.resolved = vec![ResolvedRow::default(); keys.len()];
         let id = |k: &str| keys.iter().position(|x| x == k).unwrap() as u32;
         let mut first_section: BTreeMap<u32, u32> = BTreeMap::new();
         for (i, f) in self.files.iter().enumerate() {
@@ -565,17 +565,16 @@ fn changed_file(
         }
         for x in &f.ments {
             let name = x.key.as_bytes().to_vec();
-            let k = match keys.iter().position(|n| n.name == name) {
-                Some(p) => p,
-                None => {
-                    keys.push(KeyName {
-                        name,
-                        version: Vec::new(),
-                        kind: sym_kind::GLOBAL,
-                        index: 0,
-                    });
-                    keys.len() - 1
-                }
+            let k = if let Some(p) = keys.iter().position(|n| n.name == name) {
+                p
+            } else {
+                keys.push(KeyName {
+                    name,
+                    version: Vec::new(),
+                    kind: sym_kind::GLOBAL,
+                    index: 0,
+                });
+                keys.len() - 1
             };
             let section =
                 if x.kind == def_kind::SECTION { first_section + f.local(x) } else { NONE };
@@ -638,7 +637,6 @@ fn changes(old: &Link, new: &Link) -> (BTreeMap<u32, Change>, Vec<FileId>) {
     for i in 1..new.files.len().max(old.files.len()) {
         let f = i as u32;
         let change = match (old.file(f), new.file(f)) {
-            (None, None) => continue,
             (Some(_), None) => Change::Gone,
             (None, Some(_)) => {
                 appeared.push(FileId(f));
@@ -891,22 +889,22 @@ fn same_as_full(j: &Joined, d: &resolve::ResolveDelta, new: &Link, what: &str) {
     // the new link's own.
     let mut nk = Vec::new();
     let want = new.state(&mut nk);
-    let mut refs: BTreeMap<(String, u32), KeyRefRow> = BTreeMap::new();
+    let mut key_refs: BTreeMap<(String, u32), KeyRefRow> = BTreeMap::new();
     for r in &j.state.key_refs {
-        refs.insert((j.keys[r.key as usize].clone(), r.file), KeyRefRow { key: 0, ..*r });
+        key_refs.insert((j.keys[r.key as usize].clone(), r.file), KeyRefRow { key: 0, ..*r });
     }
     for r in &d.key_refs.delete {
-        refs.remove(&(j.name(d, r.key), r.file));
+        key_refs.remove(&(j.name(d, r.key), r.file));
     }
     for r in &d.key_refs.put {
-        refs.insert((j.name(d, r.key), r.file), KeyRefRow { key: 0, ..*r });
+        key_refs.insert((j.name(d, r.key), r.file), KeyRefRow { key: 0, ..*r });
     }
     let want_refs: BTreeMap<(String, u32), KeyRefRow> = want
         .key_refs
         .iter()
         .map(|r| ((nk[r.key as usize].clone(), r.file), KeyRefRow { key: 0, ..*r }))
         .collect();
-    assert_eq!(refs, want_refs, "{what}: KEY_REFS");
+    assert_eq!(key_refs, want_refs, "{what}: KEY_REFS");
     let mut commons: BTreeMap<(String, u32), (u64, u64)> = BTreeMap::new();
     for c in &j.state.commons {
         commons.insert((j.keys[c.key as usize].clone(), c.file), (c.size, c.align));

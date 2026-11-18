@@ -4,15 +4,16 @@
 //! resolve.md §4.1 and the update checked against the same rule on the
 //! new inputs.
 
+#![allow(clippy::many_single_char_names, clippy::too_many_lines)]
+
 include!("support/resolve_model.rs");
 
 use mortar_core::incr::{LayoutDelta, StoredSlot};
 use mortar_core::layout::{Chunk, ChunkKind, DefValue, Defined, Place, SlotKind};
 use mortar_core::{ChunkId, Column, SymEntry, SymKey, SymbolId};
-use mortar_incr::format::{ChunkRow, DefinedRow, IndexRow};
 use mortar_incr::format::index_kind;
+use mortar_incr::format::{ChunkRow, DefinedRow, IndexRow};
 use mortar_incr::update::{defined, live, refill};
-
 
 // ---- extraction (IN-71b) ------------------------------------------------------
 
@@ -240,17 +241,18 @@ fn versioned_old_or_new_is_fallback() {
     {
         let view = state.view();
         let r = extract::extract(&view, &ChangedFiles::default(), &OptionKeys::default());
-        assert_eq!(
-            r.err(),
-            Some(IncrReason::UpdateNotImplemented(Some(
-                Unimplemented::Versioned
-            )))
-        );
+        assert_eq!(r.err(), Some(IncrReason::UpdateNotImplemented(Some(Unimplemented::Versioned))));
     }
     state.meta.versioned = 0;
     let view = state.view();
-    let mut c =
-        changed_file(1, Change::Appeared, Some(&F { rank: R, member: false, ments: vec![] }), 0, &mut Vec::new(), 0);
+    let mut c = changed_file(
+        1,
+        Change::Appeared,
+        Some(&F { rank: R, member: false, ments: vec![] }),
+        0,
+        &mut Vec::new(),
+        0,
+    );
     c.versioned = 1;
     let changed = ChangedFiles {
         files: vec![c],
@@ -259,10 +261,7 @@ fn versioned_old_or_new_is_fallback() {
         strings: vec![],
     };
     let r = extract::extract(&view, &changed, &OptionKeys::default());
-    assert_eq!(
-        r.err(),
-        Some(IncrReason::UpdateNotImplemented(Some(Unimplemented::Versioned)))
-    );
+    assert_eq!(r.err(), Some(IncrReason::UpdateNotImplemented(Some(Unimplemented::Versioned))));
 }
 
 fn random_ments(rng: &mut Rng, keys: u64) -> Vec<M> {
@@ -302,7 +301,7 @@ fn extraction_random_series() {
             old.roots.push(format!("k{}", rng.below(keys)));
         }
         let mut new = old.clone();
-        for _ in 0..1 + rng.below(3) {
+        for _ in 0..=rng.below(3) {
             let f = 1 + rng.below(n) as usize;
             match rng.below(5) {
                 0 => new.files[f] = None,
@@ -402,7 +401,7 @@ fn resolve_random_series() {
             old.roots.push(format!("k{}", rng.below(keys)));
         }
         let mut new = old.clone();
-        for _ in 0..1 + rng.below(2) {
+        for _ in 0..=rng.below(2) {
             random_edit(&mut rng, &mut new, n, keys);
         }
         let j = join(&old, &new);
@@ -480,7 +479,7 @@ impl Defs {
         }
         for &(addr, size) in &self.chunks {
             m.chunks.push(ChunkRow {
-                sh_flags: u64::from(mortar_elf::consts::SHF_ALLOC),
+                sh_flags: mortar_elf::consts::SHF_ALLOC,
                 size,
                 capacity: size,
                 addr,
@@ -502,13 +501,16 @@ impl Defs {
             m.files.push(FileRow { kind: 1, rank: u64::from(file) * R, ..FileRow::default() });
             m.sections.push(SectionRow {
                 file,
-                sh_flags: u64::from(mortar_elf::consts::SHF_ALLOC),
+                sh_flags: mortar_elf::consts::SHF_ALLOC,
                 size: 8,
                 ..SectionRow::default()
             });
             for k in keys {
                 let key = self.id(k);
-                m.index.push((FileId(file), IndexRow { unit: i as u32, kind: index_kind::GLOBAL, target: key }));
+                m.index.push((
+                    FileId(file),
+                    IndexRow { unit: i as u32, kind: index_kind::GLOBAL, target: key },
+                ));
                 m.key_refs.push(KeyRefRow { key, file, ..KeyRefRow::default() });
             }
         }
@@ -519,7 +521,11 @@ impl Defs {
     /// The update to `next`: the keys `recompute` says changed and the
     /// units `refill_set` refills; `slots`: the IPLT slots appended and
     /// dead (IN-28b).
-    fn hop(&self, next: &Defs, slots: (Vec<StoredSlot>, Vec<StoredSlot>)) -> (BTreeSet<&'static str>, BTreeSet<u32>) {
+    fn hop(
+        &self,
+        next: &Defs,
+        slots: (Vec<StoredSlot>, Vec<StoredSlot>),
+    ) -> (BTreeSet<&'static str>, BTreeSet<u32>) {
         let state = self.state();
         let view = state.view();
         let chunks: Vec<Chunk> = next
@@ -528,7 +534,7 @@ impl Defs {
             .map(|&(addr, size)| Chunk {
                 kind: ChunkKind::FileHeader,
                 sh_type: mortar_elf::consts::SHT_PROGBITS,
-                flags: u64::from(mortar_elf::consts::SHF_ALLOC),
+                flags: mortar_elf::consts::SHF_ALLOC,
                 align: 3,
                 size,
                 capacity: size,
@@ -553,9 +559,8 @@ impl Defs {
         (layout.slots_appended, layout.slots_dead) = slots;
         let changes = defined::recompute(&view, &layout);
         let resolved = resolve::ResolveDelta::default();
-        let set =
-            refill::refill_set(&view, &ChangedFiles::default(), &resolved, &layout, &changes)
-                .unwrap();
+        let set = refill::refill_set(&view, &ChangedFiles::default(), &resolved, &layout, &changes)
+            .unwrap();
         let keys = changes.iter().map(|c| self.keys[c.key.0 as usize]).collect();
         (keys, set.units.iter().map(|u| u.section.0).collect())
     }
@@ -588,7 +593,15 @@ fn startup(init_array: u64, bss: u64) -> Defs {
     let data = (0x2000 + init_array.max(16), 32);
     let b = (data.0 + 32, bss);
     Defs {
-        keys: vec!["_etext", "__init_array_start", "__init_array_end", "_edata", "__bss_start", "_end", "x"],
+        keys: vec![
+            "_etext",
+            "__init_array_start",
+            "__init_array_end",
+            "_edata",
+            "__bss_start",
+            "_end",
+            "x",
+        ],
         chunks: vec![text, ia, data, b],
         values: [
             ("_etext", at(0, 0x100)),
@@ -640,7 +653,10 @@ fn init_array_shrinks() {
 #[test]
 fn init_array_grows_then_shrinks() {
     let moved: &[&str] = &["__init_array_end", "_edata", "__bss_start", "_end"];
-    hops(&[startup(16, 64), startup(24, 64), startup(16, 64), startup(16, 64)], &[moved, moved, &[]]);
+    hops(
+        &[startup(16, 64), startup(24, 64), startup(16, 64), startup(16, 64)],
+        &[moved, moved, &[]],
+    );
 }
 
 // spec: incr.md IN-71c (`bss_grows_moves_end`): `_end` moves, nothing
@@ -730,10 +746,7 @@ fn iplt(n: u64) -> Defs {
 // added (one more `.rela.iplt` entry) moves `__rela_iplt_end`.
 #[test]
 fn ifunc_added_moves_rela_iplt_end() {
-    hops(
-        &[iplt(1), iplt(2), iplt(2), iplt(3)],
-        &[&["__rela_iplt_end"], &[], &["__rela_iplt_end"]],
-    );
+    hops(&[iplt(1), iplt(2), iplt(2), iplt(3)], &[&["__rela_iplt_end"], &[], &["__rela_iplt_end"]]);
 }
 
 // spec: incr.md IN-71c, IN-28b (`local_ifunc_slot_dead_and_appended`,
@@ -754,8 +767,11 @@ fn local_ifunc_slot_dead_and_appended() {
     assert_eq!(units, [3].into_iter().collect(), "the start-up code's unit only");
     // Third hop: a global IFUNC's slot appended.
     let c = iplt(3);
-    let global =
-        StoredSlot { kind: SlotKind::Iplt, key: SymKey::global(SymbolId(b.id("resolver"))), index: 1 };
+    let global = StoredSlot {
+        kind: SlotKind::Iplt,
+        key: SymKey::global(SymbolId(b.id("resolver"))),
+        index: 1,
+    };
     let (keys, units) = b.hop(&c, (vec![global], Vec::new()));
     assert_eq!(keys, ["__rela_iplt_end"].into_iter().collect());
     assert_eq!(units, [3, 4].into_iter().collect(), "with the global's referrer");
@@ -995,7 +1011,11 @@ fn affected_key_feeds_back_is_fallback() {
     let mut a = Link::new();
     a.add(R, false, vec![undef("Y"), undef("g"), undef("hx")]);
     let wa = a.add(2 * R, false, vec![def("z")]);
-    a.add(3 * R, false, vec![weak_def("g").func().group("G"), weak_def("hx").func().group("G"), def("Y")]);
+    a.add(
+        3 * R,
+        false,
+        vec![weak_def("g").func().group("G"), weak_def("hx").func().group("G"), def("Y")],
+    );
     a.add(4 * R, true, vec![def("hx")]);
     assert!(!a.full().iterated);
     let mut b = a.clone();
@@ -1030,10 +1050,33 @@ fn undefined_versioned_root() {
     let shared = |m: &mut MemoryState, keys: &[String]| {
         let k = keys.iter().position(|x| x == "foo@V").unwrap() as u32;
         m.files[so as usize].kind = 2;
-        m.mentions.push((FileId(so), MentionRow { symbol: k, kind: def_kind::SHARED, bind: GLOBAL, typ: FUNC, other: 0, section: NONE }));
-        m.key_refs.push(KeyRefRow { key: k, file: so, def: def_kind::SHARED, bind: GLOBAL, typ: FUNC, flags: 0, tomb: false });
+        m.mentions.push((
+            FileId(so),
+            MentionRow {
+                symbol: k,
+                kind: def_kind::SHARED,
+                bind: GLOBAL,
+                typ: FUNC,
+                other: 0,
+                section: NONE,
+            },
+        ));
+        m.key_refs.push(KeyRefRow {
+            key: k,
+            file: so,
+            def: def_kind::SHARED,
+            bind: GLOBAL,
+            typ: FUNC,
+            flags: 0,
+            tomb: false,
+        });
         m.key_refs.sort_by_key(|r| (r.key, r.file));
-        m.resolved[k as usize] = ResolvedRow { kind: def_kind::SHARED, value: 0, section: NONE, ..ResolvedRow::default() };
+        m.resolved[k as usize] = ResolvedRow {
+            kind: def_kind::SHARED,
+            value: 0,
+            section: NONE,
+            ..ResolvedRow::default()
+        };
     };
     let mut b = a.clone();
     b.files[f1 as usize].as_mut().unwrap().ments = vec![def("foo").val(4, 4), def("x")];
@@ -1060,8 +1103,26 @@ fn shared_definer_is_not_implemented() {
     let shared = |m: &mut MemoryState, keys: &[String]| {
         let k = keys.iter().position(|x| x == "k").unwrap() as u32;
         m.files[so as usize].kind = 2;
-        m.mentions.push((FileId(so), MentionRow { symbol: k, kind: def_kind::SHARED, bind: GLOBAL, typ: FUNC, other: 0, section: NONE }));
-        m.key_refs.push(KeyRefRow { key: k, file: so, def: def_kind::SHARED, bind: GLOBAL, typ: FUNC, flags: 0, tomb: false });
+        m.mentions.push((
+            FileId(so),
+            MentionRow {
+                symbol: k,
+                kind: def_kind::SHARED,
+                bind: GLOBAL,
+                typ: FUNC,
+                other: 0,
+                section: NONE,
+            },
+        ));
+        m.key_refs.push(KeyRefRow {
+            key: k,
+            file: so,
+            def: def_kind::SHARED,
+            bind: GLOBAL,
+            typ: FUNC,
+            flags: 0,
+            tomb: false,
+        });
         m.key_refs.sort_by_key(|r| (r.key, r.file));
     };
     let mut b = a.clone();

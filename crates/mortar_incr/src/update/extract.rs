@@ -745,6 +745,7 @@ impl<'a, 's> Ctx<'a, 's> {
 
     /// IN-71b: lost and gained edges of the affected keys; the removal
     /// cone, re-seeded; the forward addition.
+    #[allow(clippy::too_many_lines, reason = "IN-71b's steps in order")]
     fn extraction(&self) -> Result<Extraction, IncrReason> {
         let mut affected = self.changed_keys()?;
         for k in affected.clone() {

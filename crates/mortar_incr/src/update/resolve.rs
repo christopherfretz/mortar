@@ -16,7 +16,7 @@ use mortar_elf::consts::{
 
 use super::extract::{Ctx, Extraction, Ment};
 use super::rows::{
-    CommonRow, GroupRow, KeyRefRow, MentionRow, ResolvedRow, SymbolRow, key_ref_flags, keeper,
+    CommonRow, GroupRow, KeyRefRow, MentionRow, ResolvedRow, SymbolRow, keeper, key_ref_flags,
     sym_kind, winning_common,
 };
 use super::view::{Change, ChangedFile, ChangedFiles, KeyEdits, StateView};
@@ -285,7 +285,11 @@ impl<'c, 'a, 's> Res<'c, 'a, 's> {
     /// The signature of the COMDAT copy a stored section is in.
     fn stored_sig(&self, section: u32) -> Result<Option<Vec<u8>>, IncrReason> {
         let s = self.view().section(SectionId(section))?;
-        if s.anchor_kind == COMDAT_ANCHOR { Ok(Some(self.view().string(s.anchor)?)) } else { Ok(None) }
+        if s.anchor_kind == COMDAT_ANCHOR {
+            Ok(Some(self.view().string(s.anchor)?))
+        } else {
+            Ok(None)
+        }
     }
 
     /// The signature of the COMDAT copy `m` (a mention of `key` by its
@@ -377,7 +381,7 @@ impl<'c, 'a, 's> Res<'c, 'a, 's> {
         }
         self.out.affected = affected.iter().map(|&k| SymbolId(k)).collect();
         self.key_refs()?;
-        self.new_keys()?;
+        self.new_keys();
         self.out.key_ids = self
             .cx
             .changed
@@ -560,7 +564,11 @@ impl<'c, 'a, 's> Res<'c, 'a, 's> {
         let mut named: BTreeSet<u32> = self.cx.roots.iter().map(|r| r.0).collect();
         named.extend(self.cx.defsym.iter().copied());
         for w in &self.cx.options.wrap {
-            for n in [w.to_vec(), [b"__wrap_".as_slice(), w].concat(), [b"__real_".as_slice(), w].concat()] {
+            for n in [
+                w.to_vec(),
+                [b"__wrap_".as_slice(), w].concat(),
+                [b"__real_".as_slice(), w].concat(),
+            ] {
                 if let Some(k) = self.cx.key_named(&n)? {
                     named.insert(k);
                 }
@@ -617,10 +625,9 @@ impl<'c, 'a, 's> Res<'c, 'a, 's> {
     /// The stored definer of `key`'s stored row and its class.
     fn old_definer(&self, key: u32, row: &ResolvedRow) -> Result<Option<(u32, Class)>, IncrReason> {
         Ok(match row.kind {
-            def_kind::SECTION => Some((
-                self.view().section(SectionId(row.section))?.file,
-                class_of_bind(row.bind),
-            )),
+            def_kind::SECTION => {
+                Some((self.view().section(SectionId(row.section))?.file, class_of_bind(row.bind)))
+            }
             def_kind::ABSOLUTE => {
                 // No section names it: the least live absolute candidate of
                 // its class (an earlier candidate of the class in a section
@@ -750,8 +757,8 @@ impl<'c, 'a, 's> Res<'c, 'a, 's> {
                         // the fall-back is conservative).
                         let ok = match old_row {
                             Some(r) if r.kind == def_kind::UNDEFINED => {
-                                (!strong_ref || r.bind != STB_WEAK)
-                                    && (r.bind != STB_WEAK || self.referenced(k, true, false)?)
+                                r.bind != STB_WEAK
+                                    || (!strong_ref && self.referenced(k, true, false)?)
                             }
                             _ => false,
                         };
@@ -790,18 +797,17 @@ impl<'c, 'a, 's> Res<'c, 'a, 's> {
     /// are not stored), the row's other columns from its `MENTIONS` row.
     fn defined_row(
         &mut self,
-        k: u32,
+        key: u32,
         class: Class,
-        m: &Ment,
+        ment: &Ment,
         old: Option<&ResolvedRow>,
     ) -> Result<ResolvedRow, IncrReason> {
-        if let Some((i, p)) = m.new {
+        if let Some((i, p)) = ment.new {
             let c = &self.cx.changed.files[i];
             let x = c.mentions[p];
-            let v = c
-                .values
-                .get(p)
-                .ok_or_else(|| corrupt("a changed file's values are not parallel to its mentions"))?;
+            let v = c.values.get(p).ok_or_else(|| {
+                corrupt("a changed file's values are not parallel to its mentions")
+            })?;
             return Ok(ResolvedRow {
                 kind: x.kind,
                 typ: x.typ,
@@ -815,19 +821,19 @@ impl<'c, 'a, 's> Res<'c, 'a, 's> {
         // An unchanged live object (a member already extracted included).
         if let Some(old) = old
             && matches!(old.kind, def_kind::SECTION | def_kind::ABSOLUTE)
-            && self.old_definer(k, old)? == Some((m.file, class))
+            && self.old_definer(key, old)? == Some((ment.file, class))
         {
             // S-74: the merged visibility can demote the global to a local
             // of its definer's block, or promote it back (IN-72 item 2a).
-            if (self.vis(k, true)? == 0) != (self.vis(k, false)? == 0) {
-                self.draw.insert(m.file);
+            if (self.vis(key, true)? == 0) != (self.vis(key, false)? == 0) {
+                self.draw.insert(ment.file);
             }
             return Ok(*old);
         }
-        self.draw.insert(m.file);
-        let (_, x) = self
-            .stored_mention(m.file, k)?
-            .ok_or_else(|| corrupt(format!("KEY_REFS names key {k} in file {}, MENTIONS does not", m.file)))?;
+        self.draw.insert(ment.file);
+        let (_, x) = self.stored_mention(ment.file, key)?.ok_or_else(|| {
+            corrupt(format!("KEY_REFS names key {key} in file {}, MENTIONS does not", ment.file))
+        })?;
         Ok(ResolvedRow {
             kind: x.kind,
             typ: x.typ,
@@ -846,48 +852,45 @@ impl<'c, 'a, 's> Res<'c, 'a, 's> {
     /// winner's other columns its `MENTIONS` row.
     fn common_row(
         &self,
-        k: u32,
-        w: &Ment,
+        key: u32,
+        winner: &Ment,
         ments: &[Ment],
         old: Option<&ResolvedRow>,
     ) -> Result<ResolvedRow, IncrReason> {
         let mut size = 0u64;
-        for c in self.common_rows(k, ments)? {
+        for c in self.common_rows(key, ments)? {
             size = size.max(c.size);
         }
-        let mut row = ResolvedRow {
-            kind: def_kind::COMMON,
-            section: NONE,
-            size,
-            ..ResolvedRow::default()
-        };
-        if let Some((i, p)) = w.new {
+        let mut row =
+            ResolvedRow { kind: def_kind::COMMON, section: NONE, size, ..ResolvedRow::default() };
+        if let Some((i, p)) = winner.new {
             let c = &self.cx.changed.files[i];
             let x = c.mentions[p];
-            let v = c
-                .values
-                .get(p)
-                .ok_or_else(|| corrupt("a changed file's values are not parallel to its mentions"))?;
+            let v = c.values.get(p).ok_or_else(|| {
+                corrupt("a changed file's values are not parallel to its mentions")
+            })?;
             (row.typ, row.bind, row.other, row.value) = (x.typ, x.bind, x.other, v.value);
             return Ok(row);
         }
         if let Some(old) = old
             && old.kind == def_kind::COMMON
-            && self.old_definer(k, old)? == Some((w.file, Class::Common))
+            && self.old_definer(key, old)? == Some((winner.file, Class::Common))
         {
             (row.typ, row.bind, row.other, row.value) = (old.typ, old.bind, old.other, old.value);
             return Ok(row);
         }
-        let (_, x) = self
-            .stored_mention(w.file, k)?
-            .ok_or_else(|| corrupt(format!("KEY_REFS names key {k} in file {}, MENTIONS does not", w.file)))?;
+        let (_, x) = self.stored_mention(winner.file, key)?.ok_or_else(|| {
+            corrupt(format!("KEY_REFS names key {key} in file {}, MENTIONS does not", winner.file))
+        })?;
         let align = self
             .view()
-            .commons(SymbolId(k))?
+            .commons(SymbolId(key))?
             .iter()
-            .find(|c| c.file == w.file)
+            .find(|c| c.file == winner.file)
             .map(|c| c.align)
-            .ok_or_else(|| corrupt(format!("no COMMONS row of key {k} for file {}", w.file)))?;
+            .ok_or_else(|| {
+                corrupt(format!("no COMMONS row of key {key} for file {}", winner.file))
+            })?;
         (row.typ, row.bind, row.other, row.value) = (x.typ, x.bind, x.other, align);
         Ok(row)
     }
@@ -908,11 +911,16 @@ impl<'c, 'a, 's> Res<'c, 'a, 's> {
                 continue;
             }
             let Some((i, p)) = m.new else { continue };
-            let v = self.cx.changed.files[i]
-                .values
-                .get(p)
-                .ok_or_else(|| corrupt("a changed file's values are not parallel to its mentions"))?;
-            rows.push(CommonRow { key: k, file: m.file, size: v.size, align: v.value.max(1), tomb: false });
+            let v = self.cx.changed.files[i].values.get(p).ok_or_else(|| {
+                corrupt("a changed file's values are not parallel to its mentions")
+            })?;
+            rows.push(CommonRow {
+                key: k,
+                file: m.file,
+                size: v.size,
+                align: v.value.max(1),
+                tomb: false,
+            });
         }
         Ok(rows)
     }
@@ -923,7 +931,8 @@ impl<'c, 'a, 's> Res<'c, 'a, 's> {
             return Ok(());
         }
         let new = self.common_rows(k, ments)?;
-        let stored = if k < self.cx.symbols { self.view().commons(SymbolId(k))? } else { Vec::new() };
+        let stored =
+            if k < self.cx.symbols { self.view().commons(SymbolId(k))? } else { Vec::new() };
         for r in &stored {
             if !new.iter().any(|n| n.file == r.file) {
                 self.out.commons.delete.push(*r);
@@ -997,7 +1006,8 @@ impl<'c, 'a, 's> Res<'c, 'a, 's> {
                 }
             }
         }
-        let stored = if k < self.cx.symbols { Some(self.view().symbol(SymbolId(k))?) } else { None };
+        let stored =
+            if k < self.cx.symbols { Some(self.view().symbol(SymbolId(k))?) } else { None };
         let at = match best {
             None => (NONE, 0),
             Some((_, m)) => match m.new {
@@ -1006,7 +1016,10 @@ impl<'c, 'a, 's> Res<'c, 'a, 's> {
                     Some(s) if s.at_file == m.file => (s.at_file, s.at_index),
                     _ => {
                         let (p, _) = self.stored_mention(m.file, k)?.ok_or_else(|| {
-                            corrupt(format!("KEY_REFS names key {k} in file {}, MENTIONS does not", m.file))
+                            corrupt(format!(
+                                "KEY_REFS names key {k} in file {}, MENTIONS does not",
+                                m.file
+                            ))
                         })?;
                         (m.file, p)
                     }
@@ -1078,7 +1091,7 @@ impl<'c, 'a, 's> Res<'c, 'a, 's> {
 
     /// `new_keys`' rows: a new global's `at` as [`Self::at`] found it; a
     /// local's own file and index.
-    fn new_keys(&mut self) -> Result<(), IncrReason> {
+    fn new_keys(&mut self) {
         let at: BTreeMap<u32, (u32, u32)> =
             self.out.at.iter().map(|&(k, f, i)| (k.0, (f, i))).collect();
         for (i, n) in self.cx.new_keys.iter().enumerate() {
@@ -1105,10 +1118,13 @@ impl<'c, 'a, 's> Res<'c, 'a, 's> {
                     at_index,
                 }
             };
-            self.out.new_keys.push(NewKey { row, name: n.name.clone(), version: n.version.clone() });
+            self.out.new_keys.push(NewKey {
+                row,
+                name: n.name.clone(),
+                version: n.version.clone(),
+            });
         }
         self.out.at.retain(|&(k, _, _)| k.0 < self.cx.symbols);
-        Ok(())
     }
 }
 

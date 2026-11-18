@@ -7,6 +7,8 @@
 //! `tests/support/resolve_model.rs`) is checked against `mortar_resolve`
 //! on every link first: the same live files, iteration and definers.
 
+#![allow(clippy::too_many_lines)]
+
 #[allow(dead_code, clippy::all)]
 mod model {
     include!("../../mortar_incr/tests/support/resolve_model.rs");
@@ -45,7 +47,8 @@ mod model {
         }
 
         fn new(link: &Link) -> Self {
-            let mut r = Self { files: Vec::new(), names: Vec::new(), sigs: Vec::new(), of: Vec::new() };
+            let mut r =
+                Self { files: Vec::new(), names: Vec::new(), sigs: Vec::new(), of: Vec::new() };
             let mut order: Vec<(u64, u32)> = Vec::new();
             for (i, f) in link.files.iter().enumerate().skip(1) {
                 if let Some(f) = f {
@@ -91,12 +94,11 @@ mod model {
                     ));
                     let g = sections.len() as u32;
                     sections.push((b".group".to_vec(), mortar_elf::consts::SHT_GROUP, 0));
-                    let sig = match r.sigs.iter().position(|x| *x == s) {
-                        Some(p) => p,
-                        None => {
-                            r.sigs.push(s.clone());
-                            r.sigs.len() - 1
-                        }
+                    let sig = if let Some(p) = r.sigs.iter().position(|x| *x == s) {
+                        p
+                    } else {
+                        r.sigs.push(s.clone());
+                        r.sigs.len() - 1
                     };
                     groups.push(
                         SectionIndex(g),
@@ -212,7 +214,10 @@ mod model {
             (self.names[key.0 as usize].as_bytes(), None)
         }
         fn find_key(&self, name: &[u8]) -> Option<mortar_core::SymbolId> {
-            self.names.iter().position(|n| n.as_bytes() == name).map(|p| mortar_core::SymbolId(p as u32))
+            self.names
+                .iter()
+                .position(|n| n.as_bytes() == name)
+                .map(|p| mortar_core::SymbolId(p as u32))
         }
         fn shared(&self, _: FileId) -> Option<mortar_resolve::view::SharedInfo> {
             None
@@ -287,7 +292,7 @@ mod model {
                 old.roots.push(format!("k{}", rng.below(keys)));
             }
             let mut new = old.clone();
-            for _ in 0..1 + rng.below(2) {
+            for _ in 0..=rng.below(2) {
                 random_edit(&mut rng, &mut new, n, keys);
             }
             let what = format!("link {i}: old {old:#?}\nnew {new:#?}");
@@ -298,13 +303,21 @@ mod model {
             let j = join(&old, &new);
             if iterates {
                 iterated += 1;
-                assert!(j.result.is_err(), "the full link iterates, the update did not fall back: {what}");
+                assert!(
+                    j.result.is_err(),
+                    "the full link iterates, the update did not fall back: {what}"
+                );
                 caught += usize::from(matches!(j.result, Err(IncrReason::ClosureIterated(_))));
             } else if j.result.is_ok() {
                 ok += 1;
             }
         }
-        eprintln!("feedback_check_is_sound_random: {iterated} new links iterated ({caught} closure-iterated), {ok} updated");
-        assert!(iterated >= 20, "only {iterated} iterating links: the series does not test the check");
+        eprintln!(
+            "feedback_check_is_sound_random: {iterated} new links iterated ({caught} closure-iterated), {ok} updated"
+        );
+        assert!(
+            iterated >= 20,
+            "only {iterated} iterating links: the series does not test the check"
+        );
     }
 }

@@ -414,7 +414,7 @@ fn start_lib_is_unsupported() {
         .built
         .args
         .iter()
-        .find(|a| a.ends_with(".o"))
+        .find(|a| Path::new(a).extension().is_some_and(|e| e == "o"))
         .expect("an object among the link's inputs")
         .clone();
     let o = prog.mortar_env("sl", &["--incremental", "--start-lib", &obj, "--end-lib"], &[]);

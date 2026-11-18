@@ -47,7 +47,7 @@ pub fn recompute(view: &StateView<'_>, layout: &LayoutDelta) -> Vec<DefinedChang
         old.insert(r.symbol, Defined { symbol: SymbolId(r.symbol), value });
     }
     let mut new: BTreeMap<u32, Defined> = BTreeMap::new();
-    for d in layout.placement.defined.iter() {
+    for d in &layout.placement.defined {
         new.insert(d.symbol.0, *d);
     }
     let old_addr = |c: ChunkId| chunks.get(c.0 as usize).map(|r| r.addr);
