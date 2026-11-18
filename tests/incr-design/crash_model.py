@@ -46,6 +46,12 @@ is .build/review-in77/crash_model.py):
     "output not synced"; after a power loss (a new boot id) such a state's
     output is checked against its leaves before it is trusted).
 
+WP-211 additions: ops ('link', src, dst) (EEXIST leaves dst), ('unlink',
+name), ('fcreate', name, inode) (another link's durable output); variants
+inplace-aside-link (W4 = link + dsync, then unlink + dsync), and the same
+and WP-207's rename with a foreign output created at P inside the window;
+outcomes report a lost foreign output and P and A naming one inode.
+
 Usage: python3 -I crash_model.py [variant ...]   (no argument: all)
 """
 import itertools
@@ -185,6 +191,29 @@ def inplace_aside(compact=False):
     return ops, {'S0': ('P0',), 'S1': ('P0',)}
 
 
+def inplace_aside_link(foreign=False, rename_back=False):
+    # WP-211 (review-wp207 M-4): W4 is link(A, P), fsync of the directory,
+    # then unlink(A), fsync of the directory: two separately durable steps.
+    # foreign=True: another (plain or full) link creates P (inode PF) after
+    # W2's rename and before W4; then link(A, P) fails with EEXIST and the
+    # update removes A, keeps the flag set and stops (output-changed).
+    # rename_back=True: WP-207's rename(A, P) instead, for comparison.
+    ops = [('W1', ('w', 'S0', 'flag', 1)), ('W1', ('sync', 'S0')),
+           ('W2', ('rename', 'P', 'A')), ('W2', ('dsync',))] + inplace_writes('P0')
+    if foreign:
+        ops.insert(6, ('X', ('fcreate', 'P', 'PF')))
+    if rename_back:
+        ops += [('W4', ('rename', 'A', 'P')), ('W4', ('dsync',))]
+    elif foreign:
+        ops += [('W4', ('unlink', 'A')), ('W4', ('dsync',))]
+        return ops, {'S0': ('P0',)}
+    else:
+        ops += [('W4', ('link', 'A', 'P')), ('W4', ('dsync',)), ('W4u', ('unlink', 'A')), ('W4u', ('dsync',))]
+    ops += [('W5', ('w', 'S0', 'b1', NEW)), ('W5', ('w', 'S0', 'b2', NEW)), ('W5', ('w', 'S0', 'head', NEW)),
+            ('W5', ('sync', 'S0')), ('W6', ('w', 'S0', 'flag', 0)), ('W6', ('sync', 'S0'))]
+    return ops, {'S0': ('P0',)}
+
+
 def inplace_mtime_writes():
     # the reviewer's in-place order with every write also setting the mtime
     ops = [('W1', ('w', 'S0', 'flag', 1)), ('W1', ('sync', 'S0'))] + inplace_writes('P0')
@@ -206,6 +235,9 @@ VARIANTS = {
     'inplace-epoch': lambda: inplace_epoch(),
     'inplace-aside': lambda: inplace_aside(),
     'inplace-aside-compact': lambda: inplace_aside(compact=True),
+    'inplace-aside-link': lambda: inplace_aside_link(),
+    'inplace-aside-link-foreign': lambda: inplace_aside_link(foreign=True),
+    'inplace-aside-rename-foreign': lambda: inplace_aside_link(foreign=True, rename_back=True),
     'full-incremental-bootid': lambda: full_bootid(),
     'inplace': lambda: inplace(),
     'inplace-compact': lambda: inplace(compact=True),
@@ -236,6 +268,16 @@ def apply(ops_persisted):
             _, src, dst = op
             if src in names:
                 names[dst] = names.pop(src)
+        elif k == 'link':                   # link(2): EEXIST leaves dst
+            _, src, dst = op
+            if src in names and dst not in names:
+                names[dst] = names[src]
+        elif k == 'unlink':
+            names.pop(op[1], None)
+        elif k == 'fcreate':                # another link's output, durable
+            _, name, ino = op
+            inodes[ino] = {f: 'foreign' for f in ('hdr', 'w1', 'w2', 'note', 'size', 'mtime')}
+            names[name] = ino
     return inodes, names
 
 
@@ -297,8 +339,10 @@ def enumerate_variant(name, build_id=True):
                 covered = any(o in (('sync', op[1]), ('fsync', op[1])) for o in later)
             elif op[0] == 'meta':
                 covered = any(o == ('fsync', op[1]) for o in later)
-            elif op[0] in ('create', 'rename'):
+            elif op[0] in ('create', 'rename', 'link', 'unlink'):
                 covered = any(o == ('dsync',) for o in later)
+            elif op[0] == 'fcreate':
+                covered = True               # the other link synced its own rename
             else:
                 covered = False  # meta: fdatasync never covers it (fsync not used)
             (forced if covered else free).append(i)
@@ -310,6 +354,10 @@ def enumerate_variant(name, build_id=True):
             trusted, bad, desc = judge(inodes, names, bound, build_id, rebooted=(how == 'power'))
             mix = runnable_mix(inodes, names)
             ft = fresh_torn(inodes, names)
+            if 'PF' in inodes and names.get('P') != 'PF':
+                desc += ' [FOREIGN OUTPUT LOST]'
+            if 'A' in names:
+                desc += ' [aside name left' + (', same inode as P' if names.get('A') == names.get('P') else '') + ']'
             key = (how, desc, bad, mix, ft)
             seen.setdefault(key, label)
     return seen
@@ -324,9 +372,14 @@ def main():
             bad = [(k, lab) for k, lab in seen.items() if k[2]]
             mixes = [(k, lab) for k, lab in seen.items() if k[3]]
             fresh = [(k, lab) for k, lab in seen.items() if k[4]]
+            lost = [(k, lab) for k, lab in seen.items() if 'FOREIGN OUTPUT LOST' in k[1]]
+            two = [(k, lab) for k, lab in seen.items() if 'same inode as P' in k[1]]
             print(f'== {v} (build id {"on" if build_id else "none"}): '
                   f'{len(seen)} distinct outcomes, {len(bad)} trusted mixes, '
-                  f'{len(mixes)} runnable-mix outputs, {len(fresh)} fresh torn outputs')
+                  f'{len(mixes)} runnable-mix outputs, {len(fresh)} fresh torn outputs, '
+                  f'{len(lost)} foreign outputs lost, {len(two)} with P and A one inode')
+            for (how, desc, _, _, _), lab in sorted(lost + two, key=lambda x: x[1]):
+                print(f'   note         first at {lab} ({how}): {desc}')
             for (how, desc, _, _, _), lab in sorted(bad, key=lambda x: x[1]):
                 print(f'   TRUSTED MIX  first at {lab} ({how}): {desc}')
             for (how, desc, _, _, _), lab in sorted(mixes, key=lambda x: x[1]):
