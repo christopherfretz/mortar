@@ -290,10 +290,15 @@ pub(crate) fn resolved_fields<'t>(
                     row.kind = def_kind::ABSOLUTE;
                 }
             }
-            if row.kind == def_kind::COMMON
-                && let Some(&size) = commons.get(&id)
-            {
-                row.size = size;
+            if row.kind == def_kind::COMMON {
+                // A common's value is its alignment: 0 and 1 mean the
+                // same, stored as `max(1, st_value)` as `COMMONS.align` is
+                // (WP-215 R.6 5: an update whose winner is an unchanged
+                // file reads it from `COMMONS`; state rows only).
+                row.value = row.value.max(1);
+                if let Some(&size) = commons.get(&id) {
+                    row.size = size;
+                }
             }
         }
     }

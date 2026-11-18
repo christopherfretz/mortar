@@ -404,6 +404,29 @@ fn sort_options_are_unsupported() {
     }
 }
 
+// spec: incr.md IN-71b (WP-212 F-9; WP-215): `--start-lib` links plain
+// with the warning naming it; `--incremental=update` is
+// `incremental-unsupported`
+#[test]
+fn start_lib_is_unsupported() {
+    let Some(prog) = Prog::asm() else { return };
+    let obj = prog
+        .built
+        .args
+        .iter()
+        .find(|a| Path::new(a).extension().is_some_and(|e| e == "o"))
+        .expect("an object among the link's inputs")
+        .clone();
+    let o = prog.mortar_env("sl", &["--incremental", "--start-lib", &obj, "--end-lib"], &[]);
+    let err = o.stderr_text();
+    assert!(o.success(), "{err}");
+    assert!(err.contains("--incremental is not supported with --start-lib"), "{err}");
+    assert!(!prog.state_of("sl").exists(), "no state");
+    let o =
+        prog.mortar_env("sl2", &["--incremental=update", "--start-lib", &obj, "--end-lib"], &[]);
+    assert!(!o.success() && o.stderr_text().contains("incremental-unsupported"));
+}
+
 /// Checks the reader on one damaged state: a named reason or a state,
 /// never a panic.
 fn read_damaged(bytes: &[u8], what: &str) {

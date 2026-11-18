@@ -133,6 +133,11 @@ fn unsupported(parsed: &Parsed) -> Option<String> {
     if plan.scripts.iter().any(|x| x.role == ScriptRole::Script) {
         return Some("-T (a linker script)".to_owned());
     }
+    // IN-71b (WP-212 F-9): a `--start-lib` region's lazy objects are not
+    // archive members of the state.
+    if plan.inputs.iter().any(|i| i.state.lib.is_some()) {
+        return Some("--start-lib".to_owned());
+    }
     None
 }
 

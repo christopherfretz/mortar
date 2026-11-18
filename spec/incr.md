@@ -1459,7 +1459,7 @@ with each phase fed from the state for unchanged files:
   | kind | table | row (width) | rows |
   |---|---|---|---|
   | 32 | `MENTIONS` | file `FILES` row, key `SYMBOLS` row, kind `u8` (0 undefined, 1 in a section, 2 absolute, 3 common), `st_bind u8`, `st_type u8`, `st_other u8`, section `SECTIONS` row (kind 1; else `NONE`) (16) | one per (live object, global key in its symbol table), strictly ascending by (file, key). An entry the file's symbol table repeats keeps the first. |
-  | 33 | `RESOLVED` | kind `u8` (0..5 as `MENTIONS` plus 4 linker-defined and 5 shared object; 6 COMDAT keeper; 7 live file), `st_type u8`, `st_bind u8`, `st_other u8`, key `SYMBOLS` row (kinds 0..5; else `NONE`), file `FILES` row (the definer, the keeper or the live file; `NONE` for kinds 0 and 4), section `SECTIONS` row (kind 1; else `NONE`), value `u64` (`st_value` for kinds 1..3; the definer's symbol index for kind 5, and for a definition outside an object's symbol table, which is recorded as kind 2; else 0), size `u64` (`st_size`; for a common, the resolved size), name str (kind 6: the group signature; else empty) (40). An undefined key has `st_bind` 2 when weak, else 1, and its resolved visibility in `st_other`; a linker-defined key only its visibility. A definition in a section the reader keeps no id for is recorded as kind 2, in both tables. | first one row per key the resolution names (kinds 0..5), ascending by key; then one per COMDAT group with a keeper, ascending by signature bytes; then one per live file, ascending by file |
+  | 33 | `RESOLVED` | kind `u8` (0..5 as `MENTIONS` plus 4 linker-defined and 5 shared object; 6 COMDAT keeper; 7 live file), `st_type u8`, `st_bind u8`, `st_other u8`, key `SYMBOLS` row (kinds 0..5; else `NONE`), file `FILES` row (the definer, the keeper or the live file; `NONE` for kinds 0 and 4), section `SECTIONS` row (kind 1; else `NONE`), value `u64` (`st_value` for kinds 1 and 2; for kind 3, a common, its alignment `max(1, st_value)`: 0 and 1 mean the same, stored as `COMMONS` stores the alignment, so an update whose winning common is an unchanged file's gives the same row (WP-215 R.6 5, ruled; state rows only, no output byte); the definer's symbol index for kind 5, and for a definition outside an object's symbol table, which is recorded as kind 2; else 0), size `u64` (`st_size`; for a common, the resolved size), name str (kind 6: the group signature; else empty) (40). An undefined key has `st_bind` 2 when weak, else 1, and its resolved visibility in `st_other`; a linker-defined key only its visibility. A definition in a section the reader keeps no id for is recorded as kind 2, in both tables. | first one row per key the resolution names (kinds 0..5), ascending by key; then one per COMDAT group with a keeper, ascending by signature bytes; then one per live file, ascending by file |
   | 34 | `INDEX` | unit `SECTIONS` row, kind `u8` (0 global, 1 section, 2 slot, 3 `.eh_frame`, 4 link order, 5 local slot), pad 3, target `u32` (a `SYMBOLS` row for kinds 0 and 2; a `SECTIONS` row for 1, 3, 4 and 5) (12) | one per (unit, kind, target), strictly ascending in that order |
   | 39 | `HOLES` | chunk `CHUNKS` row, kind `u8` (`mortar_core::layout::HoleKind`: 0 fill, 1 `.eh_frame` padding, 2 debug, 3 abbreviation table, 4 dead debug, 5 dead fragment, 6 dead CIE), pad 3, offset `u64`, size `u64` (24) | one per range of a chunk no live unit owns (IN-3, IN-3a, IN-30), ascending by (chunk, offset), never overlapping, inside the chunk's size (a capacity tail is not a hole, L-141) (WP-062) |
 
@@ -1607,7 +1607,7 @@ with each phase fed from the state for unchanged files:
   | **whole** (small; capacity = rows + max(64, rows/8)) | `META` (1), `PROBES` (4), `OUTSECS` (5), `CHUNKS` (8), `ORDER` (9), `SEGMENTS` (10), `SLOTS` (12), `SIZES` (15), `SYM_PLACE` (16), `DEFINED` (17), `PATCHES` (18), `REDIRECTS` (19), `SIZED` (20), `LAYOUT` (21), `LEAVES` (22) | the table is written again whole into its capacity when any row differs (its blocks only; the rest of the state is untouched); over capacity: compaction. Together under 2 MB on g10x (WP-105 §3's "the rest" and `CHUNKS`). `LEAVES`' row count follows the output's size (W3 truncates or extends), within its capacity |
   | **append-only** | `FILES` (3), `STAT` (2), `FILE_INDEX` (41), `STRINGS` (23) | rows (bytes, for `STRINGS`) are only appended, into a reserved append area of max(4,096 rows, rows/64); a row is never moved, so references to it stay valid. `FILES` and `FILE_INDEX` are parallel (one row each per file, members of archives included, `LAZY` when not extracted); `STAT` has one row per file plus the device rows; a file's load-order position is its `FILES.rank` (`u64`): the first link writes `rank = FileId << 20`, an appeared or newly extracted file takes the integer midpoint of its neighbours' ranks (none left: compaction), and `FileId` order is `rank` order. A gone file's row is marked `GONE`. A string is never overwritten or reused; strings no row names any more are dead until compaction. The build id is in `META` (a length and 64 bytes), not in `STRINGS`, so an update appends no string for it |
   | **file-keyed** (one range per file through `FILE_INDEX`, with row slack: capacity = count + max(4, count/8)) | `SECTIONS` (7), `MENTIONS` (32), `INDEX` (34), `EDGES` (42: one row per stored edge, 17 bytes: kind `u8`, source `u32`, target `u32`, offset `u64`), `FRAG_USE` (56: one row per (file, fragment its live split pieces name), 28 bytes, below; WP-239), `EH_RECORDS` (13), `SYMTAB` (43: per file its local block and `.strtab` region; file 0's range holds the global area's row), `REGIONS` (51: per file its regions, one row per (output section, category, ordinal): the chunk, offset and capacity; IN-72 item 2, WP-213) | a changed, drawn-in or appeared file's range is rewritten in place when the new count fits its capacity; a file's `SECTIONS` rows are also rewritten when IN-72 moved, killed or revived its sections (IN-78); a gone file's ranges are dead (`FILE_INDEX.gone`); a new file gets new ranges in the table's append area (max(4,096 rows, rows/64)); no room: compaction |
-  | **key-keyed** (sorted body + append area of max(4,096 rows, rows/64), kept sorted on insert + tombstones) | `KEY_REFS` (45: key, file, attributes, `demand`), `GROUPS` (44: by (signature, file): one row per live relocatable object's copy; the keeper is the copy whose file has the least `FILES.rank` (resolve.md §6.1; never the least row number: `FILES` is append-only), not stored; WP-215), `FRAGS` (11: by (out, class, hash), offset, `refs`; below), `HOLES` (39: by (chunk, offset)), `COMMONS` (46: by (key, file): one row per live file with a common mention of the key, its size and alignment; the winning common (resolve.md §3.3: the file of least `FILES.rank`, the largest size and alignment) is computed from the rows, not stored; WP-215), `ODR_CLASSES` (47: ODR key, class hash and layout; PROVISIONAL, not written until WP-236), `ODR_REFS` (48: ODR key, file, row kind, class; PROVISIONAL, not written until WP-236), `COPIES` (55: by (key, file, symbol index): one row per global definition in a section of a live COMDAT copy, its `st_size` and `st_type`, 24 bytes, for every input unless `--odr=off`; the copy's group is its `MENTIONS` row's section's `SECTIONS.anchor` (`anchor_kind` 1, the signature), not stored; no rank stored: W1 and W2 order copies by the files' current `FILES.rank`; kinds 53 and 54 are reserved for WP-236; WP-220), `DIAGS` (49: subjects, code, text, order), `NAMES` (52: the by-name index of `SYMBOLS`' globals, 12 bytes, keyed by (hash, row): `hash` is model.md's 64-bit hash (`mortar_core::hash::hash_bytes`) of the bytes of `SYMBOLS.name`, one zero byte and the bytes of `SYMBOLS.version` (empty when unversioned), as `STRINGS` holds them; `row` the `SYMBOLS` row; a lookup compares the name and version bytes of every row of the hash, so a hash never identifies a key alone; a `GONE` key keeps its row, and a key that comes back takes its old `SYMBOLS` row; WP-213) | a lookup binary-searches the body and the append area (the area is kept sorted: a new row is inserted into it at its place, moving at most the area's rows; WP-211, review-wp207 m-3: no linear scan of up to 4,096 rows per lookup); a deleted row is a tombstone (its key kept, a flag set); a changed row is changed in place when its key is unchanged, else deleted and appended. Compaction when an append area is full or tombstones pass 25% of a table's rows |
+  | **key-keyed** (sorted body + append area of max(4,096 rows, rows/64), kept sorted on insert + tombstones) | `KEY_REFS` (45: key, file, attributes, `demand`), `GROUPS` (44: by (signature, file): one row per live relocatable object's copy; the keeper is the copy whose file has the least `FILES.rank` (resolve.md §6.1; never the least row number: `FILES` is append-only), not stored; WP-215), `FRAGS` (11: by (out, class, hash), offset, `refs`; below), `HOLES` (39: by (chunk, offset)), `COMMONS` (46: by (key, file): one row per live file with a common mention of the key, its size and alignment (`max(1, st_value)`, as `RESOLVED.value` of a common); the winning common (resolve.md §3.3: the file of least `FILES.rank`, the largest size and alignment) is computed from the rows, not stored; WP-215), `ODR_CLASSES` (47: ODR key, class hash and layout; PROVISIONAL, not written until WP-236), `ODR_REFS` (48: ODR key, file, row kind, class; PROVISIONAL, not written until WP-236), `COPIES` (55: by (key, file, symbol index): one row per global definition in a section of a live COMDAT copy, its `st_size` and `st_type`, 24 bytes, for every input unless `--odr=off`; the copy's group is its `MENTIONS` row's section's `SECTIONS.anchor` (`anchor_kind` 1, the signature), not stored; no rank stored: W1 and W2 order copies by the files' current `FILES.rank`; kinds 53 and 54 are reserved for WP-236; WP-220), `DIAGS` (49: subjects, code, text, order), `NAMES` (52: the by-name index of `SYMBOLS`' globals, 12 bytes, keyed by (hash, row): `hash` is model.md's 64-bit hash (`mortar_core::hash::hash_bytes`) of the bytes of `SYMBOLS.name`, one zero byte and the bytes of `SYMBOLS.version` (empty when unversioned), as `STRINGS` holds them; `row` the `SYMBOLS` row; a lookup compares the name and version bytes of every row of the hash, so a hash never identifies a key alone; a `GONE` key keeps its row, and a key that comes back takes its old `SYMBOLS` row; WP-213) | a lookup binary-searches the body and the append area (the area is kept sorted: a new row is inserted into it at its place, moving at most the area's rows; WP-211, review-wp207 m-3: no linear scan of up to 4,096 rows per lookup); a deleted row is a tombstone (its key kept, a flag set); a changed row is changed in place when its key is unchanged, else deleted and appended. Compaction when an append area is full or tombstones pass 25% of a table's rows |
   | **key-parallel** (one row per `SYMBOLS` row, in its order) | `SYMBOLS` (6), `RESOLVED` (33), `SYMTAB_KEYS` (50: a global's `.symtab` index and `.strtab` offset) | a key's rows are changed in place by its `SYMBOLS` row number; a new key appends a row to each (append area of max(4,096 rows, rows/64)); a key no file mentions any more is a tombstone (`SYMBOLS.kind` `GONE`) |
 
   Table 14 (`SYMTAB_LOCALS`) is gone (`SYMTAB` and `SYMTAB_KEYS` replace
@@ -3019,13 +3019,14 @@ a pass over a whole table of the state; **O(output)**.
   **Values** (WP-215 seam 3): a changed file's `st_value` and `st_size`
   per mention are passed in (`ChangedFile::values`, made by the capture
   function that makes its `MENTIONS` rows; never stored). An unchanged
-  file that becomes a key's definer, a common's winning file or a
-  group's keeper is **drawn in**: `resolve` returns the files to read
+  file that becomes a key's definer or a group's keeper is **drawn in**
+  (never for a common: item 2a): `resolve` returns the files to read
   (`Resolution::DrawIn`) instead of a delta, never a partial delta; the
   join reads them (`Change::DrawnIn`, IN-75's `STAT` check first) and
   calls `resolve` again. A drawn-in file's mentions equal its stored
-  rows, so it adds no affected key beyond those the first call derived
-  and changes no candidate or winner: the second call asks for nothing
+  rows, so its keys are affected (its sections take new ids, so the
+  `RESOLVED` rows naming them are rewritten); no candidate or winner
+  changes, so the second call asks for nothing (WP-215 R.6 2, ruled)
   (at most `RESOLVE_CALLS` = 2 calls; a second draw-in means a drawn-in
   file's bytes disagree with its rows: `input-changed`). Drawn-in files
   count toward IN-16's bound.
@@ -3097,7 +3098,21 @@ a pass over a whole table of the state; **O(output)**.
     member's common's size and alignment are not stored (`COMMONS` holds
     the live files' rows, IN-18e; WP-215 D6): an extracted member is read,
     and they come from its bytes; a `LAZY` member's undefined mentions
-    are not stored (an extracted member's are). Each
+    are not stored (an extracted member's are), and decide nothing that
+    is stored (as `at`, IN-71: the first LIVE mentioner).
+    **Live keys** (WP-215 R.6 3, ruled): a global key is **live** in a
+    state when a stored row gives it a mention by a live file (a
+    `KEY_REFS` row of a live file, a definition, a common, a group), a
+    `LAZY` member's definition (a `KEY_REFS` row of a `LAZY` file), or an
+    option names it (`OptionKeys`); any other key is **dead**. A capture
+    writes exactly the live keys. An update need not delete a key whose
+    last mention went: it may leave it dead (its `SYMBOLS` row, its
+    `RESOLVED` row undefined), like a dead string; IN-78's `canon` and a
+    compaction drop dead keys by this rule. No reader treats a dead key
+    as live: it is never reported undefined, never a draw-in's or a
+    re-election's reason, never affected by its own deadness; a dead key
+    that gets a mention again is found by name (`NAMES`) and its row
+    reused, never a second row. Each
     extracted member's `FILES` row carries its **round**: a number such
     that some live file or root with an edge to it has a smaller round
     (non-archive files and roots 0): the **support property**. The first
@@ -3373,12 +3388,14 @@ a pass over a whole table of the state; **O(output)**.
      change its sections or its `.symtab` block for a reason outside it:
      a section of it becomes live (IN-71a) or kept (IN-71's election), or
      stops being so; one of its globals is demoted to a local of its
-     block by the merged visibility (S-74) or promoted back; it becomes,
-     or stops being, the **winning file of a common** ([later], with item
-     11's placing rule: a changed file adds or removes a common mention
-     less by ≺ than the current winner, or the winner's own mention
-     changes; review-wp207 M-3; v1 draws no file in for a common, item
-     11). A drawn-in
+     block by the merged visibility (S-74) or promoted back. **Never for
+     a common** (WP-215 R.6 1, ruled): a winning common's `RESOLVED` row
+     is given whole by the rows (kind `COMMON`, the size the largest over
+     the key's live `COMMONS` rows, the value the winner's alignment, the
+     type, binding and `st_other` its `MENTIONS` row), so its file is
+     never read for it; and v1 places no common (item 11). [later] With
+     item 11's placing rule, the old and the new winning files of a
+     common are drawn in for their sections (review-wp207 M-3). A drawn-in
      file is processed exactly as a changed file whose bytes are its old
      bytes: it is opened, `fstat`ed and compared with its `STAT` row
      (IN-28a condition 2; else `input-changed`; review-in72 M-6) and read
@@ -4074,7 +4091,11 @@ a pass over a whole table of the state; **O(output)**.
   - `canon(X)` is `X`'s rows with: the slack rows of file-keyed ranges,
     the unused capacity of every table, tombstones (`GONE` symbols,
     deleted key-keyed rows) and the ranges and rows of gone files
-    removed; each key-keyed table sorted by its key (append order
+    removed; the **dead keys** (IN-71b "Live keys": no stored mention by a
+    live file, no `LAZY` definition, no option) removed with their
+    `SYMBOLS`, `NAMES` and `RESOLVED` rows (WP-215 R.6 3: so a capture
+    and a compaction agree without a list of tolerated keys); each
+    key-keyed table sorted by its key (append order
     forgotten); every row reference replaced by the referenced row's
     canonical name: a file by its load-order position (`rank` order), a
     symbol by its key name (a local by (file, symbol-table index)), a

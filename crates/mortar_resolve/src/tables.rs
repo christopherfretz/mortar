@@ -650,6 +650,73 @@ fn shared_mention(sym: &mortar_elf::Sym, place: SymbolSection) -> bool {
 
 // ---- the Plan -------------------------------------------------------------
 
+/// The keys the options name, **by name** (`mortar_core::incr::OptionKeys`;
+/// `spec/resolve.md` §4.2, §7.1, §7.2): the entry (`-e`, else the last
+/// script `ENTRY`, else `_start`; none for `-shared` and `-r`), `-u` then
+/// each script `EXTERN` (`arg` [`crate::options::EXTERN_ARG`] plus its
+/// ordinal), `--require-defined`, `--wrap` (`Plan::wraps`), and `--defsym`
+/// (the last option of each symbol, in command-line order of those; a
+/// value the command line refuses is left out). The ONE function that
+/// reads these names from the plan and the scripts' directives: the full
+/// link's [`options`] maps them to keys, and an incremental update's join
+/// passes the same value to U-3 (WP-215).
+#[must_use]
+pub fn option_keys(
+    plan: &Plan,
+    directives: &[mortar_core::inputs::Directive<'_>],
+) -> mortar_core::incr::OptionKeys {
+    use mortar_core::incr::{DefsymOperand, OptionDefsym, OptionKey, OptionKeys};
+    let key = |name: &[u8], arg: u32| OptionKey { name: name.into(), arg };
+    let entry = match plan.kind {
+        OutputKind::Shared | OutputKind::Relocatable => None,
+        _ => Some(match (&plan.entry, script_entry(directives)) {
+            // The `Plan` keeps `-e`'s value, not its argument index: seq 0.
+            (Some(e), _) => key(e.as_encoded_bytes(), 0),
+            (None, Some(d)) => key(d.value, 0),
+            (None, None) => key(b"_start", 0),
+        }),
+    };
+    let by_role = |role: SymbolRole| -> Vec<OptionKey> {
+        plan.symbols
+            .iter()
+            .filter(|s| s.role == role)
+            .map(|s| key(s.value.as_encoded_bytes(), s.arg))
+            .collect()
+    };
+    let externs = directives
+        .iter()
+        .filter(|d| d.kind == DirectiveKind::Extern)
+        .enumerate()
+        .map(|(i, d)| key(d.value, crate::options::EXTERN_ARG + i as u32));
+    let mut defsym: Vec<OptionDefsym> = Vec::new();
+    let all = plan.symbols.iter().filter(|s| s.role == SymbolRole::Defsym);
+    for (s, parsed) in all.zip(plan.defsyms()) {
+        let Ok(d) = parsed else { continue };
+        let value = match d.expr {
+            DefsymExpr::Number(n) => DefsymOperand::Number(n),
+            DefsymExpr::Symbol(b) => DefsymOperand::Alias(b.into()),
+            DefsymExpr::Offset(b, n) => DefsymOperand::Offset(b.into(), n),
+        };
+        defsym.retain(|o| *o.name != *d.sym);
+        defsym.push(OptionDefsym { name: d.sym.into(), value, arg: s.arg });
+    }
+    OptionKeys {
+        entry,
+        undefined: by_role(SymbolRole::Undefined).into_iter().chain(externs).collect(),
+        require_defined: by_role(SymbolRole::RequireDefined),
+        wrap: plan.wraps().into_iter().map(Into::into).collect(),
+        defsym,
+        gc_sections: plan.shaping.gc_sections,
+    }
+}
+
+/// The last script `ENTRY` (§4.2: a later one wins).
+fn script_entry<'d, 's>(
+    directives: &'d [mortar_core::inputs::Directive<'s>],
+) -> Option<&'d mortar_core::inputs::Directive<'s>> {
+    directives.iter().rev().find(|d| d.kind == DirectiveKind::Entry)
+}
+
 /// The options resolution reads, from the `Plan` and the input scripts'
 /// `ENTRY` (`spec/resolve.md` §4.2, §5.2, §5.5): `-e` wins over `ENTRY`,
 /// the last `ENTRY` over earlier ones; `--wrap` (§7.1) by the rows the
@@ -661,23 +728,13 @@ pub fn options(plan: &Plan, inputs: &Inputs<'_>, view: &InputsView<'_, '_>) -> O
         name: name.into(),
         arg,
     };
-    let script_entry = inputs
-        .link
-        .directives
-        .iter()
-        .rev()
-        .find(|d| d.kind == DirectiveKind::Entry)
-        .map(|d| named(d.value, 0));
-    let entry = match plan.kind {
-        OutputKind::Shared | OutputKind::Relocatable => Entry::None,
-        _ => match (&plan.entry, script_entry) {
-            // The `Plan` keeps `-e`'s value, not its argument index: seq 0.
-            (Some(e), _) => Entry::Named(named(e.as_encoded_bytes(), 0)),
-            (None, Some(n)) => Entry::Named(n),
-            (None, None) => {
-                Entry::Default(view.find_key(b"_start").map_or(OptId::NONE, OptId::some))
-            }
-        },
+    let keys = option_keys(plan, &inputs.link.directives);
+    let entry = match &keys.entry {
+        None => Entry::None,
+        Some(_) if plan.entry.is_none() && script_entry(&inputs.link.directives).is_none() => {
+            Entry::Default(view.find_key(b"_start").map_or(OptId::NONE, OptId::some))
+        }
+        Some(e) => Entry::Named(named(&e.name, e.arg)),
     };
     let by_role = |role: SymbolRole| -> Vec<Named> {
         plan.symbols
@@ -700,22 +757,12 @@ pub fn options(plan: &Plan, inputs: &Inputs<'_>, view: &InputsView<'_, '_>) -> O
     };
     Options {
         entry,
-        undefined: by_role(SymbolRole::Undefined)
-            .into_iter()
-            .chain(
-                inputs
-                    .link
-                    .directives
-                    .iter()
-                    .filter(|d| d.kind == DirectiveKind::Extern)
-                    .enumerate()
-                    .map(|(i, d)| named(d.value, crate::options::EXTERN_ARG + i as u32)),
-            )
-            .collect(),
-        require_defined: by_role(SymbolRole::RequireDefined),
-        wrap: plan
-            .wraps()
-            .into_iter()
+        undefined: keys.undefined.iter().map(|k| named(&k.name, k.arg)).collect(),
+        require_defined: keys.require_defined.iter().map(|k| named(&k.name, k.arg)).collect(),
+        wrap: keys
+            .wrap
+            .iter()
+            .map(|sym| &**sym)
             .filter_map(|sym| {
                 // The input phase gave each of the three a row (model.md §2.3).
                 let row = |name: &[u8]| view.find_key(name);
@@ -726,7 +773,7 @@ pub fn options(plan: &Plan, inputs: &Inputs<'_>, view: &InputsView<'_, '_>) -> O
                 })
             })
             .collect(),
-        defsym: defsyms(plan, view),
+        defsym: defsyms(plan, &keys, view),
         allow_multiple_definition: d.allow_multiple_definition,
         warn_common: d.warn_common,
         warn_backrefs: d.warn_backrefs,
@@ -761,30 +808,34 @@ pub fn options(plan: &Plan, inputs: &Inputs<'_>, view: &InputsView<'_, '_>) -> O
 /// all three references). A value the command line refuses never gets
 /// here (`spec/cli.md` §4.2); the input phase gave each name a row
 /// (model.md §2.3).
-fn defsyms(plan: &Plan, view: &InputsView<'_, '_>) -> Vec<crate::options::Defsym> {
+fn defsyms(
+    plan: &Plan,
+    keys: &mortar_core::incr::OptionKeys,
+    view: &InputsView<'_, '_>,
+) -> Vec<crate::options::Defsym> {
+    use mortar_core::incr::DefsymOperand;
     let mut out: Vec<crate::options::Defsym> = Vec::new();
-    let all = plan.symbols.iter().filter(|s| s.role == SymbolRole::Defsym);
-    for (s, parsed) in all.zip(plan.defsyms()) {
-        let Ok(d) = parsed else { continue };
-        let Some(sym) = view.find_key(d.sym) else { continue };
-        let value = match d.expr {
-            DefsymExpr::Number(n) => DefsymValue::Number(n),
-            DefsymExpr::Symbol(b) => match view.find_key(b) {
+    for d in &keys.defsym {
+        let Some(sym) = view.find_key(&d.name) else { continue };
+        let value = match &d.value {
+            DefsymOperand::Number(n) => DefsymValue::Number(*n),
+            DefsymOperand::Alias(b) => match view.find_key(b) {
                 Some(b) => DefsymValue::Alias(b),
                 None => continue,
             },
-            DefsymExpr::Offset(b, n) => match view.find_key(b) {
-                Some(b) => DefsymValue::Offset(b, n),
+            DefsymOperand::Offset(b, n) => match view.find_key(b) {
+                Some(b) => DefsymValue::Offset(b, *n),
                 None => continue,
             },
         };
+        // The option's text, `SYM=EXPR`, by its argument index.
+        let text = plan
+            .symbols
+            .iter()
+            .find(|s| s.role == SymbolRole::Defsym && s.arg == d.arg)
+            .map_or(Box::default(), |s| s.value.as_encoded_bytes().into());
         out.retain(|o| o.sym != sym);
-        out.push(crate::options::Defsym {
-            sym,
-            value,
-            arg: s.arg,
-            text: s.value.as_encoded_bytes().into(),
-        });
+        out.push(crate::options::Defsym { sym, value, arg: d.arg, text });
     }
     out
 }
