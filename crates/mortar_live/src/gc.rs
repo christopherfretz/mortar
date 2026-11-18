@@ -494,7 +494,7 @@ pub(crate) fn collect(
             marks: &fresh,
             arch: tables_in.arch,
         };
-        probe::run(&cx, &new_marks, &roots, tables_in.roots, &live, &frag_live);
+        probe::run(&cx, &new_marks, &roots, tables_in, &live, &frag_live);
     }
     Ok(Liveness {
         live: Column::from_vec(live).unwrap_or_default(),

@@ -68,6 +68,12 @@ def main():
         if not lml:
             lml = ['NO RESULT (rc %d): %s' % (lm.returncode, ' | '.join(lm.stdout.strip().splitlines()[-3:]))]
         print('LINK %s: %s | livemodel: %s' % (label, '; '.join(rep), ' / '.join(lml)), flush=True)
+        rows_path = os.path.join(d, sums[0][:-4] + '.rows')
+        if os.path.exists(rows_path):
+            o = subprocess.run([sys.executable, '-I', os.path.join(HERE, 'oracle_design.py'), rows_path],
+                               stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, errors='replace')
+            print('ORA1 %s %s: %s' % (cfgname, label, (o.stdout.strip().splitlines() or ['no output'])[-1]),
+                  flush=True)
         shutil.copy(os.path.join(r.W, 'prog.map'), os.path.join(d, 'prog.map'))
         os.remove(os.path.join(r.W, 'prog'))
         return os.path.join(d, sums[0][:-4] + '.rows')
@@ -80,6 +86,7 @@ def main():
     rows = [x for x in edits.rows_for('gen200', only) if x.name not in SKIP]
     done = 0
     bad = 0
+    ora = __import__('collections').Counter()
     for row in rows:
         k = proj.knobs()
         made = row.make['gen200'](proj, k, random.Random('wp238/' + row.name), set())
@@ -99,7 +106,13 @@ def main():
             print('EMU %s %s %s: %s || %s' % (cfgname, row.name, way, line, ' | '.join(lines[:-1])), flush=True)
             done += 1
             bad += 0 if line.startswith('AGREE') else 1
-    print('FINAL %s: %d emulations, %d disagree' % (cfgname, done, bad), flush=True)
+            p = subprocess.run([sys.executable, '-I', os.path.join(HERE, 'oracle_design.py'), a, b],
+                               stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, errors='replace')
+            line = (p.stdout.strip().splitlines() or ['no output'])[-1]
+            print('ORA2 %s %s %s: %s' % (cfgname, row.name, way, line), flush=True)
+            ora[line.split(' ')[0]] += 1
+    print('FINAL %s: %d emulations, %d disagree; oracle_design updates %s' % (
+        cfgname, done, bad, dict(ora)), flush=True)
 
 
 if __name__ == '__main__':
