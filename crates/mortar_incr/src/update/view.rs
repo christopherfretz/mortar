@@ -274,6 +274,22 @@ pub trait StateRows: Sync {
     /// # Errors
     /// `state-corrupt`.
     fn diags(&self) -> Rows<Vec<DiagRow>>;
+    /// The offset of the string of `hash` in the merged debug string
+    /// section of class `out` (`rows::debug_str_class`), or `None`
+    /// (kind 57, `DEBUG_STRS`; key: one binary search; IN-56, WP-228 R-2).
+    /// **An accelerator, never trusted**: the caller checks a hit against
+    /// the previous output's bytes at the offset (the string and its NUL,
+    /// inside the section) and appends the string on a miss or a
+    /// mismatch. Of rows with one key (a corrupt state) it returns any.
+    /// Provided: `Ok(None)` (every string a miss: appended, never a wrong
+    /// offset) until U-2's reader overrides it (WP-247).
+    ///
+    /// # Errors
+    /// `state-corrupt`.
+    fn debug_str(&self, out: u8, hash: u64) -> Rows<Option<u32>> {
+        let _ = (out, hash);
+        Ok(None)
+    }
 
     // ---- key-parallel: by SYMBOLS row ----
     /// A `SYMBOLS` row (kind 6; row).

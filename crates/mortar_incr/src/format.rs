@@ -182,6 +182,11 @@ pub mod kind {
     /// (not `.debug_*`), by the fragment's key (IN-18e; WP-239 S4-2, R-1).
     /// Replaces `FRAG_AT` (40) in format 5; 40 is never reused.
     pub const FRAG_USE: u32 = 56;
+    /// Key-keyed by `(out, hash)`: per distinct string of the merged
+    /// `.debug_str` and `.debug_line_str`, its offset in the output
+    /// section, 13-byte rows (IN-56; WP-228 R-2, seam 8). An accelerator,
+    /// never trusted: every hit is checked against the output's bytes.
+    pub const DEBUG_STRS: u32 = 57;
     /// The number of tables of versions 3 and 4.
     pub const COUNT: u32 = 28;
 
@@ -233,6 +238,7 @@ pub mod kind {
             NAMES => "NAMES",
             COPIES => "COPIES",
             FRAG_USE => "FRAG_USE",
+            DEBUG_STRS => "DEBUG_STRS",
             _ => kind.checked_sub(1).and_then(|i| FIRST.get(i as usize)).copied().unwrap_or("?"),
         }
     }
