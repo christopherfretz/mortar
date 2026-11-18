@@ -5,6 +5,9 @@ Done (record "M2a2"): A 03591af0 (the lane's `same_size_body_edit`:
 B ee4288f0 (`UpdateError`, a failed W-step fails the link), C 70085f6b
 (the identity check narrowed; merged-string test ignored: FINDING).
 
+Open: incr-update 10 FAIL ((c) on the hop after an update: no dry run;
+record "Gate on 1caf52b8"); ruling asked.
+
 Next (in order):
 1. D (M2a-3): call extract, resolve, delta::layout, refill_set and the
    symtab plan in `reference_of` (crates/mortar/src/update/mod.rs) and
