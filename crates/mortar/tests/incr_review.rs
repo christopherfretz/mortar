@@ -111,12 +111,18 @@ impl Dir<'_> {
         a
     }
 
-    /// An incremental-mode full link of the line into `out`.
+    /// An incremental-mode full link of the line into `out`, with the
+    /// format-4 side state the floor reads (WP-225's flip).
     fn full(&self, out: &str, extra: &[&str]) {
         let mut e = vec!["--incremental=full"];
         e.extend(extra);
-        let o = run_in(&self.path, Path::new(MORTAR), &self.line(out, &e));
-        assert!(o.success(), "{}: the full link: {}", self.sc.name, o.stderr_text());
+        let inv = mortar::invoke_state4("mortar", &self.line(out, &e), &self.path);
+        assert!(
+            matches!(inv.outcome, mortar::Outcome::Linked { .. }),
+            "{}: the full link: {:?}",
+            self.sc.name,
+            inv.outcome
+        );
     }
 
     /// The test path's update of `out` (in place), with its map.
@@ -727,7 +733,7 @@ fn hostile_case(
         d.full("out", &[]);
         d.build("c", &hostile(20)[2].1);
         d.full("ref", &[]);
-        let state_path = d.p("out.mortar-state");
+        let state_path = d.p("out.mortar-state.format4");
         let bytes = std::fs::read(&state_path).unwrap();
         let mut s = format::decode(&bytes, mortar::VERSION.as_bytes()).unwrap();
         edit(&mut s);
@@ -987,8 +993,9 @@ fn the_stamp_shapes_are_seen_changed() {
     }
 }
 
-// spec: IN-18a4 (a state of version 3 is refused by name and gives a
-// full link that writes a version-4 state).
+// spec: IN-18a4 (a format-4 state of version 3 is refused by name), §7
+// `state-version` (WP-225: a format-4 state at `S` gives a full link that
+// writes a format-5 state).
 #[test]
 fn a_version_3_state_is_refused_by_name() {
     let sc = Scenario {
@@ -1008,13 +1015,15 @@ fn a_version_3_state_is_refused_by_name() {
         d.build(name, text);
     }
     d.full("out", &[]);
-    let mut b = d.bytes("out.mortar-state");
+    let mut b = d.bytes("out.mortar-state.format4");
     assert_eq!(b[8..12], 4u32.to_le_bytes(), "a version-4 state");
     b[8..12].copy_from_slice(&3u32.to_le_bytes());
-    std::fs::write(d.p("out.mortar-state"), &b).unwrap();
     let e = format::decode(&b, mortar::VERSION.as_bytes()).expect_err("a version-3 state decodes");
     assert_eq!(e.reason(), "state-version");
     assert!(e.detail().starts_with("format version 3, this mortar reads 4"), "{}", e.detail());
+    // WP-225's flip: a state of format 4 (of any version) at `S` is
+    // `state-version`, and the full link replaces it with format 5.
+    std::fs::write(d.p("out.mortar-state"), &b).unwrap();
     let o = run_in(
         &d.path,
         Path::new(MORTAR),
@@ -1022,11 +1031,12 @@ fn a_version_3_state_is_refused_by_name() {
     );
     assert!(o.success(), "{}", o.stderr_text());
     assert!(
-        o.stderr_text().contains("full (state-version: format version 3,"),
+        o.stderr_text()
+            .contains("full (state-version: format version 4 (MORTARST), this mortar reads 5)"),
         "{}",
         o.stderr_text()
     );
-    assert!(format::decode(&d.bytes("out.mortar-state"), mortar::VERSION.as_bytes()).is_ok());
+    assert_eq!(d.bytes("out.mortar-state")[..8], mortar_incr::state5::MAGIC, "format 5 written");
 }
 
 // ---- shapes the review did not try (WP-064a) -----------------------------------

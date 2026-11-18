@@ -1840,6 +1840,13 @@ judge.py`; H-1's judge puts IN-79's checks behind the same function):
    files, and archive members are identified by name and ordinal, not by
    offset).
 
+L10 and the IN-63a oracle lane (`tests/incr-oracle/run.py`: `cargo
+xtask incr-oracle`, and its quick subset `cargo test -p mortar --test
+incr_oracle`): until WP-225 M6 these lanes judge the format-4 dry run of
+a testhooks build (`mortar --features testhooks` in `<target>/testhooks`,
+with `MORTAR_INCR_STATE4=1`); at M6 they judge the update or go, by
+ruling.
+
 The report's reason is recorded. A sequence stops at its first failing
 step; its sequence file goes to `failed/`, and `--minimize` reduces it
 by delta debugging (over steps, then each step's knobs and action) to

@@ -3,7 +3,9 @@
 //! lane itself is `tests/l10/l10.py` (it judges each step with
 //! `tests/l10/judge.py`, which calls the IN-63a oracle of
 //! `tests/incr-oracle/oracle.py` as a library and this xtask's `plumb`
-//! and `plumb --equiv`); this command builds mortar (and the floor's
+//! and `plumb --equiv`); this command builds mortar (until WP-225 M6 the
+//! testhooks build, `crate::incr_update::hooked_binary`, whose dry run the
+//! judge reads: `MORTAR_INCR_STATE4=1`) (and the floor's
 //! example when a run needs it), holds `-j` jobserver tokens for the
 //! lane's workers and runs it.
 //!
@@ -125,7 +127,13 @@ fn llvm_majors() -> String {
 }
 
 fn lane(a: &Args, extra: &[String]) -> Result<bool, String> {
-    let mortar = crate::mason::mortar_binary(a.mortar.as_deref())?;
+    // WP-225 (rulings M1-1): until M6 the lane judges the dry run, which
+    // only a testhooks build computes (from the format-4 side state it
+    // writes under `MORTAR_INCR_STATE4=1`, set below for every link).
+    let mortar = match &a.mortar {
+        Some(p) => p.clone(),
+        None => crate::incr_update::hooked_binary()?,
+    };
     let python = mortar_testutil::find_tool("python3").ok_or("python3 not found")?;
     let xtask = std::env::current_exe().map_err(|e| format!("the xtask binary: {e}"))?;
     let mut cmd = Command::new(python);
@@ -141,6 +149,7 @@ fn lane(a: &Args, extra: &[String]) -> Result<bool, String> {
         .args(&a.pass)
         .args(extra)
         .env("PYTHONDONTWRITEBYTECODE", "1")
+        .env("MORTAR_INCR_STATE4", "1")
         // The LLVM majors the lane's clang is found by, as find_tool finds
         // the link tests' and the census's (tests/l10/build.py `which`).
         .env("MORTAR_LLVM_MAJORS", llvm_majors());
