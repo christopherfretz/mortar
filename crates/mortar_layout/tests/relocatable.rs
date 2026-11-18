@@ -767,6 +767,7 @@ impl Case {
             shapes: if unreadable { &NoShapes } else { &shapes },
             shared: false,
             placeless: &[],
+            retired: &[],
         };
         f(&cx)
     }

@@ -389,6 +389,7 @@ pub fn front<'s>(
         shapes: &shapes,
         shared: false,
         placeless: &[],
+        retired: &[],
     };
     // L-R10: the readings, then the group rule (no kept group: refused
     // above) and the relocation rule with the inputs' facts.

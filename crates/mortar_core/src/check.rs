@@ -209,6 +209,12 @@ pub struct CheckContext<'t, 'n> {
     /// (`spec/resolve.md` §10.1 P-1, WP-136), sorted: `.dynsym` omits
     /// them, so they are not required entries. Empty in a static link.
     pub placeless: &'t [SymbolId],
+    /// The slots an incremental update retired (`spec/incr.md` IN-72
+    /// item 7): `(kind, index)` of every `SLOTS` row whose `refs` is 0
+    /// AFTER the update, sorted. Their keys stay in the positional lists
+    /// (a position is the slot's identity) and have no demand of that
+    /// kind. Empty in a full link.
+    pub retired: &'t [(SlotKind, u32)],
 }
 
 impl std::fmt::Debug for CheckContext<'_, '_> {
@@ -635,8 +641,26 @@ impl<'a, 't, 'n> Checker<'a, 't, 'n> {
         let r = Rule::Slots;
         let cx = self.cx;
         let slots = &self.layout.slots;
+        if let Some(at) = unsorted(cx.retired, |&p| p) {
+            return fail(
+                r,
+                "the retired slots not sorted or one twice",
+                [Row::Entry("retired", at)],
+            );
+        }
         let flags = SlotKind::ALL.map(SlotKind::demand);
-        for ((name, list), want) in Self::slot_lists(self.layout).into_iter().zip(flags) {
+        let lists = SlotKind::ALL.into_iter().zip(Self::slot_lists(self.layout));
+        for ((kind, (name, list)), want) in lists.zip(flags) {
+            let retired = |i: u32| cx.retired.binary_search(&(kind, i)).is_ok();
+            if let Some(&(_, i)) =
+                cx.retired.iter().find(|&&(k, i)| k == kind && i as usize >= list.len())
+            {
+                return fail(
+                    r,
+                    format!("a retired {name} slot past its list"),
+                    [Row::Entry(name, i)],
+                );
+            }
             let mut have: Vec<(SymKey, u32)> =
                 list.iter().enumerate().map(|(i, &k)| (k, i as u32)).collect();
             have.sort_unstable();
@@ -647,9 +671,8 @@ impl<'a, 't, 'n> Checker<'a, 't, 'n> {
                     [Row::Symbol(pair[0].0), Row::Entry(name, pair[1].1)],
                 );
             }
-            if let Some((key, missing)) =
-                difference(cx.demands.keys_with(want), have.iter().map(|p| p.0))
-            {
+            let live = have.iter().filter(|p| !retired(p.1)).map(|p| p.0);
+            if let Some((key, missing)) = difference(cx.demands.keys_with(want), live) {
                 let what = if missing {
                     format!("a {name} demand without a slot")
                 } else {

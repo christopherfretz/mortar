@@ -56,6 +56,8 @@ struct World {
     layout: Layout,
     class: Class,
     needs_entry: bool,
+    /// `CheckContext::retired` (an incremental update's retired slots).
+    retired: Vec<(SlotKind, u32)>,
 }
 
 fn section(kind: SectionKind, kept: bool) -> SectionRow {
@@ -340,6 +342,7 @@ impl World {
             layout,
             class: Class::Elf64,
             needs_entry: true,
+            retired: Vec::new(),
         }
     }
 
@@ -357,6 +360,7 @@ impl World {
             shapes: &self.shapes,
             shared: false,
             placeless: &[],
+            retired: &self.retired,
         }
     }
 
@@ -1164,6 +1168,51 @@ fn s4_3_slots_per_kind() {
     w.layout.slots.tls_gd = Box::new([k]);
     w.layout.slots.tls_desc = Box::new([k, k]);
     w.rejects(Rule::Slots, "tls_desc slot given twice");
+}
+
+// spec: model.md §4.3, incr.md IN-72 item 7 (Seam 7a, WP-245: a slot an
+// update retired keeps its position, its key in the list with no demand;
+// `CheckContext::retired` names it, and only it is exempt)
+#[test]
+fn s4_3_retired_slots() {
+    let mut w = World::new();
+    let (k0, k3): (SymKey, SymKey) = (SymbolId(0).into(), SymbolId(3).into());
+    w.demands.global[SymbolId(3)] = DemandFlags::GOT | DemandFlags::GOT_TPREL;
+    // GOT[0] (key 0) retired: its key stays, with no demand.
+    w.layout.slots.got = Box::new([k0, k3]);
+    w.layout.slots.tls_ie = Box::new([k3]);
+    w.rejects(Rule::Slots, "got slot without a demand");
+    w.retired = vec![(SlotKind::Got, 0)];
+    assert_eq!(w.validate(), Ok(()));
+    // A retired key still demanded: its slot is missing.
+    w.demands.global[SymbolId(0)] = DemandFlags::GOT;
+    w.rejects(Rule::Slots, "got demand without a slot");
+    w.demands.global[SymbolId(0)] = DemandFlags::empty();
+    // Another kind's position is not retired by it: the TLS IE row of key
+    // 3 retired while key 3 still demands it.
+    w.retired = vec![(SlotKind::Got, 0), (SlotKind::TlsIe, 0)];
+    w.rejects(Rule::Slots, "tls_ie demand without a slot");
+    // A retired index past its list.
+    w.retired = vec![(SlotKind::Got, 0), (SlotKind::Got, 2)];
+    w.rejects(Rule::Slots, "a retired got slot past its list");
+    w.retired = vec![(SlotKind::Got, 0), (SlotKind::TlsGd, 0)];
+    w.rejects(Rule::Slots, "a retired tls_gd slot past its list");
+    // A NON-retired key without a demand still fails, `retired` non-empty.
+    w.retired = vec![(SlotKind::Got, 0)];
+    w.layout.slots.got = Box::new([k0, k3, SymbolId(2).into()]);
+    w.rejects(Rule::Slots, "got slot without a demand");
+    w.layout.slots.got = Box::new([k0, k3]);
+    assert_eq!(w.validate(), Ok(()));
+    // A key twice stays refused, retired or not.
+    w.layout.slots.got = Box::new([k0, k3, k0]);
+    w.rejects(Rule::Slots, "got slot given twice");
+    w.layout.slots.got = Box::new([k0, k3]);
+    // `retired` not sorted, or a pair twice.
+    w.retired = vec![(SlotKind::TlsIe, 0), (SlotKind::Got, 0)];
+    w.demands.global[SymbolId(3)] = DemandFlags::GOT;
+    w.rejects(Rule::Slots, "the retired slots not sorted or one twice");
+    w.retired = vec![(SlotKind::Got, 0), (SlotKind::Got, 0)];
+    w.rejects(Rule::Slots, "the retired slots not sorted or one twice");
 }
 
 // spec: model.md §4.3 (the IPLT index of each key that demands IPLT; a PLT index or an

@@ -277,6 +277,7 @@ impl World {
             shapes: &shapes,
             shared: false,
             placeless: &[],
+            retired: &[],
         };
         layout.validate(&cx)
     }
