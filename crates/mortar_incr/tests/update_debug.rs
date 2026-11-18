@@ -585,3 +585,50 @@ fn named_fall_backs_of_inputs() {
     w.change(1, Change::Changed, 10, &[(b".debug_line", 50, b"")]);
     assert_eq!(w.run(&mut w.delta()).unwrap_err().name(), "new-output-section");
 }
+
+// ---- B2-6: DWARF64 units in a changed file -----------------------------------
+
+// spec: WP-228 B2-6 (B1-5): a changed file's 64-bit DWARF unit is
+// `debug-unit-kind` in v1, on real `-gdwarf64` objects of GCC and Clang,
+// DWARF 4 and 5, both 64-bit targets; the same source at 32-bit DWARF is
+// handled.
+#[test]
+fn dwarf64_unit_in_changed_file_is_debug_unit_kind() {
+    use mortar_core::incr::IncrReason;
+    use mortar_incr::update::split::classify_object;
+    use mortar_testutil::target::Arch;
+    use mortar_testutil::{DEFAULT_TIMEOUT, Scratch, run_with, tool, tools_required};
+    let dir = Scratch::new("wp228-dwarf64");
+    let src = dir.write("a.c", "struct S { int alpha; long beta; };\nstatic struct S s = {1, 2};\nint g(int x) { return x + s.alpha; }\n");
+    let mut ran = 0;
+    for arch in [Arch::Aarch64, Arch::X86_64] {
+        let gcc = arch.tool("gcc").map(|g| (g, Vec::new()));
+        let clang = tool("clang").map(|c| (c, arch.clang_args()));
+        for (cc, pre) in [gcc, clang].into_iter().flatten() {
+            for v in ["-gdwarf-4", "-gdwarf-5"] {
+                for (wide, flag) in [(true, "-gdwarf64"), (false, "-gdwarf32")] {
+                    let obj = dir.join("a.o");
+                    let mut c = std::process::Command::new(&cc);
+                    c.current_dir(dir.path()).args(&pre).args(["-g", v, flag, "-O0", "-c"]);
+                    c.arg(&src).arg("-o").arg(&obj);
+                    let o = run_with(&mut c, b"", DEFAULT_TIMEOUT);
+                    assert!(o.success(), "{} {v} {flag}: {}", cc.display(), o.stderr_text());
+                    let bytes = std::fs::read(&obj).unwrap();
+                    let object = mortar_elf::Object::parse(&bytes).unwrap();
+                    let got = classify_object(&object);
+                    let label = format!("{} {} {v} {flag}: {got:?}", arch.name(), cc.display());
+                    if wide {
+                        assert!(
+                            matches!(&got, Err(IncrReason::DebugUnitKind(d)) if d.contains("64-bit")),
+                            "{label}"
+                        );
+                    } else {
+                        assert!(got.is_ok(), "{label}");
+                    }
+                    ran += 1;
+                }
+            }
+        }
+    }
+    assert!(ran > 0 || !tools_required(), "no compiler");
+}
