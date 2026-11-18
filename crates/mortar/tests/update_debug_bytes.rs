@@ -91,7 +91,8 @@ int main(int argc, char **argv) {
 fn bulk() -> String {
     let mut t = String::from("struct bulk_of_a {\n");
     for i in 0..1500 {
-        t.push_str(&format!("    long a_member_field_number_{i:04};\n"));
+        use std::fmt::Write as _;
+        writeln!(t, "    long a_member_field_number_{i:04};").unwrap();
     }
     t + "};\n"
 }
@@ -101,7 +102,7 @@ fn a_c() -> String {
 }
 
 /// `b.c`, before every edit: `area` and a small type of its own.
-const B_OLD: &str = r#"struct pt { int x, y; };
+const B_OLD: &str = r"struct pt { int x, y; };
 struct small_b { long s1, s2; };
 static int scale = 5;
 int area(struct pt *p) {
@@ -109,7 +110,7 @@ int area(struct pt *p) {
     int h = p->y;
     return w * h; /*B*/
 }
-"#;
+";
 
 /// One edit of `b.c` that leaves its allocated bytes alone.
 #[derive(Debug, Clone, Copy)]
@@ -123,7 +124,7 @@ struct Edit {
 
 const LINES: Edit = Edit {
     name: "lines",
-    b: r#"struct pt { int x, y; };
+    b: r"struct pt { int x, y; };
 struct small_b { long s1, s2; };
 /* three
    more
@@ -134,13 +135,13 @@ int area(struct pt *p) {
     int h = p->y;
     return w * h; /*B*/
 }
-"#,
+",
     info: Some(Taken::InPlace),
 };
 
 const RENAME: Edit = Edit {
     name: "rename",
-    b: r#"struct pt { int x, y; };
+    b: r"struct pt { int x, y; };
 struct small_b { long s1, s2; };
 static int scale = 5;
 int area(struct pt *p) {
@@ -148,13 +149,13 @@ int area(struct pt *p) {
     int h = p->y;
     return width_renamed_for_wp228 * h; /*B*/
 }
-"#,
+",
     info: Some(Taken::InPlace),
 };
 
 const GROW: Edit = Edit {
     name: "grow",
-    b: r#"struct pt { int x, y; };
+    b: r"struct pt { int x, y; };
 struct small_b { long s1, s2; };
 struct grown_type_of_wp228 {
     long m01, m02, m03, m04, m05, m06, m07, m08;
@@ -165,7 +166,7 @@ int area(struct pt *p) {
     int h = p->y;
     return w * h; /*B*/
 }
-"#,
+",
     info: Some(Taken::Tail),
 };
 
@@ -290,8 +291,7 @@ impl Fixture {
         let (cc, flags) = cfg.driver();
         let scratch = Scratch::new(&format!("wp228-b3-{}-{}", cfg.label(), edit.name));
         let flags: Vec<&str> = flags.iter().map(String::as_str).collect();
-        let sources =
-            [Source { name: "a.c", text: "" }, Source { name: "b.c", text: B_OLD }];
+        let sources = [Source { name: "a.c", text: "" }, Source { name: "b.c", text: B_OLD }];
         let built = build_by(&scratch, &cc, &flags, &sources)?;
         scratch.write("a.c", a_c());
         // Every object compiled alike (relative names, the scratch as the
@@ -313,7 +313,13 @@ impl Fixture {
         let args: Vec<String> = self
             .args
             .iter()
-            .map(|a| if a.ends_with("b.c.o") { self.scratch.join(format!("b{v}.o")).display().to_string() } else { a.clone() })
+            .map(|a| {
+                if a.ends_with("b.c.o") {
+                    self.scratch.join(format!("b{v}.o")).display().to_string()
+                } else {
+                    a.clone()
+                }
+            })
             .collect();
         let mut a = with_output(&args, &self.scratch.join(out));
         a.extend(["--incremental=full", "--incremental-state"].iter().map(OsString::from));
@@ -374,7 +380,8 @@ fn old_of(fx: &Fixture) -> Old {
     let parsed = mortar_cli::parse(&fx.line(1, "prev-front"));
     assert!(!parsed.failed());
     let diag = Collector::new(Policy::default());
-    let env = Env { cwd: fx.scratch.path(), pool: Pool::new(2), replay: None, slack: true, state5: true };
+    let env =
+        Env { cwd: fx.scratch.path(), pool: Pool::new(2), replay: None, slack: true, state5: true };
     let f = front(parsed.plan, env, &store, &diag, &mut Timer::new(false)).expect("front");
     let mut frags = HashMap::new();
     for (id, fr) in f.merge.split.frags.iter() {
@@ -454,7 +461,11 @@ struct Update {
 /// The update of `fx` (old link `old`, its rows `rows`, previous output
 /// `prev`; new rows `new`): `debug::strings`' core over `strs` (emulated
 /// `DEBUG_STRS`, or none), `place`, and the image with that placement.
-#[allow(clippy::too_many_lines)]
+#[allow(
+    clippy::too_many_lines,
+    clippy::many_single_char_names,
+    reason = "the update's steps in order"
+)]
 fn update(
     fx: &Fixture,
     old: &Old,
@@ -471,7 +482,7 @@ fn update(
     let hook = |link: &mortar_incr::capture::Link<'_, '_>, _computed: &Layout| {
         let r = (|| -> Result<(Layout, DebugPlan), String> {
             // The changed file: the one whose path is `b2.o`.
-            let b = (0..link.inputs.files.len() as u32)
+            let b = (0..link.inputs.files.len())
                 .map(FileId)
                 .find(|&f| {
                     link.inputs.link.opened.iter().any(|o| {
@@ -501,25 +512,29 @@ fn update(
             let empty = HashMap::new();
             let strs = strs.unwrap_or(&empty);
             let lookup = |class: u8, hash: u64| Ok(strs.get(&(class, hash)).copied());
-            let strings = debug::strings_with(&lookup, &stored, &inputs, prev)
-                .map_err(|e| {
-                    let miss: Vec<String> = inputs
-                        .iter()
-                        .flat_map(|(_, c, d)| d.split(|&x| x == 0).map(move |w| (*c, w)))
-                        .filter(|(c, w)| !w.is_empty() && !strs.contains_key(&(*c, name_hash(w, b""))))
-                        .map(|(c, w)| format!("{c}:{}", String::from_utf8_lossy(w)))
-                        .collect();
-                    format!("strings: {e:?}; not in the rows: {miss:?}; rows {}", strs.len())
-                })?;
+            let strings = debug::strings_with(&lookup, &stored, &inputs, prev).map_err(|e| {
+                let miss: Vec<String> = inputs
+                    .iter()
+                    .flat_map(|(_, c, d)| d.split(|&x| x == 0).map(move |w| (*c, w)))
+                    .filter(|(c, w)| !w.is_empty() && !strs.contains_key(&(*c, name_hash(w, b""))))
+                    .map(|(c, w)| format!("{c}:{}", String::from_utf8_lossy(w)))
+                    .collect();
+                format!("strings: {e:?}; not in the rows: {miss:?}; rows {}", strs.len())
+            })?;
             // (2) what layout(debug: true) gives a debug-only edit.
-            let mut d = LayoutDelta::default();
-            d.placement = old.layout.placement.clone();
-            d.files = vec![b];
+            let mut d = LayoutDelta {
+                placement: old.layout.placement.clone(),
+                files: vec![b],
+                ..LayoutDelta::default()
+            };
             for k in 0..ob.len() {
                 let id = ob.nth(k).unwrap();
                 let r = &rows.sections[id.0 as usize];
                 let name = view.string(r.name).map_err(|e| e.name().to_owned())?;
-                if r.sh_flags & 2 == 0 && name.starts_with(b".debug_") && d.placement.place[id].get().is_some() {
+                if r.sh_flags & 2 == 0
+                    && name.starts_with(b".debug_")
+                    && d.placement.place[id].get().is_some()
+                {
                     d.killed.push(id);
                 }
             }
@@ -528,8 +543,8 @@ fn update(
                 .map_err(|e| format!("place: {} ({e:?})", e.name()))?;
             // (4) the layout of the new link with the update's placement.
             let mut l = old.layout.clone();
-            l.placement.chunks = d.placement.chunks.clone();
-            l.placement.holes = d.placement.holes.clone();
+            l.placement.chunks.clone_from(&d.placement.chunks);
+            l.placement.holes.clone_from(&d.placement.holes);
             for (chunk, at, bytes) in plan.strings.appended.values() {
                 l.placement.chunks[*chunk].size = at + bytes.len() as u64;
             }
@@ -547,7 +562,11 @@ fn update(
                             Some(debug::Policy::Strings | debug::Policy::Whole)
                         );
                         if flags & 2 == 0 && name.starts_with(b".debug_") && placed_by_place {
-                            d.placement.place.get(SectionId(first.0 + k)).copied().unwrap_or(Place::NONE)
+                            d.placement
+                                .place
+                                .get(SectionId(first.0 + k))
+                                .copied()
+                                .unwrap_or(Place::NONE)
                         } else {
                             old.layout.placement.place[oid]
                         }
@@ -564,7 +583,9 @@ fn update(
                 for k in 0..r.len() {
                     let id = r.nth(k).unwrap();
                     let (name, data) = sec(link.inputs, link.resolution, id);
-                    if name == b".debug_aranges" && let Some((c, o)) = place[id].get() {
+                    if name == b".debug_aranges"
+                        && let Some((c, o)) = place[id].get()
+                    {
                         ar_chunk = Some(c);
                         ar.push((o, id, data.len() as u64));
                     }
@@ -592,7 +613,12 @@ fn update(
                         .ok_or("a string of b without an output offset")?,
                     _ => match old.frags.get(&(name.clone(), bytes)) {
                         Some(&o) => o,
-                        None if in_b => return Err(format!("a new fragment of b in {}", String::from_utf8_lossy(&name))),
+                        None if in_b => {
+                            return Err(format!(
+                                "a new fragment of b in {}",
+                                String::from_utf8_lossy(&name)
+                            ));
+                        }
                         None => MergeMap::NONE,
                     },
                 };
@@ -621,9 +647,9 @@ fn update(
     };
     let f = front(parsed.plan, env, &store, &diag, &mut Timer::new(false));
     let plan = out.borrow_mut().take().ok_or("the replay did not run")??;
-    let mut f = f.ok_or_else(|| format!("front: {:?}", diag.finish()))?;
+    let f = f.ok_or_else(|| format!("front: {:?}", diag.finish()))?;
     let path = fx.scratch.join("upd-image");
-    mortar::image::write(&mut f, &store, &path, &|_| {}, &mut |_, _| {})
+    mortar::image::write(&f, &store, &path, &|_| {}, &mut |_, _| {})
         .map_err(|e| format!("image: {:?}", e.diagnostics))?;
     let image = std::fs::read(&path).unwrap();
     std::fs::remove_file(&path).unwrap();
@@ -635,7 +661,11 @@ fn update(
 /// writes nothing.
 fn write_update(label: &str, prev: &[u8], u: &Update, rows: &MemoryState) -> Vec<u8> {
     let img = &u.image;
-    assert_eq!(img.len(), prev.len(), "{label}: the image with the update's placement has P's size");
+    assert_eq!(
+        img.len(),
+        prev.len(),
+        "{label}: the image with the update's placement has P's size"
+    );
     let mut out = prev.to_vec();
     let view = rows.view();
     let lo = LayoutOf { view: &view };
@@ -668,8 +698,10 @@ fn write_update(label: &str, prev: &[u8], u: &Update, rows: &MemoryState) -> Vec
     }
     // `.debug_aranges` (IN-54): `aranges` over P's section; the changed
     // file's new sets are the image's sets naming its new `.debug_info`.
-    if let (Some(pa), Some(ia)) = (section(prev, ".debug_aranges"), section(img, ".debug_aranges")) {
-        let info = u.plan.contributions.iter().find(|c| chunk_name(rows, c.chunk) == b".debug_info");
+    if let (Some(pa), Some(ia)) = (section(prev, ".debug_aranges"), section(img, ".debug_aranges"))
+    {
+        let info =
+            u.plan.contributions.iter().find(|c| chunk_name(rows, c.chunk) == b".debug_info");
         let mut replaced = Vec::new();
         if let Some(c) = info {
             let (s, e) = (c.allot.offset, c.allot.offset + c.size);
@@ -710,8 +742,15 @@ fn write_update(label: &str, prev: &[u8], u: &Update, rows: &MemoryState) -> Vec
     // ranges but the merged strings' (P's prefix stays).
     for s in &is {
         let (a, e) = (s.offset as usize, (s.offset + s.size) as usize);
-        if s.size == 0 || s.sh_type == 8 || e > img.len() || s.name == ".debug_str" || s.name == ".debug_line_str"
-            || s.name.starts_with(".note") || s.name == ".symtab" || s.name == ".strtab" || s.name == ".shstrtab"
+        if s.size == 0
+            || s.sh_type == 8
+            || e > img.len()
+            || s.name == ".debug_str"
+            || s.name == ".debug_line_str"
+            || s.name.starts_with(".note")
+            || s.name == ".symtab"
+            || s.name == ".strtab"
+            || s.name == ".shstrtab"
             || s.flags & 2 == 0 && !s.name.starts_with(".debug_")
         {
             continue;
@@ -750,7 +789,8 @@ fn line_of(src: &str, mark: &str) -> usize {
 /// gdb's transcript of the questions on `prog`.
 fn gdb(cfg: Cfg, prog: &Path, dir: &Path, b: &str) -> String {
     let (bl, al) = (line_of(b, "/*B*/"), line_of(&a_c(), "/*A*/"));
-    let mut ex: Vec<String> = ["set pagination off", "set width 0", "set confirm off"].map(String::from).to_vec();
+    let mut ex: Vec<String> =
+        ["set pagination off", "set width 0", "set confirm off"].map(String::from).to_vec();
     ex.push(format!("break b.c:{bl}"));
     ex.push(format!("break a.c:{al}"));
     ex.push(format!("info line b.c:{bl}"));
@@ -761,9 +801,25 @@ fn gdb(cfg: Cfg, prog: &Path, dir: &Path, b: &str) -> String {
     ex.push("info address g_count".into());
     ex.push("list area".into());
     if cfg.arch.is_host() {
-        ex.extend(["run > /dev/null 2>&1", "bt", "info locals", "print *p", "print scale", "print g_count", "next", "continue", "bt", "print local_a", "continue"].map(String::from));
+        ex.extend(
+            [
+                "run > /dev/null 2>&1",
+                "bt",
+                "info locals",
+                "print *p",
+                "print scale",
+                "print g_count",
+                "next",
+                "continue",
+                "bt",
+                "print local_a",
+                "continue",
+            ]
+            .map(String::from),
+        );
     }
-    let mut args: Vec<String> = ["-batch", "-nx", "-iex", "set debuginfod enabled off"].map(String::from).to_vec();
+    let mut args: Vec<String> =
+        ["-batch", "-nx", "-iex", "set debuginfod enabled off"].map(String::from).to_vec();
     for e in ex {
         args.push("-ex".into());
         args.push(e);
@@ -782,7 +838,19 @@ fn lldb(cfg: Cfg, prog: &Path, dir: &Path, b: &str) -> String {
     o.push("image lookup -t pt".into());
     o.push("image lookup -t small_b".into());
     if cfg.arch.is_host() {
-        o.extend(["process launch -o /dev/null -e /dev/null", "bt", "frame variable", "target variable g_count", "continue", "bt", "frame variable local_a", "continue"].map(String::from));
+        o.extend(
+            [
+                "process launch -o /dev/null -e /dev/null",
+                "bt",
+                "frame variable",
+                "target variable g_count",
+                "continue",
+                "bt",
+                "frame variable local_a",
+                "continue",
+            ]
+            .map(String::from),
+        );
     }
     let mut args: Vec<String> = vec!["-b".into()];
     for x in o {
@@ -813,7 +881,13 @@ fn norm(t: &str, prog: &Path) -> String {
                 let stack = w.trim_start_matches('0').starts_with("ff") && n >= 10;
                 // A DIE's offset (lldb's `id`) is a position, not a meaning:
                 // an update moves units (IN-50).
-                out.push_str(if stack { "0xSTACK" } else if die { "0xDIE" } else { &rest[..2 + n] });
+                out.push_str(if stack {
+                    "0xSTACK"
+                } else if die {
+                    "0xDIE"
+                } else {
+                    &rest[..2 + n]
+                });
                 rest = &h[n..];
             } else if pid && rest.starts_with(|c: char| c.is_ascii_digit()) {
                 let n = rest.chars().take_while(char::is_ascii_digit).count();
@@ -842,7 +916,9 @@ fn readelf_warnings(cfg: Cfg, prog: &Path, dir: &Path) -> std::collections::BTre
 
 /// IN-51b's accepted readelf differences (record §A.3's causes).
 fn accepted(w: &str) -> bool {
-    ["hole", "unused bytes", "Corrupt .debug_addr", "There are ### unused bytes"].iter().any(|p| w.contains(p))
+    ["hole", "unused bytes", "Corrupt .debug_addr", "There are ### unused bytes"]
+        .iter()
+        .any(|p| w.contains(p))
 }
 
 fn verify(prog: &Path, dir: &Path) -> (bool, String) {
@@ -850,7 +926,15 @@ fn verify(prog: &Path, dir: &Path) -> (bool, String) {
     let mut c = Command::new(exe);
     c.current_dir(dir).args(["--verify".as_ref(), prog.as_os_str()]);
     let o = run_with(&mut c, b"", Duration::from_mins(3));
-    (o.success(), o.stdout_text().lines().filter(|l| l.contains("error")).take(5).collect::<Vec<_>>().join("\n"))
+    (
+        o.success(),
+        o.stdout_text()
+            .lines()
+            .filter(|l| l.contains("error"))
+            .take(5)
+            .collect::<Vec<_>>()
+            .join("\n"),
+    )
 }
 
 /// The judges: `u` (the update's output) against `f` (the full link).
@@ -902,12 +986,16 @@ fn scenario(edit: Edit) {
                 // merged section's tail reserve (`size/32`, small in a small
                 // program) it is IN-57's named fall-back.
                 Err(e) if !with_rows && e.starts_with("strings: DebugCompaction") => {
-                    eprintln!("[wp228-b3] {l}: debug-compaction (the string tail): {}", &e[..e.find(';').unwrap_or(e.len())]);
+                    eprintln!(
+                        "[wp228-b3] {l}: debug-compaction (the string tail): {}",
+                        &e[..e.find(';').unwrap_or(e.len())]
+                    );
                     continue;
                 }
                 Err(e) => panic!("{l}: {e}"),
             };
-            let info = u.plan.contributions.iter().find(|c| chunk_name(&rows, c.chunk) == b".debug_info");
+            let info =
+                u.plan.contributions.iter().find(|c| chunk_name(&rows, c.chunk) == b".debug_info");
             if let (Some(want), Some(c)) = (edit.info, info) {
                 assert_eq!(c.taken, want, "{l}: .debug_info's placement");
             }
@@ -928,7 +1016,8 @@ fn scenario(edit: Edit) {
             let out = write_update(&l, &prev, &u, &rows);
             let up = fx.scratch.join(format!("upd-{tag}"));
             std::fs::write(&up, &out).unwrap();
-            std::fs::set_permissions(&up, std::os::unix::fs::PermissionsExt::from_mode(0o755)).unwrap();
+            std::fs::set_permissions(&up, std::os::unix::fs::PermissionsExt::from_mode(0o755))
+                .unwrap();
             judge(&l, cfg, fx.scratch.path(), &up, &fx.scratch.join("full"), edit.b);
             if let Some(k) = &keep {
                 let d = k.join(format!("{}-{}-{tag}", cfg.label(), edit.name));
