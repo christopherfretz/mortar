@@ -3,8 +3,8 @@
 # rebuilds the objects with these tools and fails unless every byte is
 # identical. kiln and hod: their source checkouts' commits; clang: its
 # `--version` line (i386's IR, which the pinned kiln does not target).
-kiln d854b23bc70e21a41a8e9a83eefeef19363c1052
-hod b701c7be7505bd0d2038da142f26afc44d1fc069
+kiln de347b847311c4e68c280994768392c760d58906
+hod a68a0d5d5f2e7369fbb9b302548ad66f30f352e9
 hod-i386 a68a0d5d5f2e7369fbb9b302548ad66f30f352e9
 clang-i386 Debian clang version 22.1.8 (1~deb13u4)
 # The commands, run in a directory holding a copy of runtime/odr/mason_odr_rt.cpp
