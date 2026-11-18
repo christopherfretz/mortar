@@ -1,0 +1,63 @@
+# A demoted STB_GLOBAL mention whose key only an --as-needed shared
+# library defines (WP-200; resolve.md §6.2, dyn.md D-11 item 2, the
+# supervisor's ruling): wb.o's copy of g is dropped and its global hx
+# demoted. asn: nothing else references hx or the library, and a demoted
+# mention makes no library needed whatever its binding, so libhx.so is
+# not needed, hx ends with no definition and Y's read through the mention
+# is comdat-mismatch (§6.3 case (b)). other: wz.o's strong reference to
+# z makes libhx.so needed, and the demoted mention binds to its hx:
+# 7 + 1 + 0. GNU ld makes the library needed for the demoted mention too
+# (asn exits 8); lld refuses both lines (relocation refers to a symbol in
+# a discarded section), even with the library needed; mold refuses asn
+# and links other as mortar does.
+#@ spec: resolve.md §6.2
+#@ spec: dyn.md D-11
+#@ arch: aarch64 x86_64
+
+cc -O1 -fno-pie wm.c -o wm.o
+cc -O1 -fno-pie wz.c -o wz.o
+cc -O1 -fno-pie wa.c -o wa.o
+cc -O1 -fno-pie wb.c -o wb.o
+cc -O1 -fPIC hxs.c -o hxs.o
+shlib gcc hxs.o -Wl,-soname,libhx.so -o libhx.so
+
+link(bfd) gcc -no-pie wm.o wa.o wb.o -Wl,--as-needed -L. -lhx -o asn
+run(bfd) asn
+  exit: 8
+check(bfd) readelf -dW asn
+  has: (NEEDED) Shared library: [libhx.so]
+link(lld,mold,mortar) gcc -no-pie wm.o wa.o wb.o -Wl,--as-needed -L. -lhx -o asn
+  exit: fail
+  diag(lld): relocation refers to a symbol in a discarded section: hx
+  diag(mold): hx refers to a discarded COMDAT section
+  diag(mortar): symbol hx is defined only in a discarded copy of COMDAT group g
+link(lld) gcc -no-pie wz.o wa.o wb.o -Wl,--as-needed -L. -lhx -o other
+  exit: fail
+  diag(lld): relocation refers to a symbol in a discarded section: hx
+link(bfd,mold,mortar) gcc -no-pie wz.o wa.o wb.o -Wl,--as-needed -L. -lhx -o other
+run(bfd,mold,mortar) other
+  exit: 8
+check(bfd,mold,mortar) readelf -dW other
+  has: (NEEDED) Shared library: [libhx.so]
+
+#--- wm.c
+extern int g;
+int Y(void);
+int main(void) { return Y() + g; }
+#--- wz.c
+extern int g;
+extern int z;
+int Y(void);
+int main(void) { return Y() + g + z; }
+#--- wa.c
+__asm__(".section .data.g,\"awG\",%progbits,g,comdat\n"
+        ".weak g\n.type g,%object\n.size g,4\ng: .long 1\n.previous\n");
+#--- wb.c
+__asm__(".section .data.g,\"awG\",%progbits,g,comdat\n"
+        ".weak g\n.type g,%object\n.size g,4\ng: .long 2\n"
+        ".globl hx\n.type hx,%object\n.size hx,4\nhx: .long 40\n.previous\n");
+extern int hx;
+int Y(void) { return hx; }
+#--- hxs.c
+int hx = 7;
+int z = 0;
