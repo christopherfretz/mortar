@@ -141,6 +141,12 @@ for c in $CONFIGS; do
     case $c in *-x64) OC=x86_64-linux-gnu-objcopy; NM=x86_64-linux-gnu-nm;; *) OC=objcopy; NM=nm;; esac
     rn=""
     for sym in $($NM --defined-only b.o | awk '$2 ~ /[A-Z]/ {print $3}'); do rn="$rn --redefine-sym $sym=old_$sym"; done
+    # and every COMDAT group signature (type units, macro groups: their
+    # signatures need not be globals), so the old file's groups are its
+    # own, as the old version's are in an update
+    for sym in $(readelf -gW b.o | sed -n 's/^COMDAT group section \[ *[0-9]*\] `[^'"'"']*'"'"' \[\([^]]*\)\].*/\1/p' | sort -u); do
+      case " $rn " in *" --redefine-sym $sym="*) ;; *) rn="$rn --redefine-sym $sym=old_$sym";; esac
+    done
     # shellcheck disable=SC2086
     $OC $rn b.o bold.o || { note "$tag objcopy FAIL"; continue; }
     L() { local name=$1; shift

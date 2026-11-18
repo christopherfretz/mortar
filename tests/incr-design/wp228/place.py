@@ -91,10 +91,11 @@ def block_tail(rest):
 MINS = {'.debug_info': (15, 1), '.debug_abbrev': (1, 1), '.debug_line': (32, 1),
         '.debug_rnglists': (12, 1), '.debug_loclists': (12, 1), '.debug_str_offsets': (8, 4),
         '.debug_addr': (8, 8), '.debug_ranges': (16, 1), '.debug_loc': (16, 1),
-        '.debug_frame': (13, 1), '.debug_macro': (7, 1)}
+        '.debug_frame': (13, 1), '.debug_macro': (7, 1), '.debug_types': (26, 1),
+        '.debug_macinfo': (1, 1)}
 
 
-def neutral(name, size, abbrev, addr_size=8, addr_base=None, abbrev_addr=None):
+def neutral(name, size, abbrev, addr_size=8, addr_base=None, abbrev_addr=None, sig=0xdead000000000000):
     """The neutral unit of `size` bytes of section `name` (neutral.rs's
     `unit` with version 5, ported; and the proposed forms)."""
     L = size
@@ -104,7 +105,13 @@ def neutral(name, size, abbrev, addr_size=8, addr_base=None, abbrev_addr=None):
         else:
             out = u32(L - 4) + u16(5) + bytes([1, addr_size]) + u32(abbrev) + bytes([1])
         return out + block_tail(L - len(out))
-    if name in ('.debug_abbrev', '.debug_ranges', '.debug_loc'):
+    if name == '.debug_types':
+        # PROPOSED: a DWARF 4 type unit whose DIE is IN-51's block DIE;
+        # its signature is the neutral marker 0xdead... plus the offset
+        # (no real unit names it), type_offset the DIE
+        out = u32(L - 4) + u16(4) + u32(abbrev) + bytes([addr_size]) + struct.pack('<Q', sig) + u32(23) + bytes([1])
+        return out + block_tail(L - len(out))
+    if name in ('.debug_abbrev', '.debug_ranges', '.debug_loc', '.debug_macinfo'):
         return bytes(L)
     if name == '.debug_line':
         common = bytes([1, 1, 1, 0xfb, 14, 7, 0, 1, 1, 1, 1, 0])
@@ -267,12 +274,12 @@ def main():
                     if as_pieces and name != '.debug_addr':
                         q = o
                         for L in pieces(name, size):
-                            data = neutral(name, L, abbrev_at)
+                            data = neutral(name, L, abbrev_at, sig=0xdead000000000000 | q)
                             assert len(data) == L
                             b[s.off + q:s.off + q + L] = data
                             q += L
                     else:
-                        data = neutral(name, size, abbrev_at)
+                        data = neutral(name, size, abbrev_at, sig=0xdead000000000000 | o)
                         assert len(data) == size, (name, size, len(data))
                         b[s.off + o:s.off + o + size] = data
                     if name == '.debug_abbrev' and addr_base_on and addr and (o, size) == abr[0] and size >= 11:
