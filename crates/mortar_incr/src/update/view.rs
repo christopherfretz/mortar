@@ -205,11 +205,14 @@ pub trait StateRows: Sync {
     /// # Errors
     /// `state-corrupt`.
     fn key_refs(&self, key: SymbolId) -> Rows<Vec<KeyRefRow>>;
-    /// The `GROUPS` row of a signature (kind 44; key).
+    /// The `GROUPS` rows of a signature (kind 44; key: every row of the
+    /// signature, one per live file with a copy), ascending by `file`, no
+    /// tombstone; the keeper is [`super::rows::keeper`] of them (WP-215
+    /// D2).
     ///
     /// # Errors
     /// `state-corrupt`.
-    fn group(&self, signature: &[u8]) -> Rows<Option<GroupRow>>;
+    fn group(&self, signature: &[u8]) -> Rows<Vec<GroupRow>>;
     /// An output section's `FRAGS` rows, by offset (kind 11; key).
     ///
     /// # Errors
@@ -220,11 +223,24 @@ pub trait StateRows: Sync {
     /// # Errors
     /// `state-corrupt`.
     fn holes_in(&self, chunk: ChunkId) -> Rows<Vec<HoleRow>>;
-    /// A key's `COMMONS` row (kind 46; key).
+    /// A key's `COMMONS` rows (kind 46; key: one per live file with a
+    /// common mention of it), ascending by `file`, no tombstone (WP-215
+    /// D6).
     ///
     /// # Errors
     /// `state-corrupt`.
-    fn common(&self, key: SymbolId) -> Rows<Option<CommonRow>>;
+    fn commons(&self, key: SymbolId) -> Rows<Vec<CommonRow>>;
+    /// A key's common as resolve.md §3.3 gives it (kind 46; key):
+    /// [`super::rows::winning_common`] of [`Self::commons`] (the winning
+    /// file, the maximum size and alignment), `None` when no live file
+    /// has a common mention of it. Provided: an implementation does not
+    /// override it (no winner is stored).
+    ///
+    /// # Errors
+    /// `state-corrupt`.
+    fn common(&self, key: SymbolId) -> Rows<Option<CommonRow>> {
+        Ok(super::rows::winning_common(&self.commons(key)?))
+    }
     /// An ODR key's `ODR_CLASSES` rows (kind 47; key). **PROVISIONAL
     /// (U-8's design step)**: the key's numbering and this accessor's
     /// shape follow U-8's ruling (WP-213 follow-up F-5).
@@ -382,6 +398,12 @@ pub struct ChangedFile {
     /// It has debug sections or a split-DWARF skeleton (IN-70: the G
     /// packages' `update-not-implemented (debug)` until G-3).
     pub debug: bool,
+    /// Its non-local symbol-table entries named `foo@V` or `foo@@V` (an
+    /// `@` in the name), counted from its new bytes as the capture counts
+    /// `META.versioned` (WP-215 D8: U-3 gives `update-not-implemented
+    /// (versioned)` when it is not 0). 0 for a gone or no longer
+    /// extracted file.
+    pub versioned: u32,
 }
 
 /// U2-U4's result (WP-211 §C `ChangedFiles`). Written by the join; read by
