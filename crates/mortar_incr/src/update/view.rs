@@ -21,13 +21,13 @@ use mortar_core::{ChunkId, FileId, OutSecId, SectionId, SymbolId};
 
 use super::diags::DiagRow;
 use super::rows::{
-    CommonRow, CopyRow, EdgeRow, FileIndexRow, FileRow, FragRow, GroupRow, HoleRow, IndexRow,
-    KeyRefRow, MentionRow, MetaRow, NameRow, OdrClassRow, OdrRefRow, RegionRow, ResolvedRow,
-    SymbolRow, SymtabKeyRow, SymtabRow,
+    CommonRow, CopyRow, EdgeRow, FileIndexRow, FileRow, FragRow, FragUseRow, GroupRow, HoleRow,
+    IndexRow, KeyRefRow, MentionRow, MetaRow, NameRow, OdrClassRow, OdrRefRow, RegionRow,
+    ResolvedRow, SlotRow, SymbolRow, SymtabKeyRow, SymtabRow,
 };
 use crate::format::{
-    ChunkRow, DefinedRow, EhRow, FragAtRow, LayoutRow, OutSecRow, PatchRow, ProbeRow, RedirectRow,
-    SectionRow, SegmentRow, SizeRow, SlotRow, StatRow, Str, SymPlaceRow,
+    ChunkRow, DefinedRow, EhRow, LayoutRow, OutSecRow, PatchRow, ProbeRow, RedirectRow, SectionRow,
+    SegmentRow, SizeRow, StatRow, Str, SymPlaceRow,
 };
 
 /// Read a row or a table, or `state-corrupt`.
@@ -181,11 +181,11 @@ pub trait StateRows: Sync {
     /// # Errors
     /// `state-corrupt`.
     fn edges_of(&self, file: FileId) -> Rows<Vec<EdgeRow>>;
-    /// A file's `FRAG_AT` rows (kind 40; range).
+    /// A file's `FRAG_USE` rows (kind 56; range; WP-239), by key.
     ///
     /// # Errors
     /// `state-corrupt`.
-    fn frag_at_of(&self, file: FileId) -> Rows<Vec<FragAtRow>>;
+    fn frag_uses_of(&self, file: FileId) -> Rows<Vec<FragUseRow>>;
     /// A file's `EH_RECORDS` rows (kind 13; range).
     ///
     /// # Errors
@@ -218,13 +218,13 @@ pub trait StateRows: Sync {
     /// # Errors
     /// `state-corrupt`.
     fn group(&self, signature: &[u8]) -> Rows<Vec<GroupRow>>;
-    /// The `FRAGS` rows of one identity prefix `(out, hash)`, by ordinal
-    /// (kind 11; key: two binary searches; WP-216 seam 4: never a whole
-    /// read of an output section's fragments).
+    /// The `FRAGS` row of one key `(out, class, hash)`, or `None` (kind 11;
+    /// key: one binary search; WP-239 S4-1: never a whole read of an output
+    /// section's fragments).
     ///
     /// # Errors
     /// `state-corrupt`.
-    fn frags_of(&self, out: OutSecId, hash: [u8; 16]) -> Rows<Vec<FragRow>>;
+    fn frags_of(&self, out: OutSecId, class: u32, hash: [u8; 16]) -> Rows<Option<FragRow>>;
     /// A chunk's `HOLES` rows, by offset (kind 39; key).
     ///
     /// # Errors
@@ -566,11 +566,16 @@ impl<R> Default for ParallelEdits<R> {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct FileRanges {
     pub file: FileId,
+    /// `FILE_INDEX.first_global` (IN-18e, IN-78), from
+    /// [`ChangedFile::first_global`]: ALWAYS given, never "keep the
+    /// stored value" (a kept value goes stale when the file's entries
+    /// move; WP-239 seam 5, U-2's F-10). 0 for a gone file.
+    pub first_global: u32,
     pub sections: Option<Vec<SectionRow>>,
     pub mentions: Option<Vec<MentionRow>>,
     pub index: Option<Vec<IndexRow>>,
     pub edges: Option<Vec<EdgeRow>>,
-    pub frag_at: Option<Vec<FragAtRow>>,
+    pub frag_uses: Option<Vec<FragUseRow>>,
     pub eh_records: Option<Vec<EhRow>>,
     pub symtab: Option<Option<SymtabRow>>,
     /// `REGIONS` (kind 51): rewritten when a region of the file was opened,

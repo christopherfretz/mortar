@@ -11,14 +11,14 @@ use mortar_core::{ChunkId, FileId, OutSecId, SectionId, SymbolId};
 
 use super::diags::DiagRow;
 use super::rows::{
-    CommonRow, CopyRow, EdgeRow, FileIndexRow, FileRow, FragRow, GroupRow, HoleRow, IndexRow,
-    KeyRefRow, MentionRow, MetaRow, NameRow, OdrClassRow, OdrRefRow, RegionRow, ResolvedRow,
-    SymbolRow, SymtabKeyRow, SymtabRow,
+    CommonRow, CopyRow, EdgeRow, FileIndexRow, FileRow, FragRow, FragUseRow, GroupRow, HoleRow,
+    IndexRow, KeyRefRow, MentionRow, MetaRow, NameRow, OdrClassRow, OdrRefRow, RegionRow,
+    ResolvedRow, SlotRow, SymbolRow, SymtabKeyRow, SymtabRow,
 };
 use super::view::{Rows, StateRows, StateView};
 use crate::format::{
-    ChunkRow, DefinedRow, EhRow, FragAtRow, LayoutRow, OutSecRow, PatchRow, ProbeRow, RedirectRow,
-    SectionRow, SegmentRow, SizeRow, SlotRow, StatRow, Str, SymPlaceRow, kind,
+    ChunkRow, DefinedRow, EhRow, LayoutRow, OutSecRow, PatchRow, ProbeRow, RedirectRow, SectionRow,
+    SegmentRow, SizeRow, StatRow, Str, SymPlaceRow, kind,
 };
 
 /// A state in memory: the tables as plain vectors. File-keyed rows are
@@ -51,7 +51,7 @@ pub struct MemoryState {
     pub mentions: Vec<(FileId, MentionRow)>,
     pub index: Vec<(FileId, IndexRow)>,
     pub edges: Vec<(FileId, EdgeRow)>,
-    pub frag_at: Vec<(FileId, FragAtRow)>,
+    pub frag_uses: Vec<(FileId, FragUseRow)>,
     pub eh_records: Vec<(FileId, EhRow)>,
     pub symtab: Vec<(FileId, SymtabRow)>,
     pub regions: Vec<(FileId, RegionRow)>,
@@ -109,7 +109,13 @@ impl MemoryState {
             chunks: s.chunks.clone(),
             order: s.order.clone(),
             segments: s.segments.clone(),
-            slots: s.slots.clone(),
+            // Format 4 has no `refs`: 1, as `FRAGS.refs` below (WP-239
+            // seam 5; U-2's capture writes the count).
+            slots: s
+                .slots
+                .iter()
+                .map(|r| SlotRow { kind: r.kind, symbol: r.symbol, refs: 1 })
+                .collect(),
             sizes: s.sizes.clone(),
             sym_place: s.sym_place.clone(),
             defined: s.defined.clone(),
@@ -159,6 +165,9 @@ impl MemoryState {
                 hash: f.hash,
                 rank: (i as u64) << 20,
                 round: 0,
+                eh_offset: 0,
+                eh_capacity: 0,
+                eh_records: 0,
             })
             .collect();
         m.keyed_from_format4(s);
@@ -195,6 +204,7 @@ impl MemoryState {
                 bind: r.bind,
                 typ: r.typ,
                 flags,
+                demand: 0,
                 tomb: false,
             });
         }
@@ -216,14 +226,26 @@ impl MemoryState {
             }
         }
         m.index = s.index.iter().map(|r| (file_of(r.unit), *r)).collect();
-        m.frag_at = s.frag_at.iter().map(|r| (file_of(r.section), *r)).collect();
+        // Format 4's `FRAG_AT` (first occurrences) as the closest rows:
+        // its ordinal stands in for the class until U-2's capture writes
+        // the class word (WP-239 seam 5: today's behaviour kept).
+        m.frag_uses = s
+            .frag_at
+            .iter()
+            .filter_map(|r| {
+                let f = s.frags.get(usize::try_from(r.frag).ok()?)?;
+                let file = file_of(r.section);
+                let row = FragUseRow { file: file.0, out: f.out, class: f.ordinal, hash: f.hash };
+                Some((file, row))
+            })
+            .collect();
         m.eh_records = s.eh_records.iter().map(|r| (file_of(r.section), r.clone())).collect();
         m.frags = s
             .frags
             .iter()
             .map(|f| FragRow {
                 out: f.out,
-                ordinal: f.ordinal,
+                class: f.ordinal,
                 hash: f.hash,
                 offset: f.offset,
                 refs: 1,
@@ -266,7 +288,7 @@ impl MemoryState {
         row.ranges[FileTable::Mentions as usize] = range(self.mentions.iter().map(|r| r.0 == file));
         row.ranges[FileTable::Index as usize] = range(self.index.iter().map(|r| r.0 == file));
         row.ranges[FileTable::Edges as usize] = range(self.edges.iter().map(|r| r.0 == file));
-        row.ranges[FileTable::FragAt as usize] = range(self.frag_at.iter().map(|r| r.0 == file));
+        row.ranges[FileTable::FragUse as usize] = range(self.frag_uses.iter().map(|r| r.0 == file));
         row.ranges[FileTable::EhRecords as usize] =
             range(self.eh_records.iter().map(|r| r.0 == file));
         row.ranges[FileTable::Symtab as usize] = range(self.symtab.iter().map(|r| r.0 == file));
@@ -412,8 +434,10 @@ impl StateRows for &MemoryState {
     fn edges_of(&self, file: FileId) -> Rows<Vec<EdgeRow>> {
         Ok(of(&self.edges, file))
     }
-    fn frag_at_of(&self, file: FileId) -> Rows<Vec<FragAtRow>> {
-        Ok(of(&self.frag_at, file))
+    fn frag_uses_of(&self, file: FileId) -> Rows<Vec<FragUseRow>> {
+        let mut v = of(&self.frag_uses, file);
+        v.sort();
+        Ok(v)
     }
     fn eh_records_of(&self, file: FileId) -> Rows<Vec<EhRow>> {
         Ok(self.eh_records.iter().filter(|(f, _)| *f == file).map(|(_, r)| r.clone()).collect())
@@ -442,15 +466,12 @@ impl StateRows for &MemoryState {
         // No promised order (WP-215): the rows' order is the vector's.
         Ok(v)
     }
-    fn frags_of(&self, out: OutSecId, hash: [u8; 16]) -> Rows<Vec<FragRow>> {
-        let mut v: Vec<FragRow> = self
+    fn frags_of(&self, out: OutSecId, class: u32, hash: [u8; 16]) -> Rows<Option<FragRow>> {
+        Ok(self
             .frags
             .iter()
-            .filter(|f| f.out == out.0 && f.hash == hash && !f.tomb)
-            .copied()
-            .collect();
-        v.sort_by_key(|f| f.ordinal);
-        Ok(v)
+            .find(|f| (f.out, f.class, f.hash) == (out.0, class, hash) && !f.tomb)
+            .copied())
     }
     fn holes_in(&self, chunk: ChunkId) -> Rows<Vec<HoleRow>> {
         let mut v: Vec<HoleRow> =
