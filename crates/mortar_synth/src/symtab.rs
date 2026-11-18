@@ -17,6 +17,7 @@
 use std::ops::Range;
 
 use mortar_core::column::Column;
+use mortar_core::incr::{SymtabBlock, SymtabTables};
 use mortar_core::layout::{Patch, PatchKind, ThunkTarget};
 use mortar_core::par::Pool;
 use mortar_core::plan::Discard;
@@ -44,7 +45,7 @@ const REGION: u64 = FIXED.len() as u64;
 /// An AArch64 Cortex-A53 843419 patch's name (S-80).
 pub const ERRATUM_843419: &[u8] = b"__erratum_843419_veneer";
 
-fn fixed_name(name: &[u8]) -> Option<u32> {
+pub(crate) fn fixed_name(name: &[u8]) -> Option<u32> {
     match name {
         b"" => Some(0),
         b"$x" => Some(1),
@@ -56,7 +57,7 @@ fn fixed_name(name: &[u8]) -> Option<u32> {
 
 /// The bytes a name takes in a region (S-86): none for the empty name and
 /// the fixed table's names.
-fn region_len(name: &[u8]) -> u64 {
+pub(crate) fn region_len(name: &[u8]) -> u64 {
     if fixed_name(name).is_some() { 0 } else { name.len() as u64 + 1 }
 }
 
@@ -254,7 +255,7 @@ impl std::fmt::Debug for SymCtx<'_> {
     }
 }
 
-/// Patch symbols' facts.
+/// Patch symbols' facts, and the form of the tables.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct PatchFacts {
     /// `arch.thunk()`'s size.
@@ -263,10 +264,15 @@ pub struct PatchFacts {
     pub erratum_843419_size: u64,
     /// AArch64: a `$x` per patch (S-80).
     pub mapping: bool,
+    /// An incremental-mode output (`spec/incr.md` IN-49a, S-88, S-112):
+    /// each block followed by fillers up to its capacity, a local tail
+    /// reserve, a `.strtab` region per block with slack. `false` in a
+    /// plain link (S-73 to S-88 unchanged, no filler, no slack).
+    pub room: bool,
 }
 
 impl PatchFacts {
-    /// The facts of `arch` (`spec/arch.md` §3.6, §3.7).
+    /// The facts of `arch` (`spec/arch.md` §3.6, §3.7), for a plain link.
     #[must_use]
     pub fn of(arch: &dyn mortar_arch::Arch) -> Self {
         let size = |s: Option<&mortar_arch::ThunkShape>| s.map_or(0, |s| u64::from(s.size));
@@ -274,9 +280,54 @@ impl PatchFacts {
             thunk_size: size(arch.thunk()),
             erratum_843419_size: size(arch.patch(mortar_core::layout::Erratum::E843419)),
             mapping: arch.facts().machine == mortar_elf::Machine::AArch64,
+            room: false,
         }
     }
 }
+
+/// IN-49a's room after a block of `count` entries and `bytes` of names:
+/// `(fillers, .strtab slack)`. A block with no entry is no block (S-74):
+/// no room.
+#[must_use]
+pub fn block_room(count: u32, bytes: u64) -> (u32, u64) {
+    if count == 0 {
+        (0, 0)
+    } else {
+        (BLOCK_MIN.max(count / BLOCK_DIV), REGION_MIN.max(bytes / REGION_DIV))
+    }
+}
+
+/// IN-49a's local tail reserve after the last block, for `locals` local
+/// entries (fillers and the null entry not counted): max(64, locals/32).
+#[must_use]
+pub fn tail_room(locals: u32) -> u32 {
+    TAIL_MIN.max(locals / TAIL_DIV)
+}
+
+/// IN-49a's file slack after `.symtab` or `.strtab` of `size` bytes:
+/// max(4 KiB, size/16) (`spec/layout.md` L-72: the layout's tail, the same
+/// numbers as `mortar_layout::slack::Slack::tail`).
+#[must_use]
+pub fn file_slack(size: u64) -> u64 {
+    FILE_SLACK_MIN.max(size / FILE_SLACK_DIV)
+}
+
+/// IN-49a's constants: a block's fillers max(2, count/8), a region's
+/// slack max(16, len/8), the tail reserve max(64, locals/32), the file
+/// slack max(4 KiB, size/16).
+pub const BLOCK_MIN: u32 = 2;
+pub const BLOCK_DIV: u32 = 8;
+pub const REGION_MIN: u64 = 16;
+pub const REGION_DIV: u64 = 8;
+pub const TAIL_MIN: u32 = 64;
+pub const TAIL_DIV: u32 = 32;
+pub const FILE_SLACK_MIN: u64 = 4096;
+pub const FILE_SLACK_DIV: u64 = 16;
+
+/// A filler's `st_info` (IN-49a: `STB_LOCAL`, `STT_SECTION`).
+pub const FILLER_INFO: u8 = STT_SECTION;
+/// A filler's `st_shndx` (IN-49a: section 1).
+pub const FILLER_SHNDX: u16 = 1;
 
 /// One output symbol, before addresses.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -292,6 +343,8 @@ enum Where {
     Internal(SymbolId),
     Undefined,
     Patch(usize),
+    /// An IN-49a filler: section 1 at its address.
+    Filler,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -311,6 +364,11 @@ enum Seg {
     Patches,
     Locals(FileId),
     Demoted(FileId),
+    /// IN-49a (incremental mode only): `len` fillers after the block
+    /// before it (or, the last one, the local tail reserve), and the
+    /// `.strtab` slack of that block's region (the bytes to the next
+    /// segment's `str_off`).
+    Fill,
     Globals,
 }
 
@@ -549,6 +607,16 @@ impl<'c> Walk<'_, 'c> {
                     }
                     found
                 }
+                Seg::Fill => (self.cursor < seg.len).then(|| {
+                    self.cursor += 1;
+                    Row {
+                        name: (&b""[..]).into(),
+                        info: FILLER_INFO,
+                        other: 0,
+                        size: 0,
+                        at: Where::Filler,
+                    }
+                }),
                 Seg::Globals => {
                     let n = self.cx.syms.globals();
                     let mut found = None;
@@ -573,10 +641,16 @@ impl<'c> Walk<'_, 'c> {
                 });
                 return Ok(Some((entry, st_name, row)));
             }
+            let filled = seg.seg == Seg::Fill;
             self.seg += 1;
             self.cursor = 0;
             if let Some(next) = self.plan.segs.get(self.seg) {
                 debug_assert_eq!(next.entry, self.entry, "segment entries are contiguous");
+                if filled {
+                    // IN-49a: the region's slack, which no entry names.
+                    debug_assert!(next.str_off >= self.str_off, "a region's slack is not negative");
+                    self.str_off = next.str_off;
+                }
                 debug_assert_eq!(next.str_off, self.str_off, "segment strings are contiguous");
             }
         }
@@ -661,8 +735,22 @@ impl SymtabPlan {
         }
         b.push(Seg::Patches, patch_syms.len() as u32, o - b.str_off, 0..0);
         symtab_locals[0] = Span { start: 1, len: b.entry - 1 };
+        // IN-49a: each block's room, the tail reserve after the last.
+        // A block's span is its capacity (S-88 in incremental mode: the
+        // spans follow IN-49a's capacities, so they stay contiguous).
+        let room = |b: &mut Segs, start: u32, str_start: u64| -> u32 {
+            if !facts.room {
+                return 0;
+            }
+            let (fill, slack) = block_room(b.entry - start, b.str_off - str_start);
+            b.push(Seg::Fill, fill, slack, 0..0);
+            fill
+        };
+        symtab_locals[0].len += room(&mut b, 1, REGION);
+        let mut block_entries = b.entry - 1;
         for (f, count) in files.iter().enumerate().skip(1) {
             let block_start = b.entry;
+            let block_str = b.str_off;
             let seg = b.list.len() as u32;
             b.checks.push(Check { entry: b.entry, seg, cursor: 0, str_off: b.str_off });
             for &(kept, cursor, bytes) in &count.checks {
@@ -674,6 +762,11 @@ impl SymtabPlan {
             let bytes = demoted_rows(rows.clone(), b.str_off, &mut demoted_str);
             b.push(Seg::Demoted(FileId(f as u32)), rows.len() as u32, bytes, rows);
             symtab_locals[f] = Span { start: block_start, len: b.entry - block_start };
+            block_entries += b.entry - block_start;
+            symtab_locals[f].len += room(&mut b, block_start, block_str);
+        }
+        if facts.room {
+            b.push(Seg::Fill, tail_room(block_entries), 0, 0..0);
         }
         let locals = b.entry;
         let gseg = b.list.len() as u32;
@@ -722,6 +815,9 @@ impl SymtabPlan {
         let old_bytes = self.segs.get(at + 1).map_or(self.strtab, |n| n.str_off) - old.str_off;
         let len = patch_syms.len() as u32;
         let bytes: u64 = patch_bytes.iter().sum();
+        if self.facts.room {
+            return self.relaid(at, len, bytes, patch_syms, &patch_bytes, patches);
+        }
         // Entries and bytes after the segment, in wrapping arithmetic:
         // each shifted value is the old one plus the difference.
         let d_entry = len.wrapping_sub(old.len);
@@ -789,6 +885,117 @@ impl SymtabPlan {
         }
     }
 
+    /// [`SymtabPlan::with_patches`] in an incremental-mode output
+    /// (IN-49a): the patch segment `at` gets `len` rows and `bytes` name
+    /// bytes, so the internal block's room and the tail reserve change
+    /// too; every segment is placed again from its rows and bytes, and
+    /// each checkpoint and stored string offset moves with its segment.
+    fn relaid(
+        &self,
+        at: usize,
+        len: u32,
+        bytes: u64,
+        patch_syms: Vec<PatchSym>,
+        patch_bytes: &[u64],
+        patches: &[Patch],
+    ) -> Self {
+        let n = self.segs.len();
+        let end = |i: usize| self.segs.get(i + 1).map_or(self.strtab, |s| s.str_off);
+        let mut sizes: Vec<(u32, u64)> =
+            (0..n).map(|i| (self.segs[i].len, end(i) - self.segs[i].str_off)).collect();
+        sizes[at] = (len, bytes);
+        // The room of each block, then the tail reserve (the last fill).
+        let last_fill = self.segs.iter().rposition(|s| s.seg == Seg::Fill);
+        let (mut block, mut total) = ((0u32, 0u64), 0u32);
+        for i in 0..n {
+            match self.segs[i].seg {
+                Seg::Null | Seg::Globals => block = (0, 0),
+                Seg::Fill if Some(i) == last_fill => sizes[i] = (tail_room(total), 0),
+                Seg::Fill => {
+                    sizes[i] = block_room(block.0, block.1);
+                    total += block.0;
+                    block = (0, 0);
+                }
+                _ => block = (block.0 + sizes[i].0, block.1 + sizes[i].1),
+            }
+        }
+        let mut segs = self.segs.to_vec();
+        let mut delta = Vec::with_capacity(n);
+        let (mut entry, mut str_off) = (0u32, REGION);
+        for (s, &(l, b)) in segs.iter_mut().zip(&sizes) {
+            delta.push((entry.wrapping_sub(s.entry), str_off.wrapping_sub(s.str_off)));
+            s.entry = entry;
+            s.str_off = str_off;
+            s.len = l;
+            entry += l;
+            str_off += b;
+        }
+        let checks: Box<[Check]> = self
+            .checks
+            .iter()
+            .map(|c| {
+                let (de, ds) = delta[c.seg as usize];
+                Check { entry: c.entry.wrapping_add(de), str_off: c.str_off.wrapping_add(ds), ..*c }
+            })
+            .collect();
+        let mut demoted_str = self.demoted_str.to_vec();
+        for (s, &(_, ds)) in segs.iter().zip(&delta) {
+            for r in s.rows.clone() {
+                demoted_str[r as usize] = demoted_str[r as usize].wrapping_add(ds);
+            }
+        }
+        let mut patch_str = Vec::with_capacity(patch_bytes.len());
+        let mut o = segs[at].str_off;
+        for b in patch_bytes {
+            patch_str.push(o);
+            o += b;
+        }
+        let mut locals = self.symtab_locals.as_slice().to_vec();
+        let mut globals_at = entry;
+        for s in &segs {
+            match s.seg {
+                Seg::Linker => locals[0] = Span { start: s.entry, len: s.len },
+                Seg::Patches => locals[0].len += s.len,
+                Seg::Locals(f) => locals[f.0 as usize] = Span { start: s.entry, len: s.len },
+                Seg::Demoted(f) => locals[f.0 as usize].len += s.len,
+                Seg::Globals => globals_at = s.entry,
+                Seg::Null | Seg::Fill => {}
+            }
+        }
+        // The spans are the capacities (S-88 in incremental mode): each
+        // block's fill is its file's, the tail reserve is no file's.
+        let last_fill = segs.iter().rposition(|s| s.seg == Seg::Fill);
+        let mut owner = None;
+        for (i, s) in segs.iter().enumerate() {
+            match s.seg {
+                Seg::Linker | Seg::Patches => owner = Some(0),
+                Seg::Locals(f) | Seg::Demoted(f) => owner = Some(f.0 as usize),
+                Seg::Fill if Some(i) != last_fill => {
+                    if let Some(f) = owner.take() {
+                        locals[f].len += s.len;
+                    }
+                }
+                _ => owner = None,
+            }
+        }
+        Self {
+            class: self.class,
+            facts: self.facts,
+            segs: segs.into(),
+            checks,
+            demoted: self.demoted.clone(),
+            demoted_str: demoted_str.into(),
+            patches: patches.into(),
+            patch_syms: patch_syms.into(),
+            patch_str: patch_str.into(),
+            entries: entry,
+            locals: globals_at,
+            strtab: str_off,
+            symtab_locals: Column::from_vec(locals).unwrap_or_default(),
+            gnu_symbols: self.gnu_symbols,
+        }
+    }
+
     fn patch_row<'c>(&self, cx: &SymCtx<'c>, r: usize) -> Row<'c> {
         let syms: &'c dyn SymSource = cx.syms;
         match self.patch_syms[r] {
@@ -825,9 +1032,109 @@ impl SymtabPlan {
 
     /// `Slots.symtab_locals` (S-88): per file its `(first local, count)`,
     /// demoted globals included; file 0 is the internal block.
+    /// In an incremental-mode output the count is the block's capacity
+    /// (IN-49a: its entries and its fillers), so the spans stay
+    /// contiguous; the tail reserve is no file's.
     #[must_use]
     pub fn symtab_locals(&self) -> &Column<FileId, Span> {
         &self.symtab_locals
+    }
+
+    /// Whether the tables have IN-49a's form (an incremental-mode output).
+    #[must_use]
+    pub fn room(&self) -> bool {
+        self.facts.room
+    }
+
+    /// IN-49a's blocks of an incremental-mode output, in `.symtab` order
+    /// (the internal file's first, as `FileId(0)`; a file with no entry
+    /// has no block, S-74): `(first, count, capacity)` and the `.strtab`
+    /// region `(offset, bytes used, bytes held)`. What the state's
+    /// `SYMTAB` rows (IN-18e) and the map's `symblock` records
+    /// (`spec/plumb.md` §3.2) say. `None` in a plain link.
+    #[must_use]
+    pub fn incr_blocks(&self) -> Option<Vec<(FileId, SymtabBlock)>> {
+        if !self.facts.room {
+            return None;
+        }
+        let end = |i: usize| self.segs.get(i + 1).map_or(self.strtab, |s| s.str_off);
+        let mut out = Vec::new();
+        // The open block: its file, first entry, first byte, entries, bytes.
+        let mut open: Option<(FileId, u32, u64, u32, u64)> = None;
+        let last_fill = self.segs.iter().rposition(|s| s.seg == Seg::Fill);
+        for (i, s) in self.segs.iter().enumerate() {
+            let file = match s.seg {
+                Seg::Linker | Seg::Patches => FileId(0),
+                Seg::Locals(f) | Seg::Demoted(f) => f,
+                Seg::Fill if Some(i) != last_fill => {
+                    if let Some((file, first, str_at, count, bytes)) = open.take()
+                        && count > 0
+                    {
+                        let slack = end(i) - s.str_off;
+                        out.push((
+                            file,
+                            SymtabBlock {
+                                first,
+                                count,
+                                capacity: count + s.len,
+                                strtab_offset: str_at,
+                                strtab_len: bytes,
+                                strtab_capacity: bytes + slack,
+                            },
+                        ));
+                    }
+                    continue;
+                }
+                Seg::Null | Seg::Fill | Seg::Globals => continue,
+            };
+            let b = open.get_or_insert((file, s.entry, s.str_off, 0, 0));
+            b.3 += s.len;
+            b.4 += end(i) - s.str_off;
+        }
+        Some(out)
+    }
+
+    /// The global area of an incremental-mode output (IN-49a: dense, from
+    /// `sh_info` to the end; `SYMTAB`'s row of file 0): its first entry,
+    /// its entries (capacity the same), its names' bytes. `None` in a
+    /// plain link.
+    #[must_use]
+    pub fn incr_global_area(&self) -> Option<SymtabBlock> {
+        if !self.facts.room {
+            return None;
+        }
+        let g = self.segs.iter().find(|s| s.seg == Seg::Globals)?;
+        let bytes = self.strtab - g.str_off;
+        Some(SymtabBlock {
+            first: g.entry,
+            count: g.len,
+            capacity: g.len,
+            strtab_offset: g.str_off,
+            strtab_len: bytes,
+            strtab_capacity: bytes,
+        })
+    }
+
+    /// The sizes of an incremental-mode output's tables (IN-49a; the
+    /// state's `META.symtab`): `sh_info`, the local tail reserve, each
+    /// table's `sh_size` and its file slack ([`file_slack`], the layout's
+    /// L-72 tail). `None` in a plain link.
+    #[must_use]
+    pub fn incr_tables(&self) -> Option<SymtabTables> {
+        if !self.facts.room {
+            return None;
+        }
+        let tail = self.segs.iter().rfind(|s| s.seg == Seg::Fill)?;
+        let symtab_size = self.symtab_size();
+        Some(SymtabTables {
+            sh_info: self.locals,
+            tail_first: tail.entry,
+            tail_capacity: tail.len,
+            symtab_size,
+            symtab_slack: file_slack(symtab_size),
+            strtab_size: self.strtab,
+            strtab_slack: file_slack(self.strtab),
+        })
     }
 
     /// S-88: whether a layout's `Slots.symtab_locals` are this plan's
@@ -995,6 +1302,13 @@ impl SymtabPlan {
             Where::Patch(p) => addrs
                 .patch(p)
                 .ok_or_else(|| internal::<SynthError>(format!("patch {p} has no place")))?,
+            // IN-49a: section 1 and its `sh_addr`.
+            Where::Filler => {
+                let (addr, _) = addrs.section_range(u32::from(FILLER_SHNDX)).ok_or_else(|| {
+                    internal::<SynthError>("an IN-49a filler without a section 1")
+                })?;
+                return Ok((u32::from(FILLER_SHNDX), addr));
+            }
         };
         // S-122 (anomaly A10): the index names the section holding the
         // address, its end included.
@@ -1036,8 +1350,13 @@ impl SymtabPlan {
         let mut entries = Vec::new();
         let mut strings = Vec::new();
         let str_end = |i: usize| self.segs.get(i + 1).map_or(self.strtab, |n| n.str_off);
+        let mut mine = false;
         for (i, seg) in self.segs.iter().enumerate() {
-            if matches!(seg.seg, Seg::Locals(f) | Seg::Demoted(f) if f == file) {
+            // IN-49a: the fillers and the region's slack after its block
+            // are the file's too.
+            let filled = mine && seg.seg == Seg::Fill;
+            mine = matches!(seg.seg, Seg::Locals(f) | Seg::Demoted(f) if f == file);
+            if mine || filled {
                 entries.push(seg.entry..seg.entry + seg.len);
                 strings.push(seg.str_off..str_end(i));
             }
@@ -1165,6 +1484,10 @@ impl SymtabPlan {
 
     /// Fills the window's range of `.strtab` (S-86).
     pub fn write_strtab(&self, cx: &SymCtx<'_>, out: &mut Window<'_>) -> Result<(), SynthError> {
+        if self.facts.room {
+            // IN-49a: the regions' slack is zeros (no entry names it).
+            out.zero(out.start(), out.end() - out.start());
+        }
         out.put(0, FIXED);
         if out.end() <= REGION {
             return Ok(());

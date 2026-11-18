@@ -768,7 +768,8 @@ pub fn front<'s>(
         eh: Some((&eh, &merge_eh)),
         discard: plan.shaping.discard,
     };
-    let facts = PatchFacts::of(arch);
+    // spec/incr.md IN-49a: per-file room in an incremental-mode output.
+    let facts = PatchFacts { room: env.slack, ..PatchFacts::of(arch) };
     let symtab = if strip_all {
         None
     } else {
