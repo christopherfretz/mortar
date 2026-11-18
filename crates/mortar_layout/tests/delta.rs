@@ -1585,7 +1585,10 @@ fn eh_frame_range_rewritten_in_place() {
     // A file with records and no range: the whole rewrite, which needs
     // every `FILES` row with a range (WP-243 F-1).
     let grown = [eh_file(1, &[24, 40, 40])];
-    assert_eq!(layout(&stored, &LayoutInput { eh: &grown, ..inp }, t).err(), Some(not_implemented()));
+    assert_eq!(
+        layout(&stored, &LayoutInput { eh: &grown, ..inp }, t).err(),
+        Some(not_implemented())
+    );
 }
 
 // spec: incr.md IN-72 item 5 (WP-243: no `.eh_frame` in the update and

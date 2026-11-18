@@ -525,8 +525,7 @@ fn select_in_per_file_equals_restricted_full_selection() {
         for name in ["one", "two"] {
             let src = sub.write(&format!("{name}.cc"), CXX.replace("ONE", name));
             let obj = sub.join(format!("{name}.o"));
-            let out =
-                run(&cxx, ["-O0", "-c", src.to_str().unwrap(), "-o", obj.to_str().unwrap()]);
+            let out = run(&cxx, ["-O0", "-c", src.to_str().unwrap(), "-o", obj.to_str().unwrap()]);
             assert!(out.success(), "{}", out.stderr_text());
             objs.push(obj);
         }

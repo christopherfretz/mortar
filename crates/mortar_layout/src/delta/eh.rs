@@ -153,7 +153,8 @@ pub(super) fn item_5(
     let stored_holes = stored.holes_in(chunk)?;
     check_holes(&stored_holes, end)?;
 
-    let fits = now.iter().all(|n| n.size == 0 || n.old.is_some_and(|o| n.size <= u64::from(o.capacity)));
+    let fits =
+        now.iter().all(|n| n.size == 0 || n.old.is_some_and(|o| n.size <= u64::from(o.capacity)));
     if fits && let Some(out) = in_place(chunk, c.size, &now, &stored_holes)? {
         return Ok(Some(out));
     }
@@ -166,9 +167,8 @@ fn find<'c>(
     chunks: &'c Column<ChunkId, Chunk>,
     name: &[u8],
 ) -> Result<Option<(ChunkId, &'c Chunk)>, IncrReason> {
-    let mut it = chunks
-        .iter()
-        .filter(|(_, c)| matches!(c.kind, ChunkKind::Synthetic(s) if s.name == name));
+    let mut it =
+        chunks.iter().filter(|(_, c)| matches!(c.kind, ChunkKind::Synthetic(s) if s.name == name));
     let first = it.next();
     if it.next().is_some() {
         return Err(corrupt(format!("two {} chunks", String::from_utf8_lossy(name))));
@@ -259,6 +259,11 @@ fn in_place(
     Ok(Some(EhOut { layout: EhLayout { chunk, whole: false, ranges }, size, holes, made }))
 }
 
+/// A range of the whole rewrite: (the internal file, rank, file, size,
+/// the new records or `None`: moved). Sorted, the first three are S-46's
+/// order.
+type Laid<'a> = (bool, u64, FileId, u64, Option<&'a [EhRecordIn]>);
+
 /// The whole rewrite in full-link order.
 fn whole(
     chunk: ChunkId,
@@ -269,8 +274,7 @@ fn whole(
 ) -> Result<EhOut, IncrReason> {
     let end = c.size - TERMINATOR;
     let mine: BTreeMap<FileId, &Now<'_>> = now.iter().map(|n| (n.file, n)).collect();
-    // (internal last, rank, file, size, the new records or none: moved).
-    let mut list: Vec<(bool, u64, FileId, u64, Option<&[EhRecordIn]>)> = Vec::new();
+    let mut list: Vec<Laid<'_>> = Vec::new();
     let mut seen = BTreeSet::new();
     for &(file, rank, r) in rows {
         if !seen.insert(file) {
@@ -278,7 +282,10 @@ fn whole(
         }
         if let Some(n) = mine.get(&file) {
             if n.old != Some(r) {
-                return Err(corrupt(format!("file {}'s .eh_frame range read twice differs", file.0)));
+                return Err(corrupt(format!(
+                    "file {}'s .eh_frame range read twice differs",
+                    file.0
+                )));
             }
             continue;
         }
@@ -326,7 +333,10 @@ fn bytes_of(file: FileId, r: StoredEhRange, holes: &[Hole]) -> Result<u64, IncrR
     let mut inside = holes.iter().filter(|h| h.offset < e && h.offset + h.size > s);
     let Some(h) = inside.next() else { return Ok(e - s) };
     if inside.next().is_some() || h.offset <= s || h.offset + h.size < e {
-        return Err(corrupt(format!("file {}'s .eh_frame range holds a hole not at its end", file.0)));
+        return Err(corrupt(format!(
+            "file {}'s .eh_frame range holds a hole not at its end",
+            file.0
+        )));
     }
     Ok(h.offset - s)
 }
@@ -469,7 +479,11 @@ mod tests {
         State {
             rows,
             ranks: files.iter().map(|f| (f.file, f.rank)).collect(),
-            bytes: files.iter().map(|f| (f.file, f.sizes.iter().sum())).filter(|e| e.1 > 0).collect(),
+            bytes: files
+                .iter()
+                .map(|f| (f.file, f.sizes.iter().sum()))
+                .filter(|e| e.1 > 0)
+                .collect(),
         }
     }
 
@@ -501,9 +515,8 @@ mod tests {
         let eh = eh_files(touched);
         let files: Vec<FileId> = eh.iter().map(|e| e.file).collect();
         let chunks = Column::from_vec(s.rows.chunks.clone()).unwrap();
-        let rows = || {
-            Ok(s.rows.eh_ranges.iter().map(|&(f, r)| (f, s.ranks[&f], r)).collect::<Vec<_>>())
-        };
+        let rows =
+            || Ok(s.rows.eh_ranges.iter().map(|&(f, r)| (f, s.ranks[&f], r)).collect::<Vec<_>>());
         item_5(&stored, &eh, &files, &chunks, enumerate.then_some(&rows as AllRanges<'_>))
     }
 
@@ -529,7 +542,8 @@ mod tests {
             next.rows.eh_ranges.retain(|(f, _)| !by.contains_key(f));
         }
         for r in &out.layout.ranges {
-            let records = if r.records.is_empty() { old[&r.file].records } else { r.records.len() as u32 };
+            let records =
+                if r.records.is_empty() { old[&r.file].records } else { r.records.len() as u32 };
             let row = StoredEhRange {
                 offset: u32::try_from(r.offset).unwrap(),
                 capacity: u32::try_from(r.capacity).unwrap(),
@@ -591,16 +605,24 @@ mod tests {
                     .collect();
                 assert_eq!(r.records, want);
             } else {
-                assert!(out.layout.whole && r.records.is_empty(), "an unchanged range is moved, not rewritten");
+                assert!(
+                    out.layout.whole && r.records.is_empty(),
+                    "an unchanged range is moved, not rewritten"
+                );
             }
         }
         if out.layout.whole {
             let v = s.bytes.iter().map(|(&f, &n)| (f, s.ranks[&f], n)).collect();
             let (ranges, holes, size) = fresh(v);
-            let got: Vec<_> =
-                by_off.iter().map(|(f, r)| (*f, u64::from(r.offset), u64::from(r.capacity))).collect();
+            let got: Vec<_> = by_off
+                .iter()
+                .map(|(f, r)| (*f, u64::from(r.offset), u64::from(r.capacity)))
+                .collect();
             assert_eq!(got, ranges, "the whole rewrite is the fresh layout");
-            assert_eq!(merge(EH, holes.iter().map(|h| (h.offset, h.offset + h.size)).collect()), s.rows.holes);
+            assert_eq!(
+                merge(EH, holes.iter().map(|h| (h.offset, h.offset + h.size)).collect()),
+                s.rows.holes
+            );
             assert_eq!(size, c.size);
             assert_eq!(out.layout.ranges.len(), ranges.len(), "every range given");
         }
@@ -619,8 +641,8 @@ mod tests {
         ]
     }
 
-    fn layout_err(e: IncrReason) -> bool {
-        e == IncrReason::UpdateNotImplemented(Some(Unimplemented::Layout))
+    fn layout_err(e: &IncrReason) -> bool {
+        *e == IncrReason::UpdateNotImplemented(Some(Unimplemented::Layout))
     }
 
     #[test]
@@ -658,7 +680,10 @@ mod tests {
     fn whole_rewrite_outgrowing_the_chunk_is_reserve_exhausted() {
         let s = first(&base(), 0);
         let e = run(&s, &[f(2, 2 << 20, &[20, 4000])], true).unwrap_err();
-        assert!(matches!(e, IncrReason::ReserveExhausted(ref m) if m.contains(".eh_frame")), "{e:?}");
+        assert!(
+            matches!(e, IncrReason::ReserveExhausted(ref m) if m.contains(".eh_frame")),
+            "{e:?}"
+        );
     }
 
     #[test]
@@ -667,7 +692,8 @@ mod tests {
         // FILES row 9, rank between files 2 and 3.
         let (s2, whole) = hop(&s, &[f(9, (2 << 20) + (1 << 19), &[24, 32])]);
         assert!(whole);
-        let at = |file: u32| s2.rows.eh_ranges.iter().find(|e| e.0 == FileId(file)).unwrap().1.offset;
+        let at =
+            |file: u32| s2.rows.eh_ranges.iter().find(|e| e.0 == FileId(file)).unwrap().1.offset;
         assert!(at(2) < at(9) && at(9) < at(3));
     }
 
@@ -749,7 +775,8 @@ mod tests {
         // File 3 (now row 7) grows past its capacity: whole, by rank.
         let (c2, whole) = hop(&c, &[f(7, 3 << 20, &[24, 40, 40, 40, 400])]);
         assert!(whole);
-        let off = |file: u32| c2.rows.eh_ranges.iter().find(|e| e.0 == FileId(file)).unwrap().1.offset;
+        let off =
+            |file: u32| c2.rows.eh_ranges.iter().find(|e| e.0 == FileId(file)).unwrap().1.offset;
         assert!(off(9) < off(8) && off(8) < off(7) && off(7) < off(6) && off(6) < off(5));
     }
 
@@ -786,8 +813,8 @@ mod tests {
     #[test]
     fn whole_without_the_rows_is_not_implemented() {
         let s = first(&base(), 4096);
-        assert!(layout_err(run(&s, &[f(2, 2 << 20, &[20, 400])], false).unwrap_err()));
-        assert!(layout_err(run(&s, &[f(9, 1, &[24])], false).unwrap_err()));
+        assert!(layout_err(&run(&s, &[f(2, 2 << 20, &[20, 400])], false).unwrap_err()));
+        assert!(layout_err(&run(&s, &[f(9, 1, &[24])], false).unwrap_err()));
     }
 
     #[test]
@@ -796,17 +823,17 @@ mod tests {
         let s = first(&base(), 0);
         let stored = StoredLayout::new(&s.rows);
         let chunks = Column::from_vec(s.rows.chunks.clone()).unwrap();
-        assert!(layout_err(item_5(&stored, &[], &[FileId(2)], &chunks, None).unwrap_err()));
+        assert!(layout_err(&item_5(&stored, &[], &[FileId(2)], &chunks, None).unwrap_err()));
         // `.eh_frame_hdr` (its size needs the FDE count).
         let mut h = s.clone();
         h.rows.chunks.push(synth(EH_FRAME_HDR, 52));
-        assert!(layout_err(run(&h, &[f(2, 2 << 20, &[20, 60])], true).unwrap_err()));
+        assert!(layout_err(&run(&h, &[f(2, 2 << 20, &[20, 60])], true).unwrap_err()));
         // An FDE first, a record not of whole words.
         let mut eh = eh_files(&[f(2, 2 << 20, &[20, 64])]);
         eh[0].records[0].cie = false;
-        assert!(layout_err(item_5(&stored, &eh, &[], &chunks, None).unwrap_err()));
+        assert!(layout_err(&item_5(&stored, &eh, &[], &chunks, None).unwrap_err()));
         let eh = eh_files(&[f(2, 2 << 20, &[20, 62])]);
-        assert!(layout_err(item_5(&stored, &eh, &[], &chunks, None).unwrap_err()));
+        assert!(layout_err(&item_5(&stored, &eh, &[], &chunks, None).unwrap_err()));
         // A corrupt range.
         let mut c = s.clone();
         c.rows.eh_ranges[1].1.capacity = 1 << 20;

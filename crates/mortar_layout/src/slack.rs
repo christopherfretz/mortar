@@ -227,7 +227,12 @@ mod tests {
         assert_eq!(s.eh_pad(164), 24);
         for size in (0..4096).step_by(4) {
             let p = s.eh_pad(size);
-            assert!(p >= 16 && p % 4 == 0 && p >= size.div_ceil(8) && p < size.div_ceil(8) + 4 + 16);
+            assert!(
+                p >= 16
+                    && p.is_multiple_of(4)
+                    && p >= size.div_ceil(8)
+                    && p < size.div_ceil(8) + 4 + 16
+            );
         }
     }
 
