@@ -579,6 +579,7 @@ fn patch_and_compact_on_a_file() {
 // `versioned`, FILE_INDEX's `first_global` (WP-215, WP-220): written, read
 // back by accessor and decode, kept by a patch and by the compaction
 #[test]
+#[allow(clippy::many_single_char_names)]
 fn seam_rows_round_trip_and_patch() {
     let bytes = full(&sample(&[0, 1, 2], 2));
     let view = read::open_bytes(bytes.clone()).expect("open");

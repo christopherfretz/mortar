@@ -31,9 +31,68 @@ fn load5(path: &str) -> Result<Vec<u8>, String> {
 fn convert(path4: &str, version: &str) -> Result<Vec<u8>, String> {
     let bytes = std::fs::read(path4).map_err(|e| format!("{path4}: {e}"))?;
     let s = format::decode(&bytes, version.as_bytes()).map_err(|e| format!("{path4}: {e}"))?;
-    let m = MemoryState::from_format4(&s);
+    let mut m = MemoryState::from_format4(&s);
+    seam_rows(&mut m);
     let n = compact::normalize(&m).map_err(|e| format!("{path4}: {e}"))?;
     write::encode(&n).map_err(|e| format!("{path4}: {e}"))
+}
+
+/// The rows format 4 does not store but a full link's capture writes
+/// (WP-215, WP-220), rebuilt from format 4's own rows so the size gate
+/// counts them: `GROUPS` one row per (signature, file) of a section whose
+/// anchor is a group signature; `COMMONS` one per (key, file) of a common
+/// mention; `COPIES` one per global definition in such a section (format 4
+/// keeps one mention per (file, key) and no `st_size`: the count is a
+/// lower bound, the sizes 0).
+fn seam_rows(m: &mut MemoryState) {
+    use mortar_incr::update::rows::{CommonRow, CopyRow, GroupRow};
+    let bytes = |x: format::Str| {
+        m.strings.get(x.off as usize..(x.off + x.len) as usize).unwrap_or_default().to_vec()
+    };
+    let mut seen = std::collections::BTreeMap::new();
+    for r in &m.sections {
+        if r.anchor_kind == 1 && r.file != u32::MAX {
+            seen.entry((bytes(r.anchor), r.file)).or_insert(r.anchor);
+        }
+    }
+    let groups: Vec<GroupRow> = seen
+        .into_iter()
+        .map(|((_, file), signature)| GroupRow { signature, file, tomb: false })
+        .collect();
+    let mut commons = Vec::new();
+    let mut copies = Vec::new();
+    for (f, r) in &m.mentions {
+        if r.kind == format::def_kind::COMMON {
+            commons.push(CommonRow { key: r.symbol, file: f.0, size: 0, align: 1, tomb: false });
+        }
+        let in_group = m.sections.get(r.section as usize).is_some_and(|x| x.anchor_kind == 1);
+        if r.kind == format::def_kind::SECTION && in_group && r.bind != 0 {
+            copies.push(CopyRow {
+                key: r.symbol,
+                file: f.0,
+                index: 0,
+                size: 0,
+                typ: r.typ,
+                tomb: false,
+            });
+        }
+    }
+    commons.sort_by_key(|c| (c.key, c.file));
+    commons.dedup_by_key(|c| (c.key, c.file));
+    for (i, c) in copies.iter_mut().enumerate() {
+        c.index = u32::try_from(i).unwrap_or(u32::MAX);
+    }
+    eprintln!(
+        "seam rows from format 4: GROUPS {} (was {}), COMMONS {} (was {}), COPIES {}",
+        groups.len(),
+        m.groups.len(),
+        commons.len(),
+        m.commons.len(),
+        copies.len()
+    );
+    m.groups = groups;
+    m.commons = commons;
+    m.copies = copies;
 }
 
 fn run(args: &[String]) -> Result<ExitCode, String> {
