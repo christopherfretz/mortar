@@ -44,9 +44,12 @@ enum Lang {
     Kiln,
 }
 
+/// A fixture's sources: name, language, text.
+type Files = Vec<(&'static str, Lang, String)>;
+
 /// U-6's fixture (`tests/update_image.rs`): `_start` with a GOT load and
 /// a call, data and merged strings, a function with CFI.
-fn u6(arch: Arch) -> Vec<(&'static str, Lang, String)> {
+fn u6(arch: Arch) -> Files {
     let (got, call, ty) = match arch {
         Arch::X86_64 => ("\tmovq d@GOTPCREL(%rip), %rax\n\tmovq (%rax), %rdi\n", "\tcall f\n", "@"),
         _ => ("\tadrp x1, :got:d\n\tldr x1, [x1, :got_lo12:d]\n\tldr x0, [x1]\n", "\tbl f\n", "%"),
@@ -86,7 +89,7 @@ fn u6(arch: Arch) -> Vec<(&'static str, Lang, String)> {
 /// The C fixture: TLS, an IFUNC, a merged string named by a global (in
 /// top-level assembly: C gives a string literal no global name) and
 /// referenced through a global pointer.
-fn c_fixture(arch: Arch) -> Vec<(&'static str, Lang, String)> {
+fn c_fixture(arch: Arch) -> Files {
     let ty = if arch == Arch::X86_64 { "@" } else { "%" };
     vec![
         (
@@ -115,7 +118,7 @@ fn c_fixture(arch: Arch) -> Vec<(&'static str, Lang, String)> {
 
 /// The C++ fixture: `inline` `h` and a template's instance are COMDAT
 /// groups in both files; the second copy is dropped.
-fn cxx_fixture() -> Vec<(&'static str, Lang, String)> {
+fn cxx_fixture() -> Files {
     let common = "inline int h(int x) { return x * 3; }\n\
                   template <class T> struct S { static int v; static int get() { return v + 1; } };\n\
                   template <class T> int S<T>::v = 4;\n";
@@ -133,7 +136,7 @@ fn cxx_fixture() -> Vec<(&'static str, Lang, String)> {
 }
 
 /// The kiln/hod fixture, when both are given.
-fn kiln_fixture() -> Vec<(&'static str, Lang, String)> {
+fn kiln_fixture() -> Files {
     vec![
         (
             "k1",
@@ -224,7 +227,7 @@ struct Seen {
 
 /// The three-way comparison on one fixture; `None` when a tool is
 /// missing.
-fn check(arch: Arch, label: &str, files: &[(&str, Lang, String)]) -> Option<Seen> {
+fn check(arch: Arch, label: &str, files: &Files) -> Option<Seen> {
     let dir = Scratch::new(&format!("wp255c-{label}-{arch:?}"));
     let mut objs = Vec::new();
     for (name, lang, text) in files {
@@ -322,7 +325,7 @@ fn check(arch: Arch, label: &str, files: &[(&str, Lang, String)]) -> Option<Seen
 fn stored_rows_value_every_global() {
     let mut ran = 0;
     for arch in ARCHES {
-        let fixtures: Vec<(&str, Vec<(&str, Lang, String)>)> = vec![
+        let fixtures: Vec<(&str, Files)> = vec![
             ("u6", u6(arch)),
             ("c-tls-ifunc-merge", c_fixture(arch)),
             ("cxx-comdat", cxx_fixture()),

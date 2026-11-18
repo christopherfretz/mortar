@@ -52,6 +52,9 @@ const UNKNOWN_FACTS: SymFacts = match SymFacts::unpack(7) {
     None => panic!("7 is a packed undefined key's facts"),
 };
 
+/// One page of the name cache: a key's `SYMBOLS.name` bytes, once read.
+type NamePage = Box<[OnceLock<Box<[u8]>>]>;
+
 /// One file's `MENTIONS` range and its `FILE_INDEX.first_global`.
 type Mentions = Arc<(u32, Vec<MentionRow>)>;
 
@@ -72,7 +75,7 @@ pub struct StoredRows<'a, 's> {
     slots: HashMap<(mortar_core::layout::SlotKind, SymKey), u32>,
     tls_ld: bool,
     mentions: Mutex<HashMap<FileId, Mentions>>,
-    names: Box<[OnceLock<Box<[OnceLock<Box<[u8]>>]>>]>,
+    names: Box<[OnceLock<NamePage>]>,
     /// The first reason a read could not answer (see the module doc).
     failed: Mutex<Option<IncrReason>>,
 }
