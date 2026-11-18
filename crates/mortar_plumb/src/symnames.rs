@@ -110,7 +110,14 @@ pub(crate) fn linker_name(name: &str, format: Format, machine: u16) -> Option<&'
         }
         Format::Mold => {
             // §6.5's not-judged list: mold's own.
-            if name.contains('$') || name == "__start_EHDR" || name == "__start_PHDR" {
+            // `_PROCEDURE_LINKAGE_TABLE_`: mold defines it at its PLT
+            // (and leaves it undefined without one), measured on AArch64
+            // and x86-64 in every dynamic output of tests/dyn.rs (WP-246).
+            if name.contains('$')
+                || name == "__start_EHDR"
+                || name == "__start_PHDR"
+                || name == "_PROCEDURE_LINKAGE_TABLE_"
+            {
                 return Some("mold's own (§6.5)");
             }
             (name == "__dso_handle").then_some("mold defines __dso_handle (layout.md §13.1)")
@@ -148,6 +155,7 @@ const NJ_UNKNOWN: &str = "locals of sections whose place the map does not give";
 const NJ_TLS: &str = "thread-local locals without a usable PT_TLS";
 const NJ_UNDEF: &str = "undefined or common locals";
 const NJ_LINE: &str = "every local: the link's -x/-X options are not known";
+const NJ_FOREIGN: &str = "every local: Y6's rules are mortar's (S-76, S-83; GNU ld inserts an STT_FILE per object and an unnamed one, drops crtbegin's __TMC_LIST__; mold makes every global local, A9)";
 
 /// The options that decide which locals are kept: mortar's `arg` records,
 /// or the caller's line.
@@ -174,6 +182,10 @@ fn discarded(d: Discard, name: &str, file: bool, split: bool) -> bool {
 pub(crate) fn locals(e: &mut Engine<'_, '_>, map: &Map, fs: &mut Vec<Finding>) {
     let image = e.image;
     if image.symbols.is_empty() {
+        return;
+    }
+    if map.format != Format::Mortar {
+        e.cov.input_locals_not_judged.push((NJ_FOREIGN.to_string(), 1));
         return;
     }
     let Some(opts) = options(e, map) else {
@@ -454,6 +466,12 @@ pub(crate) fn files(e: &mut Engine<'_, '_>, fs: &mut Vec<Finding>) {
             continue;
         }
         judged += 1;
+        // GNU ld writes an unnamed STT_FILE before its own locals
+        // (`_GLOBAL_OFFSET_TABLE_`, `__init_array_start`, ...), measured
+        // on AArch64 and x86-64 in tests/dyn.rs's and the corpus's links.
+        if out.name.is_empty() && e.format == Format::Gnu {
+            continue;
+        }
         if out.name.is_empty() {
             fs.push(y(7, format!(".symtab entry {} is an STT_FILE with no name", out.index)));
         } else if !names.contains(&out.name) {
@@ -481,6 +499,14 @@ fn unexplained(e: &mut Engine<'_, '_>, map: &Map, fs: &mut Vec<Finding>) {
     let image = e.image;
     let machine = image.header.e_machine;
     let script = options(e, map).is_some_and(|o| o.script);
+    let dynsym = dynsym_names(image);
+    // A name `.dynsym` has (stage 3 judges it against the shared objects:
+    // an import, a copy and its aliases), with or without GNU ld's
+    // `@VERSION` suffix.
+    let dynamic = |n: &str| {
+        dynsym.contains(n.as_bytes())
+            || n.split_once('@').is_some_and(|(b, _)| dynsym.contains(b.as_bytes()))
+    };
     let names = std::mem::take(&mut e.cov.linker_defined_not_judged);
     let mut kept = Vec::new();
     for n in names {
@@ -490,6 +516,9 @@ fn unexplained(e: &mut Engine<'_, '_>, map: &Map, fs: &mut Vec<Finding>) {
         }
         if script {
             kept.push(format!("{n} (the line has a script)"));
+            continue;
+        }
+        if dynamic(&n) {
             continue;
         }
         for out in image.symbols.iter().filter(|o| o.name == n) {
@@ -530,6 +559,8 @@ fn unexplained(e: &mut Engine<'_, '_>, map: &Map, fs: &mut Vec<Finding>) {
             ));
         } else if s.st_shndx == SHN_UNDEF
             && !mentioned.contains(out.name.as_bytes())
+            && !out.name.split_once('@').is_some_and(|(b, _)| mentioned.contains(b.as_bytes()))
+            && !dynamic(&out.name)
             && linker_name(&out.name, e.format, machine).is_none()
         {
             fs.push(named(
@@ -544,6 +575,20 @@ fn unexplained(e: &mut Engine<'_, '_>, map: &Map, fs: &mut Vec<Finding>) {
             ));
         }
     }
+}
+
+/// The names of the output's `.dynsym`, if it has one.
+fn dynsym_names<'a>(image: &crate::image::Image<'a>) -> HashSet<&'a [u8]> {
+    let mut v = HashSet::default();
+    let Ok(t) = mortar_elf::SectionTable::parse(image.data, &image.header) else { return v };
+    if let Ok(Some(d)) = t.find_symbol_table(mortar_elf::consts::SHT_DYNSYM) {
+        for (_, s) in d.iter() {
+            if let Ok(n) = d.name(&s) {
+                v.insert(n);
+            }
+        }
+    }
+    v
 }
 
 /// Y5's closed set, Y6 and Y7.

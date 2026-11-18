@@ -2971,6 +2971,13 @@ rules below judge the rest. Code: `src/symbols.rs`.
     `SHT_STRTAB` that begins and ends with a NUL. Entry 0 is all zeros.
     No local follows the first non-local entry. `sh_info` is the index of
     the first non-local entry (gABI "Symbol Table").
+  - Every entry's `st_name` is the offset of a NUL-terminated string
+    inside `.strtab`'s `sh_size`: the output's reader refuses any other,
+    so it is O1 (§6.1). An `st_name` in `.strtab`'s file slack (§6.8,
+    past `sh_size`) is therefore O1, and one inside a `dead` range of an
+    incremental map is P-I3 (§6.8). An `st_name` that names the middle of
+    a live string reads as another name: Y5's closed set, Y6 and Y3
+    judge that name (WP-246).
 - **Y3. Globals.** This rule applies to each name with a global, weak or
   unique definition in the inputs whose output symbol (as Y1 chooses it)
   is defined. The definition D is the placed definition at the output
@@ -3004,12 +3011,16 @@ rules below judge the rest. Code: `src/symbols.rs`.
   name without a usable `PT_TLS`, is counted in `globals_unchecked`,
   except (WP-143):
   - **a missing global.** When the output has a `.symtab`, no symbol of
-    any binding has the name, the name's visibility V is default or
-    protected, and an input defines it (global or weak) in an allocated
+    any binding has the name, and an input defines it (global or weak) in an allocated
     section placed whole, or as pieces with a piece holding its label (a
     dead piece of a merged section is collected under `--gc-sections`, and
     its labels with it: glibc's `__nptl_version`), or (mortar's map) without bytes and
-    without a record: a finding. A foreign map's merged section is not
+    without a record: a finding. Whatever its visibility V (WP-246: a
+    hidden or internal definition is a local of its definer's block,
+    `synth.md` S-77, GNU ld's `GLOBAL HIDDEN`, lld's and mold's `LOCAL`;
+    before WP-246 a hidden name was not judged, and an output whose
+    `.strtab` named the middle of glibc's `__libc_single_threaded`,
+    `readed`, passed). A foreign map's merged section is not
     known to hold anything (lld collects the pieces of one under
     `--gc-sections`), so its names are not judged so. A versioned input
     name (`foo@@V2`) is present when its base name is. Before WP-143 a
@@ -3119,13 +3130,99 @@ rules below judge the rest. Code: `src/symbols.rs`.
   | `__CortexA53843419_H` (lld; H the hex address of a site's patched final word) | the patch W8 accepted for the 843419 site whose final word is at H, size 8; with no patched site at H the name labels dead bytes and is not judged (the site's C1 or its not-judged count reports it; WP-082) |
 
   The data-end symbols allow a range, because the reference linkers place
-  them differently within it (§10.5). Every other name is not judged. It
-  is listed by name in `linker_defined_not_judged`.
+  them differently within it (§10.5).
+
+  **The closed set (WP-246).** A defined output symbol whose name no input
+  defines and the table above does not value is one of these, listed by
+  name in `linker_defined_not_judged`, or a **finding** naming the entry
+  (`.symtab entry i ('n') is defined, but no input symbol has the name
+  and no rule names it the linker's`):
+  - `spec/resolve.md` §8.1's rows (the one list of the linker's own
+    symbols; on AArch64 `__data_start`, `__end__`, `__bss_start__`,
+    `__bss_end__`, `_bss_end__`), `spec/layout.md` L-105's
+    `__tdata_start`, and `__start_X`/`__stop_X` for a C identifier X;
+  - on AArch64, a thunk's or a patch's name of `synth.md` S-80
+    (`__<target>…_veneer`, `__erratum_843419_veneer`; GNU ld's stubs
+    have the same form);
+  - a `--defsym` key (§4.4b judges it);
+  - under lld's map: `__AArch64ADRPThunk_*`, `__AArch64AbsLongThunk_*`,
+    `__CortexA53843419_*` and `__dso_handle` (layout.md §13.1, E-24);
+    under mold's: a name with `$`, `__start_EHDR`, `__start_PHDR` and
+    `__dso_handle` (the not-judged list below);
+  - any name, when the line has a linker script (`-T`): the script may
+    assign it; listed as `<name> (the line has a script)`.
+
+  Also a finding: an entry with no name (other than an `STT_SECTION` or
+  `STT_FILE` one: §6.9's fillers and GNU ld's and mold's section symbols
+  are unnamed `STT_SECTION`; Y7 judges file symbols), and an undefined
+  entry whose name no input symbol, defined or not, has. Before WP-246
+  every name outside the table was "not judged": mortar's incremental
+  output with `readed` (the middle of `__libc_single_threaded`) at
+  `.symtab` entry 2489 passed with zero findings.
+- **Y6. The locals of each input file (WP-246).** For each input file in
+  the link (§3.8: a file of the map's), each local the rules keep is in
+  `.symtab` with its name, `st_info`, `st_other`, `st_size`, section and
+  value, and each output local is one of them, a demoted global or the
+  linker's own. The kept locals (`synth.md` S-76, S-78, S-83):
+  - every `STB_LOCAL` entry other than entry 0 and `STT_SECTION` ones
+    (S-79), `STT_FILE` ones included (S-83), `SHN_ABS` ones at their
+    input value (S-81);
+  - in a section placed whole (a `place`, an `nplace`, a `fold`'s
+    target's place): its place plus the input value; a thread-local one
+    as its offset from `PT_TLS`'s `p_vaddr` (S-81);
+  - in a section placed as pieces: the piece that holds the value (or
+    ends at it, a label at the section's end), at the piece's address
+    plus the offset; with no such piece the local is dropped (S-76:
+    its fragment is not live);
+  - dropped: in a discarded section, in one with no place (§4.4 step 0,
+    mortar's map), and by S-78: `-x` every local (`STT_FILE` too);
+    `-X` every `.L` local; neither of the three, the `.L` locals of a
+    section placed as pieces; `--discard-none` none. The last of `-x`,
+    `-X`, `--discard-none` on the line (mortar's `arg` records, else the
+    caller's line) decides; with no line Y6 judges nothing, named.
+
+  They are compared as a multiset, keyed by name, `st_info`, `st_other`,
+  `st_size` and `st_value`; order and index are free (§6.9's fillers,
+  `STT_SECTION`, are passed over). A matched entry's `st_shndx` holds the
+  input section's range (allocated), names a non-allocated section
+  (non-allocated) or is `SHN_ABS`. A kept local with no entry is a finding
+  naming the file and the input entry (`the local 'n' (file entry k,
+  …) is not in .symtab`); an output local that is none of them is a
+  finding naming the entry (`.symtab entry i ('n', …) is no kept input
+  local`), unless it is:
+  - a **demoted** global: an input defines the name globally (or as a
+    common, or the line makes it local): Y3 judges it (S-77);
+  - the **linker's own**: a name of Y5's closed set or a `--defsym` key,
+    or a mapping symbol (`$x…`, `$d…`) at an address no input section
+    occupies (S-80; Y4's second exception);
+  - named as a local not judged (below), in the section such a local
+    would be in.
+
+  **Not judged** (counted by reason in `input locals not judged`): the
+  locals of an input `.eh_frame` when the output has one (S-50 drops a
+  mapping symbol in a removed record and an interior local no relocation
+  names; the relocations are not read for this); labels of an empty
+  allocated section without a record (S-123: the map does not say where);
+  locals of a section merged without pieces (a foreign map's, a mortar
+  `merged` record); locals of a section whose place the map does not
+  give (a foreign map's `rewritten`, ambiguous or absent row);
+  thread-local ones without a usable `PT_TLS`; undefined ones. A
+  demoted global absent from the output is Y3's missing global.
+- **Y7. File symbols (WP-246).** Every `STT_FILE` entry has a name, and
+  it is the name of an input's `STT_FILE` entry (S-83: copied in place;
+  under GNU ld's map also the base name of an input's path or member,
+  which GNU ld inserts for a file with none, S-83, X-32). An unnamed one
+  is a finding (`.symtab entry i is an STT_FILE with no name`), and so is
+  one of another name. Under mortar's map Y6 also holds them to their
+  files as a multiset.
 
 **Coverage.** `globals_checked`, `globals_unchecked`, `locals_checked`,
 `locals_unchecked`, `linker_defined_checked` and
 `linker_defined_not_judged` (a list of names) are reported. The summary
-line is "symbol attributes: …".
+line is "symbol attributes: …". Y6 and Y7 add "input locals (Y6): kept
+k (missing m), dropped by rule d; output locals: not a kept input's x,
+demoted y, the linker's z; STT_FILE judged f" and "input locals not
+judged: <reason>: <n>; …".
 
 **Not judged.** These are reported by name or count:
 

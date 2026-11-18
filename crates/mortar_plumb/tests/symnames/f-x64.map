@@ -1,0 +1,55 @@
+mortar-map 2
+file 0 start-x64.o
+file 1 a-x64.o
+file 2 b-x64.o
+place 0 2 401130 52
+place 0 4 402218 4
+piece 1 6 0 400120 d
+place 1 2 401190 4c
+place 1 4 402200 10
+place 2 2 4011e0 1a
+place 2 4 402210 8
+nplace 0 5 .debug_abbrev 0 a2
+nplace 0 6 .debug_info 0 9e
+nplace 0 8 .debug_str_offsets 0 30
+merged 0 10 .debug_str
+nplace 0 11 .debug_addr 0 38
+merged 0 13 .comment
+nplace 0 15 .debug_frame 0 58
+nplace 0 17 .debug_line 0 7e
+merged 0 19 .debug_line_str
+nplace 1 7 .debug_loclists 0 47
+nplace 1 8 .debug_abbrev a2 bc
+nplace 1 9 .debug_info 9e de
+nplace 1 11 .debug_str_offsets 30 38
+merged 1 13 .debug_str
+nplace 1 14 .debug_addr 38 50
+merged 1 16 .comment
+nplace 1 18 .debug_frame 58 80
+nplace 1 20 .debug_line 7e 86
+merged 1 22 .debug_line_str
+nplace 2 5 .debug_loclists 47 1e
+nplace 2 6 .debug_abbrev 15e a6
+nplace 2 7 .debug_info 17c 83
+nplace 2 9 .debug_str_offsets 68 2c
+merged 2 11 .debug_str
+nplace 2 12 .debug_addr 88 30
+merged 2 14 .comment
+nplace 2 16 .debug_frame d8 50
+nplace 2 18 .debug_line 104 6e
+merged 2 20 .debug_line_str
+discard 0 20 unspecified
+discard 1 23 unspecified
+discard 2 21 unspecified
+chunk synthetic .symtab - 180
+chunk synthetic .strtab - a2
+chunk synthetic .shstrtab - ba
+chunk synthetic .comment - d
+arg -static
+arg -o
+arg f-x64
+arg start-x64.o
+arg a-x64.o
+arg b-x64.o
+arg --mortar-map=f-x64.map
+end
