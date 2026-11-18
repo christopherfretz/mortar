@@ -20,3 +20,7 @@ fillers.sh        WP-207: IN-49a's filler form against ~35 tools on AArch64, x86
                   and the prebuilt mortar). From review-in72/r7-fillers.sh.
 fillcmp.py        WP-207: for the listing tools fillers.sh reports as differing, compare again without the filler
                   lines, index columns and the table-size lines (run: fillcmp.py SCRATCH/fill-T SECTION1-NAME).
+extract_amended.py WP-211: R-2's extract_mine.py (review-wp207/, the reviewer's scripts, copied here unchanged) in the reading
+                  WP-211's IN-71b leaves ("member", extracted or not), rounds judged by the support property.
+crash_model.py    (WP-211) variants inplace-aside-link, -link-foreign, -rename-foreign: W4 as link + unlink,
+                  each durable after its own directory fsync; a foreign output created at P inside the window.
