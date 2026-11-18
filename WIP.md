@@ -16,11 +16,14 @@ Brief: the supervisor's Part 2 message; rulings `briefs/wp-238-rulings.md`
   incremental.rs passes the rows, writes `META.live_hash`, runs `live_check`
   under `MORTAR_INCR_LIVE_CHECK` (a disagreement fails the link).
 
+## Done since
+- tests `crates/mortar/tests/live_rows.rs` (F1, scenarios, F6, -s/-S, thin,
+  negative); lane.py live check; linktest replay (scratch `p2/lt`), L10
+  (`p2/l10.sh`), bench (`p2/bench.sh`): all agree or refused by name.
+- Record: `spec/landed/incr/WP-238.md` "Step 2 Part 2".
+
 ## Next
-- Tests (crates/mortar/tests/live_rows.rs): F1, scenarios.
-- lane.py env for incr-update; the lane replay wrapper; L10; bench; gates.
-- Record's Part 2 section; hand-back.
+- Gates (`p2/gates.sh`), hand-back. Then wait for Part 3's word.
 
 ## How to resume
 - Hooked binary: scratch `p2/hooks.sh` (into `.build/target-wp-125/testhooks`).
-- Quick check: `p2/bin/ld` wrapper with gcc -B (scratch `p2/t1`).
