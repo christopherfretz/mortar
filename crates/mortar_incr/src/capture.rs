@@ -918,6 +918,8 @@ pub struct Rows5 {
     groups: Vec<crate::update::rows::GroupRow>,
     commons: Vec<crate::update::rows::CommonRow>,
     copies: Vec<crate::update::rows::CopyRow>,
+    /// `EDGES` (WP-238 S1), by the source's file.
+    edges: Vec<(FileId, crate::update::rows::EdgeRow)>,
     versioned: u32,
     /// Counts for the experiments (`incremental: state5 ...` lines).
     pub notes: Vec<String>,
@@ -1186,6 +1188,42 @@ fn rows5(
             }
         }
     }
+    // ---- EDGES (WP-238 S1): the producer's rows, in state ids (a
+    // `SECTIONS` row is its `SectionId` at the capture; a key its
+    // `SYMBOLS` row), each checked against its kind's target class.
+    let before = syms.rows.len();
+    let mut refuse = 0usize;
+    for e in extra.edges.unwrap_or_default() {
+        use crate::update::rows::{EdgeRow, edge_kind};
+        use mortar_core::incr::LiveTarget;
+        let bad = || format!("EDGES: a row of kind {} with the wrong target", e.kind);
+        let target = match (edge_kind::target(e.kind), e.target) {
+            (Some(edge_kind::Target::Key), LiveTarget::Key(k)) => {
+                syms.row(strings, SymKey::global(k))?
+            }
+            (Some(edge_kind::Target::Section), LiveTarget::Section(t)) => {
+                res.sections.get(t).ok_or("EDGES: a target section out of range")?;
+                t.0
+            }
+            (Some(edge_kind::Target::Zero), LiveTarget::None) => 0,
+            (Some(edge_kind::Target::Code), LiveTarget::Code(c)) => c,
+            _ => return Err(bad()),
+        };
+        let (file, _) = res.sh_index(e.source).ok_or("EDGES: a source section without index")?;
+        let row = EdgeRow { kind: e.kind, source: e.source.0, target, offset: e.offset };
+        if !crate::state5::edge_row_ok(&row) {
+            return Err(bad());
+        }
+        if e.kind == edge_kind::REFUSE {
+            refuse += 1;
+        }
+        out.edges.push((file, row));
+    }
+    if syms.rows.len() != before {
+        return Err("EDGES: a key without a format-4 row".into());
+    }
+    out.edges.sort_unstable_by_key(|&(f, r)| (f.0, r));
+    out.edges.dedup();
     let n_rows = syms.rows.len();
     out.symbols = vec![None; n_rows];
     for (i, &(at_file, at_index)) in first.iter().enumerate() {
@@ -1312,6 +1350,9 @@ fn rows5(
         ),
         format!("eh files {} (fixed encodings {fixed}), versioned {}", eh.len(), out.versioned),
     ];
+    if extra.edges.is_some() {
+        out.notes.push(format!("EDGES {} (REFUSE {refuse})", out.edges.len()));
+    }
     Ok(out)
 }
 
@@ -1377,6 +1418,7 @@ pub fn state5_rows(
     m.groups = rows.groups;
     m.commons = rows.commons;
     m.copies = rows.copies;
+    m.edges = rows.edges;
     m.meta.versioned = rows.versioned;
     if rows.slot_refs.len() != m.slots.len() {
         return Err("SLOTS: the rows are not this state's".into());

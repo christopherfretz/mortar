@@ -192,17 +192,19 @@ pub fn removed(
 }
 
 /// IN-29's rows (WP-238 S1) of `files`' kept sections (every file when
-/// `None`), F8 applied, sorted: the enumerator `Walk::edges` (the full
-/// mark's one walk) plus `file_facts`' roots, names, split sections, the
-/// group ring, and the `REFUSE` rows of S5 and F6. Called only by an
+/// `None`), F8 applied, sorted by `(source, kind, target, offset)`: the
+/// enumerator `Walk::edges` (the full mark's one walk) plus `file_facts`'
+/// roots, names, split sections, the group ring, and the `REFUSE` rows of
+/// S5 (code 1) and F11 (code 2, on the outcome). Called only by an
 /// incremental-mode full link with `--gc-sections` (the capture) and by
 /// the join (changed and drawn-in files); a plain link never calls it.
 ///
-/// WP-238 seam 9: the signature only. Until Part 2 it returns no rows
-/// (nobody calls it yet).
+/// Cost: the mark's steps 1 and 3 (facts, frames), then one pass over
+/// the records of every kept section of `files`, one over the keys.
 ///
 /// # Errors
-/// As [`liveness`]: a relocation section the enumerator could not read.
+/// As [`liveness`]: a relocation section the enumerator could not read
+/// (here also of a kept section the mark leaves dead).
 #[allow(clippy::result_large_err, reason = "the phases' diagnostic pair, returned once per link")]
 pub fn stored_edges(
     t: &LiveInputs<'_, '_>,
@@ -210,8 +212,29 @@ pub fn stored_edges(
     files: Option<&[mortar_core::FileId]>,
     pool: &Pool,
 ) -> Result<Vec<mortar_core::incr::LiveEdge>, (Key, Diagnostic)> {
-    let _ = (t, options, files, pool);
-    Ok(Vec::new())
+    gc::stored(t, options, files, pool)
+}
+
+/// WP-238 S4's capture side (P0-3): per live split section of the full
+/// mark `liveness`, the offsets it marked (sorted, distinct; `[u32::MAX]`
+/// when every piece), projected from `edges` (the link's
+/// [`stored_edges`]) and the link's own definitions in memory (the
+/// mark's `def_target`), never through the stored form. The capture
+/// hashes them (`mortar_incr::update::live::live_hash`).
+///
+/// Cost: the mark's steps 1 and 2, then one pass over `edges`.
+///
+/// # Errors
+/// As [`liveness`].
+#[allow(clippy::result_large_err, reason = "the phases' diagnostic pair, returned once per link")]
+pub fn live_positions(
+    t: &LiveInputs<'_, '_>,
+    options: LiveOptions,
+    edges: &[mortar_core::incr::LiveEdge],
+    liveness: &Liveness,
+    pool: &Pool,
+) -> Result<Vec<(SectionId, Vec<u32>)>, (Key, Diagnostic)> {
+    gc::positions(t, options, edges, liveness, pool)
 }
 
 /// `--print-gc-sections` (I-10): one line per removed section with bytes,
