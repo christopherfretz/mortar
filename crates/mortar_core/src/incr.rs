@@ -96,11 +96,25 @@ pub enum Unimplemented {
     /// mention that only moves to another file is no fall-back. [later]
     /// item 11's placing rule.
     Common,
+    /// A `.eh_frame` range the update would move holds a CIE whose FDE
+    /// pointer, LSDA or personality encoding is not `0x1b` (pcrel sdata4)
+    /// or `0x9b` (indirect pcrel sdata4) (IN-34a as ruled by WP-239 S4-3):
+    /// its fields cannot be adjusted from the previous output's bytes.
+    /// Decided by the plan, which reads every range it will move, before
+    /// W1 (nothing is written).
+    Eh,
+    /// A fact of a key's resolution that the scan reads (the one value
+    /// `mortar_arch::SymFacts`, through `ScanTables::sym`) changes, and the
+    /// key has a referrer in an unchanged file (`KEY_REFS`): that file's
+    /// stored `KEY_REFS.demand` may be stale (IN-72 item 7 as ruled by
+    /// WP-239 R-4). Decided by the join, comparing the value before and
+    /// after.
+    Slots,
 }
 
 impl Unimplemented {
     /// Every word, in `spec/incr.md` §7's order.
-    pub const ALL: [Self; 13] = [
+    pub const ALL: [Self; 15] = [
         Self::State5,
         Self::Resolve,
         Self::Refill,
@@ -114,6 +128,8 @@ impl Unimplemented {
         Self::Versioned,
         Self::Live,
         Self::Common,
+        Self::Eh,
+        Self::Slots,
     ];
 
     /// The word (`spec/incr.md` §7).
@@ -133,6 +149,8 @@ impl Unimplemented {
             Self::Versioned => "versioned",
             Self::Live => "live",
             Self::Common => "common",
+            Self::Eh => "eh",
+            Self::Slots => "slots",
         }
     }
 }
@@ -218,6 +236,15 @@ pub enum IncrReason {
     /// `input-changed`: a file the update read is not the file it judged
     /// (IN-28a condition 2, IN-75).
     InputChanged(String),
+    /// `state-collision`: the capture of this full link found two different
+    /// fragments with one `FRAGS` key `(out, class, hash)` (IN-18e, WP-239
+    /// R-2): no state is written and the previous one is removed; the link
+    /// itself is not affected.
+    StateCollision(String),
+    /// `state-limit`: the capture of this full link has a value a stored
+    /// column cannot hold (WP-239: a `.eh_frame` chunk past `u32` bytes,
+    /// for `FILES`' eh columns): no state is written, as `state-collision`.
+    StateLimit(String),
     /// `layout-changed`: the test path's only (WP-064a); never an update's.
     LayoutChanged(String),
     /// `resolution-changed`: the test path's only (WP-064a).
@@ -227,7 +254,7 @@ pub enum IncrReason {
 impl IncrReason {
     /// Every reason's name, in `spec/incr.md` §7's order (the spec test
     /// compares it with the table).
-    pub const NAMES: [&'static str; 30] = [
+    pub const NAMES: [&'static str; 32] = [
         "no-state",
         "state-corrupt",
         "state-version",
@@ -256,6 +283,8 @@ impl IncrReason {
         "debug-name-index",
         "debug-unit-kind",
         "input-changed",
+        "state-collision",
+        "state-limit",
         "layout-changed",
         "resolution-changed",
     ];
@@ -292,6 +321,8 @@ impl IncrReason {
             Self::DebugNameIndex(_) => "debug-name-index",
             Self::DebugUnitKind(_) => "debug-unit-kind",
             Self::InputChanged(_) => "input-changed",
+            Self::StateCollision(_) => "state-collision",
+            Self::StateLimit(_) => "state-limit",
             Self::LayoutChanged(_) => "layout-changed",
             Self::ResolutionChanged(_) => "resolution-changed",
         }
@@ -330,6 +361,8 @@ impl IncrReason {
             | Self::DebugNameIndex(d)
             | Self::DebugUnitKind(d)
             | Self::InputChanged(d)
+            | Self::StateCollision(d)
+            | Self::StateLimit(d)
             | Self::LayoutChanged(d)
             | Self::ResolutionChanged(d) => d,
         }
@@ -378,6 +411,8 @@ impl IncrReason {
             "debug-name-index" => Self::DebugNameIndex(d),
             "debug-unit-kind" => Self::DebugUnitKind(d),
             "input-changed" => Self::InputChanged(d),
+            "state-collision" => Self::StateCollision(d),
+            "state-limit" => Self::StateLimit(d),
             "layout-changed" => Self::LayoutChanged(d),
             "resolution-changed" => Self::ResolutionChanged(d),
             _ => return None,
@@ -603,67 +638,70 @@ pub struct StoredRegion {
 }
 
 /// A merged-section fragment (`FRAGS`, IN-72 item 6): identity, offset,
-/// reference count. Key: `(out, hash, ordinal)` (IN-18e: key-keyed, so the
-/// rows of one `(out, hash)` are found by two binary searches,
-/// [`LayoutRows::frags_of`]). Read and written by U-4; read by U-6 (a
-/// fragment whose count rises from 0 is rewritten).
+/// reference count. Key: `(out, class, hash)` (IN-18e as ruled by WP-239
+/// S4-1: key-keyed, so a fragment is found by one binary search,
+/// [`LayoutRows::frags_of`]). Only fragments of split sections whose name
+/// does not start with `.debug_` have rows (WP-239 R-1). Two different
+/// fragments with one key refuse the state at the capture
+/// (`state-collision`), never the link. Read and written by U-4; read by
+/// U-6 (a fragment whose count rises from 0 is rewritten).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct StoredFrag {
     pub out: OutSecId,
+    /// The merge class word ([`MergeClass::word`]).
+    pub class: u32,
     /// L128 of the content.
     pub hash: [u8; 16],
-    /// The `FRAGS.ordinal` column as the capture writes it: `u32::MAX`
-    /// ("none") when every live fragment of `(out, hash)` is at one offset
-    /// (one row), else the fragment's rank among them by `FragId`. It is
-    /// **not** the merge class (the class is not stored: WP-216 seam 4,
-    /// finding S4-1), so a piece whose `(out, hash)` has rows is matched
-    /// exactly only when there is one row and the class is known equal.
-    pub ordinal: u32,
     /// Bytes from the merged chunk's start.
     pub offset: u64,
-    /// Live pieces naming it (IN-18e `FRAGS.refs`); 0: a dead range.
+    /// The live files with a `FRAG_USE` row naming it (IN-18e
+    /// `FRAGS.refs`, counted per FILE); 0: a dead range.
     pub refs: u32,
 }
 
-/// One `FRAG_AT` row of a file (IN-18e, kind 40; range): a live fragment's
-/// first occurrence in the file's merged section and the `FRAGS` row it
-/// names, as the identity `(out, hash, ordinal)` (the stored column is the
-/// `FRAGS` row number; the accessor resolves it). One row per live
-/// FRAGMENT at its first occurrence, not one per piece (WP-216 seam 4,
-/// finding S4-2). Read by U-4 (item 6: the old version's pieces).
+/// One `FRAG_USE` row of a file (IN-18e, kind 56; file-keyed, 28 bytes;
+/// WP-239 S4-2): a fragment the file's live split pieces name, once per
+/// fragment, by the fragment's key (never a `FRAGS` row number). No row for
+/// a split section named `.debug_*` (R-1). Written by the capture and U-2
+/// (a changed file's range from its `MergedPiece`s); read by U-4 (item 6:
+/// the old version's fragments, each decrementing `FRAGS.refs`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
-pub struct StoredFragAt {
-    /// The input section (the old version's `SECTIONS` row).
-    pub section: SectionId,
-    /// Bytes from the input section's start.
-    pub offset: u64,
-    /// The fragment's identity.
+pub struct StoredFragUse {
+    pub file: FileId,
     pub out: OutSecId,
+    /// The merge class word ([`MergeClass::word`]).
+    pub class: u32,
     pub hash: [u8; 16],
-    pub ordinal: u32,
 }
 
-/// One `EH_RECORDS` row of a file (IN-18e, kind 13; range; IN-34a): a
-/// kept `.eh_frame` record of the stored link, as S-49's decision lists it
-/// (`(section, piece)`, the piece's index in the split's `.eh_frame`
-/// pieces of that section), in S-46 order. Neither the record's size nor
-/// the file's range is stored (WP-216 seam 4, finding S4-3). Read by U-4
-/// (item 5).
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
-pub struct StoredEhRecord {
-    pub section: SectionId,
-    pub piece: u32,
+/// A file's `.eh_frame` range in the stored output (IN-34a as ruled by
+/// WP-239 S4-3): three `u32` columns of its `FILES` row. Record sizes are
+/// not stored: a changed file's come from its new bytes (S-47), an
+/// unchanged range is moved by walking the previous output's bytes. Written
+/// by the capture (the incremental-mode full link gives each file's records
+/// a capacity of size + max(16, ceil4(size/8))) and U-2 (from
+/// `LayoutDelta::eh`); read by U-4 (item 5), U-6 (the move).
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct StoredEhRange {
+    /// Bytes from the `.eh_frame` chunk's start.
+    pub offset: u32,
+    /// Bytes: the records and the pad.
+    pub capacity: u32,
+    /// Kept records in the range.
+    pub records: u32,
 }
 
-/// One slot-relevant `INDEX` row of a file (IN-18e, kind 34; range;
-/// `mortar_incr::format::index_kind`): the file used `key`, through a slot
-/// (`slot`: kind `SLOT`, "uses a slot (GOT, TLS) or the GOT's base") or as
-/// a plain global target. Which slot kind is not stored (WP-216 seam 4,
-/// finding S4-4). Read by U-4 (item 7: what the old version demanded).
+/// One `KEY_REFS` row as the delta layout reads it (IN-18e; WP-239 S4-4):
+/// the file mentions `key`, and `demand` is the OR of the `DemandFlags`
+/// the scan raised on `key` over the file's live units (counted per FILE;
+/// empty for a mention no relocation uses). `INDEX` is never the demand.
+/// Written by the capture and U-2 (from the scan's per-file demand, S4-5);
+/// read by U-4 (item 7: what the old version demanded).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
-pub struct StoredUse {
+pub struct StoredKeyRef {
     pub key: SymbolId,
-    pub slot: bool,
+    pub file: FileId,
+    pub demand: DemandFlags,
 }
 
 /// A GOT, PLT, IPLT or TLS slot (`SLOTS`, IN-28b, IN-72 item 7): the
@@ -676,6 +714,10 @@ pub struct StoredSlot {
     pub key: SymKey,
     /// Its position in its kind's list.
     pub index: u32,
+    /// The live files whose `KEY_REFS.demand` needs this slot (WP-239
+    /// S4-4; counted per FILE); a slot whose count falls to 0 is retired.
+    /// A local's slot (IN-28b) is its file's alone: 1.
+    pub refs: u32,
 }
 
 /// One file's `.symtab` block and `.strtab` region (`SYMTAB` table 43,
@@ -767,38 +809,46 @@ pub trait LayoutRows: Sync {
     /// # Errors
     /// `state-corrupt`.
     fn holes_in(&self, chunk: ChunkId) -> Result<Vec<Hole>, IncrReason>;
-    /// The `FRAGS` rows of one identity prefix `(out, hash)`, by ordinal
-    /// (key-keyed: two binary searches). Never a whole read of an output
-    /// section's fragments.
+    /// The `FRAGS` row of one key `(out, class, hash)`, or `None` (key-keyed:
+    /// one binary search). Never a whole read of an output section's
+    /// fragments.
     ///
     /// # Errors
     /// `state-corrupt`; `update-not-implemented (layout)` until the
     /// implementation gives it.
-    fn frags_of(&self, out: OutSecId, hash: [u8; 16]) -> Result<Vec<StoredFrag>, IncrReason> {
-        let _ = (out, hash);
+    fn frags_of(
+        &self,
+        out: OutSecId,
+        class: u32,
+        hash: [u8; 16],
+    ) -> Result<Option<StoredFrag>, IncrReason> {
+        let _ = (out, class, hash);
         Err(not_given())
     }
-    /// A file's `FRAG_AT` rows (range), with each row's `FRAGS` identity.
+    /// A file's `FRAG_USE` rows (range), by key.
     ///
     /// # Errors
     /// `state-corrupt`; `update-not-implemented (layout)` until given.
-    fn frag_at_of(&self, file: FileId) -> Result<Vec<StoredFragAt>, IncrReason> {
+    fn frag_uses_of(&self, file: FileId) -> Result<Vec<StoredFragUse>, IncrReason> {
         let _ = file;
         Err(not_given())
     }
-    /// A file's `EH_RECORDS` rows (range), in S-46 order.
+    /// A file's `.eh_frame` range (its `FILES` row), or `None` when it has
+    /// no kept record.
     ///
     /// # Errors
     /// `state-corrupt`; `update-not-implemented (layout)` until given.
-    fn eh_records_of(&self, file: FileId) -> Result<Vec<StoredEhRecord>, IncrReason> {
+    fn eh_range_of(&self, file: FileId) -> Result<Option<StoredEhRange>, IncrReason> {
         let _ = file;
         Err(not_given())
     }
-    /// A file's `INDEX` rows of kinds `SLOT` and `GLOBAL` (range), by key.
+    /// A file's `KEY_REFS` rows, by key: the keys of its `MENTIONS` range,
+    /// each row found by `(key, file)` (one binary search a key; no
+    /// global keys of other files).
     ///
     /// # Errors
     /// `state-corrupt`; `update-not-implemented (layout)` until given.
-    fn uses_of(&self, file: FileId) -> Result<Vec<StoredUse>, IncrReason> {
+    fn key_refs_of(&self, file: FileId) -> Result<Vec<StoredKeyRef>, IncrReason> {
         let _ = file;
         Err(not_given())
     }
@@ -900,12 +950,10 @@ pub struct MemoryLayout {
     pub regions: Vec<StoredRegion>,
     pub holes: Vec<Hole>,
     pub frags: Vec<StoredFrag>,
-    /// `(file, row)`, each file's rows in its range's order.
-    pub frag_at: Vec<(FileId, StoredFragAt)>,
-    /// `(file, row)`, each file's rows in S-46 order.
-    pub eh_records: Vec<(FileId, StoredEhRecord)>,
-    /// `(file, row)`.
-    pub uses: Vec<(FileId, StoredUse)>,
+    pub frag_uses: Vec<StoredFragUse>,
+    /// `(file, range)`.
+    pub eh_ranges: Vec<(FileId, StoredEhRange)>,
+    pub key_refs: Vec<StoredKeyRef>,
     pub slots: Vec<StoredSlot>,
     pub patches: Vec<Patch>,
     pub redirects: Vec<Redirect>,
@@ -946,21 +994,26 @@ impl LayoutRows for MemoryLayout {
         v.sort_by_key(|h| h.offset);
         Ok(v)
     }
-    fn frags_of(&self, out: OutSecId, hash: [u8; 16]) -> Result<Vec<StoredFrag>, IncrReason> {
-        let mut v: Vec<StoredFrag> =
-            self.frags.iter().filter(|f| f.out == out && f.hash == hash).copied().collect();
-        v.sort_by_key(|f| f.ordinal);
+    fn frags_of(
+        &self,
+        out: OutSecId,
+        class: u32,
+        hash: [u8; 16],
+    ) -> Result<Option<StoredFrag>, IncrReason> {
+        Ok(self.frags.iter().find(|f| (f.out, f.class, f.hash) == (out, class, hash)).copied())
+    }
+    fn frag_uses_of(&self, file: FileId) -> Result<Vec<StoredFragUse>, IncrReason> {
+        let mut v: Vec<StoredFragUse> =
+            self.frag_uses.iter().filter(|r| r.file == file).copied().collect();
+        v.sort();
         Ok(v)
     }
-    fn frag_at_of(&self, file: FileId) -> Result<Vec<StoredFragAt>, IncrReason> {
-        Ok(self.frag_at.iter().filter(|(f, _)| *f == file).map(|(_, r)| *r).collect())
+    fn eh_range_of(&self, file: FileId) -> Result<Option<StoredEhRange>, IncrReason> {
+        Ok(self.eh_ranges.iter().find(|(f, _)| *f == file).map(|(_, r)| *r))
     }
-    fn eh_records_of(&self, file: FileId) -> Result<Vec<StoredEhRecord>, IncrReason> {
-        Ok(self.eh_records.iter().filter(|(f, _)| *f == file).map(|(_, r)| *r).collect())
-    }
-    fn uses_of(&self, file: FileId) -> Result<Vec<StoredUse>, IncrReason> {
-        let mut v: Vec<StoredUse> =
-            self.uses.iter().filter(|(f, _)| *f == file).map(|(_, r)| *r).collect();
+    fn key_refs_of(&self, file: FileId) -> Result<Vec<StoredKeyRef>, IncrReason> {
+        let mut v: Vec<StoredKeyRef> =
+            self.key_refs.iter().filter(|r| r.file == file).copied().collect();
         v.sort();
         Ok(v)
     }
@@ -1040,6 +1093,16 @@ pub struct MergeClass {
     pub align: u8,
 }
 
+impl MergeClass {
+    /// The class word `FRAGS` and `FRAG_USE` store (IN-18e, WP-239 S4-1):
+    /// `strings << 31 | align << 24 | entsize` (`entsize` is at most 2^16,
+    /// S-6; `align` below 64).
+    #[must_use]
+    pub const fn word(self) -> u32 {
+        ((self.strings as u32) << 31) | ((self.align as u32 & 0x7f) << 24) | self.entsize
+    }
+}
+
 /// One merged piece of a changed or drawn-in file (IN-72 item 6) as the
 /// full link's split gives it (`mortar_merge::cut::placed_whole`, S-6, and
 /// `mortar_merge::cut::cut`, S-7..S-10; the hash as the capture's
@@ -1063,7 +1126,7 @@ pub struct MergedPiece {
 /// A changed or drawn-in file's merged pieces (IN-72 item 6), every piece
 /// of every live, kept `SHF_MERGE` section, in `(section, offset)` order.
 /// A gone file, or a changed file whose new version has none, is given
-/// with no pieces (its old version's are its `FRAG_AT` rows).
+/// with no pieces (its old version's are its `FRAG_USE` rows).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct FilePieces {
     pub file: FileId,
@@ -1091,7 +1154,8 @@ pub struct EhRecordIn {
 
 /// A changed, drawn-in or gone file's `.eh_frame` records (IN-34a): the
 /// kept records in S-46 order (empty for a gone file or a file whose new
-/// version has none), and the file's CURRENT rank (S-46's order is the
+/// version has none; the old version's range is [`StoredEhRange`]), and
+/// the file's CURRENT rank (S-46's order is the
 /// load order: the stored `FILES.rank` composed with the update's ranks
 /// as `mortar_incr::update::rows::keeper`'s caller composes it; never the
 /// `FILES` row number).
@@ -1113,11 +1177,15 @@ pub struct SlotDemand {
 }
 
 /// A changed, drawn-in or gone file's slot demand (IN-72 item 7), sorted
-/// by key, one row per key (the flags or-ed). The full link's scan has no
-/// per-file step that returns it (`mortar_scan::driver::run_unit` ors a
-/// unit's global demand into the link-wide column and returns its locals:
-/// WP-216 seam 4, finding S4-5); the join builds it from the same
-/// per-unit scan. A gone file is given with none.
+/// by key, one row per key (the flags or-ed over the file's live units:
+/// counted per FILE). One producer (WP-239 S4-5): `run_unit` generic over
+/// its global sink, the plain link's sink today's atomic OR, the
+/// incremental-mode full link's and the join's a recording one whose
+/// per-file OR is this list and `KEY_REFS.demand`. The scan reads a
+/// target's resolution only through `mortar_arch::SymFacts`
+/// (`ScanTables::sym`): the join compares that value before and after for
+/// the keys unchanged files reference (`update-not-implemented (slots)`).
+/// A gone file is given with none.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct FileDemands {
     pub file: FileId,
@@ -1555,10 +1623,10 @@ mod tests {
         let bare = StoredLayout::new(&Bare);
         let no = Some(IncrReason::UpdateNotImplemented(Some(Unimplemented::Layout)));
         assert_eq!(d.place_of(&bare, SectionId(0)).err(), no);
-        assert_eq!(bare.frags_of(OutSecId(0), [0; 16]).err(), no);
-        assert_eq!(bare.frag_at_of(FileId(0)).err(), no);
-        assert_eq!(bare.eh_records_of(FileId(0)).err(), no);
-        assert_eq!(bare.uses_of(FileId(0)).err(), no);
+        assert_eq!(bare.frags_of(OutSecId(0), 0, [0; 16]).err(), no);
+        assert_eq!(bare.frag_uses_of(FileId(0)).err(), no);
+        assert_eq!(bare.eh_range_of(FileId(0)).err(), no);
+        assert_eq!(bare.key_refs_of(FileId(0)).err(), no);
     }
 
     /// An implementation that gives none of the seam-4 accessors.

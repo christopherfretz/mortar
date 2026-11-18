@@ -178,6 +178,10 @@ pub mod kind {
     /// `FRAG_USE` (WP-239 seam 5); 40 (`FRAG_AT`) is retired with it and
     /// never reused.
     pub const COPIES: u32 = 55;
+    /// File-keyed: per file one row per fragment its live split pieces name
+    /// (not `.debug_*`), by the fragment's key (IN-18e; WP-239 S4-2, R-1).
+    /// Replaces `FRAG_AT` (40) in format 5; 40 is never reused.
+    pub const FRAG_USE: u32 = 56;
     /// The number of tables of versions 3 and 4.
     pub const COUNT: u32 = 28;
 
@@ -228,6 +232,7 @@ pub mod kind {
             REGIONS => "REGIONS",
             NAMES => "NAMES",
             COPIES => "COPIES",
+            FRAG_USE => "FRAG_USE",
             _ => kind.checked_sub(1).and_then(|i| FIRST.get(i as usize)).copied().unwrap_or("?"),
         }
     }

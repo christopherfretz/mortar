@@ -8,8 +8,9 @@
 //! [`super::view::StatePatch`]. Tables format 5 does not change keep
 //! [`crate::format`]'s row types (`SectionRow`, `ChunkRow`, `SegmentRow`,
 //! `SlotRow`, `EhRow`, `SizeRow`, `SymPlaceRow`, `DefinedRow`, `PatchRow`,
-//! `RedirectRow`, `LayoutRow`, `FragAtRow`, `StatRow`, `ProbeRow`,
-//! `OutSecRow`).
+//! `RedirectRow`, `LayoutRow`, `StatRow`, `ProbeRow`, `OutSecRow`).
+//! `SLOTS` (WP-239: `refs`) and `FRAG_USE` (kind 56, replacing `FRAG_AT`)
+//! are format 5's own rows here.
 //!
 //! Widths: where IN-18e states a row's bytes, the fields here add up to
 //! it (the test below); elsewhere the width is the fields' sum, U-2's to
@@ -66,6 +67,14 @@ pub struct FileRow {
     /// 0 for a file named on the command line; unused when `LAZY`.
     /// Written by capture and U-3 (`Extraction`); read by U-3.
     pub round: u32,
+    /// The file's `.eh_frame` range (IN-34a; WP-239 S4-3): bytes from the
+    /// `.eh_frame` chunk's start, bytes held (records and pad), kept
+    /// records (0: no range). `u32` each: a chunk past them is
+    /// `state-limit` at the capture. Written by capture and U-2 (from
+    /// `LayoutDelta::eh`); read by U-4, U-6.
+    pub eh_offset: u32,
+    pub eh_capacity: u32,
+    pub eh_records: u32,
 }
 
 /// `FILE_INDEX` (kind 41, append-only, parallel to `FILES`; IN-18d): per
@@ -103,7 +112,7 @@ pub enum FileTable {
     Mentions = 1,
     Index = 2,
     Edges = 3,
-    FragAt = 4,
+    FragUse = 4,
     EhRecords = 5,
     Symtab = 6,
     Regions = 7,
@@ -117,7 +126,7 @@ impl FileTable {
         Self::Mentions,
         Self::Index,
         Self::Edges,
-        Self::FragAt,
+        Self::FragUse,
         Self::EhRecords,
         Self::Symtab,
         Self::Regions,
@@ -131,7 +140,7 @@ impl FileTable {
             Self::Mentions => kind::MENTIONS,
             Self::Index => kind::INDEX,
             Self::Edges => kind::EDGES,
-            Self::FragAt => kind::FRAG_AT,
+            Self::FragUse => kind::FRAG_USE,
             Self::EhRecords => kind::EH_RECORDS,
             Self::Symtab => kind::SYMTAB,
             Self::Regions => kind::REGIONS,
@@ -353,24 +362,58 @@ pub struct KeyRefRow {
     pub typ: u8,
     /// [`key_ref_flags`].
     pub flags: u8,
+    /// The OR of the `DemandFlags` bits the scan raised on `key` over the
+    /// file's live units (WP-239 S4-4; 2 bytes: the row is 14). Never
+    /// derived from `INDEX`.
+    pub demand: u16,
     pub tomb: bool,
 }
 
-/// `FRAGS` (kind 11, key-keyed by `(out, hash, ordinal)`; IN-72 item 6):
-/// a merged fragment's identity, offset and reference count. Written by
+/// `FRAGS` (kind 11, key-keyed by `(out, class, hash)`; IN-72 item 6;
+/// WP-239 S4-1): a merged fragment's identity, offset and reference count
+/// (files with a `FRAG_USE` row); no `.debug_*` fragment (R-1). Written by
 /// capture and U-2 (from `LayoutDelta::frags`); read by U-4, U-6. As
-/// `mortar_core::incr::StoredFrag` plus `tomb`; `ordinal` is not the merge
-/// class (`StoredFrag::ordinal`).
+/// `mortar_core::incr::StoredFrag` plus `tomb`.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct FragRow {
     pub out: u32,
-    pub ordinal: u32,
+    /// `mortar_core::incr::MergeClass::word`.
+    pub class: u32,
     pub hash: Hash16,
     /// Bytes from the merged chunk's start.
     pub offset: u64,
     /// Live pieces naming it; 0: a dead range (IN-72 item 6).
     pub refs: u32,
     pub tomb: bool,
+}
+
+/// `FRAG_USE` (kind 56, file-keyed; IN-18e; WP-239 S4-2): one row per
+/// (file, fragment its live split pieces name), by the fragment's `FRAGS`
+/// key, 28 bytes; none for a section named `.debug_*`. Written by capture
+/// and U-2 (a changed file's range); read by U-4 (the old version's
+/// fragments).
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct FragUseRow {
+    /// The `FILES` row (the range's).
+    pub file: u32,
+    /// The `OUTSECS` row.
+    pub out: u32,
+    /// `mortar_core::incr::MergeClass::word`.
+    pub class: u32,
+    pub hash: Hash16,
+}
+
+/// `SLOTS` (kind 12, whole; IN-28b, IN-72 item 7): format 4's
+/// `format::SlotRow` plus `refs` (WP-239 S4-4: the live files whose
+/// `KEY_REFS.demand` needs the slot; a local's slot: 1). Written by capture
+/// and U-2; read by U-4.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct SlotRow {
+    /// `mortar_core::layout::SlotKind` as format 4 numbers it.
+    pub kind: u8,
+    /// The `SYMBOLS` row.
+    pub symbol: u32,
+    pub refs: u32,
 }
 
 /// `HOLES` (kind 39, key-keyed by `(chunk, offset)`; IN-3, IN-3a, IN-72):
@@ -639,8 +682,10 @@ mod tests {
         assert_eq!(resolved, 24);
         let index = 4 + 1 + 4;
         assert_eq!(index, 9);
-        let key_ref = 4 + 4 + 1 + 1 + 1 + 1; // tomb is a bit of flags
-        assert_eq!(key_ref, 12);
+        let key_ref = 4 + 4 + 1 + 1 + 1 + 1 + 2; // tomb is a bit of flags
+        assert_eq!(key_ref, 14);
+        let frag_use = 4 + 4 + 4 + 16;
+        assert_eq!(frag_use, 28);
         let symtab_key = 4 + 4;
         assert_eq!(symtab_key, 8);
         let odr_class = 4 + 16 + 8;
@@ -659,8 +704,9 @@ mod tests {
             MentionRow::default();
         let ResolvedRow { kind: _, typ: _, bind: _, other: _, section: _, value: _, size: _ } =
             ResolvedRow::default();
-        let KeyRefRow { key: _, file: _, def: _, bind: _, typ: _, flags: _, tomb: _ } =
+        let KeyRefRow { key: _, file: _, def: _, bind: _, typ: _, flags: _, demand: _, tomb: _ } =
             KeyRefRow::default();
+        let FragUseRow { file: _, out: _, class: _, hash: _ } = FragUseRow::default();
         let SymtabKeyRow { index: _, strtab: _ } = SymtabKeyRow::default();
         let OdrClassRow { key: _, hash: _, layout: _, tomb: _ } = OdrClassRow::default();
         let OdrRefRow { key: _, file: _, kind: _, class: _, tomb: _ } = OdrRefRow::default();
