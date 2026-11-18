@@ -654,6 +654,9 @@ pub struct StoredFrag {
     pub hash: [u8; 16],
     /// Bytes from the merged chunk's start.
     pub offset: u64,
+    /// Its bytes (WP-242 C, seam 6): a function of its identity, so never
+    /// changed for a key; a dead string fragment's hole is this long.
+    pub size: u32,
     /// The live files with a `FRAG_USE` row naming it (IN-18e
     /// `FRAGS.refs`, counted per FILE); 0: a dead range.
     pub refs: u32,
@@ -675,12 +678,14 @@ pub struct StoredFragUse {
 }
 
 /// A file's `.eh_frame` range in the stored output (IN-34a as ruled by
-/// WP-239 S4-3): three `u32` columns of its `FILES` row. Record sizes are
-/// not stored: a changed file's come from its new bytes (S-47), an
-/// unchanged range is moved by walking the previous output's bytes. Written
-/// by the capture (the incremental-mode full link gives each file's records
-/// a capacity of size + max(16, ceil4(size/8))) and U-2 (from
-/// `LayoutDelta::eh`); read by U-4 (item 5), U-6 (the move).
+/// WP-239 S4-3): four `u32` columns of its `FILES` row (`fdes`: WP-214
+/// seam 6, from WP-243). Record sizes are not stored: a changed file's come
+/// from its new bytes (S-47), an unchanged range is moved by walking the
+/// previous output's bytes. Written by the capture (the incremental-mode
+/// full link gives each file's records a capacity of size + max(16,
+/// ceil4(size/8))) and U-2 (from `LayoutDelta::eh`, with `fdes` counted
+/// by the join from the file's [`EhFile::records`]: the records that are
+/// not `cie`); read by U-4 (item 5), U-6 (the move).
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct StoredEhRange {
     /// Bytes from the `.eh_frame` chunk's start.
@@ -689,6 +694,11 @@ pub struct StoredEhRange {
     pub capacity: u32,
     /// Kept records in the range.
     pub records: u32,
+    /// The FDEs among `records` (WP-243, seam 6): written wherever
+    /// `records` is. With it U-4 sizes `.eh_frame_hdr` without reading
+    /// unchanged ranges: the stored chunk's FDE count, minus the changed
+    /// files' stored `fdes`, plus their new ones (IN-34a).
+    pub fdes: u32,
 }
 
 /// One `KEY_REFS` row as the delta layout reads it (IN-18e; WP-239 S4-4):
@@ -842,6 +852,17 @@ pub trait LayoutRows: Sync {
         let _ = file;
         Err(not_given())
     }
+    /// Every file that has a `.eh_frame` range (`records` > 0; not `GONE`),
+    /// with its CURRENT `FILES.rank` and its range, in `rank` order (WP-243,
+    /// seam 6). Called only by the whole rewrite of IN-34a (overflow, an
+    /// appearing file): it reads `FILES` whole, O(files), which IN-18c
+    /// names; the rewrite it serves is O(records) anyway.
+    ///
+    /// # Errors
+    /// `state-corrupt`; `update-not-implemented (layout)` until given.
+    fn eh_ranges(&self) -> Result<Vec<(FileId, u64, StoredEhRange)>, IncrReason> {
+        Err(not_given())
+    }
     /// A file's `KEY_REFS` rows, by key: the keys of its `MENTIONS` range,
     /// each row found by `(key, file)` (one binary search a key; no
     /// global keys of other files).
@@ -953,6 +974,9 @@ pub struct MemoryLayout {
     pub frag_uses: Vec<StoredFragUse>,
     /// `(file, range)`.
     pub eh_ranges: Vec<(FileId, StoredEhRange)>,
+    /// `(file, FILES.rank)` for [`LayoutRows::eh_ranges`]; a file not
+    /// listed has the first link's rank, `FileId << 20`.
+    pub ranks: Vec<(FileId, u64)>,
     pub key_refs: Vec<StoredKeyRef>,
     pub slots: Vec<StoredSlot>,
     pub patches: Vec<Patch>,
@@ -1010,6 +1034,19 @@ impl LayoutRows for MemoryLayout {
     }
     fn eh_range_of(&self, file: FileId) -> Result<Option<StoredEhRange>, IncrReason> {
         Ok(self.eh_ranges.iter().find(|(f, _)| *f == file).map(|(_, r)| *r))
+    }
+    fn eh_ranges(&self) -> Result<Vec<(FileId, u64, StoredEhRange)>, IncrReason> {
+        let rank = |f: FileId| {
+            self.ranks.iter().find(|(g, _)| *g == f).map_or(u64::from(f.0) << 20, |(_, r)| *r)
+        };
+        let mut v: Vec<(FileId, u64, StoredEhRange)> = self
+            .eh_ranges
+            .iter()
+            .filter(|(_, r)| r.records > 0)
+            .map(|(f, r)| (*f, rank(*f), *r))
+            .collect();
+        v.sort_by_key(|e| (e.1, e.0));
+        Ok(v)
     }
     fn key_refs_of(&self, file: FileId) -> Result<Vec<StoredKeyRef>, IncrReason> {
         let mut v: Vec<StoredKeyRef> =
@@ -1229,9 +1266,13 @@ pub struct EhRange {
     pub file: FileId,
     /// Bytes from the chunk's start.
     pub offset: u64,
-    /// Bytes: its records and its pad (0, or a hole of at least 16 bytes
-    /// in [`LayoutDelta::holes`], `HoleKind::EhPad`; 4, 8 or 12 bytes are
-    /// absorbed into the last record).
+    /// Bytes: its records and its pad. The pad is 0; or a hole of at
+    /// least 16 bytes in [`LayoutDelta::holes`], `HoleKind::EhPad` (a
+    /// padding CIE in the bytes); or 4, 8 or 12 bytes, which in the
+    /// placement DATA are a short `HoleKind::EhPad` entry (never at offset
+    /// 0), as the full link's `eh_pads` reads them, and in the BYTES and
+    /// the map are the last record's padding (`DW_CFA_nop`), never a
+    /// `hole` line or a padding CIE (IN-34a; WP-243, seam 6).
     pub capacity: u64,
     pub records: Vec<u64>,
 }
@@ -1279,7 +1320,10 @@ pub struct LayoutDelta {
     /// again, the TLS template and the entry) complete; `place` indexed by
     /// the update's id space and meaningful only for the sections of
     /// `files`; `holes` only the holes of `hole_chunks`; `sized` empty (no
-    /// row `LayoutRows` gives).
+    /// row `LayoutRows` gives). `defined`: the stored `DEFINED`, whole and
+    /// unchanged (chunk-relative values follow their chunks); a row whose
+    /// value is a chunk's END is not moved by the layout when the update
+    /// grows that chunk (seam 6, from WP-242).
     pub placement: Placement,
     /// The files whose sections this update places (changed, appeared,
     /// drawn-in, newly extracted, gone), sorted.
@@ -1311,10 +1355,27 @@ pub struct LayoutDelta {
     /// Fragments whose `refs` or offset changed, appended or revived
     /// (IN-72 item 6), by identity.
     pub frags: Vec<StoredFrag>,
-    /// Slots appended (IN-72 item 7).
+    /// Every `SLOTS` row the update writes (IN-72 item 7), in four lists
+    /// (WP-242 B, seam 6). Each is sorted by `(kind, index)` and holds the
+    /// row as it is AFTER the update; a `(kind, index)` is in at most one
+    /// of them; a stored row in none is unchanged. U-2 writes `SLOTS`
+    /// from the stored rows with these replacing theirs; U-6 writes the
+    /// bytes of `slots_appended` and `slots_revived`, and 0 over
+    /// `slots_dead`.
+    ///
+    /// Slots appended: an index at or past its kind's stored count.
     pub slots_appended: Vec<StoredSlot>,
-    /// Slots now dead (written 0, IN-72 item 7).
+    /// Slots retired: a stored row whose `refs` was above 0 and is now 0;
+    /// written 0, a [`crate::layout::HoleKind::DeadSlot`] hole in
+    /// `holes` (IN-72 item 7, S-113).
     pub slots_dead: Vec<StoredSlot>,
+    /// Slots revived: a stored row whose `refs` was 0 and is now above 0
+    /// (the same key, its old index); written again as an appended slot
+    /// is, its `DeadSlot` hole gone.
+    pub slots_revived: Vec<StoredSlot>,
+    /// Slots recounted: a stored row whose `refs` was above 0 and is now a
+    /// different count above 0; no byte changes, the row only.
+    pub slots_recounted: Vec<StoredSlot>,
 }
 
 impl LayoutDelta {
@@ -1627,6 +1688,29 @@ mod tests {
         assert_eq!(bare.frag_uses_of(FileId(0)).err(), no);
         assert_eq!(bare.eh_range_of(FileId(0)).err(), no);
         assert_eq!(bare.key_refs_of(FileId(0)).err(), no);
+        assert_eq!(bare.eh_ranges().err(), no);
+    }
+
+    // spec: incr.md IN-34a (WP-243, seam 6: every file with a range, by
+    // its current rank; `fdes` beside `records`)
+    #[test]
+    fn eh_ranges_by_current_rank() {
+        let r = |offset, records, fdes| StoredEhRange { offset, capacity: 64, records, fdes };
+        let rows = MemoryLayout {
+            eh_ranges: vec![
+                (FileId(1), r(0, 3, 2)),
+                (FileId(2), r(64, 0, 0)),
+                (FileId(3), r(128, 2, 1)),
+                (FileId(6), r(192, 1, 1)),
+            ],
+            // file 6 appeared between files 1 and 3
+            ranks: vec![(FileId(6), (1 << 20) + (1 << 19))],
+            ..MemoryLayout::default()
+        };
+        let v = StoredLayout::new(&rows).eh_ranges().unwrap();
+        let files: Vec<(u32, u64)> = v.iter().map(|e| (e.0.0, e.1)).collect();
+        assert_eq!(files, [(1, 1 << 20), (6, (1 << 20) + (1 << 19)), (3, 3 << 20)]);
+        assert_eq!(v[0].2.fdes, 2);
     }
 
     /// An implementation that gives none of the seam-4 accessors.
