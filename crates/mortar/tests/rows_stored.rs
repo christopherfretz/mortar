@@ -14,7 +14,7 @@
 //! is a COMDAT group in two files (one copy dropped, I-47a's case); a
 //! kiln/hod link when `MASON_KILN` and `MASON_HOD` are set.
 
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
 use std::ffi::OsString;
 use std::process::Command;
 use std::time::Duration;
@@ -231,6 +231,22 @@ struct Seen {
     fallbacks: u32,
     /// Slot and PLT answers compared (every key, every slot kind).
     slots: u32,
+    /// The scale run (not strict): the fall-backs by reason and the
+    /// definer's section kind.
+    reasons: BTreeMap<String, u32>,
+    /// The scale run: `StoredRows::new`, and `value_of` over every key,
+    /// microseconds, each run.
+    new_us: Vec<u128>,
+    value_us: Vec<u128>,
+}
+
+/// How [`compare`] runs.
+#[derive(Clone, Copy, Default)]
+struct Opts {
+    /// A fall-back that is not a named one is tallied, not an error.
+    tally: bool,
+    /// Time `StoredRows::new` and `value_of` over every key (5 runs).
+    timing: bool,
 }
 
 /// One fixture's incremental-mode full link: its directory, arguments,
@@ -279,7 +295,12 @@ type Probe<'p> = &'p dyn Fn(&StoredRows<'_, '_>);
 /// The three-way comparison of `linked`'s link against the format-5 state
 /// `state` (the link's own, or a mutated copy): `Err` names the first key
 /// on which the stored side disagrees, or the open's refusal.
-fn compare(linked: &Linked, state: Vec<u8>, probe: Option<Probe<'_>>) -> Result<Seen, String> {
+fn compare(
+    linked: &Linked,
+    state: Vec<u8>,
+    probe: Option<Probe<'_>>,
+    opts: Opts,
+) -> Result<Seen, String> {
     let label = &linked.label;
     let view = mortar_incr::state5::read::open_bytes(state).map_err(|e| format!("open: {e:?}"))?;
     let lo = mortar_incr::state5::read::LayoutOf { view: &view };
@@ -312,6 +333,15 @@ fn compare(linked: &Linked, state: Vec<u8>, probe: Option<Probe<'_>>) -> Result<
         let stored = StoredRows::new(&view, &stored_layout, l.arch, got_output, variant)
             .map_err(|e| format!("{label}: open (StoredRows::new): {e:?}"))?;
         let mut seen = Seen::default();
+        if opts.timing {
+            let n = l.inputs.symbols.len();
+            time_rows(
+                &|| StoredRows::new(&view, &stored_layout, l.arch, got_output, variant),
+                n,
+                &mut seen,
+            )
+            .map_err(|e| format!("{label}: open: {e:?}"))?;
+        }
         let tls = front_rows.tls().map_or(0, |t| t.start);
         if let Some(p) = probe {
             p(&stored);
@@ -332,26 +362,7 @@ fn compare(linked: &Linked, state: Vec<u8>, probe: Option<Probe<'_>>) -> Result<
                 return Err(format!("{label}: key {i} ({shown}) names another key"));
             }
             seen.keys += 1;
-            for kind in SLOT_KINDS {
-                let (fr, st) = (rows::slot(&front_rows, key, kind), rows::slot(&stored, key, kind));
-                if fr != st {
-                    return Err(format!(
-                        "{label}: {shown}: {kind:?} slot: front {fr:x?}, stored {st:x?}"
-                    ));
-                }
-                seen.slots += 1;
-            }
-            let (fr, st) = (rows::plt(&front_rows, key), rows::plt(&stored, key));
-            if fr != st {
-                return Err(format!("{label}: {shown}: PLT entry: front {fr:x?}, stored {st:x?}"));
-            }
-            // The definition row, its entry included (WP-255c3: the value
-            // alone does not see a definer's `MENTIONS` rows reordered,
-            // the derived index stays consistent inside the state).
-            let (fr, st) = (front_rows.def(SymbolId(i)), stored.def(SymbolId(i)));
-            if fr != st && !(st.is_none() && stored.failure().is_some()) {
-                return Err(format!("{label}: {shown}: def: front {fr:?}, stored {st:?}"));
-            }
+            same_rows(&front_rows, &stored, SymbolId(i), &format!("{label}: {shown}"), &mut seen)?;
             let want = rows::sym(&front_rows, key);
             match stored.value_of(key) {
                 Ok(got) if got == want => seen.equal += 1,
@@ -365,9 +376,11 @@ fn compare(linked: &Linked, state: Vec<u8>, probe: Option<Probe<'_>>) -> Result<
                         .and_then(|e| front_rows.entry(e))
                         .and_then(|d| d.place?.ok())
                         .and_then(|s| front_rows.section_kind(s));
-                    if !matches!(def_kind, Some(SectionKind::Merge | SectionKind::EhFrame))
-                        || e != IncrReason::UpdateNotImplemented(Some(Unimplemented::Image))
-                    {
+                    let named = matches!(def_kind, Some(SectionKind::Merge | SectionKind::EhFrame))
+                        && e == IncrReason::UpdateNotImplemented(Some(Unimplemented::Image));
+                    if opts.tally {
+                        *seen.reasons.entry(format!("{e:?} / {def_kind:?}")).or_default() += 1;
+                    } else if !named {
                         return Err(format!("{label}: {shown} has no stored value: {e:?}"));
                     }
                     seen.fallbacks += 1;
@@ -392,11 +405,63 @@ fn compare(linked: &Linked, state: Vec<u8>, probe: Option<Probe<'_>>) -> Result<
     .unwrap()
 }
 
+/// Beside the value: one key's slot addresses, PLT entry and definition
+/// row (its entry included) agree; `at` names the key.
+fn same_rows(
+    front: &FrontRows<'_, '_>,
+    stored: &StoredRows<'_, '_>,
+    id: SymbolId,
+    at: &str,
+    seen: &mut Seen,
+) -> Result<(), String> {
+    let key = SymKey::global(id);
+    for kind in SLOT_KINDS {
+        let (fr, st) = (rows::slot(front, key, kind), rows::slot(stored, key, kind));
+        if fr != st {
+            return Err(format!("{at}: {kind:?} slot: front {fr:x?}, stored {st:x?}"));
+        }
+        seen.slots += 1;
+    }
+    let (fr, st) = (rows::plt(front, key), rows::plt(stored, key));
+    if fr != st {
+        return Err(format!("{at}: PLT entry: front {fr:x?}, stored {st:x?}"));
+    }
+    // The definition row, its entry included (WP-255c3: the value
+    // alone does not see a definer's `MENTIONS` rows reordered,
+    // the derived index stays consistent inside the state).
+    let (fr, st) = (front.def(id), stored.def(id));
+    if fr != st && !(st.is_none() && stored.failure().is_some()) {
+        return Err(format!("{at}: def: front {fr:?}, stored {st:?}"));
+    }
+    Ok(())
+}
+
+/// `StoredRows::new` (by `open`) and `value_of` over the `n` keys, 5 runs
+/// each, into `seen`.
+fn time_rows<'v, 's>(
+    open: &dyn Fn() -> Result<StoredRows<'v, 's>, IncrReason>,
+    n: u32,
+    seen: &mut Seen,
+) -> Result<(), IncrReason> {
+    for _ in 0..5 {
+        let t = std::time::Instant::now();
+        let again = open()?;
+        seen.new_us.push(t.elapsed().as_micros());
+        let t = std::time::Instant::now();
+        for i in 0..n {
+            std::hint::black_box(again.value_of(SymKey::global(SymbolId(i))).ok());
+        }
+        seen.value_us.push(t.elapsed().as_micros());
+    }
+    Ok(())
+}
+
 /// The three-way comparison on one fixture's own state; `None` when a
 /// tool is missing.
 fn check(arch: Arch, label: &str, files: &Files) -> Option<Seen> {
     let linked = link(arch, label, files)?;
-    let seen = compare(&linked, linked.state.clone(), None).unwrap_or_else(|e| panic!("{e}"));
+    let seen = compare(&linked, linked.state.clone(), None, Opts::default())
+        .unwrap_or_else(|e| panic!("{e}"));
     eprintln!("[wp255c] {}: {seen:?}", linked.label);
     Some(seen)
 }
@@ -491,14 +556,15 @@ fn sees_stale(x: &str, mutate: fn(&mut MemoryState) -> Result<(), String>) -> Ve
         };
         let mut m = mortar_incr::state5::read::decode(&linked.state).unwrap();
         let control = mortar_incr::state5::write::encode(&m).unwrap();
-        let ok = compare(&linked, control, None).unwrap_or_else(|e| panic!("control: {e}"));
+        let ok = compare(&linked, control, None, Opts::default())
+            .unwrap_or_else(|e| panic!("control: {e}"));
         assert!(ok.equal > 0, "{x} {arch:?}: {ok:?}");
         mutate(&mut m).unwrap_or_else(|e| panic!("{x} {arch:?}: {e}"));
         let copy = linked.dir.join("copy.mortar-state");
         let bytes = mortar_incr::state5::write::encode(&m)
             .unwrap_or_else(|e| panic!("{x} {arch:?}: the writer refuses the mutation: {e:?}"));
         std::fs::write(&copy, bytes).unwrap();
-        let r = compare(&linked, std::fs::read(&copy).unwrap(), None);
+        let r = compare(&linked, std::fs::read(&copy).unwrap(), None, Opts::default());
         std::fs::remove_file(&copy).unwrap();
         eprintln!("[wp255c3] stale {x} {arch:?}: {r:?}");
         match r {
@@ -614,9 +680,90 @@ fn stored_rows_value_of_gives_the_reason() {
             assert!(s.value_of(e).is_ok(), "{arch:?}");
             assert_eq!(s.failure(), None, "{arch:?}");
         };
-        let r = compare(&linked, std::fs::read(&copy).unwrap(), Some(&probe));
+        let r = compare(&linked, std::fs::read(&copy).unwrap(), Some(&probe), Opts::default());
         std::fs::remove_file(&copy).unwrap();
         let e = r.expect_err("the corrupt key compared");
         assert!(e.contains(": d has no stored value: StateCorrupt"), "{e}");
+    }
+}
+
+// ---- WP-255c3: scale (protoc, a Fortran link) ------------------------------
+
+/// The median of `v`.
+fn median(v: &[u128]) -> u128 {
+    let mut v = v.to_vec();
+    v.sort_unstable();
+    v.get(v.len() / 2).copied().unwrap_or(0)
+}
+
+/// The three-way comparison on a bench workload's link (run by hand):
+/// `WP255C3_WORKLOADS` names workload directories of the bench's cache
+/// (`<dir>/response.txt`, inputs under `<dir>/build`), colon-separated.
+/// The cache is only READ: the link runs in this test's own directory,
+/// the relative inputs made absolute. Prints the keys compared, the
+/// fall-backs by reason, the disagreement if any, and the median of 5
+/// of `StoredRows::new` and of `value_of` over every key.
+#[test]
+#[ignore = "by hand: needs the bench's prepared workloads"]
+fn stored_rows_scale() {
+    let list = std::env::var("WP255C3_WORKLOADS").expect("WP255C3_WORKLOADS");
+    for w in list.split(':') {
+        let w = std::path::Path::new(w);
+        let build = w.join("build");
+        let label = w.file_name().unwrap().to_string_lossy().into_owned();
+        let dir = Scratch::new(&format!("wp255c3-scale-{label}"));
+        let text = std::fs::read_to_string(w.join("response.txt")).unwrap();
+        let mut args: Vec<OsString> = Vec::new();
+        let mut lines = text.lines().peekable();
+        while let Some(a) = lines.next() {
+            if a == "-o" {
+                lines.next();
+                args.extend(["-o".into(), "out".into()]);
+            } else if a.starts_with("--dependency-file") {
+            } else if !a.starts_with('-') && !a.starts_with('/') && build.join(a).exists() {
+                args.push(build.join(a).into_os_string());
+            } else {
+                args.push(a.into());
+            }
+        }
+        let mut inc = args.clone();
+        inc.push("--incremental".into());
+        let t = std::time::Instant::now();
+        let inv = mortar::invoke_in("mortar", &inc, dir.path());
+        let link_ms = t.elapsed().as_millis();
+        assert!(
+            matches!(inv.outcome, mortar::Outcome::Linked { .. }),
+            "{label}: {:?}",
+            inv.outcome
+        );
+        let out = std::fs::read(dir.join("out")).unwrap();
+        std::fs::remove_file(dir.join("out")).unwrap();
+        let state = std::fs::read(dir.join("out.mortar-state")).unwrap();
+        std::fs::remove_file(dir.join("out.mortar-state")).unwrap();
+        let (out_len, state_len) = (out.len(), state.len());
+        let linked = Linked { label: label.clone(), dir, args, out, state };
+        let opts = Opts { tally: true, timing: true };
+        match compare(&linked, linked.state.clone(), None, opts) {
+            Ok(seen) => {
+                let n = u128::from(seen.keys.max(1));
+                eprintln!(
+                    "[wp255c3-scale] {label}: link {link_ms} ms, out {out_len} B, state {state_len} B; \
+                     keys {}, equal {}, .symtab {}, slots {}; fall-backs {:?}; \
+                     StoredRows::new median {} us {:?}; value_of all keys median {} us {:?} \
+                     ({} ns a key)",
+                    seen.keys,
+                    seen.equal,
+                    seen.symtab,
+                    seen.slots,
+                    seen.reasons,
+                    median(&seen.new_us),
+                    seen.new_us,
+                    median(&seen.value_us),
+                    seen.value_us,
+                    median(&seen.value_us) * 1000 / n,
+                );
+            }
+            Err(e) => panic!("[wp255c3-scale] {label}: DISAGREEMENT: {e}"),
+        }
     }
 }
