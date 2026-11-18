@@ -2596,7 +2596,7 @@ fn first_update_same_size_body() {
         let o = prog.mortar_env("o", &["--incremental"], &env);
         assert!(o.success(), "{arch:?}: {}", o.stderr_text());
         for imm in ["43", "44"] {
-            let src = prog.scratch.write("a.s", &text.replace(from, &from.replace("42", imm)));
+            let src = prog.scratch.write("a.s", text.replace(from, &from.replace("42", imm)));
             let gcc = arch.tool("gcc").unwrap();
             let obj = prog.path("a.o");
             let g = run_in(

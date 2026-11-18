@@ -368,7 +368,7 @@ pub fn detect(view: &StateView<'_>, cwd: &Path) -> Result<Detected, IncrReason> 
             d.changed_paths.push(i);
             continue;
         };
-        let t = mortar_incr::stamp::Tuple::of(&m);
+        let t = Tuple::of(&m);
         if stat_rule(r, (t.dev, t.ino, t.size, t.mtime_ns, t.ctime_ns), &devices) == Stat::Clean {
             continue;
         }
