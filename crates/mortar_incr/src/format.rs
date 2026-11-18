@@ -84,7 +84,10 @@ fn corrupt(detail: impl Into<String>) -> StateError {
     StateError::Corrupt(detail.into())
 }
 
-/// A string: bytes of the `STRINGS` table.
+/// A string: bytes of the `STRINGS` table. Two strings are equal when
+/// their BYTES are, never by `Str` value: in an update the same bytes can
+/// sit in the state's `STRINGS` and in `ChangedFiles::strings` (WP-215
+/// seam 3).
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct Str {
     pub off: u32,

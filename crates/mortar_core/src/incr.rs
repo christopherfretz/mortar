@@ -82,11 +82,15 @@ pub enum Unimplemented {
     /// §2; the old version of a file's `@@` is not stored). WP-215 (U-3);
     /// [later] the version of a `@@` definition stored.
     Versioned,
+    /// A link under `--gc-sections` (`OptionKeys::gc_sections`): IN-29's
+    /// stored graph and IN-71a's walk are not built (WP-215 seam 3, G3);
+    /// decided from the option alone, on every update. [later] WP-238.
+    Live,
 }
 
 impl Unimplemented {
     /// Every word, in `spec/incr.md` §7's order.
-    pub const ALL: [Self; 11] = [
+    pub const ALL: [Self; 12] = [
         Self::State5,
         Self::Resolve,
         Self::Refill,
@@ -98,6 +102,7 @@ impl Unimplemented {
         Self::Debug,
         Self::Diags,
         Self::Versioned,
+        Self::Live,
     ];
 
     /// The word (`spec/incr.md` §7).
@@ -115,6 +120,7 @@ impl Unimplemented {
             Self::Debug => "debug",
             Self::Diags => "diags",
             Self::Versioned => "versioned",
+            Self::Live => "live",
         }
     }
 }
@@ -387,9 +393,10 @@ impl fmt::Display for IncrReason {
 
 // ---- the option-given keys (passed in, never stored) -------------------------
 
-/// The keys a link's options name (WP-215 D3-D5; `spec/incr.md` IN-71,
-/// IN-71b, IN-71c): resolve.md §4.2's roots, `--wrap` (§7.1) and
-/// `--defsym` (§7.2), **by name**. Never stored: an update has the full
+/// What the update reads of the plan (WP-215 D3-D5 and seam 3;
+/// `spec/incr.md` IN-71, IN-71a, IN-71b, IN-71c): the keys a link's
+/// options name, resolve.md §4.2's roots, `--wrap` (§7.1) and `--defsym`
+/// (§7.2), **by name**, and the one switch `--gc-sections`. Never stored: an update has the full
 /// link's options (else `options-changed`, IN-18b), so the join (U-10)
 /// builds this from the plan and the scripts' directives exactly as the
 /// full link's resolution reads them (`mortar_resolve::tables::options`
@@ -417,13 +424,21 @@ pub struct OptionKeys {
     /// `--defsym=SYM=EXPR`: the last option of each `SYM`, in
     /// command-line order of those (§7.2).
     pub defsym: Vec<OptionDefsym>,
+    /// `--gc-sections` (`Plan::gc_sections`). Under it every update is
+    /// `update-not-implemented (live)` (WP-215 seam 3; [later] WP-238).
+    pub gc_sections: bool,
 }
 
 /// A key an option names (§4.2), by name, with the option's argument
 /// index (`Named::arg`: the `seq` of a root's pulling reference, §4.1).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct OptionKey {
-    /// The key's name (unversioned: an option names no version).
+    /// The option's operand as written. Its key is found as
+    /// `mortar_resolve::tables::InputsView::key_of` finds it: split at
+    /// the first `@`; `foo@V` is `(foo, V)`, `foo@@V` is `foo` looked up
+    /// with no version, no `@` the name with no version. `foo@V` is reachable under D8
+    /// only when a shared object defines `foo@V` (`META.versioned` counts
+    /// relocatable objects and members only).
     pub name: Box<[u8]>,
     pub arg: u32,
 }
@@ -1093,6 +1108,7 @@ mod tests {
                     arg: 8,
                 },
             ],
+            gc_sections: false,
         };
         assert_eq!(o.redirect(b"foo"), Some(b"__wrap_foo".to_vec()));
         // `__real_foo` is `S` of the second option, which decides.
