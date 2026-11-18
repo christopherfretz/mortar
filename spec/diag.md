@@ -256,7 +256,7 @@ is `error` has `—`.
 | `odr-archive-shadow` | `OdrArchiveShadow { name }` | `{name} in an archive member that is not linked is defined differently` | own (`spec/odr.md` O-23; WP-076) | warning | file, key |
 | `odr-contents-mismatch` | `OdrContentsMismatch { name }` | `{name} has different contents in different files` | own (`spec/odr.md` §8.1 W4; WP-072) | warning | file, key |
 | `odr-declaration-mismatch` | `OdrDeclarationMismatch { name }` | `{name} is declared with a type that does not match its definition` | own (WP-073) | warning | file, key |
-| `odr-internal-reference` | `OdrInternalReference { name }` | `{name} refers to an entity with internal linkage, which differs in each translation unit` | own (WP-073) | warning | file, key |
+| `odr-internal-reference` | `OdrInternalReference { name }` | `{name} refers to an entity with internal linkage, which differs in each translation unit` | own (WP-073; WP-204: the places group the rows by hash, so equal definitions are each `>>> defined in`, never `defined differently in`, the cause being the note `each translation unit's copy refers to its own entity with internal linkage`; `SYSTEM` rows and `unit.system` units take no part, `spec/odr.md` O-16) | warning | file, key |
 | `odr-isa-mismatch` | `OdrIsaMismatch { name }` | `the kept copy of {name} was compiled for other target features than a translation unit that uses it` | own (WP-073) | warning | file, key |
 | `odr-size-mismatch` | `OdrSizeMismatch { name }` | `{name} has different sizes in different files` | own | warning | file, key |
 | `odr-strong-and-comdat` | `OdrStrongAndComdat { name }` | `{name} has a non-inline definition and an inline copy` | own | warning | file, key |

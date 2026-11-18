@@ -151,7 +151,8 @@ fn stats_line(odr: Odr, c: &Counts, r: &records::Counts, micros: u128) -> String
     format!(
         "mortar: odr-stats: mode {}; units {}, rows {} (kind 1 {}, kind 2 {}, kind 3 {}, kind 5 \
          {}), schemes {}, pairs not compared {}, layout schemes {}, layout pairs not compared {}, type groups compared across schemes {}, ambiguous anchors {}, unanchored rows {}, \
-         system -std differences {}, rows set aside {}, container bytes read {}, shared-object \
+         system -std differences {}, rows set aside {}, rows with reserved flag bits {}, container \
+         bytes read {}, shared-object \
          tables {} ({} rows), archive members {} ({} units, {} bytes, {} rows compared), layout \
          details read {}, record findings {}; files with COMDAT copies {}, groups {}, copies {}, definitions {}; \
          findings W1 {}, W2 {}, W3 {}, W4 {}; time {}.{:03} ms",
@@ -171,6 +172,7 @@ fn stats_line(odr: Odr, c: &Counts, r: &records::Counts, micros: u128) -> String
         r.unanchored,
         r.system_std,
         r.ignored,
+        r.reserved,
         r.bytes,
         r.tables,
         r.table_rows,

@@ -54,7 +54,7 @@
 //! vptr offset=N
 //! slot name=S index=N              # a vtable slot: the final overrider's declaration
 //! enumerator name=S value=N      # N may be negative: two's complement (O-19)
-//! underlying type=S
+//! underlying type=S [scoped=1] [fixed=1]   # O-18's bits in the value (kiln-odr-1, from .d5; WP-204)
 //! item flags=N name=S type=S value=N width=N   # any item, as given (kind in bits 0-3)
 //! ```
 //!
@@ -403,8 +403,14 @@ fn detail_item(directive: &[u8], fields: &Fields) -> Result<Option<Detail>, Stri
             x
         }
         b"underlying" => {
-            let mut x = d(item::UNDERLYING, &["type"])?;
+            let mut x = d(item::UNDERLYING, &["type", "scoped", "fixed"])?;
             x.ty = fields.string("type");
+            let scoped: u64 = fields.num("scoped", 0)?;
+            let fixed: u64 = fields.num("fixed", 0)?;
+            if scoped > 1 || fixed > 1 {
+                return Err("scoped= and fixed= are 0 or 1".to_owned());
+            }
+            x.value = (scoped * item::SCOPED) | (fixed * item::FIXED);
             x
         }
         b"item" => {
@@ -811,8 +817,19 @@ fn print_items(out: &mut String, u: &Unit<'_>, offset: u32) -> bool {
                 let v = if signed { (it.value as i64).to_string() } else { it.value.to_string() };
                 format!("enumerator name={name} value={v}")
             }
-            item::UNDERLYING if it.name == 0 && it.width == 0 && it.value == 0 => {
-                format!("underlying type={ty}")
+            item::UNDERLYING
+                if it.name == 0
+                    && it.width == 0
+                    && it.value & !(item::SCOPED | item::FIXED) == 0 =>
+            {
+                let mut l = format!("underlying type={ty}");
+                if it.value & item::SCOPED != 0 {
+                    l.push_str(" scoped=1");
+                }
+                if it.value & item::FIXED != 0 {
+                    l.push_str(" fixed=1");
+                }
+                l
             }
             _ => format!(
                 "item flags={:#x} name={name} type={ty} value={} width={}",
@@ -1588,7 +1605,7 @@ enumerator name=A value=0
 enumerator name=B value=0xffffffffffffffff
 enumerator name=C value=-2
 type name=1F size=4 align=4 flags=1
-underlying type=j
+underlying type=j scoped=1 fixed=1
 enumerator name=U value=0xffffffffffffffff
 type name=1U size=8 align=4
 member offset=0 nested=2
@@ -1641,6 +1658,7 @@ type name=1N size=1 align=1
             "member name=b type=i offset=96 width=3\n",
             "slot name=_ZN1S1fEv index=0\n",
             "underlying type=i\n",
+            "underlying type=j scoped=1 fixed=1\n",
             "enumerator name=B value=-1\n",
             "enumerator name=C value=-2\n",
             "enumerator name=U value=18446744073709551615\n",

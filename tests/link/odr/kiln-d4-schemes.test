@@ -1,0 +1,55 @@
+# kiln's frozen scheme beside a unit of .d4 in one link (spec/odr.md O-11,
+# O-30; meta.md MT-26; WP-204), under --odr=strict: one inline function
+# shared_fn with two bodies (N=1, 2), in
+# - k.o: kiln de347b847 (scheme kiln-odr-1, the .d5 serialization
+#   frozen), -funsigned-char;
+# - h.o: a GCC object with a hand-written unit as kiln 3b77b13c7 (scheme
+#   kiln-odr-1.d4) wrote it for -fsigned-char: no abi.wchar-sign row
+#   (written from .d5 on), abi.char signed.
+# The two schemes' rows are never compared, only counted (`schemes 2,
+# pairs not compared 1`): kiln-odr-1.d0 to .d5 are other schemes than
+# kiln-odr-1 (a .d5 unit beside a kiln-odr-1 unit counts the same way,
+# measured by WP-204). The ENFORCE keys are compared across schemes:
+# abi.char differs (odr-abi-mismatch, a warning), abi.wchar-sign is in
+# one unit only and no party. The one record finding is the ABI
+# mismatch. The program runs k.o's copy (the first).
+#@ spec: odr.md O-11, O-30
+#@ arch: aarch64 x86_64
+#@ requires: kiln g++
+#@ diag: odr-abi-mismatch k.o h.o
+
+cxx(kiln) -O0 -DN=1 -funsigned-char -fmason-metadata k.cc -o k.o
+cxx -O0 -DN=2 h.cc -o h0.o
+meta h.meta h0.o -o h.o
+cxx(kiln) -O0 main.cc -o main.o
+link(bfd,lld,mold) g++ -static -no-pie main.o k.o h.o -o prog
+link(mortar) g++ -static -no-pie main.o k.o h.o -Wl,--odr=strict -Wl,--odr-stats -o prog
+  diag: ^mortar: warning: translation units compiled with different abi.char: unsigned and signed$
+  diag: ^mortar: odr-stats: mode strict; units 2, rows * kind 2 2,* schemes 2, pairs not compared 1,* record findings 1;
+  no-diag: abi.wchar-sign
+  no-diag: shared_fn
+run prog
+  stdout: 1 1
+
+#--- s.h
+__attribute__((noinline)) inline int shared_fn() { return N; }
+#--- k.cc
+#include "s.h"
+int fk() { return shared_fn(); }
+#--- h.cc
+#include "s.h"
+int fh() { return shared_fn(); }
+#--- main.cc
+#include <cstdio>
+int fk();
+int fh();
+int main() { std::printf("%d %d\n", fk(), fh()); }
+#--- h.meta
+# a unit as kiln 3b77b13c7 (.d4) wrote it: no abi.wchar-sign
+summary name=abi.char value=signed flags=0x1
+summary name=lang value=c++
+summary name=odr.scheme value=kiln-odr-1.d4
+summary name=producer value="kiln 1.2.1"
+summary name=source value=h.cc
+summary name=std value=c++17
+definition anchor=_Z9shared_fnv hash=d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4 class=1 flags=0x1 file=s.h line=1

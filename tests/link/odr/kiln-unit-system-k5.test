@@ -1,0 +1,35 @@
+# The implementation's own definition (spec/odr.md O-35; meta.md MT-26
+# unit.system; WP-204): lib.cc, compiled by kiln (de347b847, scheme
+# kiln-odr-1; the option exists from .d5 on) with
+# -fmason-metadata-system-unit as libc++'s own sources are, defines `obj`
+# as a Stream (derived from Base, 8 bytes); the user's header declares it
+# a Base (4 bytes), the way libc++ defines std::cout as a stream<ostream>
+# its <iostream> declares an ostream (WP-199's k14impl). The kind 5 rows
+# disagree; because the defining unit says unit.system=yes, the finding
+# is a warning under --odr=strict (it was an error) and the link
+# succeeds. kiln-k14.test keeps the error between users' units.
+#@ spec: odr.md O-35
+#@ arch: aarch64 x86_64
+#@ requires: kiln g++
+#@ diag: odr-declaration-mismatch lib.o user.o
+
+cxx(kiln) -O0 -fmason-metadata -fmason-metadata-system-unit lib.cc -o lib.o
+cxx(kiln) -O0 -fmason-metadata user.cc -o user.o
+link(bfd,lld,mold) g++ user.o lib.o -o prog
+link(mortar) g++ user.o lib.o -Wl,--odr=strict -Wl,--odr-stats -o prog
+  diag: ^mortar: warning: obj is declared with a type that does not match its definition$
+  diag: ^>>> lib.o: defined as 6Stream, size 8; user.o: declared as 4Base, size 4$
+  diag: ^>>> the translation unit that defines it is the implementation's own (kind 1 unit.system=yes): a warning (spec/odr.md O-35)$
+  diag: ^mortar: odr-stats: mode strict;* system -std differences 1,* record findings 1;
+run prog
+  stdout: 1
+
+#--- lib.cc
+struct Base { int x = 1; };
+struct Stream : Base { int y = 2; };
+Stream obj;
+#--- user.cc
+#include <cstdio>
+struct Base { int x; };
+extern Base obj;
+int main() { std::printf("%d\n", obj.x); }

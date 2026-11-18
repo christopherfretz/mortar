@@ -9,9 +9,11 @@
 # unnamed union "of the unnamed member at offset 0" (kiln 4b017b227 writes
 # the unnamed member's `width`, O-19: here 2, the union's two members, so
 # `k` after them is U's own), the negative enumerator in signed decimal
-# (WP-151), and for H no item
-# but what kind 4 does not describe (whether the underlying type is
-# fixed). kiln's slot index is the component's index in the vtable group
+# (WP-151), and for H the underlying type's bits (from kiln 19428a411's
+# scheme kiln-odr-1.d5 on, frozen as kiln-odr-1 by de347b847, kiln writes
+# O-18's scoped/fixed byte in the item's value, WP-204; with .d4 the items
+# were equal and the note said kind 4 does not
+# describe the difference). kiln's slot index is the component's index in the vtable group
 # with the RTTI slot left out (offset-to-top is 0): the first virtual
 # function is slot 1, which the help note under the slot says.
 #@ spec: odr.md O-19, §9.1
@@ -34,7 +36,7 @@ link(mortar) g++ -static -no-pie main.o a.o b.o -Wl,--odr=strict -o prog
   diag: ^>>> vtable slot 1: __cxa_pure_virtual in a.o; vtable slot 1: _ZN1P1fEv in b.o$
   diag: ^>>> vtable slots are numbered over the whole vtable group from 0, its offset-to-top, vcall and vbase entries counted and its RTTI entries not (spec/odr.md O-18, O-19)$
   diag: ^>>> enumerator 'N0' = -2 in a.o; 'N0' = -3 in b.o$
-  diag: ^>>> the layout details are equal: the enumerations differ in something kind 4 does not describe (whether the underlying type is fixed, or whether the enumeration is scoped)$
+  diag: ^>>> underlying type j (unscoped, fixed) in a.o; j (unscoped, not fixed) in b.o$
 
 #--- a.cc
 struct VB1 { int v; };

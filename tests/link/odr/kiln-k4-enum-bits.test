@@ -1,0 +1,38 @@
+# An enumeration fixed to int in one unit and scoped in the other (kiln
+# de347b847, scheme kiln-odr-1, the frozen .d5; spec/odr.md O-18, O-19;
+# WP-204): the
+# layout hash differs by O-18's byte (bit 0 scoped, bit 1 fixed), and from
+# .d5 on the kind 4 underlying-type item carries the same bits, so the
+# note names the difference (before, the items were equal and the note
+# said kind 4 does not describe it). odr-type-mismatch is an error under
+# --odr=strict; the default mode runs no record check (O-47; measured
+# by WP-204: the same link under --odr=warn succeeds, the program runs).
+#@ spec: odr.md O-19
+#@ arch: aarch64 x86_64
+#@ requires: kiln g++
+#@ diag: odr-type-mismatch a.o b.o
+
+cxx(kiln) -O0 -DUNIT=fa -fmason-metadata=detail en.cc -o a.o
+cxx(kiln) -O0 -DUNIT=fb -DSCOPED -fmason-metadata=detail en.cc -o b.o
+cxx(kiln) -O0 main.cc -o main.o
+link(mortar) g++ main.o a.o b.o -Wl,--odr=strict -Wl,--odr-stats -o prog
+  exit: fail
+  diag: ^mortar: error: type 4Mode violates the one-definition rule$
+  diag: ^>>> underlying type i (unscoped, fixed) in a.o; i (scoped, fixed) in b.o$
+  diag: ^mortar: odr-stats: mode strict;* layout details read 2, record findings 1;
+
+#--- en.h
+#ifdef SCOPED
+enum class Mode : int { Off, On };
+#else
+enum Mode : int { Off, On };
+#endif
+__attribute__((noinline)) inline int mode_size() { return sizeof(Mode); }
+#--- en.cc
+#include "en.h"
+int UNIT() { Mode m = Mode::On; return static_cast<int>(m) + mode_size(); }
+#--- main.cc
+#include <cstdio>
+int fa();
+int fb();
+int main() { std::printf("%d %d\n", fa(), fb()); }

@@ -241,6 +241,9 @@ pub struct Counts {
     /// members' rows that O-23 does not compare below strict because a
     /// row is `PARTIAL` (O-15).
     pub ignored: u64,
+    /// Rows whose flag word sets a bit their kind reserves: read with the
+    /// bit ignored (MT-25, WP-204).
+    pub reserved: u64,
     /// Container bytes read.
     pub bytes: u64,
     /// Shared-object inputs whose `.note.mason` table O-24 read, and the
@@ -272,6 +275,7 @@ impl Counts {
         self.unanchored += o.unanchored;
         self.system_std += o.system_std;
         self.ignored += o.ignored;
+        self.reserved += o.reserved;
         self.bytes += o.bytes;
         self.findings += o.findings;
         self.details += o.details;
@@ -346,6 +350,28 @@ pub(crate) struct Info<'l> {
     /// The layout serialization (kind 3's `layout`, `size`, `align` and
     /// flags): `odr.layout-scheme`, or `odr.scheme` without it (O-11).
     pub(crate) layout_scheme: Option<&'l [u8]>,
+    /// `unit.system` = `yes` (MT-26, WP-204): the unit is part of the
+    /// implementation (a standard library built from its sources), so
+    /// every row of it is `SYSTEM` wherever a rule reads the bit, and its
+    /// kind 5 definitions are the implementation's own (O-35). Any other
+    /// value is no row (MT-26's rule for a value outside a key's
+    /// vocabulary).
+    pub(crate) system: bool,
+}
+
+impl Info<'_> {
+    /// A kind 2 row's flags as the rules read them: the reserved bits
+    /// cleared (MT-25), `SYSTEM` set in a system unit.
+    pub(crate) const fn def_flags(&self, raw: u16) -> u16 {
+        let f = raw & flags::DEF_KNOWN;
+        if self.system { f | flags::SYSTEM } else { f }
+    }
+
+    /// A kind 3 row's flags as the rules read them (as [`Self::def_flags`]).
+    pub(crate) const fn type_flags(&self, raw: u16) -> u16 {
+        let f = raw & flags::TYPE_KNOWN;
+        if self.system { f | flags::TYPE_SYSTEM } else { f }
+    }
 }
 
 /// A row that takes part in a comparison.
@@ -579,7 +605,18 @@ pub(crate) fn info_of<'l>(at: usize, file: FileId, u: &Unit<'l>) -> Info<'l> {
         // at `min`, or kind 2 rows only) has no layout to compare and no
         // layout scheme (WP-174).
         layout_scheme: value(b"odr.layout-scheme").or(scheme.filter(|_| !u.types().is_empty())),
+        system: value(b"unit.system") == Some(b"yes"),
     }
+}
+
+/// The rows of `u` whose flag word sets a bit its kind reserves (MT-25:
+/// ignored, counted; WP-204), kinds 1, 2, 3 and 5.
+fn reserved_rows(u: &Unit<'_>) -> u64 {
+    let summary = u.summary().iter().filter(|r| r.flags & !flags::SUMMARY_KNOWN != 0).count();
+    let defs = u.definitions().iter().filter(|r| r.flags & !flags::DEF_KNOWN != 0).count();
+    let types = u.types().iter().filter(|r| r.flags & !flags::TYPE_KNOWN != 0).count();
+    let decls = u.declarations().iter().filter(|r| r.flags & !flags::DECL_KNOWN != 0).count();
+    (summary + defs + types + decls) as u64
 }
 
 /// (name, value, file, unit, row) of an ENFORCE kind-1 row.
@@ -814,7 +851,7 @@ impl<'s: 'l, 'l> Cx<'_, 's, 'l> {
             unit.types().len(),
             unit.declarations().len(),
         ];
-        Counts { rows: rows.map(|r| r as u64), ..Counts::default() }
+        Counts { rows: rows.map(|r| r as u64), reserved: reserved_rows(unit), ..Counts::default() }
     }
 
     /// The entries of unit `u`; what it sets aside is [`Cx::skipped`]'s.
@@ -933,16 +970,27 @@ impl<'s: 'l, 'l> Cx<'_, 's, 'l> {
         c
     }
 
+    /// The kind 2 row of an entry, its flags as the rules read them
+    /// ([`Info::def_flags`]: reserved bits cleared, `SYSTEM` in a system
+    /// unit).
     pub(crate) fn definition(&self, e: &Entry<'_>) -> Option<DefinitionRow> {
-        self.units[e.unit as usize].definitions().get(e.row as usize)
+        let mut r = self.units[e.unit as usize].definitions().get(e.row as usize)?;
+        r.flags = self.info[e.unit as usize].def_flags(r.flags);
+        Some(r)
     }
 
+    /// The kind 3 row of an entry (as [`Cx::definition`]).
     fn type_row(&self, e: &Entry<'_>) -> Option<TypeRow> {
-        self.units[e.unit as usize].types().get(e.row as usize)
+        let mut r = self.units[e.unit as usize].types().get(e.row as usize)?;
+        r.flags = self.info[e.unit as usize].type_flags(r.flags);
+        Some(r)
     }
 
+    /// The kind 5 row of an entry, its reserved flag bits cleared (MT-25).
     fn declaration(&self, e: &Entry<'_>) -> Option<DeclarationRow> {
-        self.units[e.unit as usize].declarations().get(e.row as usize)
+        let mut r = self.units[e.unit as usize].declarations().get(e.row as usize)?;
+        r.flags &= flags::DECL_KNOWN;
+        Some(r)
     }
 
     pub(crate) fn file_of(&self, e: &Entry<'_>) -> FileId {
@@ -1218,15 +1266,26 @@ impl<'s: 'l, 'l> Cx<'_, 's, 'l> {
         let keeper = self.keeper(rows);
         let def = |e: &Entry<'_>| self.definition(e);
         if self.switches.internal {
+            // O-16 (Q5, WP-204): a `SYSTEM` row (by its flag, or by its
+            // unit's `unit.system`) is exempt: the implementation's own
+            // `static inline` helpers are not the user's to fix.
             let users: Vec<Entry<'l>> = rows
                 .iter()
                 .copied()
-                .filter(|e| def(e).is_some_and(|r| r.flags & flags::USES_INTERNAL != 0))
+                .filter(|e| {
+                    def(e).is_some_and(|r| {
+                        r.flags & flags::USES_INTERNAL != 0 && r.flags & flags::SYSTEM == 0
+                    })
+                })
                 .collect();
             let mut files: Vec<FileId> = users.iter().map(|e| self.file_of(e)).collect();
+            files.sort_unstable();
             files.dedup();
             if files.len() >= 2 {
-                let classes = self.classes(&users, keeper, |e| e.unit);
+                // Classes by hash (WP-204): equal definitions are all
+                // "defined in"; "defined differently in" only where the
+                // hashes differ (§9.1).
+                let classes = self.classes(&users, keeper, |e| def(e).map(|r| r.hash));
                 let name = Self::display_name(rows);
                 let kind = Kind::OdrInternalReference { name };
                 let note = "each translation unit's copy refers to its own entity with internal \
@@ -1267,8 +1326,8 @@ impl<'s: 'l, 'l> Cx<'_, 's, 'l> {
                     continue;
                 }
                 notes.push(
-                    "every definition is in a system header, and the translation units' -std \
-                     differ: a warning (spec/odr.md O-32)"
+                    "every definition is SYSTEM (in a system header, or in a unit.system unit), \
+                     and the translation units' -std differ: a warning (spec/odr.md O-32)"
                         .to_owned(),
                 );
                 Severity::Warning
@@ -1393,8 +1452,8 @@ impl<'s: 'l, 'l> Cx<'_, 's, 'l> {
                 return;
             }
             notes.push(
-                "every definition is in a system header, and the translation units' -std \
-                 differ: a warning (spec/odr.md O-32)"
+                "every definition is SYSTEM (in a system header, or in a unit.system unit), and \
+                 the translation units' -std differ: a warning (spec/odr.md O-32)"
                     .to_owned(),
             );
             Severity::Warning
@@ -1597,7 +1656,22 @@ impl<'s: 'l, 'l> Cx<'_, 's, 'l> {
         } else {
             classes
         };
-        let severity = if c_linkage || noexcept_only { Severity::Warning } else { Severity::Error };
+        // O-35 (WP-204): the implementation's own definition against its
+        // headers' declarations. Every definition of the group lies in a
+        // unit whose kind 1 says `unit.system` = `yes` (libc++ defines
+        // `cout` as a `stream<ostream>` its header declares `ostream`), or
+        // every row of the group does: as O-32, counted, and reported as a
+        // warning where O-32's differences are.
+        let sys = |e: &Entry<'_>| self.info[e.unit as usize].system;
+        let all_system = rows.iter().all(sys);
+        let mut defs = rows.iter().filter(|e| definition(e)).peekable();
+        let system = all_system || (defs.peek().is_some() && defs.all(sys));
+        if system && !self.switches.system_std_reported {
+            out.push(Found::count(Counts { system_std: 1, ..Counts::default() }));
+            return;
+        }
+        let severity =
+            if c_linkage || noexcept_only || system { Severity::Warning } else { Severity::Error };
         let (first, second) = (&classes[0][0], &classes[1][0]);
         let mut notes = Vec::new();
         if let (Some(ra), Some(rb)) = (decl(first), decl(second)) {
@@ -1659,12 +1733,25 @@ impl<'s: 'l, 'l> Cx<'_, 's, 'l> {
                 );
             }
         }
+        if system {
+            let who = if all_system {
+                "every translation unit that declares or defines it is"
+            } else {
+                "the translation unit that defines it is"
+            };
+            notes.push(format!(
+                "{who} the implementation's own (kind 1 unit.system=yes): a warning (spec/odr.md \
+                 O-35)"
+            ));
+        }
         // WP-151: a C/C++ pair (compared by size) notes only the ABI keys
         // both units enforce; `lang`, `std` and the C++-only keys differ
         // between any C and C++ unit, and no rule judges them there.
         notes.extend(self.summary_notes(first, second, by_size));
         let kind = Kind::OdrDeclarationMismatch { name: Self::display_name(rows) };
-        out.push(Found::report(self.diagnostic(kind, severity, &classes, keeper, notes)));
+        let mut found = Found::report(self.diagnostic(kind, severity, &classes, keeper, notes));
+        found.counts.system_std = u64::from(system);
+        out.push(found);
     }
 
     /// The entity's name for a message: the first anchor's or row's name
