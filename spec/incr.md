@@ -1293,7 +1293,10 @@ with each phase fed from the state for unchanged files:
   WP-207: an update makes these checks through the one descriptor U1
   opened, and checks the path again before its first write to `P`
   (IN-77a); "the link's lock" is IN-77b's lock on `S`; a full link's
-  unsynced output is checked once after a reboot (IN-77c).)* *Test:* `touch`,
+  unsynced output is checked once after a reboot (IN-77c).)* *(WP-255a:
+  the blocks an update dirties are also hashed against their stored
+  leaves before its first write, IN-75; every other block rests on
+  this binding.)* *Test:* `touch`,
   `strip`, `cp` of another output, `objcopy` in place, each over the
   output: each gives `output-changed`; a killed update gives
   `output-torn`; `stamp_rule.py` case B (an update followed at once by
@@ -3763,7 +3766,8 @@ a pass over a whole table of the state; **O(output)**.
 
 - **IN-75 [v1] Refill, dirty ranges, build id** (amended by WP-207;
   review-in72 B-4, M-6, M-7). The units of the set are filled (image.md
-  I-95) into windows, and only the **dirty ranges** are written. The rule
+  I-95: the update fills its dirty ranges, not whole windows; WP-255a),
+  and only the **dirty ranges** are written. The rule
   is an invariant: **the dirty ranges cover every byte in which the
   update's output differs from the previous output**, and outside them
   the previous output's bytes are the update's. They include, and are
@@ -3785,7 +3789,13 @@ a pass over a whole table of the state; **O(output)**.
   is used; a difference is `input-changed`. The build id is the tree
   hash of image.md I-76 over the patched image: the leaves of the blocks
   the update wrote are recomputed from the new bytes, every other leaf is
-  the state's (`LEAVES`), and the tree is combined; the note's own bytes
+  the state's (`LEAVES`), and the tree is combined; **an update hashes
+  every block it will dirty against its stored leaf before its first
+  write; a difference is `output-changed`** (WP-255 ruling F8, WP-255a:
+  the block as read from the previous output, the note zeroed as I-72
+  says, one read serving the check and the new leaf; a byte flipped in
+  a dirtied block outside its ranges is caught; a block the update
+  leaves clean is not read, and IN-21 alone binds it); the note's own bytes
   are hashed as I-76 says (zeroed). The new leaves go to the state's
   patch. The update's map (`--mortar-map`) is the full link's map grammar
   with the update's placement, `incremental`, and its `hole`/`dead`
