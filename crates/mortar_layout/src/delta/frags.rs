@@ -245,9 +245,10 @@ fn net_change(
 }
 
 /// A string fragment whose count falls to 0 and whose stored `size` is 0:
-/// no fragment is empty (a string holds its NUL), so the format did not
-/// store the size (batch 13's format 5 before U-2's seam-6 columns; WP-245
-/// compile junction); its `DeadFragment` hole cannot be given.
+/// no fragment is empty (a string holds its NUL), and the capture writes
+/// every `FRAGS` row's size (`FRAGS.size`, seam 6), so such a row is not
+/// one a capture made; its `DeadFragment` hole cannot be given, and the
+/// update is refused rather than guess the size.
 fn dead_string_refused() -> IncrReason {
     not_implemented()
 }
