@@ -28,6 +28,8 @@
 
 mod support;
 
+use std::ffi::OsStr;
+use std::fmt::Write as _;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::time::Duration;
@@ -104,7 +106,13 @@ fn keeper(arch: Arch) -> String {
          \x20   .section .debug_macro,\"\",@progbits\n    .ascii \"PADPADPADPADPAD.\"\n"
     );
     s += &member(&grp(".debug_macro", "", "g_same", true, None), ".Lk1", "SAMEkeep", 0, None);
-    s += &member(&grp(".debug_macro", "", "g_named", true, None), ".Lk2", "NAMEkeep", 0, Some("named"));
+    s += &member(
+        &grp(".debug_macro", "", "g_named", true, None),
+        ".Lk2",
+        "NAMEkeep",
+        0,
+        Some("named"),
+    );
     s += &member(&grp(".debug_types", "", "g_lack", true, None), ".Lk3", "LACKtype", 0, None);
     s += &member(&grp(".debug_macro", "", "g_size", true, None), ".Lk4", "SIZEkeep", 0, None);
     s += &member(&grp(".debug_macro", "", "g_two", true, Some(1)), ".Lk5", "TWO1keep", 0, None);
@@ -145,22 +153,43 @@ struct Word {
 const WORDS: &[Word] = &[
     Word { what: "section symbol", width: 4, expr: ".Ld1", want: Want::Kept(b"SAMEkeep", 0) },
     Word { what: "addend", width: 4, expr: ".Ld1+4", want: Want::Kept(b"SAMEkeep", 4) },
-    Word { what: "named local, st_value 8", width: 4, expr: "named", want: Want::Kept(b"NAMEkeep", 8) },
+    Word {
+        what: "named local, st_value 8",
+        width: 4,
+        expr: "named",
+        want: Want::Kept(b"NAMEkeep", 8),
+    },
     Word { what: "keeper's group lacks the name", width: 4, expr: ".Ld3", want: Want::Tombstone },
     Word { what: "another size", width: 4, expr: ".Ld4", want: Want::Tombstone },
     Word { what: "two members of the name", width: 4, expr: ".Ld5", want: Want::Tombstone },
     Word { what: "keeper's member SHF_ALLOC", width: 4, expr: ".Ld7", want: Want::Tombstone },
     Word { what: "code (I-47 stands)", width: 8, expr: ".Ld8", want: Want::Tombstone },
-    Word { what: "debug member beside code", width: 4, expr: ".Ld9", want: Want::KeptUnlessGc(b"CODMkeep") },
+    Word {
+        what: "debug member beside code",
+        width: 4,
+        expr: ".Ld9",
+        want: Want::KeptUnlessGc(b"CODMkeep"),
+    },
     Word { what: "no GRP_COMDAT", width: 4, expr: ".Ld10", want: Want::Own(b"NOCOdrop") },
-    Word { what: "keeper's copy collected", width: 4, expr: ".Ld12", want: Want::KeptUnlessGc(b"GCMAkeep") },
+    Word {
+        what: "keeper's copy collected",
+        width: 4,
+        expr: ".Ld12",
+        want: Want::KeptUnlessGc(b"GCMAkeep"),
+    },
     Word { what: "64-bit field", width: 8, expr: ".Ld1", want: Want::Kept(b"SAMEkeep", 0) },
 ];
 
 fn dropped() -> String {
     let mut s = String::new();
     s += &member(&grp(".debug_macro", "", "g_same", true, None), ".Ld1", "SAMEdrop", 0, None);
-    s += &member(&grp(".debug_macro", "", "g_named", true, None), ".Ld2", "NAMEdrop", 0, Some("named"));
+    s += &member(
+        &grp(".debug_macro", "", "g_named", true, None),
+        ".Ld2",
+        "NAMEdrop",
+        0,
+        Some("named"),
+    );
     s += &member(&grp(".debug_macro", "", "g_lack", true, None), ".Ld3", "LACKdrop", 0, None);
     s += &member(&grp(".debug_macro", "", "g_size", true, None), ".Ld4", "SIZEdrop", 8, None);
     s += &member(&grp(".debug_macro", "", "g_two", true, None), ".Ld5", "TWO.drop", 0, None);
@@ -172,7 +201,7 @@ fn dropped() -> String {
     s += &member(&grp(".debug_macro", "", "g_gc", true, None), ".Ld12", "GCMAdrop", 0, None);
     s += "    .section .debug_macro,\"\",@progbits\n    .ascii \"WP249REF\"\n";
     for w in WORDS {
-        s += &format!("    .{}byte {}\n", w.width, w.expr);
+        let _ = writeln!(s, "    .{}byte {}", w.width, w.expr);
     }
     s
 }
@@ -202,7 +231,7 @@ fn emulation(arch: Arch) -> &'static str {
     }
 }
 
-fn mortar(args: &[&std::ffi::OsStr], dir: &Path, label: &str) {
+fn mortar<A: AsRef<OsStr>>(args: &[A], dir: &Path, label: &str) {
     let o = run_with(Command::new(MORTAR).args(args).current_dir(dir), b"", Duration::from_mins(5));
     assert!(o.success(), "{label}: mortar: {}", o.stderr_text());
     assert_eq!(o.stderr_text(), "", "{label}: mortar warns");
@@ -221,7 +250,7 @@ fn branches(arch: Arch) {
     for gc in [false, true] {
         let out = dir.join(if gc { "out-gc" } else { "out" });
         let words = ["-m", emulation(arch), "-static", "-e", "_start", "-o"];
-        let mut args: Vec<&std::ffi::OsStr> = words.iter().map(std::ffi::OsStr::new).collect();
+        let mut args: Vec<&OsStr> = words.iter().map(OsStr::new).collect();
         args.push(out.as_os_str());
         args.extend([k.as_os_str(), d.as_os_str()]);
         if gc {
@@ -245,14 +274,16 @@ fn branches(arch: Arch) {
             let tomb = if is64 { ones } else { 0 };
             let want = match w.want {
                 Want::Kept(t, n) => tag(t) + n,
-                Want::Own(t) => tag(t),
                 Want::Tombstone => tomb,
                 Want::KeptUnlessGc(_) if gc => tomb,
-                Want::KeptUnlessGc(t) => tag(t),
+                Want::Own(t) | Want::KeptUnlessGc(t) => tag(t),
             };
             assert_eq!(got, want, "{label}: {} ({:?})", w.what, w.want);
             // Not a dropped copy's bytes: the keeper's only.
-            assert!(find(&macro_, b"SAMEdrop").is_none(), "{label}: a dropped copy is in the output");
+            assert!(
+                find(&macro_, b"SAMEdrop").is_none(),
+                "{label}: a dropped copy is in the output"
+            );
         }
     }
 }
@@ -367,10 +398,8 @@ fn build(arch: Arch, cxx: bool, flags: &[&str], scratch: &Scratch) -> Option<sup
         (H, [("a.c", A), ("b.c", B), ("c.c", C)], "gcc")
     };
     scratch.write("h.h", h);
-    let sources: Vec<support::Source> = srcs
-        .iter()
-        .map(|(n, t)| support::Source { name: n, text: t })
-        .collect();
+    let sources: Vec<support::Source> =
+        srcs.iter().map(|(n, t)| support::Source { name: n, text: t }).collect();
     let d = arch.gnu(driver);
     if tool(&d).is_none() {
         assert!(!tools_required(), "{d} is required");
@@ -390,15 +419,23 @@ fn units(readelf: &Path, prog: &Path, label: &str) -> Vec<(u64, Vec<String>)> {
         Duration::from_mins(2),
     );
     assert!(o.success(), "{label}: readelf: {}", o.stderr_text());
-    assert!(!o.stderr_text().to_lowercase().contains("warn"), "{label}: readelf: {}", o.stderr_text());
+    assert!(
+        !o.stderr_text().to_lowercase().contains("warn"),
+        "{label}: readelf: {}",
+        o.stderr_text()
+    );
     let mut units: Vec<(u64, Vec<String>)> = Vec::new();
     for line in o.stdout_text().lines() {
         let t = line.trim();
         if let Some(off) = t.strip_prefix("Offset:") {
             let off = off.trim();
-            let v = off.strip_prefix("0x").map_or_else(|| off.parse(), |h| u64::from_str_radix(h, 16));
+            let v =
+                off.strip_prefix("0x").map_or_else(|| off.parse(), |h| u64::from_str_radix(h, 16));
             units.push((v.unwrap_or_else(|_| panic!("{label}: offset {off}")), Vec::new()));
-        } else if t.is_empty() || t.starts_with("Offset into .debug_line") || t.starts_with("Contents of") {
+        } else if t.is_empty()
+            || t.starts_with("Offset into .debug_line")
+            || t.starts_with("Contents of")
+        {
         } else if let Some(u) = units.last_mut() {
             u.1.push(t.to_owned());
         }
@@ -422,9 +459,9 @@ fn rendered(units: &[(u64, Vec<String>)], label: &str) -> (Vec<String>, usize) {
                     Some(h) => {
                         imports += 1;
                         let v = u64::from_str_radix(h.trim(), 16).unwrap();
-                        let t = by_off.get(&v).unwrap_or_else(|| {
-                            panic!("{label}: import of {v:#x} names no unit")
-                        });
+                        let t = by_off
+                            .get(&v)
+                            .unwrap_or_else(|| panic!("{label}: import of {v:#x} names no unit"));
                         format!("import [{}]", t.join(" | "))
                     }
                     None => l.clone(),
@@ -452,21 +489,21 @@ fn gcc_g3(arch: Arch) {
             let Some(built) = build(arch, cxx, &["-O0", "-g3", v], &scratch) else { return };
             let ours = scratch.join("mortar.out");
             let theirs = scratch.join("bfd.out");
-            let args = support::with_output(&built.args, &ours);
-            let a: Vec<&std::ffi::OsStr> = args.iter().map(|s| s.as_os_str()).collect();
-            mortar(&a, scratch.path(), &label);
-            let b = run_with(
-                Command::new(&ld).args(support::with_output(&built.args, &theirs)).current_dir(scratch.path()),
+            mortar(&support::with_output(&built.args, &ours), scratch.path(), &label);
+            let bfd = run_with(
+                Command::new(&ld)
+                    .args(support::with_output(&built.args, &theirs))
+                    .current_dir(scratch.path()),
                 b"",
                 Duration::from_mins(5),
             );
-            assert!(b.success(), "{label}: ld.bfd: {}", b.stderr_text());
-            let (o, n) = rendered(&units(&readelf, &ours, &label), &label);
-            let (t, m) = rendered(&units(&readelf, &theirs, &label), &label);
-            assert!(n > 20, "{label}: {n} imports: not GCC's -g3");
-            assert_eq!(n, m, "{label}: import counts");
-            if o != t {
-                let first = o.iter().zip(&t).find(|(x, y)| x != y);
+            assert!(bfd.success(), "{label}: ld.bfd: {}", bfd.stderr_text());
+            let (our_units, imports) = rendered(&units(&readelf, &ours, &label), &label);
+            let (their_units, their_imports) = rendered(&units(&readelf, &theirs, &label), &label);
+            assert!(imports > 20, "{label}: {imports} imports: not GCC's -g3");
+            assert_eq!(imports, their_imports, "{label}: import counts");
+            if our_units != their_units {
+                let first = our_units.iter().zip(&their_units).find(|(x, y)| x != y);
                 panic!("{label}: the macro units differ from GNU ld's; first: {first:#?}");
             }
             if v == "-gdwarf-5" && !cxx {
@@ -474,14 +511,16 @@ fn gcc_g3(arch: Arch) {
                 let incr = scratch.join("incr.out");
                 let mut args = support::with_output(&built.args, &incr);
                 args.push("--incremental=full".into());
-                let a: Vec<&std::ffi::OsStr> = args.iter().map(|s| s.as_os_str()).collect();
-                mortar(&a, scratch.path(), &format!("{label} --incremental=full"));
+                mortar(&args, scratch.path(), &format!("{label} --incremental=full"));
                 // Its debug contributions are laid out in size classes
                 // (`spec/incr.md` IN-30): the units are compared by what
                 // their imports name, as against GNU ld.
-                let (i, k) = rendered(&units(&readelf, &incr, &label), &label);
-                assert_eq!(k, n, "{label}: --incremental=full: import counts");
-                assert!(i == o, "{label}: --incremental=full's macro units differ from the plain link's");
+                let (incr_units, incr_imports) = rendered(&units(&readelf, &incr, &label), &label);
+                assert_eq!(incr_imports, imports, "{label}: --incremental=full: import counts");
+                assert!(
+                    incr_units == our_units,
+                    "{label}: --incremental=full's macro units differ from the plain link's"
+                );
             }
         }
     }
@@ -506,8 +545,7 @@ fn gcc_g3_imports_name_gnu_lds_units_x86_64() {
 fn gdb_session(gdb: &Path, prog: &Path, dir: &Path, label: &str) -> Vec<String> {
     let port = std::net::TcpListener::bind("127.0.0.1:0")
         .and_then(|l| l.local_addr())
-        .map(|a| a.port())
-        .unwrap_or_else(|e| panic!("a port: {e}"));
+        .map_or_else(|e| panic!("a port: {e}"), |a| a.port());
     let (qemu, mut qargs) = Arch::X86_64.runner(prog);
     let program = qargs.pop().unwrap();
     let mut q = Command::new(qemu);
@@ -553,7 +591,10 @@ fn gdb_session(gdb: &Path, prog: &Path, dir: &Path, label: &str) -> Vec<String> 
         .collect();
     assert!(keep.iter().any(|l| l == "#define WP249_ANSWER 42"), "{label}: gdb: {all}");
     assert!(keep.iter().any(|l| l == "expands to: ((42) * 2)"), "{label}: gdb: {all}");
-    assert!(keep.iter().any(|l| l.contains("WP249_A_ONLY") && l.contains("has no definition")), "{label}: gdb: {all}");
+    assert!(
+        keep.iter().any(|l| l.contains("WP249_A_ONLY") && l.contains("has no definition")),
+        "{label}: gdb: {all}"
+    );
     keep
 }
 
@@ -575,17 +616,17 @@ fn gdb_x86_64_macros() {
         let Some(built) = build(arch, false, &["-O0", "-g3", v], &scratch) else { return };
         let ours = scratch.join("mortar.out");
         let theirs = scratch.join("bfd.out");
-        let args = support::with_output(&built.args, &ours);
-        let a: Vec<&std::ffi::OsStr> = args.iter().map(|s| s.as_os_str()).collect();
-        mortar(&a, scratch.path(), &label);
-        let b = run_with(
-            Command::new(&ld).args(support::with_output(&built.args, &theirs)).current_dir(scratch.path()),
+        mortar(&support::with_output(&built.args, &ours), scratch.path(), &label);
+        let bfd = run_with(
+            Command::new(&ld)
+                .args(support::with_output(&built.args, &theirs))
+                .current_dir(scratch.path()),
             b"",
             Duration::from_mins(5),
         );
-        assert!(b.success(), "{label}: ld.bfd: {}", b.stderr_text());
-        let o = gdb_session(&gdb, &ours, scratch.path(), &format!("{label} mortar"));
-        let t = gdb_session(&gdb, &theirs, scratch.path(), &format!("{label} bfd"));
-        assert_eq!(o, t, "{label}: gdb's answers differ from GNU ld's output's");
+        assert!(bfd.success(), "{label}: ld.bfd: {}", bfd.stderr_text());
+        let ours = gdb_session(&gdb, &ours, scratch.path(), &format!("{label} mortar"));
+        let theirs = gdb_session(&gdb, &theirs, scratch.path(), &format!("{label} bfd"));
+        assert_eq!(ours, theirs, "{label}: gdb's answers differ from GNU ld's output's");
     }
 }
