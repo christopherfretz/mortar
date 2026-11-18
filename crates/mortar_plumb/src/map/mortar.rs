@@ -947,10 +947,10 @@ pub fn parse(text: &str) -> Result<Map, MapError> {
     crate::maprec::end_shared(map.dynamic.as_ref(), output_line, shared_line)?;
     // §3.2: the decision records and `common`'s `<file>` are an
     // incremental-mode map's alone.
-    if let Some((w, at)) = &first_decision {
-        if !map.incremental {
-            return Err(MapError::new(*at, format!("'{w}' in a map without 'incremental'")));
-        }
+    if let Some((w, at)) = &first_decision
+        && !map.incremental
+    {
+        return Err(MapError::new(*at, format!("'{w}' in a map without 'incremental'")));
     }
     for c in &map.commons {
         if c.file.is_some() && !map.incremental {

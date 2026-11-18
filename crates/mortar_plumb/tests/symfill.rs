@@ -353,9 +353,10 @@ fn pad_pair(arch: &str) -> (Link, Link, PathBuf) {
                 "arg" => w[1] = abs(&w[1]),
                 _ => {}
             }
-            format!("{}\n", w.join(" "))
+            w.join(" ")
         })
-        .collect();
+        .collect::<Vec<_>>()
+        .join("\n");
     let xt = text.replacen("\noutput ", "\nincremental\noutput ", 1);
     let x = Link { out: out.clone(), map: parse(&xt) };
     let pad = shdr_at(&out, ".pad.relro");
@@ -379,8 +380,8 @@ fn pad_pair(arch: &str) -> (Link, Link, PathBuf) {
     let ft: String = text
         .lines()
         .filter(|l| !l.starts_with("chunk synthetic .pad.relro "))
-        .map(|l| format!("{l}\n"))
-        .collect();
+        .collect::<Vec<_>>()
+        .join("\n");
     (x, Link { out: fo, map: parse(ft.trim_end()) }, d)
 }
 
@@ -388,9 +389,7 @@ fn equiv_in(x: &Link, f: &Link, d: &Path) -> Equiv {
     let mut files: Vec<(String, Vec<u8>)> = Vec::new();
     for e in std::fs::read_dir(d).unwrap() {
         let p = e.unwrap().path();
-        if let Some(n) = p.file_name().and_then(|n| n.to_str())
-            && (n.ends_with(".o") || n.ends_with(".a") || n.ends_with(".so"))
-        {
+        if p.extension().and_then(|x| x.to_str()).is_some_and(|x| matches!(x, "o" | "a" | "so")) {
             files.push((p.to_str().unwrap().to_string(), std::fs::read(&p).unwrap()));
         }
     }
