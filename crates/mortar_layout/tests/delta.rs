@@ -17,8 +17,10 @@ use mortar_core::column::Column;
 use mortar_core::id::{ChunkId, FileId, OutSecId, SectionId};
 use mortar_core::identity::{Anchor, SectionKey};
 use mortar_core::incr::{
-    IncrReason, LayoutDelta, LayoutInput, LayoutRows, MemoryLayout, SectionChange, StoredLayout,
-    StoredRegion, StoredSection, StoredSlot, SymtabBlock, SymtabTables, Unimplemented,
+    EhFile, EhRecordIn, FileDemands, FilePieces, IncrReason, LayoutDelta, LayoutInput, LayoutRows,
+    MemoryLayout, MergeClass, MergedPiece, PlaceNow, SectionChange, SlotDemand, StoredEhRecord,
+    StoredFragAt, StoredLayout, StoredRegion, StoredSection, StoredSlot, StoredUse, SymtabBlock,
+    SymtabTables, Unimplemented,
 };
 use mortar_core::layout::{
     Chunk, ChunkKind, Defined, Hole, HoleKind, Patch, Place, Placement, Redirect, Segment,
@@ -318,15 +320,19 @@ fn world_of(prev: &State, edit: &Edit) -> World {
 /// checked. `Err` is the update's reason.
 fn hop(prev: &State, edit: &Edit) -> Result<(State, LayoutDelta), IncrReason> {
     let (changes, ids2) = changes_of(prev, edit);
-    let delta = layout(
-        &StoredLayout::new(&prev.mem),
-        &LayoutInput { changes: &changes, ..LayoutInput::default() },
-        &prev.world.target,
-    )?;
+    let delta = layout(&StoredLayout::new(&prev.mem), &input(&changes), &prev.world.target)?;
     let next = overlay(prev, edit, &changes, &ids2, &delta);
     Ok((next, delta))
 }
 
+/// The input of `layout` with `changes` and no `.eh_frame` records,
+/// merged pieces or slot demand.
+fn input<'a>(changes: &'a [SectionChange<'a>]) -> LayoutInput<'a> {
+    LayoutInput { changes, ..LayoutInput::default() }
+}
+
+/// The overlay reads the sparse placement through the seam's one reader
+/// (`place_of`, `holes_of`; WP-216 R-3), for every section and chunk.
 fn overlay(
     prev: &State,
     edit: &Edit,
@@ -340,6 +346,11 @@ fn overlay(
     let (a2, placed2) = w2.run(&Pool::sequential()).expect("the edited link links");
     let a2 = in_stored_ids(a2, &prev.assignment);
     let d = &delta.placement;
+    let stored = StoredLayout::new(&prev.mem);
+    let mut files: Vec<FileId> = changes.iter().map(|c| c.file).collect();
+    files.sort_unstable();
+    files.dedup();
+    assert_eq!(delta.files, files, "the placed files, sorted");
     // Places, in the new world's ids.
     let mut place: Column<SectionId, Place> = Column::filled(w2.headers.len(), Place::NONE);
     let by_new: BTreeMap<SectionId, SectionId> =
@@ -347,31 +358,19 @@ fn overlay(
     for f in 1..=nfiles(&w2) {
         for i in 1..=file_len(&w2, f) {
             let s2 = w2.sid(f, i);
-            place[s2] = match by_new.get(&s2) {
-                Some(&id) => d.place.get(id).copied().unwrap_or(Place::NONE),
-                None => p1.place[w.sid(f, i)],
+            let id = by_new.get(&s2).copied().unwrap_or_else(|| w.sid(f, i));
+            place[s2] = match delta.place_of(&stored, id).expect("the reader") {
+                PlaceNow::Here(p) | PlaceNow::Stored(p) => p,
+                PlaceNow::NotPlaced => Place::NONE,
             };
         }
     }
-    // Holes: the delta's for the chunks it touched.
-    let files: Vec<FileId> = changes.iter().map(|c| c.file).collect();
-    let mut touched: Vec<ChunkId> = prev
-        .regions
-        .iter()
-        .filter(|r| files.contains(&r.file))
-        .map(|r| r.chunk)
-        .chain(delta.regions_opened.iter().map(|r| r.chunk))
-        .chain(d.holes.iter().map(|h| h.chunk))
-        .collect();
-    touched.sort_unstable();
-    touched.dedup();
-    let mut holes: Vec<Hole> = p1
-        .holes
-        .iter()
-        .filter(|h| touched.binary_search(&h.chunk).is_err())
-        .chain(d.holes.iter())
-        .copied()
-        .collect();
+    // Holes: every chunk's, through the reader.
+    assert!(delta.hole_chunks.windows(2).all(|w| w[0] < w[1]), "hole_chunks sorted");
+    let mut holes: Vec<Hole> = Vec::new();
+    for (c, _) in d.chunks.iter() {
+        holes.extend(delta.holes_of(&stored, c).expect("the reader"));
+    }
     holes.sort_by_key(|h| (h.chunk, h.offset));
     let placement = Placement {
         kind: d.kind,
@@ -949,13 +948,7 @@ fn section_without_output_is_new_output_section() {
     let mut files = s0.files();
     files[0].push(sec(b"my_section", SHT_PROGBITS, WA, 8, 3));
     let (changes, _) = changes_of(&s0, &Edit::new(files).changed(&[1]));
-    let e = layout(
-        &StoredLayout::new(&s0.mem),
-        &LayoutInput { changes: &changes, ..LayoutInput::default() },
-        &s0.world.target,
-    )
-    .err()
-    .unwrap();
+    let e = layout(&StoredLayout::new(&s0.mem), &input(&changes), &s0.world.target).err().unwrap();
     assert_eq!(e.name(), "new-output-section", "{e:?}");
 }
 
@@ -1034,6 +1027,8 @@ struct Counting<'a> {
     regions: AtomicUsize,
     holes: AtomicUsize,
     frags: AtomicUsize,
+    /// `EH_RECORDS`, `FRAG_AT` and `INDEX` ranges.
+    ranges: AtomicUsize,
 }
 
 impl<'a> Counting<'a> {
@@ -1044,6 +1039,7 @@ impl<'a> Counting<'a> {
             regions: AtomicUsize::new(0),
             holes: AtomicUsize::new(0),
             frags: AtomicUsize::new(0),
+            ranges: AtomicUsize::new(0),
         }
     }
 }
@@ -1080,6 +1076,21 @@ impl LayoutRows for Counting<'_> {
     ) -> Result<Vec<mortar_core::incr::StoredFrag>, IncrReason> {
         self.frags.fetch_add(1, Ordering::Relaxed);
         self.inner.frags_of(out, hash)
+    }
+    fn frag_at_of(&self, file: FileId) -> Result<Vec<StoredFragAt>, IncrReason> {
+        self.ranges.fetch_add(1, Ordering::Relaxed);
+        self.inner.frag_at_of(file)
+    }
+    fn eh_records_of(&self, file: FileId) -> Result<Vec<StoredEhRecord>, IncrReason> {
+        self.ranges.fetch_add(1, Ordering::Relaxed);
+        self.inner.eh_records_of(file)
+    }
+    fn uses_of(&self, file: FileId) -> Result<Vec<StoredUse>, IncrReason> {
+        self.ranges.fetch_add(1, Ordering::Relaxed);
+        self.inner.uses_of(file)
+    }
+    fn section(&self, id: SectionId) -> Result<Option<StoredSection>, IncrReason> {
+        self.inner.section(id)
     }
     fn slots(&self) -> Result<Vec<StoredSlot>, IncrReason> {
         self.inner.slots()
@@ -1122,18 +1133,14 @@ fn reads_only_what_changed() {
     files[29][1].size = 600; // overflows .data: a new region.
     let (changes, _) = changes_of(&s0, &Edit::new(files).changed(&[30]).drawn(&[7]));
     let rows = Counting::new(&s0.mem);
-    let d = layout(
-        &StoredLayout::new(&rows),
-        &LayoutInput { changes: &changes, ..LayoutInput::default() },
-        &s0.world.target,
-    )
-    .unwrap();
+    let d = layout(&StoredLayout::new(&rows), &input(&changes), &s0.world.target).unwrap();
     assert_eq!(rows.sections.load(Ordering::Relaxed), 2, "one SECTIONS range per file");
     assert_eq!(rows.regions.load(Ordering::Relaxed), 2, "one REGIONS range per file");
     // The chunks of the two files' regions (.text, .data, .bss, .rodata)
     // and the tail chunk of .data: at most 4.
     assert!(rows.holes.load(Ordering::Relaxed) <= 4, "{}", rows.holes.load(Ordering::Relaxed));
     assert_eq!(rows.frags.load(Ordering::Relaxed), 0);
+    assert_eq!(rows.ranges.load(Ordering::Relaxed), 6, "three ranges per file (items 5-7)");
     assert_eq!(d.regions_opened.len(), 1);
 }
 
@@ -1143,21 +1150,11 @@ fn reads_only_what_changed() {
 fn delta_layout_same_on_1_and_n_threads() {
     let (s0, hops) = m1_world("o2fs");
     let (changes, _) = changes_of(&s0, &hops[3]);
-    let one = layout(
-        &StoredLayout::new(&s0.mem),
-        &LayoutInput { changes: &changes, ..LayoutInput::default() },
-        &s0.world.target,
-    );
+    let one = layout(&StoredLayout::new(&s0.mem), &input(&changes), &s0.world.target);
     let many: Vec<_> = std::thread::scope(|sc| {
         let h: Vec<_> = (0..4)
             .map(|_| {
-                sc.spawn(|| {
-                    layout(
-                        &StoredLayout::new(&s0.mem),
-                        &LayoutInput { changes: &changes, ..LayoutInput::default() },
-                        &s0.world.target,
-                    )
-                })
+                sc.spawn(|| layout(&StoredLayout::new(&s0.mem), &input(&changes), &s0.world.target))
             })
             .collect();
         h.into_iter().map(|h| h.join().unwrap()).collect()
@@ -1331,30 +1328,135 @@ fn edit_moves_only_changed_sections() {
     }
 }
 
-// Item 11 (a winning common is a section of its winning file) needs each
-// common's SymbolId, size and alignment in the update's input, and
-// `SectionChange` carries none: `LayoutDelta::commons` stays empty
-// (WP-216.md, R-2). These tests wait for that ruling.
-
-#[test]
-#[ignore = "item 11: no common input in SectionChange (WP-216.md R-2)"]
-fn n4_common_grows() {}
-
-#[test]
-#[ignore = "item 11: no common input in SectionChange (WP-216.md R-2)"]
-fn common_appears() {}
-
-#[test]
-#[ignore = "item 11: no common input in SectionChange (WP-216.md R-2)"]
-fn two_commons_one_grows() {}
-
-#[test]
-#[ignore = "item 11: no common input in SectionChange (WP-216.md R-2)"]
-fn common_winner_moves_to_unchanged_file() {}
-
 // IN-28b's slots: the order of IRELATIVE slots needs the update's slot
-// demand (which IFUNCs a changed file now needs), and the input has none
-// (WP-216.md R-4).
+// demand; item 7 is refused wholesale until WP-239's ruling on the stored
+// state (`items_5_6_7_refused_wholesale`).
 #[test]
-#[ignore = "IN-28b slots: no slot demand input (WP-216.md R-4)"]
+#[ignore = "item 7: refused wholesale until WP-239 (WP-216.md §Q)"]
 fn two_ifuncs_added_irelative_order() {}
+
+// ---- items 5, 6, 7: refused wholesale (until WP-239) ------------------------
+
+// spec: incr.md IN-72 items 5, 6, 7 (v1 as the supervisor ruled on WP-216's
+// seam 4: any `.eh_frame` record, merged piece or slot demand of a file of
+// the update, new or old, is `update-not-implemented (layout)`)
+#[test]
+fn items_5_6_7_refused_wholesale() {
+    let s0 = first(Machine::X86_64, &two_text_files());
+    let mut files = s0.files();
+    files[0][0].size = 60;
+    let (changes, _) = changes_of(&s0, &Edit::new(files).changed(&[1]));
+    let t = &s0.world.target;
+    let f1 = FileId(1);
+    let sid = SectionId(1);
+    let run = |mem: &MemoryLayout, inp: &LayoutInput<'_>| layout(&StoredLayout::new(mem), inp, t);
+    assert!(run(&s0.mem, &input(&changes)).is_ok());
+    // The new version's.
+    let eh = [EhFile {
+        file: f1,
+        rank: 1,
+        records: vec![EhRecordIn { section: sid, piece: 0, size: 24, cie: true }],
+    }];
+    let pieces = [FilePieces {
+        file: f1,
+        pieces: vec![MergedPiece {
+            section: sid,
+            offset: 0,
+            size: 4,
+            out: OutSecId(0),
+            class: MergeClass { strings: true, entsize: 1, align: 0 },
+            hash: [7; 16],
+        }],
+    }];
+    let demands = [FileDemands {
+        file: f1,
+        demands: vec![SlotDemand {
+            key: mortar_core::id::SymKey::global(mortar_core::id::SymbolId(3)),
+            flags: mortar_core::demands::DemandFlags::GOT,
+        }],
+    }];
+    let with = |i: LayoutInput<'_>| run(&s0.mem, &i).err();
+    assert_eq!(with(LayoutInput { eh: &eh, ..input(&changes) }), Some(not_implemented()));
+    assert_eq!(with(LayoutInput { pieces: &pieces, ..input(&changes) }), Some(not_implemented()));
+    assert_eq!(with(LayoutInput { demands: &demands, ..input(&changes) }), Some(not_implemented()));
+    // Empty lists are no demand.
+    let none = [EhFile { file: f1, rank: 1, records: Vec::new() }];
+    assert!(with(LayoutInput { eh: &none, ..input(&changes) }).is_none());
+    // The old version's.
+    let old = |f: &dyn Fn(&mut MemoryLayout)| {
+        let mut m = s0.mem.clone();
+        f(&mut m);
+        run(&m, &input(&changes)).err()
+    };
+    let r = StoredEhRecord { section: sid, piece: 0 };
+    assert_eq!(old(&|m| m.eh_records.push((f1, r))), Some(not_implemented()));
+    let fa = StoredFragAt { section: sid, offset: 0, out: OutSecId(0), hash: [1; 16], ordinal: 0 };
+    assert_eq!(old(&|m| m.frag_at.push((f1, fa))), Some(not_implemented()));
+    let slot = StoredUse { key: mortar_core::id::SymbolId(3), slot: true };
+    assert_eq!(old(&|m| m.uses.push((f1, slot))), Some(not_implemented()));
+    // A plain global use is no slot; another file's rows are not read.
+    let plain = StoredUse { key: mortar_core::id::SymbolId(3), slot: false };
+    assert!(old(&|m| m.uses.push((f1, plain))).is_none());
+    assert!(old(&|m| m.eh_records.push((FileId(2), r))).is_none());
+}
+
+// ---- item 10: an output section left empty (F-6) ----------------------------
+
+// spec: incr.md IN-72 item 10 (an output section left empty:
+// `new-output-section`; WP-216 F-6, detected by bytes)
+#[test]
+fn output_section_left_empty_is_new_output_section() {
+    // `.rodata` only in file 1: its section dies, the output section is
+    // left empty.
+    let files =
+        vec![vec![text(b".text.a", 100), rodata(b".rodata", 64)], vec![text(b".text.c", 200)]];
+    let s0 = first(Machine::X86_64, &files);
+    let e = hop(&s0, &Edit::new(s0.files()).changed(&[1]).dead(&[(1, 2)])).err().unwrap();
+    assert_eq!(e.name(), "new-output-section", "{e:?}");
+    assert!(e.report().contains(".rodata"), "{e:?}");
+    // The same file's section gone from its new version.
+    let mut gone = s0.files();
+    gone[0].pop();
+    let e = hop(&s0, &Edit::new(gone).changed(&[1])).err().unwrap();
+    assert_eq!(e.name(), "new-output-section", "{e:?}");
+    // `.rodata` in both files: one dies, the other keeps the output
+    // section; the update succeeds.
+    let files = vec![
+        vec![text(b".text.a", 100), rodata(b".rodata", 64)],
+        vec![text(b".text.c", 200), rodata(b".rodata", 64)],
+    ];
+    let s0 = first(Machine::X86_64, &files);
+    let (_, d) = hop(&s0, &Edit::new(s0.files()).changed(&[1]).dead(&[(1, 2)])).unwrap();
+    assert_eq!(d.killed.len(), 1, "{d:?}");
+}
+
+// ---- R-3: the one reader ----------------------------------------------------
+
+// spec: incr.md IN-18c, IN-72 (WP-216 R-3: the sparse placement names its
+// files and touched chunks; a section of another file reads as stored)
+#[test]
+fn sparse_placement_names_files_and_touched_chunks() {
+    let s0 = first(Machine::X86_64, &two_text_files());
+    let mut files = s0.files();
+    files[0][1].size = 30;
+    let (changes, _) = changes_of(&s0, &Edit::new(files).changed(&[1]));
+    let stored = StoredLayout::new(&s0.mem);
+    let d = layout(&stored, &input(&changes), &s0.world.target).unwrap();
+    assert_eq!(d.files, [FileId(1)]);
+    assert!(!d.hole_chunks.is_empty());
+    let other = s0.world.sid(2, 1);
+    let at = s0.placed.placement.place[other];
+    assert_eq!(d.place_of(&stored, other).unwrap(), PlaceNow::Stored(at));
+    let mine = changes.iter().find(|c| c.key.name == b".text.b").unwrap().id;
+    assert!(matches!(d.place_of(&stored, mine).unwrap(), PlaceNow::Here(_)));
+    // A chunk the update did not touch has its stored holes.
+    let untouched = s0
+        .placed
+        .placement
+        .order
+        .iter()
+        .copied()
+        .find(|c| d.hole_chunks.binary_search(c).is_err())
+        .unwrap();
+    assert_eq!(d.holes_of(&stored, untouched).unwrap(), s0.mem.holes_in(untouched).unwrap());
+}

@@ -1,5 +1,5 @@
-//! The delta layout (`spec/incr.md` IN-72 items 1-12, the growth step,
-//! commons; IN-70 step U7): the update's `Placement` from the stored one,
+//! The delta layout (`spec/incr.md` IN-72 items 1-12, the growth step;
+//! IN-70 step U7): the update's `Placement` from the stored one,
 //! never a fresh one. Not `mortar_incr::delta` (the floor's refill
 //! report). WP-213 (U-1): the entry point [`layout`]; filled by U-4
 //! (WP-216). Its types are `mortar_core::incr`'s (`StoredLayout`,
@@ -9,22 +9,25 @@
 //! What it reads (IN-18c, O(change)): the whole small tables (`CHUNKS`,
 //! `ORDER`, `SEGMENTS`, `OUTSECS`, `PATCHES`, `REDIRECTS`, `SYM_PLACE`,
 //! `DEFINED`, `LAYOUT`; `SLOTS` only when a file changed), and per file of
-//! `changes` its `SECTIONS` and `REGIONS` ranges, and `HOLES` of the chunks
-//! a touched region or a new region is in. Nothing else.
+//! `changes` its `SECTIONS`, `REGIONS`, `EH_RECORDS`, `FRAG_AT` and
+//! `INDEX` ranges, and `HOLES` of the chunks a touched region or a new
+//! region is in, or of an output section that lost a member (item 10).
+//! Nothing else.
 //!
 //! What it gives (`spec/landed/incr/WP-216.md` §2): `placement` has the
 //! stored whole tables, updated (chunks grown or moved by the growth steps,
 //! the segments derived again, the TLS template and the entry moved with
-//! them); `placement.place` is indexed by the update's id space and holds
-//! the places of the sections of `changes` only (every other entry is
-//! [`Place::NONE`]: a section of no file of `changes` is where the stored
-//! layout has it, an old version's row is gone); `placement.holes` holds
-//! every hole of every chunk the update touched (the other chunks' holes
-//! are the stored ones); `sized` is empty (not a row `LayoutRows` gives).
+//! them); the placement is SPARSE (WP-216 R-3), read through
+//! `LayoutDelta::place_of` and `holes_of` only: `files` names the files
+//! whose sections `placement.place` places, `hole_chunks` the chunks whose
+//! holes `placement.holes` replaces; `sized` is empty (not a row
+//! `LayoutRows` gives).
 //!
 //! Every refusal is a reason of `spec/incr.md` §7 by name; what this
-//! package cannot do yet (IN-72 items 4's rewrite, 5, 6, 7's appends, 11)
-//! is `update-not-implemented (layout)`, never a guess.
+//! package cannot do (IN-72 item 4's rewrite; items 5, 6 and 7 wholesale
+//! until WP-239's ruling on the stored state) is `update-not-implemented
+//! (layout)`, never a guess. Commons are not placed by an update in v1
+//! (WP-216 R-2: the join's `update-not-implemented (common)`).
 
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -52,10 +55,12 @@ use crate::slack::{self, Slack};
 use crate::target::Target;
 
 /// Place the update's sections in the stored layout (WP-211 §C; IN-72).
-/// `changes`: every section of every changed, appeared, drawn-in or newly
-/// extracted file (sorted by id), plus the sections whose liveness or
-/// keeping flips (the join builds them from U-3's results). Called by the
-/// join (IN-70 U7).
+/// `input.changes`: every section of every changed, appeared, drawn-in or
+/// newly extracted file (sorted by id), plus the sections whose liveness
+/// or keeping flips (the join builds them from U-3's results); per such
+/// file, `input.eh`, `input.pieces` and `input.demands` (items 5, 6, 7).
+/// Called by the join (IN-70 U7), after its `update-not-implemented
+/// (common)` check (R-2).
 ///
 /// A change whose `old` is its own id is a stored row standing for itself
 /// (a drawn-in file's section, or a gone file's with `live` false); any
@@ -76,11 +81,12 @@ pub fn layout(
 ) -> Result<LayoutDelta, IncrReason> {
     let changes = input.changes;
     debug_assert!(changes.windows(2).all(|w| w[0].id < w[1].id), "changes sorted by id");
-    let base = Base::read(stored, target)?;
     let mut files: BTreeMap<FileId, Vec<usize>> = BTreeMap::new();
     for (i, c) in changes.iter().enumerate() {
         files.entry(c.file).or_default().push(i);
     }
+    items_5_6_7_refused(stored, input, files.keys().copied())?;
+    let base = Base::read(stored, target)?;
     let mut u = Update::new(&base, changes);
     for (&file, members) in &files {
         u.file(stored, file, members)?;
@@ -89,7 +95,40 @@ pub fn layout(
     u.overflow()?;
     u.growth()?;
     u.holes(stored)?;
-    u.finish()
+    u.left_empty(stored)?;
+    let mut delta = u.finish()?;
+    delta.files = files.into_keys().collect();
+    Ok(delta)
+}
+
+/// Items 5, 6 and 7, refused wholesale until WP-239's ruling on the stored
+/// state (the supervisor's word on WP-216's seam 4): a file of the update
+/// with kept `.eh_frame` records, merged pieces or a slot demand, in its
+/// new version (`input`) or its old one (`EH_RECORDS`, `FRAG_AT`, an
+/// `INDEX` row of kind `SLOT`), is `update-not-implemented (layout)`. An
+/// accessor the stored rows do not give is the same reason (its provided
+/// body). A merged section placed whole and kept at its place (S-6) is
+/// not a piece and stays item 4's.
+fn items_5_6_7_refused(
+    stored: &StoredLayout<'_>,
+    input: &LayoutInput<'_>,
+    files: impl Iterator<Item = FileId>,
+) -> Result<(), IncrReason> {
+    if input.eh.iter().any(|f| !f.records.is_empty())
+        || input.pieces.iter().any(|f| !f.pieces.is_empty())
+        || input.demands.iter().any(|f| !f.demands.is_empty())
+    {
+        return Err(not_implemented());
+    }
+    for file in files {
+        if !stored.eh_records_of(file)?.is_empty()
+            || !stored.frag_at_of(file)?.is_empty()
+            || stored.uses_of(file)?.iter().any(|u| u.slot)
+        {
+            return Err(not_implemented());
+        }
+    }
+    Ok(())
 }
 
 // ---- small helpers ----------------------------------------------------------
@@ -307,8 +346,7 @@ impl Base {
         {
             return Fate::Ignore;
         }
-        // Item 5: `.eh_frame` (IN-34a) needs its records, which a
-        // `SectionChange` does not carry.
+        // Item 5: `.eh_frame` (IN-34a), refused wholesale (§Q).
         if name == b".eh_frame"
             || (self.machine == Machine::X86_64 && s.sh_type == SHT_X86_64_UNWIND)
         {
@@ -316,7 +354,7 @@ impl Base {
         }
         // Item 6: merged pieces. A section of this shape is placed whole
         // when its previous version had a place (synth.md S-6); otherwise
-        // its pieces are needed, which a `SectionChange` does not carry.
+        // it is pieces, refused wholesale (§Q).
         if s.flags & SHF_MERGE != 0
             && s.sh_type == SHT_PROGBITS
             && s.flags & (SHF_WRITE | SHF_EXECINSTR | SHF_TLS) == 0
@@ -477,8 +515,8 @@ enum Fate {
 impl Refusal {
     fn reason(self, name: &[u8]) -> IncrReason {
         match self {
-            // Items 5 and 6 need `.eh_frame` records and merged pieces in
-            // the seam (`spec/landed/incr/WP-216.md` §1, ruling R-1).
+            // Items 5 and 6: refused wholesale until WP-239's ruling on
+            // the stored state (`spec/landed/incr/WP-216.md` §Q).
             Self::EhFrame | Self::Merged => not_implemented(),
             Self::Debug => IncrReason::UpdateNotImplemented(Some(Unimplemented::Debug)),
             Self::NoOutput => IncrReason::NewOutputSection(text(name)),
@@ -590,6 +628,8 @@ struct Update<'b, 'c> {
     /// Every hole of the touched chunks, and those this update made.
     holes: Vec<Hole>,
     made: Vec<Hole>,
+    /// The touched chunks (`holes` replaces their stored holes), sorted.
+    hole_chunks: Vec<ChunkId>,
 }
 
 impl<'b, 'c> Update<'b, 'c> {
@@ -611,6 +651,7 @@ impl<'b, 'c> Update<'b, 'c> {
             shift: vec![0; base.chunks.len() as usize],
             holes: Vec::new(),
             made: Vec::new(),
+            hole_chunks: Vec::new(),
         }
     }
 
@@ -1125,6 +1166,7 @@ impl<'b, 'c> Update<'b, 'c> {
         }
         let mut all = Vec::new();
         let mut made = Vec::new();
+        self.hole_chunks = by_chunk.keys().copied().collect();
         for (chunk, (ranges, new)) in by_chunk {
             let old = stored.holes_in(chunk)?;
             let mut kept = Vec::new();
@@ -1167,6 +1209,86 @@ impl<'b, 'c> Update<'b, 'c> {
         self.holes = all;
         self.made = made;
         Ok(())
+    }
+
+    /// Item 10's "an output section left empty" (WP-216 F-6): an output
+    /// section that lost a member in this update (a section of a file of
+    /// `changes` placed in it before and not now) and in which this
+    /// update places none is `new-output-section`, unless one of its
+    /// chunks still holds a live byte. No member count is stored, so the
+    /// proof is by bytes: in a chunk, every byte is a live section's, a
+    /// hole (a region's slack, a dead section, IN-3), or alignment padding
+    /// before a member or a region, which is shorter than the chunk's
+    /// alignment. A run of non-hole bytes at least the chunk's alignment
+    /// long therefore holds a live section; a non-body chunk (merged,
+    /// synthetic) with bytes is live. Anything else is taken as empty: an
+    /// output section whose only members left are empty sections is
+    /// refused too (a refusal, never a kept empty output section).
+    fn left_empty(&self, stored: &StoredLayout<'_>) -> Result<(), IncrReason> {
+        let base = self.base;
+        let out_of = |at: Option<(ChunkId, u64)>| {
+            at.and_then(|(c, _)| base.chunks.get(c)).and_then(|c| c.kind.out())
+        };
+        let mut placed: BTreeSet<OutSecId> = BTreeSet::new();
+        let mut lost: BTreeSet<OutSecId> = BTreeSet::new();
+        for (i, now) in self.place.iter().enumerate() {
+            let now = out_of(*now);
+            placed.extend(now);
+            let before = out_of(self.prev[i].as_ref().and_then(|p| p.place.get()));
+            if let Some(o) = before
+                && now != Some(o)
+            {
+                lost.insert(o);
+            }
+        }
+        lost.extend(self.orphans.iter().filter_map(|o| out_of(o.place.get())));
+        for out in lost.difference(&placed) {
+            if !self.holds_live_byte(stored, *out)? {
+                let name = base.names.get(out).map_or_else(String::new, |n| text(n));
+                return Err(IncrReason::NewOutputSection(format!(
+                    "output section {name} left empty"
+                )));
+            }
+        }
+        Ok(())
+    }
+
+    /// Whether a chunk of `out` holds a run of non-hole bytes at least its
+    /// alignment long, or is a non-body chunk with bytes ([`Self::left_empty`]).
+    fn holds_live_byte(
+        &self,
+        stored: &StoredLayout<'_>,
+        out: OutSecId,
+    ) -> Result<bool, IncrReason> {
+        for &c in self.base.of_out.get(&out).map_or(&[][..], Vec::as_slice) {
+            let chunk = &self.chunks[c];
+            if chunk.size == 0 {
+                continue;
+            }
+            if !matches!(chunk.kind, ChunkKind::Body(_)) {
+                return Ok(true);
+            }
+            let mut holes: Vec<Hole> = if self.hole_chunks.binary_search(&c).is_ok() {
+                self.holes.iter().filter(|h| h.chunk == c).copied().collect()
+            } else {
+                stored.holes_in(c)?
+            };
+            holes.sort_by_key(|h| h.offset);
+            let align = 1u64 << chunk.align.min(63);
+            let mut at = 0u64;
+            for h in holes.iter().chain(std::iter::once(&Hole {
+                chunk: c,
+                offset: chunk.size,
+                size: 0,
+                kind: HoleKind::Fill,
+            })) {
+                if h.offset.saturating_sub(at) >= align {
+                    return Ok(true);
+                }
+                at = at.max(h.offset.saturating_add(h.size));
+            }
+        }
+        Ok(false)
     }
 
     /// The segments derived again, the TLS template and the entry moved
@@ -1288,7 +1410,7 @@ impl<'b, 'c> Update<'b, 'c> {
             regions_opened,
             growth_steps: steps.into_iter().map(|s| s.1).collect(),
             files: Vec::new(),
-            hole_chunks: Vec::new(),
+            hole_chunks: self.hole_chunks,
             eh: None,
             frags: Vec::new(),
             slots_appended: Vec::new(),
