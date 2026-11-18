@@ -97,6 +97,15 @@ impl Engine<'_, '_> {
         if kept.alloc() {
             return Some(Kept::Fallback("the keeper's member of its name and size is SHF_ALLOC"));
         }
+        // The supervisor's amendment (WP-250): K and D are placed whole,
+        // neither SHF_MERGE nor `.eh_frame`.
+        let machine = o.elf.machine();
+        let whole = |s: &crate::locate::Sec<'_>, m| !s.merge() && !s.is_eh_frame(m);
+        if !whole(d, machine) || !whole(kept, keeper.elf.machine()) {
+            return Some(Kept::Fallback(
+                "the keeper's member or the dropped one is SHF_MERGE or .eh_frame",
+            ));
+        }
         Some(match kept.place {
             Place::Whole(a) => Kept::To(a),
             Place::Absent | Place::Discarded => {

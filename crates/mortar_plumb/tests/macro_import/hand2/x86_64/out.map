@@ -1,0 +1,35 @@
+mortar-map 2
+file 0 k.o
+file 1 d.o
+place 0 6 4010e8 4
+nplace 0 9 .debug_info 0 10
+nplace 0 10 .debug_macro 0 10
+merged 0 11 .debug_wp250m
+merged 0 12 .debug_wp250k
+nplace 0 13 .debug_wp250d 0 8
+nplace 0 14 .debug_info 10 10
+nplace 0 15 .debug_macro 10 10
+nplace 0 16 .debug_line 0 1d
+nplace 1 14 .debug_macro 20 18
+nplace 1 16 .debug_gnu_pubnames 0 c
+nplace 1 18 .debug_line 1d 1d
+discard 1 9 comdat
+discard 1 10 comdat
+discard 1 11 comdat
+discard 1 12 comdat
+discard 1 13 comdat
+chunk synthetic .symtab - 30
+chunk synthetic .strtab - 26
+chunk synthetic .shstrtab - 8d
+chunk synthetic .comment - d
+arg -m
+arg elf_x86_64
+arg -static
+arg --gc-sections
+arg --build-id=none
+arg k.o
+arg d.o
+arg -o
+arg out
+arg --mortar-map=out.map
+end

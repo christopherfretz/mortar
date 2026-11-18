@@ -2306,8 +2306,10 @@ or absent holds the linker's *tombstone*, compared in the field's width:
   map. In the keeper's copy of the group (its `SHT_GROUP` section's
   members) the verifier takes the members with D's name, then of those
   the ones with D's `sh_size`, and requires exactly one, K, with no
-  `SHF_ALLOC`, placed whole (§3.3: K's place, its offset in the output
-  section of its name). Then X is K's place + the symbol's `st_value` +
+  `SHF_ALLOC`, in the output; and K and D are placed whole, neither
+  `SHF_MERGE` nor `.eh_frame` (the supervisor's amendment to I-47a,
+  WP-250). K's place is its offset in the output section of its name
+  (§3.3). Then X is K's place + the symbol's `st_value` +
   A for an absolute operation, that − P for a PC-relative one, decided
   by §5.2 in the field's width (overflow is R1 as for any target). A
   field that differs is R1 "a reference into a dropped COMDAT copy of a
@@ -2315,11 +2317,16 @@ or absent holds the linker's *tombstone*, compared in the field's width:
   + A (spec/image.md I-47a)", with "; it holds a tombstone" when it
   holds all ones, 0 or 1. Each branch of the condition that fails (no
   member of D's name; one of another size; more than one of D's name and
-  size; it is `SHF_ALLOC`; it is not in the output, absent or discarded
-  by the map) leaves the column's tombstone, and a field that differs
-  from it is R1 with "; spec/image.md I-47a keeps the tombstone here:
-  <the branch>". K placed in pieces, merged or ambiguous (§3.3) is not
-  judged: `section-not-locatable`. The verifier does not parse DWARF and
+  size; it is `SHF_ALLOC`; K or D is `SHF_MERGE` or `.eh_frame`; it is
+  not in the output, absent or discarded by the map) leaves the column's
+  tombstone, and a field that differs from it is R1 with ";
+  spec/image.md I-47a keeps the tombstone here: <the branch>". K placed
+  in pieces or ambiguous (§3.3) is not judged: `section-not-locatable`.
+  The referring section is binding: only a record of a live non-alloc
+  section with a debug name is redirected. A record of an `SHF_ALLOC`
+  section (`.gcc_except_table`: 0, §5.7b) or of a non-alloc section
+  without a debug name (R5, I-46) into D keeps its column, whatever the
+  field holds. The verifier does not parse DWARF and
   does not compare D's bytes with K's (I-47a does not either). A
   verified field counts under `kept-copy` (§7.2).
 - **GNU ld's redirect** (`_bfd_elf_check_kept_section`, measured on
@@ -2466,8 +2473,11 @@ Tests: `tests/tls.rs s5_8_debug_references_verify_clean`,
 `tests/mutation.rs s9_2j_debug_mutations_are_found`,
 `tests/macro_import.rs` (I-47a: mortar's output patched to the kept
 copy, the tombstone, 0 and off by 4; each branch of the condition by a
-hand-written pair of objects; the three reference linkers' columns on
-GCC `-g3` links and on WP-249's probe, each with a word moved).
+hand-written pair of objects, `SHF_MERGE` members and a `.debug_info`
+member referred to from `.debug_gnu_pubnames` included; referrers
+without a debug name or with `SHF_ALLOC`; the three reference linkers'
+columns on GCC `-g3` links and on WP-249's probe, each with a word
+moved).
 
 ### 5.9 x86-64 rewritings (WP-028c)
 

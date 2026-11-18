@@ -590,3 +590,201 @@ fn reference_columns_on_gnu_probe() {
         }
     }
 }
+
+// ---- the amendment (K and D placed whole) and the referring section ----
+
+/// `hand2/d.s`'s words: (the referring section, offset after its marker,
+/// the group, the would-be K's output section and tag, the fall-back's
+/// reason or `None` where I-47a redirects).
+const HAND2: [(&str, usize, &str, &str, &[u8], Option<&str>); 5] = [
+    (".debug_macro", 8, "M", ".debug_wp250m", b"Mtag", Some("SHF_MERGE or .eh_frame")),
+    (".debug_macro", 12, "MK", ".debug_wp250k", b"MKtag", Some("SHF_MERGE or .eh_frame")),
+    (".debug_macro", 16, "MD", ".debug_wp250d", b"MDtag", Some("SHF_MERGE or .eh_frame")),
+    (".debug_macro", 20, "X", ".debug_macro", b"Xtag", None),
+    // split/gdb-index-refused.test's shape: a `.debug_gnu_pubnames` word
+    // into a dropped copy of a `.debug_info` group member.
+    (".debug_gnu_pubnames", 8, "I", ".debug_info", b"Itag", None),
+];
+
+struct Hand2 {
+    dir: PathBuf,
+    out: Vec<u8>,
+    /// Per word of HAND2: its file offset and the would-be K's offset in
+    /// its output section.
+    words: Vec<(usize, u64)>,
+}
+
+fn hand2(arch: &'static str) -> Hand2 {
+    let dir = fixture(&format!("hand2/{arch}"));
+    let out = std::fs::read(dir.join("out")).unwrap();
+    let words = HAND2
+        .iter()
+        .map(|&(sec, off, _, ksec, tag, _)| {
+            let at = section(&out, sec, false).unwrap().0 + find_in(&out, sec, b"WP250REF") + off;
+            (at, find_in(&out, ksec, tag) as u64)
+        })
+        .collect();
+    Hand2 { dir, out, words }
+}
+
+impl Hand2 {
+    fn verify(&self, out: &[u8]) -> Report {
+        verify_in(&self.dir, out, "out.map", Format::Mortar)
+    }
+
+    /// The output with I-47a's redirects written (X and I).
+    fn redirected(&self) -> Vec<u8> {
+        let mut o = self.out.clone();
+        for (k, h) in HAND2.iter().enumerate() {
+            if h.5.is_none() {
+                put(&mut o, self.words[k].0, 4, self.words[k].1);
+            }
+        }
+        o
+    }
+}
+
+// The amendment (K and D are placed whole, neither SHF_MERGE nor
+// `.eh_frame`): both members SHF_MERGE (M), the keeper's only (MK), the
+// dropped one's only (MD) keep the tombstone; the plain member (X) and a
+// `.debug_info` member referred to from `.debug_gnu_pubnames` (I, the
+// shape of split/gdb-index-refused.test) are redirected. As linked (all
+// ones): two R1, three tombstones; redirected: clean; each word moved by
+// 1, or a merge word given the would-be K's place, is one R1.
+#[test]
+fn i47a_merge_members_keep_the_tombstone_and_an_info_member_is_redirected() {
+    for arch in ARCHES {
+        let h = hand2(arch);
+        let r = h.verify(&h.out);
+        let mut got: Vec<u64> = r.findings.iter().map(|f| f.expected.unwrap()).collect();
+        got.sort_unstable();
+        let mut want = vec![h.words[3].1, h.words[4].1];
+        want.sort_unstable();
+        assert_eq!(got, want, "{arch}\n{}", r.summary());
+        assert_eq!(r.coverage.verified_of(Via::Tombstone), 3, "{arch}\n{}", r.summary());
+        let o = h.redirected();
+        let r = h.verify(&o);
+        assert!(r.findings.is_empty(), "{arch}: {:?}\n{}", r.findings.first(), r.summary());
+        assert_eq!(r.coverage.verified_of(Via::KeptCopy), 2, "{arch}\n{}", r.summary());
+        assert_eq!(r.coverage.verified_of(Via::Tombstone), 3, "{arch}\n{}", r.summary());
+        for (k, &(_, _, g, _, _, why)) in HAND2.iter().enumerate() {
+            let (at, kplace) = h.words[k];
+            let mut vals = vec![get(&o, at, 4).wrapping_add(1) & 0xffff_ffff];
+            if why.is_some() {
+                vals.push(kplace);
+            }
+            for v in vals {
+                let mut m = o.clone();
+                put(&mut m, at, 4, v);
+                let r = h.verify(&m);
+                assert_eq!(r.findings.len(), 1, "{arch} {g} {v:#x}\n{}", r.summary());
+                let f = &r.findings[0];
+                assert_eq!((f.rule, f.found), (Rule::Field, Some(v)), "{arch} {g}: {f:?}");
+                if let Some(why) = why {
+                    assert!(f.message.contains(why), "{arch} {g}: {}", f.message);
+                    assert_eq!(f.expected, Some(0xffff_ffff), "{arch} {g}");
+                }
+            }
+        }
+    }
+}
+
+// The referring section is binding: a word into a dropped non-alloc copy
+// (X) from a non-alloc section without a debug name (`.wp250note`, I-46)
+// or from an SHF_ALLOC one (`.wp250data`) is never accepted as the kept
+// copy. mortar refuses both links by name; lld's link of `hand2/k.s` and
+// `hand2/r.s` is read with mortar's map (its non-alloc rows as `nplace`
+// records, as `aranges.rs` does), the words as lld wrote them and then
+// set to K's place: each is a finding sited at its word, and nothing
+// counts as `kept-copy`.
+#[test]
+fn i47a_a_referrer_without_a_debug_name_or_allocated_is_not_redirected() {
+    use mortar_plumb::map::{NonAlloc, SectionRef};
+    for arch in ARCHES {
+        let Some(t) = tools_or_skip(arch) else { return };
+        let s = Scratch::new(&format!("plumb-macro-referrer-{arch}"));
+        let dir = s.path();
+        for f in ["k", "r"] {
+            let a = vec![
+                fixture(&format!("hand2/{f}.s")).display().to_string(),
+                "-o".into(),
+                dir.join(format!("{f}.o")).display().to_string(),
+            ];
+            let o = run(&t.asm, &a);
+            assert!(o.success(), "{arch} {f}.s: {}", o.stderr_text());
+        }
+        let args: Vec<String> = vec![
+            "-m".into(),
+            t.em.into(),
+            "-static".into(),
+            "-e".into(),
+            "_start".into(),
+            // lld refuses `.wp250data`'s word into a discarded section.
+            "--noinhibit-exec".into(),
+            "-Map".into(),
+            dir.join("lld.map").display().to_string(),
+            dir.join("k.o").display().to_string(),
+            dir.join("r.o").display().to_string(),
+            "-o".into(),
+            dir.join("lld").display().to_string(),
+        ];
+        let o = run(&t.ld[1], &args);
+        assert!(o.success(), "{arch} lld: {}", o.stderr_text());
+        let out = std::fs::read(dir.join("lld")).unwrap();
+        let lld = map::parse(Format::Lld, &std::fs::read_to_string(dir.join("lld.map")).unwrap())
+            .unwrap();
+        let nonalloc_out = |n: &str| section(&out, n, false);
+        let mut m = lld.clone();
+        let (na, placed): (Vec<_>, Vec<_>) = m
+            .placed
+            .drain(..)
+            .partition(|p| matches!(&p.section, SectionRef::Name(n) if nonalloc_out(n).is_some()));
+        m.placed = placed;
+        for p in na {
+            let SectionRef::Name(n) = &p.section else { unreachable!() };
+            let addr = nonalloc_out(n).unwrap().1;
+            m.nonalloc.push(NonAlloc {
+                file: p.file,
+                section: p.section.clone(),
+                out: n.clone(),
+                offset: Some(p.addr - addr),
+                size: p.size,
+                line: 0,
+            });
+        }
+        if m.args.is_empty() {
+            m.args = m.paths().iter().map(|p| p.as_bytes().to_vec()).collect();
+        }
+        let m = map::parse(Format::Mortar, &map::mortar::write(&m)).unwrap();
+        let bytes: Vec<(String, Vec<u8>)> =
+            m.paths().into_iter().map(|p| (p.to_string(), std::fs::read(p).unwrap())).collect();
+        let inputs: Vec<Input<'_>> =
+            bytes.iter().map(|(p, b)| Input { path: p, bytes: b }).collect();
+        let files = Dir(dir.to_path_buf());
+        let judge = |o: &[u8]| verify_with(o, &inputs, &m, &Ctx { line: None, files: &files });
+        let k = find_in(&out, ".debug_macro", b"Xtag") as u64;
+        let note = section(&out, ".wp250note", false).unwrap().0
+            + find_in(&out, ".wp250note", b"WP250REF")
+            + 8;
+        let (doff, _, dsize) = section(&out, ".wp250data", true).unwrap();
+        let data =
+            doff + out[doff..doff + dsize].windows(8).position(|w| w == b"WP250REF").unwrap() + 8;
+        for (what, v) in [("as lld wrote it", None), ("K's place", Some(k))] {
+            let mut o = out.clone();
+            if let Some(v) = v {
+                put(&mut o, note, 4, v);
+                put(&mut o, data, 4, v);
+            }
+            let r = judge(&o);
+            assert_eq!(r.coverage.verified_of(Via::KeptCopy), 0, "{arch} {what}\n{}", r.summary());
+            for sec in [".wp250note", ".wp250data"] {
+                assert!(
+                    r.findings.iter().any(|f| f.site.as_ref().is_some_and(|s| s.section == sec)),
+                    "{arch} {what}: no finding at {sec}: {:?}\n{}",
+                    r.findings,
+                    r.summary()
+                );
+            }
+        }
+    }
+}

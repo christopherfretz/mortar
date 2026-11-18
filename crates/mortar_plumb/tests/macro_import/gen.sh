@@ -11,6 +11,11 @@
 #                       (its 'redirect', which gdb and lldb read right).
 #   hand/<arch>/        hand/k.s (first: the keeper) and hand/d.s, one group
 #                       per branch of I-47a's condition, --gc-sections.
+#   hand2/<arch>/       hand2/k.s and hand2/d.s: the supervisor's amendment
+#                       (K and D placed whole: SHF_MERGE members) and a
+#                       .debug_info member referred to from
+#                       .debug_gnu_pubnames. (hand2/r.s is linked by the
+#                       test itself, with lld: mortar refuses it.)
 # mortar at the time wrote I-47's all-ones tombstone in every such field
 # (before WP-249 step 2); the tests patch the fields themselves.
 #   sh gen.sh <mortar>          (run from this directory)
@@ -49,5 +54,10 @@ while i < len(a):
   mkdir -p "$h"
   "$arch-linux-gnu-as" hand/k.s -o "$h/k.o"
   "$arch-linux-gnu-as" hand/d.s -o "$h/d.o"
+  (cd "$h" && "$mortar" -m $em -static --gc-sections --build-id=none k.o d.o -o out --mortar-map=out.map)
+  h=hand2/$arch
+  mkdir -p "$h"
+  "$arch-linux-gnu-as" hand2/k.s -o "$h/k.o"
+  "$arch-linux-gnu-as" hand2/d.s -o "$h/d.o"
   (cd "$h" && "$mortar" -m $em -static --gc-sections --build-id=none k.o d.o -o out --mortar-map=out.map)
 done
