@@ -712,30 +712,42 @@ fn gcc_g3_imports_name_gnu_lds_units_x86_64() {
 /// macro (none in b.c), `macro expand`; the session's lines that state
 /// them.
 fn gdb_session(gdb: &Path, prog: &Path, dir: &Path, label: &str) -> Vec<String> {
-    let port = std::net::TcpListener::bind("127.0.0.1:0")
-        .and_then(|l| l.local_addr())
-        .map_or_else(|e| panic!("a port: {e}"), |a| a.port());
-    let (qemu, mut qargs) = Arch::X86_64.runner(prog);
-    let program = qargs.pop().unwrap();
-    let mut q = Command::new(qemu);
-    q.args(&qargs).arg("-g").arg(port.to_string()).arg(program);
-    q.current_dir(dir).stdin(std::process::Stdio::null());
-    q.stdout(std::process::Stdio::null()).stderr(std::process::Stdio::null());
-    let mut child = q.spawn().unwrap_or_else(|e| panic!("{label}: qemu: {e}"));
-    std::thread::sleep(Duration::from_millis(500));
-    let cmds = [
+    // Off its host the program runs under qemu's gdb stub; on an x86-64
+    // host gdb runs it itself (there is no stub to attach to).
+    let (mut child, start) = if Arch::X86_64.is_host() {
+        (None, vec!["break b_f".to_owned(), "run".to_owned()])
+    } else {
+        let port = std::net::TcpListener::bind("127.0.0.1:0")
+            .and_then(|l| l.local_addr())
+            .map_or_else(|e| panic!("a port: {e}"), |a| a.port());
+        let (qemu, mut qargs) = Arch::X86_64.runner(prog);
+        let program = qargs.pop().unwrap();
+        let mut q = Command::new(qemu);
+        q.args(&qargs).arg("-g").arg(port.to_string()).arg(program);
+        q.current_dir(dir).stdin(std::process::Stdio::null());
+        q.stdout(std::process::Stdio::null()).stderr(std::process::Stdio::null());
+        let child = q.spawn().unwrap_or_else(|e| panic!("{label}: qemu: {e}"));
+        std::thread::sleep(Duration::from_millis(500));
+        let start = vec![
+            format!("target remote 127.0.0.1:{port}"),
+            "break b_f".to_owned(),
+            "continue".to_owned(),
+        ];
+        (Some(child), start)
+    };
+    let mut cmds = vec![
         "set pagination off".to_owned(),
         "set debuginfod enabled off".to_owned(),
         format!("file {}", prog.display()),
-        format!("target remote 127.0.0.1:{port}"),
-        "break b_f".to_owned(),
-        "continue".to_owned(),
+    ];
+    cmds.extend(start);
+    cmds.extend([
         "info macro WP249_ANSWER".to_owned(),
         "macro expand WP249_TWICE(WP249_ANSWER)".to_owned(),
         "info macro WP249_A_ONLY".to_owned(),
         "info macro __GNUC__".to_owned(),
         "kill".to_owned(),
-    ];
+    ]);
     let mut c = Command::new(gdb);
     c.args(["-nx", "-q", "-batch"]);
     for cmd in &cmds {
@@ -743,8 +755,10 @@ fn gdb_session(gdb: &Path, prog: &Path, dir: &Path, label: &str) -> Vec<String> 
     }
     c.current_dir(dir).env("DEBUGINFOD_URLS", "");
     let o = run_with(&mut c, b"", Duration::from_mins(2));
-    let _ = child.kill();
-    let _ = child.wait();
+    if let Some(child) = child.as_mut() {
+        let _ = child.kill();
+        let _ = child.wait();
+    }
     let all = format!("{}{}", o.stdout_text(), o.stderr_text());
     assert!(!all.contains("This is a bug") && !all.contains("Fatal signal"), "{label}: gdb: {all}");
     let keep: Vec<String> = all
@@ -767,7 +781,8 @@ fn gdb_session(gdb: &Path, prog: &Path, dir: &Path, label: &str) -> Vec<String> 
     keep
 }
 
-/// gdb-multiarch on qemu-x86_64: mortar's output answers as GNU ld's.
+/// gdb on x86-64 (gdb-multiarch on qemu-x86_64 off its host, gdb itself
+/// on it): mortar's output answers as GNU ld's.
 #[test]
 fn gdb_x86_64_macros() {
     let arch = Arch::X86_64;
