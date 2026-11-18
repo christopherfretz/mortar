@@ -971,7 +971,11 @@ program is the program a from-scratch link would have made.
   referenced from elsewhere, `--warn-unresolved-symbols`) is recomputed,
   because resolution is (IN-26). On failure the update does what a full
   link does (image.md I-65, I-66: the output is removed) and also removes
-  the state. *Test:* L10 steps that introduce and then fix an undefined
+  the state. In v1 an update that would report an error does not report
+  it itself: it falls back to the full link, whose failure is this
+  rule's (its diagnostics, the output removed, the state removed;
+  IN-48's test holds for it). *Test:* L10 steps that introduce and then
+  fix an undefined
   symbol; the diagnostics are compared with a full link's.
 
 ## 4. Determinism
@@ -3794,7 +3798,9 @@ a pass over a whole table of the state; **O(output)**.
 - **IN-75a [v1] Diagnostics equal to a full link's** (WP-207). An update
   emits the warnings the full link of the same inputs would emit, in the
   same order (amended by WP-211, review-wp207 M-5). The state's `DIAGS`
-  table (IN-18e) holds every warning of the link that wrote it, each with
+  table (IN-18e) holds every warning of the link that wrote it, and one
+  row per `.gnu.warning.K` section of a linked file whose key no live
+  reference reaches (stored, never printed; WP-221 §2.4), each with
   its **subjects**: **every** file and key the warning's text or its
   existence depends on, plus an output section or the link where the code
   depends on the layout, as `spec/diag.md`'s code table gives them for
@@ -3806,12 +3812,30 @@ a pass over a whole table of the state; **O(output)**.
   `SYMBOLS` row or an ODR key (`ODR_CLASSES`' key, for the
   one-definition rule's record codes, WP-236; W1 and W2's subject is the
   `SYMBOLS` row, WP-220); `DIAGS`' row says which (WP-212, F-12).
+  Key-implied files are not stored: a file the warning names or that
+  decides it and that mentions the key is in IN-71's affected set
+  through the key whenever it is touched, so the key subject stands for
+  it, and a key referenced by 1,000 files is one subject, not 1,001
+  (WP-221 F-6). A `DIAGS` row stores the warning's model
+  (`mortar_diag::Diagnostic`: its kind's fields, its place and its
+  context lines, as `mortar_diag::subject::stored` writes them), never a
+  rendering: the program name, colour and the demangling hook are the
+  invocation's (`Style`, diag.md §5.1), not in the plan hash, and are
+  applied when the update renders its report; so a repeated row renders
+  under the update's `Style` as the full link's would (WP-221 §1.1).
   An update drops every row with
   **any** subject that is a changed, appeared, gone, drawn-in, newly
   extracted or no longer extracted file, an affected or ODR-affected key
   (IN-71, IN-71d), or an output section or the link: recomputed every
   time, from the update's `Placement` or by the update's own front
-  (U1-U4) for a warning the front raises. **A warning with the subject
+  (U1-U4) for a warning the front raises. A reference-site row's
+  references in a drawn-in file are dropped and re-read: a section
+  killed or revived by a re-elected group is in a drawn-in file (IN-72
+  item 2a), whose keys are affected (IN-71; WP-221 §2.2). A stored
+  reference-site warning keeps at most 64 references and the count of
+  all of them; a row whose count exceeds what it keeps cannot be rebuilt
+  when its key is affected: the update falls back
+  (`update-not-implemented`, detail `diags`). **A warning with the subject
   `link` that the update cannot raise again within O(change) is never
   repeated from the stored row: the update falls back
   (`update-not-implemented`, detail `diags`), by code, until U-9 shows
@@ -3825,7 +3849,10 @@ a pass over a whole table of the state; **O(output)**.
   appeared file or a rank midpoint makes stale) and mapped at emission to
   the `unit` the full link of the update's inputs would use (the file's
   current position in `FILES.rank` order, IN-18e); then §6.2's text and
-  field tie-breaks. A warning code without subjects in diag.md's table is
+  field tie-breaks. A phase-20 row's unit is its argument; the row is
+  dropped when that argument's input is not clean (IN-22, IN-24) and
+  recomputed by U2's walk (WP-221 F-4). A warning code without
+  subjects in diag.md's table is
   a spec defect that `spec_tables` reports (REQUEST to diag.md, WP-211
   §R.7). `--fatal-warnings` (diag.md §6.3) makes a warning an error, and
   a link with an error writes no state, so a state never holds a warning

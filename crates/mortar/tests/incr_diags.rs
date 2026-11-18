@@ -147,7 +147,7 @@ fn front_of<'s>(args: &[OsString], cwd: &Path, store: &'s Store) -> Front<'s> {
     let diag = Collector::new(Policy::default());
     let f = front(
         parsed.plan,
-        Env { cwd, pool: Pool::new(2), replay: None, slack: true },
+        Env { cwd, pool: Pool::new(2), replay: None, slack: true, state5: false },
         store,
         &diag,
         &mut Timer::new(false),
