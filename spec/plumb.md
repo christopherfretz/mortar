@@ -322,11 +322,12 @@ or a wrong number of fields, is a `MapError`. A `common` record has five
 fields exactly in a map that says `incremental` and four elsewhere: a
 fifth field in a plain map, its absence in an incremental-mode map, or
 a `<file>` that names no earlier `file` record is a `MapError`.
-**Transitional (WP-222, for the supervisor's ruling):** today's
-incremental-mode maps (base 294101b1) write four fields and no decision
-records; until the linker writes the decision records, a `common`
+**Transitional (WP-222, ruled):** today's incremental-mode maps (base
+294101b1) write four fields and no decision records, so a `common`
 without `<file>` is a `MapError` only in a map that has a decision
-record, so today's lane keeps its verdicts. A plain
+record; it ends when the linker writes the field (the update's map);
+then a `common` without `<file>` in an incremental map is a `MapError`
+again and this paragraph goes. A plain
 link's map is unchanged by the field (not one byte). A foreign map never has
 them (§3.4 to §3.6 do not change): GNU ld's and lld's `COMMON` and
 mold's `.common` stay `common` chunks, one per file, and their maps
