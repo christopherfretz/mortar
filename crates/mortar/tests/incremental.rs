@@ -2634,6 +2634,161 @@ fn first_update_same_size_body() {
     assert!(ran == 2 || !tools_required(), "{ran} of the 2 programs built");
 }
 
+/// The two same-size programs of [`first_update_same_size_body`], with
+/// the source edit that makes a same-size change of `a.o`'s body.
+fn same_size_programs() -> Vec<(Prog, &'static str, &'static str)> {
+    [(Prog::asm(), ASM, "mov x0, #42"), (Prog::asm_x86_64(), ASM_X86_64, "movl $42, %edi")]
+        .into_iter()
+        .filter_map(|(p, t, f)| p.map(|p| (p, t, f)))
+        .collect()
+}
+
+/// `a.o` recompiled with the immediate `imm` in place of 42.
+fn same_size_edit(prog: &Prog, text: &str, from: &str, imm: &str) {
+    let src = prog.scratch.write("a.s", text.replace(from, &from.replace("42", imm)));
+    let gcc = prog.arch.tool("gcc").unwrap();
+    let obj = prog.path("a.o");
+    let g =
+        run_in(prog.scratch.path(), &gcc, &["-c".into(), src.into(), "-o".into(), obj.into()], &[]);
+    assert!(g.success(), "gcc: {}", g.stderr_text());
+}
+
+/// [`mortar_incr::ops::StdOps`], with every `rename` onto a path whose
+/// name ends with `suffix` failing (`write_state_whole`'s last step: W5).
+struct FailRenameOnto(&'static str);
+
+impl mortar_incr::ops::WriteOps for FailRenameOnto {
+    fn pwrite(&mut self, f: &std::fs::File, at: u64, b: &[u8]) -> std::io::Result<()> {
+        mortar_incr::ops::StdOps.pwrite(f, at, b)
+    }
+    fn set_len(&mut self, f: &std::fs::File, len: u64) -> std::io::Result<()> {
+        mortar_incr::ops::StdOps.set_len(f, len)
+    }
+    fn fdatasync(&mut self, f: &std::fs::File) -> std::io::Result<()> {
+        mortar_incr::ops::StdOps.fdatasync(f)
+    }
+    fn fsync(&mut self, f: &std::fs::File) -> std::io::Result<()> {
+        mortar_incr::ops::StdOps.fsync(f)
+    }
+    fn rename(&mut self, from: &Path, to: &Path) -> std::io::Result<()> {
+        if to.as_os_str().as_encoded_bytes().ends_with(self.0.as_bytes()) {
+            return Err(std::io::Error::other("injected failure (the test's WriteOps)"));
+        }
+        mortar_incr::ops::StdOps.rename(from, to)
+    }
+    fn hard_link(&mut self, from: &Path, to: &Path) -> std::io::Result<()> {
+        mortar_incr::ops::StdOps.hard_link(from, to)
+    }
+    fn unlink(&mut self, path: &Path) -> std::io::Result<()> {
+        mortar_incr::ops::StdOps.unlink(path)
+    }
+    fn fsync_dir(&mut self, dir: &Path) -> std::io::Result<()> {
+        mortar_incr::ops::StdOps.fsync_dir(dir)
+    }
+    fn flock(
+        &mut self,
+        f: &std::fs::File,
+        mode: mortar_incr::ops::LockMode,
+    ) -> std::io::Result<bool> {
+        mortar_incr::ops::StdOps.flock(f, mode)
+    }
+    fn create_new(&mut self, path: &Path) -> std::io::Result<std::fs::File> {
+        mortar_incr::ops::StdOps.create_new(path)
+    }
+    fn copy_range(
+        &mut self,
+        from: &std::fs::File,
+        to: &std::fs::File,
+        len: u64,
+    ) -> std::io::Result<()> {
+        mortar_incr::ops::StdOps.copy_range(from, to, len)
+    }
+}
+
+/// Ruling M2a-4 (IN-77e): a write step of an update that fails FAILS the
+/// link, naming the step and the error (no reason word, no full link
+/// after it); W1's flag stays set, so the next link refuses the state and
+/// links in full.
+#[test]
+fn update_failed_w5_fails_the_link() {
+    let programs = same_size_programs();
+    assert!(programs.len() == 2 || !tools_required(), "{} of the 2 programs built", programs.len());
+    for (prog, text, from) in programs {
+        let arch = prog.arch;
+        let o = prog.mortar_env("o", &["--incremental"], &[]);
+        assert!(o.success(), "{arch:?}: {}", o.stderr_text());
+        same_size_edit(&prog, text, from, "43");
+        let args = prog.args("o", &["--incremental=update"]);
+        let inv = mortar::update::with_ops(Box::new(FailRenameOnto(".mortar-state")), || {
+            mortar::invoke_in("mortar", &args, &prog.built.dir)
+        });
+        let text = match inv.outcome {
+            mortar::Outcome::Failed(r) => r.render(&mortar_diag::Style::plain("mortar")),
+            other => panic!("{arch:?}: the link did not fail: {other:?}"),
+        };
+        assert!(text.contains("cannot write output file"), "{arch:?}: {text}");
+        assert!(text.contains("W5 failed: injected failure"), "{arch:?}: {text}");
+        assert!(!text.contains("output-changed"), "{arch:?}: {text}");
+        let state = std::fs::read(prog.state_of("o")).unwrap();
+        assert!(
+            mortar_incr::state5::read::refuse_updating(&state).is_err(),
+            "{arch:?}: W1's flag is not set after the failed W5"
+        );
+        // The next link: a full link, from the flagged state.
+        let o = prog.mortar_env("o", &["--incremental", "--incremental-report"], &[]);
+        let err = o.stderr_text();
+        assert!(o.success(), "{arch:?}: {err}");
+        assert!(err.contains("incremental: full ("), "{arch:?}: {err}");
+    }
+}
+
+/// IN-45/IN-76's copy path (the ruling on U1, M2a2): an output another
+/// process holds open is updated by copy, and equals the full link.
+/// (An output WITHOUT WRITE PERMISSION cannot be set up for an update: the
+/// `chmod` changes its ctime, so U1 finds `output-changed`; and euid 0
+/// opens it for writing anyway.) The output is in ONE temporary directory
+/// under `/tmp`, removed at the end.
+#[test]
+fn update_by_copy_equals_the_full_link() {
+    let programs = same_size_programs();
+    assert!(programs.len() == 2 || !tools_required(), "{} of the 2 programs built", programs.len());
+    for (prog, text, from) in programs {
+        let arch = prog.arch;
+        let nanos =
+            std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos();
+        let tmp = PathBuf::from(format!("/tmp/mortar-wp225-{}-{nanos}", std::process::id()));
+        std::fs::create_dir(&tmp).unwrap();
+        eprintln!("{arch:?}: the copy path's directory: {}", tmp.display());
+        let out = tmp.join("o");
+        let link = |o: &Path, extra: &[&str]| {
+            let mut a = with_output(&prog.built.args, o);
+            a.extend(extra.iter().map(OsString::from));
+            run_in(&prog.built.dir, Path::new(MORTAR), &a, &[])
+        };
+        let o = link(&out, &["--incremental"]);
+        assert!(o.success(), "{arch:?}: {}", o.stderr_text());
+        let mut holder = Command::new("sleep")
+            .arg("60")
+            .stdin(std::fs::File::open(&out).unwrap())
+            .spawn()
+            .unwrap();
+        let why = "another process maps the output or holds it open";
+        same_size_edit(&prog, text, from, "43");
+        let o = link(&out, &["--incremental=update", "--incremental-report"]);
+        let _ = holder.kill();
+        let _ = holder.wait();
+        let err = o.stderr_text();
+        assert!(o.success(), "{arch:?}: {err}");
+        assert!(err.contains(&format!("incremental: update (Copy: {why})")), "{arch:?}: {err}");
+        let full = tmp.join("full");
+        let o = link(&full, &["--incremental=full"]);
+        assert!(o.success(), "{arch:?}: {}", o.stderr_text());
+        let (got, want) = (std::fs::read(&out).unwrap(), std::fs::read(&full).unwrap());
+        assert!(got == want, "{arch:?}: the update by copy differs from the full link");
+        std::fs::remove_dir_all(&tmp).unwrap();
+    }
+}
+
 fn state_equals_capture_of_its_placement(prog: &Prog, arch: Arch, hop: &str) {
     use mortar_incr::format::kind;
     use mortar_incr::state5::canon::{canon, compare};

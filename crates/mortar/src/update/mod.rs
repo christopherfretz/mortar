@@ -85,19 +85,97 @@ pub struct Updated {
     pub lines: String,
 }
 
+/// Why [`run`] did not finish an update (ruling M2a-4).
+#[derive(Debug)]
+pub enum UpdateError {
+    /// A reason found before the first write (IN-77e: before W1/C1, or a
+    /// `Fallback` of `write_with`): the caller links in full, or under
+    /// `--incremental=update` reports it as the error.
+    Fallback(IncrReason),
+    /// An I/O failure of a write step (IN-77e: W1..W6, C1..C5, and the
+    /// map after them): the LINK FAILS with the step and the error, and
+    /// no full link follows. From W1 on the state's flag is set (W1) and
+    /// stays set on every failure before W6's flag write, so the next
+    /// link refuses that state (IN-77f): no old state describes the
+    /// output it left.
+    Failed { step: &'static str, error: std::io::Error },
+}
+
+impl From<IncrReason> for UpdateError {
+    fn from(r: IncrReason) -> Self {
+        Self::Fallback(r)
+    }
+}
+
+impl UpdateError {
+    /// The failed link's diagnostic (`cannot-write-output`, naming the
+    /// step and the error; the file is the state for W1, W5, W6, C4 and
+    /// C5, the map for `map`, the output otherwise).
+    #[must_use]
+    pub fn failed_diagnostic(
+        step: &str,
+        error: &std::io::Error,
+        out: &Path,
+        state: &Path,
+        map: Option<&Path>,
+    ) -> mortar_diag::Diagnostic {
+        let path = match step {
+            "W1" | "W5" | "W6" | "C4" | "C5" => state,
+            "map" => map.unwrap_or(out),
+            _ => out,
+        };
+        mortar_diag::Diagnostic::error(mortar_diag::Kind::CannotWriteOutput {
+            path: path.display().to_string(),
+            reason: format!("the incremental update's {step} failed: {error}"),
+        })
+        .note("the update stopped there (spec/incr.md IN-77e); the next link is a full link")
+    }
+}
+
 /// Steps U2 on (IN-70) for a session that U1 accepted
-/// (`Start::Update`): the update, or the reason it falls back (before
-/// its first write; the caller links in full, or under
-/// `--incremental=update` reports it as the error).
+/// (`Start::Update`): the update, the reason it falls back (before its
+/// first write), or the write step that failed.
 ///
 /// # Errors
-/// The fall-back's reason.
+/// [`UpdateError`].
 pub fn run(
     session: &Session,
     parsed: &Parsed,
     cwd: &Path,
     ctx: &Ctx<'_>,
-) -> Result<Updated, IncrReason> {
+) -> Result<Updated, UpdateError> {
+    let ops = TEST_OPS.with(|t| t.borrow_mut().take());
+    match ops {
+        Some(mut ops) => run_with(session, parsed, cwd, ctx, &mut *ops),
+        None => run_with(session, parsed, cwd, ctx, &mut mortar_incr::ops::StdOps),
+    }
+}
+
+std::thread_local! {
+    /// The tests' [`WriteOps`](mortar_incr::ops::WriteOps) for the next
+    /// [`run`] on this thread ([`with_ops`]); `None` in every link.
+    static TEST_OPS: std::cell::RefCell<Option<Box<dyn mortar_incr::ops::WriteOps>>> =
+        const { std::cell::RefCell::new(None) };
+}
+
+/// Tests (ruling M2a-4: a failed W-step through `WriteOps`): `go` with
+/// `ops` as the write operations of the first update [`run`] makes on
+/// this thread (an in-process link, `crate::invoke_in`).
+#[doc(hidden)]
+pub fn with_ops<T>(ops: Box<dyn mortar_incr::ops::WriteOps>, go: impl FnOnce() -> T) -> T {
+    TEST_OPS.with(|t| *t.borrow_mut() = Some(ops));
+    let r = go();
+    TEST_OPS.with(|t| *t.borrow_mut() = None);
+    r
+}
+
+fn run_with(
+    session: &Session,
+    parsed: &Parsed,
+    cwd: &Path,
+    ctx: &Ctx<'_>,
+    ops: &mut dyn mortar_incr::ops::WriteOps,
+) -> Result<Updated, UpdateError> {
     let lock = session.lock().ok_or_else(|| IncrReason::NoState(String::new()))?;
     let view = mortar_incr::state5::open(lock, session.plan_hash())?;
     let detected = detect(&view, cwd)?;
@@ -105,7 +183,7 @@ pub fn run(
     // Option-only reasons the callees give from the plan alone, on every
     // update: `--gc-sections` (U6's `live::live`, WP-215 seam 3).
     if parsed.plan.shaping.gc_sections {
-        return Err(IncrReason::UpdateNotImplemented(Some(Unimplemented::Live)));
+        return Err(IncrReason::UpdateNotImplemented(Some(Unimplemented::Live)).into());
     }
     // G-7: no update producer of the text map (`-Map`, `-M`,
     // `--print-map`), and none yet of the machine map's `arg` records or
@@ -114,24 +192,24 @@ pub fn run(
     // 0.2; its `arg` records are the front's, as the full link's).
     let b = &ctx.plan.bookkeeping;
     if b.map.is_some() || b.print_map || b.dependency_file.is_some() {
-        return Err(IncrReason::UpdateNotImplemented(Some(Unimplemented::Image)));
+        return Err(IncrReason::UpdateNotImplemented(Some(Unimplemented::Image)).into());
     }
     // M2a: one changed object, not an archive member (U4's member-level
     // judgement and U5's extraction loop are M2b's).
     if detected.changed_files.len() != 1 || detected.changed_paths.len() != 1 {
-        return Err(IncrReason::UpdateNotImplemented(Some(Unimplemented::Resolve)));
+        return Err(IncrReason::UpdateNotImplemented(Some(Unimplemented::Resolve)).into());
     }
     if view.file(detected.changed_files[0])?.member != 0 {
-        return Err(IncrReason::UpdateNotImplemented(Some(Unimplemented::Resolve)));
+        return Err(IncrReason::UpdateNotImplemented(Some(Unimplemented::Resolve)).into());
     }
     let file = detected.changed_files[0];
     let out = session.out.as_ref().ok_or_else(|| IncrReason::NoState(String::new()))?;
     // U1's tuple of the output (IN-77a), taken before the front reads.
     let checked = Tuple::of(&out.metadata().map_err(|e| IncrReason::OutputChanged(e.to_string()))?);
-    image_link(ctx, cwd, None, |f| {
-        let reference = reference_of(session, &view, file, f, ctx, cwd, out)?;
-        write_identity(session, &view, ctx, cwd, out, checked, reference)
-    })
+    // The front is dropped before the first write.
+    let reference =
+        image_link(ctx, cwd, None, |f| reference_of(session, &view, file, f, ctx, cwd, out))?;
+    write_identity(session, &view, ctx, cwd, out, checked, reference, ops)
 }
 
 /// What the identity case writes (M2a, ruling M2a-1): the refill's
@@ -250,6 +328,10 @@ fn reference_of(
     Ok(Reference { refill, size, state, map })
 }
 
+#[allow(
+    clippy::too_many_arguments,
+    reason = "U10's inputs: the session, U1's binding, U9's result"
+)]
 /// U10 for the identity case: `write_with` the refill's ranges in place
 /// (IN-76, IN-77), W5 the reference state with W4's binding of the
 /// output, whole (`write_state_whole`, ruling M2a-1).
@@ -261,7 +343,8 @@ fn write_identity(
     out: &std::fs::File,
     checked: Tuple,
     r: Reference,
-) -> Result<Updated, IncrReason> {
+    ops: &mut dyn mortar_incr::ops::WriteOps,
+) -> Result<Updated, UpdateError> {
     let lock = session.lock().ok_or_else(|| IncrReason::NoState(String::new()))?;
     let pair = write::Pair {
         out,
@@ -295,27 +378,25 @@ fn write_identity(
             Err(error) => Err(WriteFailure::Failed { step: "W5", error }),
         }
     };
-    let mut ops = mortar_incr::ops::StdOps;
     let w = write::write_with(
         &pair,
         view,
         &r.refill.ranges,
         &r.refill.bytes,
         true,
-        &mut ops,
+        ops,
         policy,
         &mut w5,
     )
     .map_err(|e| match e {
-        WriteFailure::Fallback(reason) => reason,
-        WriteFailure::Failed { step, error } => {
-            IncrReason::OutputChanged(format!("{step}: {error}"))
-        }
+        WriteFailure::Fallback(reason) => UpdateError::Fallback(reason),
+        WriteFailure::Failed { step, error } => UpdateError::Failed { step, error },
     })?;
     if let (Some(m), Some(bytes)) = (ctx.plan.bookkeeping.mortar_map.as_deref(), &r.map) {
         let path = cwd.join(m);
-        mortar_image::output::write_whole(&path, bytes, 0o666)
-            .map_err(|(_, d)| IncrReason::OutputChanged(format!("map: {d:?}")))?;
+        mortar_image::output::write_whole(&path, bytes, 0o666).map_err(|(_, d)| {
+            UpdateError::Failed { step: "map", error: std::io::Error::other(format!("{d:?}")) }
+        })?;
     }
     let c = &r.refill.counts;
     let line = format!(

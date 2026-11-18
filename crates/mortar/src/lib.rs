@@ -379,7 +379,21 @@ fn invoke_with4(
                         incremental: done.lines,
                     };
                 }
-                Err(reason) => reason,
+                Err(update::UpdateError::Fallback(reason)) => reason,
+                // IN-77e (ruling M2a-4): a write step failed: the link
+                // fails with it, and no full link follows.
+                Err(update::UpdateError::Failed { step, error }) => {
+                    let d = update::UpdateError::failed_diagnostic(
+                        step,
+                        &error,
+                        &out_path,
+                        s.state_path(),
+                        mortar_map_path.as_deref(),
+                    );
+                    diagnostics.emit(Key::new(15, 0, 3), d);
+                    emit_refusals(&diagnostics);
+                    return failed(diagnostics, timer.finish());
+                }
             };
             if s.update_mode() {
                 let d = Diagnostic::error(mortar_diag::Kind::IncrementalUpdateFailed {
