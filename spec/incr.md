@@ -1602,7 +1602,7 @@ with each phase fed from the state for unchanged files:
   | **whole** (small; capacity = rows + max(64, rows/8)) | `META` (1), `PROBES` (4), `OUTSECS` (5), `CHUNKS` (8), `ORDER` (9), `SEGMENTS` (10), `SLOTS` (12), `SIZES` (15), `SYM_PLACE` (16), `DEFINED` (17), `PATCHES` (18), `REDIRECTS` (19), `SIZED` (20), `LAYOUT` (21), `LEAVES` (22) | the table is written again whole into its capacity when any row differs (its blocks only; the rest of the state is untouched); over capacity: compaction. Together under 2 MB on g10x (WP-105 §3's "the rest" and `CHUNKS`). `LEAVES`' row count follows the output's size (W3 truncates or extends), within its capacity |
   | **append-only** | `FILES` (3), `STAT` (2), `FILE_INDEX` (41), `STRINGS` (23) | rows (bytes, for `STRINGS`) are only appended, into a reserved append area of max(4,096 rows, rows/64); a row is never moved, so references to it stay valid. `FILES` and `FILE_INDEX` are parallel (one row each per file, members of archives included, `LAZY` when not extracted); `STAT` has one row per file plus the device rows; a file's load-order position is its `FILES.rank` (`u64`): the first link writes `rank = FileId << 20`, an appeared or newly extracted file takes the integer midpoint of its neighbours' ranks (none left: compaction), and `FileId` order is `rank` order. A gone file's row is marked `GONE`. A string is never overwritten or reused; strings no row names any more are dead until compaction. The build id is in `META` (a length and 64 bytes), not in `STRINGS`, so an update appends no string for it |
   | **file-keyed** (one range per file through `FILE_INDEX`, with row slack: capacity = count + max(4, count/8)) | `SECTIONS` (7), `MENTIONS` (32), `INDEX` (34), `EDGES` (42: one row per stored edge, 17 bytes: kind `u8`, source `u32`, target `u32`, offset `u64`), `FRAG_AT` (40), `EH_RECORDS` (13), `SYMTAB` (43: per file its local block and `.strtab` region; file 0's range holds the global area's row), `REGIONS` (51: per file its regions, one row per (output section, category, ordinal): the chunk, offset and capacity; IN-72 item 2, WP-213) | a changed, drawn-in or appeared file's range is rewritten in place when the new count fits its capacity; a file's `SECTIONS` rows are also rewritten when IN-72 moved, killed or revived its sections (IN-78); a gone file's ranges are dead (`FILE_INDEX.gone`); a new file gets new ranges in the table's append area (max(4,096 rows, rows/64)); no room: compaction |
-  | **key-keyed** (sorted body + append area of max(4,096 rows, rows/64), kept sorted on insert + tombstones) | `KEY_REFS` (45: key, file, attributes), `GROUPS` (44: by (signature, file): one row per live relocatable object's copy; the keeper is the copy whose file has the least `FILES.rank` (resolve.md §6.1; never the least row number: `FILES` is append-only), not stored; WP-215), `FRAGS` (11: identity, offset, `refs`), `HOLES` (39: by (chunk, offset)), `COMMONS` (46: by (key, file): one row per live file with a common mention of the key, its size and alignment; the winning common (resolve.md §3.3: the file of least `FILES.rank`, the largest size and alignment) is computed from the rows, not stored; WP-215), `ODR_CLASSES` (47: ODR key, class hash and layout), `ODR_REFS` (48: ODR key, file, row kind, class), `DIAGS` (49: subjects, code, text, order), `NAMES` (52: the by-name index of `SYMBOLS`' globals, 12 bytes, keyed by (hash, row): `hash` is model.md's 64-bit hash (`mortar_core::hash::hash_bytes`) of the bytes of `SYMBOLS.name`, one zero byte and the bytes of `SYMBOLS.version` (empty when unversioned), as `STRINGS` holds them; `row` the `SYMBOLS` row; a lookup compares the name and version bytes of every row of the hash, so a hash never identifies a key alone; a `GONE` key keeps its row, and a key that comes back takes its old `SYMBOLS` row; WP-213) | a lookup binary-searches the body and the append area (the area is kept sorted: a new row is inserted into it at its place, moving at most the area's rows; WP-211, review-wp207 m-3: no linear scan of up to 4,096 rows per lookup); a deleted row is a tombstone (its key kept, a flag set); a changed row is changed in place when its key is unchanged, else deleted and appended. Compaction when an append area is full or tombstones pass 25% of a table's rows |
+  | **key-keyed** (sorted body + append area of max(4,096 rows, rows/64), kept sorted on insert + tombstones) | `KEY_REFS` (45: key, file, attributes), `GROUPS` (44: by (signature, file): one row per live relocatable object's copy; the keeper is the copy whose file has the least `FILES.rank` (resolve.md §6.1; never the least row number: `FILES` is append-only), not stored; WP-215), `FRAGS` (11: identity, offset, `refs`), `HOLES` (39: by (chunk, offset)), `COMMONS` (46: by (key, file): one row per live file with a common mention of the key, its size and alignment; the winning common (resolve.md §3.3: the file of least `FILES.rank`, the largest size and alignment) is computed from the rows, not stored; WP-215), `ODR_CLASSES` (47: ODR key, class hash and layout; PROVISIONAL, not written until WP-236), `ODR_REFS` (48: ODR key, file, row kind, class; PROVISIONAL, not written until WP-236), `COPIES` (55: by (key, file, symbol index): one row per global definition in a section of a live COMDAT copy, its `st_size` and `st_type`, 24 bytes, for every input unless `--odr=off`; the copy's group is its `MENTIONS` row's section's `SECTIONS.anchor` (`anchor_kind` 1, the signature), not stored; no rank stored: W1 and W2 order copies by the files' current `FILES.rank`; kinds 53 and 54 are reserved for WP-236; WP-220), `DIAGS` (49: subjects, code, text, order), `NAMES` (52: the by-name index of `SYMBOLS`' globals, 12 bytes, keyed by (hash, row): `hash` is model.md's 64-bit hash (`mortar_core::hash::hash_bytes`) of the bytes of `SYMBOLS.name`, one zero byte and the bytes of `SYMBOLS.version` (empty when unversioned), as `STRINGS` holds them; `row` the `SYMBOLS` row; a lookup compares the name and version bytes of every row of the hash, so a hash never identifies a key alone; a `GONE` key keeps its row, and a key that comes back takes its old `SYMBOLS` row; WP-213) | a lookup binary-searches the body and the append area (the area is kept sorted: a new row is inserted into it at its place, moving at most the area's rows; WP-211, review-wp207 m-3: no linear scan of up to 4,096 rows per lookup); a deleted row is a tombstone (its key kept, a flag set); a changed row is changed in place when its key is unchanged, else deleted and appended. Compaction when an append area is full or tombstones pass 25% of a table's rows |
   | **key-parallel** (one row per `SYMBOLS` row, in its order) | `SYMBOLS` (6), `RESOLVED` (33), `SYMTAB_KEYS` (50: a global's `.symtab` index and `.strtab` offset) | a key's rows are changed in place by its `SYMBOLS` row number; a new key appends a row to each (append area of max(4,096 rows, rows/64)); a key no file mentions any more is a tombstone (`SYMBOLS.kind` `GONE`) |
 
   Table 14 (`SYMTAB_LOCALS`) is gone (`SYMTAB` and `SYMTAB_KEYS` replace
@@ -1678,8 +1678,11 @@ with each phase fed from the state for unchanged files:
 
   `GROUPS` takes `RESOLVED`'s kind-6 rows, plus one row for each further
   live copy (WP-215: by (signature, file); U-2 measures it); `COMMONS`,
-  the `FILES` round and `DIAGS` are under 1 MB here; `ODR_*` are zero for
-  GCC and Clang objects (IN-71d's estimate applies to kiln's). WP-202's
+  the `FILES` round and `DIAGS` are under 1 MB here; the `ODR_*` record
+  tables are not written (WP-236); `COPIES` (W1 and W2, every input
+  unless `--odr=off`) is 1.34 MB on protoc and 2.35 MB on `cxx-large-g`
+  (measured counts × 24 B, WP-220 §F.1; g10x's generator makes no COMDAT
+  group) and is part of U-2's gate. WP-202's
   "at most 150 MB against 167.4" compared three tables and left out the
   slack and the new tables; it is withdrawn. **U-2's gate**: the format-5
   state measured on g10x and `cxx-large-g` is at most 1.15 × format 4's
@@ -3156,35 +3159,60 @@ a pass over a whole table of the state; **O(output)**.
   (`--defsym x=_etext+4`, an edit that moves `_etext`: `x`'s referrers
   refilled; review-wp207 M-6).
 
-- **IN-71d [v1] ODR checks and `.mason.meta` in an update** (WP-207).
-  O-20's findings are a function of the rows of the live units, grouped
-  by key; an update recomputes them for the **ODR-affected keys** only:
-  every key with a row in a unit of a changed, appeared, gone, drawn-in,
-  newly extracted or no longer extracted file (old or new version), and
-  every key whose COMDAT keeper changed (O-21 names the kept file). For
-  each, its classes are recomputed from `ODR_REFS` (one row per (ODR key,
-  file, row kind): the class the row's hash and layout fall in) and the
-  changed files' new rows; findings of other keys are the stored ones
-  (`DIAGS`, IN-75a). O-23's archive rows are stored only under
-  `--odr-check-archives`. The default severity is `--odr=warn` (operator,
-  2026-11-17); a finding the mode makes fatal fails the update as it
-  fails a full link (IN-5). The operator's code base does not mix `-std`
-  levels in one executable, so O-32 needs no update rule beyond being
-  recomputed with its key. *Estimate* (odr.md O-21, O-22's counts): about
-  1,600 rows a heavy TU, 12 B each, 19 MB for 1,000 TUs, plus one 28-byte
-  class row per key; zero when no input has `.mason.meta` or under
-  `--odr=off`. **`.mason.meta` in the output** (`--keep-mason-meta`,
-  MT-32) is a non-allocated per-file contribution like a debug section:
-  until G-1's contributions cover it, an update whose changed files carry
-  units under that option is `update-not-implemented` (detail `meta`).
-  *Argued, not run* (no update code; kiln's kind 2 rows are not yet
-  emitted). *Test (O-1 package):* each K of odr.md §2 introduced by an
-  update, removed by the next, introduced again (three hops): the
-  diagnostics equal the full link's; *(U-8, WP-211)*
-  `odr_unchanged_pair_made_live_by_changed_file` (two unchanged units
-  in conflict, made live by a changed file's call: the finding appears
-  as in the full link) and `odr_runtime_note_under_update`
-  (`--odr-runtime`'s `.note.mason` under an update).
+- **IN-71d [v1] ODR checks and `.mason.meta` in an update** (WP-207;
+  rewritten by WP-220). In the default `--odr=warn` (operator,
+  2026-11-17) and in `--odr=error` the only checks of odr.md that run
+  are W1 (`odr-size-mismatch`) and W2 (`odr-symbol-type-mismatch`)
+  (O-47's register; O-42: no container is read); they read symbol
+  tables, not `.mason.meta`, and an update computes them **exactly**:
+  - **Affected keys**: every key a COMDAT copy of a changed, appeared,
+    gone, drawn-in, newly extracted or no longer extracted file defines
+    (old version: its `MENTIONS` rows whose section has `anchor_kind` 1;
+    new version: `ChangedFile::odr.copies`), and every key whose resolved
+    definition or COMDAT keeper changed (`ResolveDelta`).
+  - **Per affected key**: the full link's comparator
+    (`mortar_odr::foreign::compare_copies`, one function: the full link
+    calls it per key) over the key's `COPIES` rows with the changed
+    files' rows replaced by their new ones, and its resolved definition
+    (`RESOLVED`, `KEY_REFS`). Copies are ordered by the files'
+    **current** `FILES.rank` (the stored rank composed with the update's
+    new ranks), never by `FILES` row number: "first", a class's first
+    file and §9.1's key follow load order. A finding's subjects are the
+    key and the files it names (`mortar_odr::foreign::diagnostic`, the
+    same function for a full link's capture); findings of other keys are
+    the stored ones (`DIAGS`, IN-75a).
+  - **Everything else falls back, from the switches alone** before any
+    row is read (`mortar_odr::register::update_fallback`, WP-220):
+    `--odr=strict` (W3, W4 and every record check), `--odr-check-archives`,
+    `--odr-table` other than `off`, `--odr-runtime` other than `off`,
+    `--odr-stats`, and any check O-47 runs under the switches other than
+    W1 and W2 (a check O-46 moves to on by default forces the fall-back
+    until an update computes it) give `update-not-implemented` (detail
+    `meta`) on every update. `--odr=off`: nothing runs, nothing is read.
+    The record families (kinds 2, 3, 5, ENFORCE, isa, vtable-rtti) are
+    WP-236's: reviewed adversarially before any table is written (their
+    proposal: `spec/landed/incr/WP-220.md` §B-§D). An `--odr` mode change
+    is `options-changed` (the plan hash covers it).
+  - **`.mason.meta` in the output** (`--keep-mason-meta`, MT-32) is a
+    non-allocated per-file contribution like a debug section: until
+    G-1's contributions cover it, an update whose changed, appeared,
+    gone or flipped files carry units under that option is
+    `update-not-implemented` (detail `meta`).
+
+  *Estimate* (WP-220 §F.1, measured counts): `COPIES` 1.34 MB on
+  protoc, 2.35 MB on `cxx-large-g`. *Argued, not run* (no update code
+  yet). *Test (U-8):* an update's W1/W2 findings equal the full link's
+  of the same inputs (text, order, subjects) over three hops (introduced,
+  removed, introduced again) for: a size mismatch of data copies in one
+  group; a type mismatch; a copy in a changed file, in an unchanged file
+  whose key's resolved definition changed, in a newly extracted and in a
+  no longer extracted member; a keeper change without a change of the
+  copies; one file with one key in two groups; GCC, Clang and kiln
+  objects; on AArch64 and x86-64. `odr_unchanged_pair_made_live_by_changed_file`
+  (two unchanged copies in conflict, made live by a changed file's call:
+  the finding appears as in the full link); one test per switch of the
+  fall-back and the register test (`update_knows_every_default_check`);
+  `odr_runtime_note_under_update` asserts the fall-back by name.
 
 - **IN-71a [v1] Liveness from stored edges.** IN-29's stored graph is the
   `EDGES` table (IN-18e: per file a range of rows, each IN-29's row
@@ -3493,7 +3521,8 @@ a pass over a whole table of the state; **O(output)**.
   referrer decides whether it appears and its "referenced by" text:
   `tests/incr-design/review-wp207/gnu-warning.sh`). A key subject is a
   `SYMBOLS` row or an ODR key (`ODR_CLASSES`' key, for the
-  one-definition rule's codes); `DIAGS`' row says which (WP-212, F-12).
+  one-definition rule's record codes, WP-236; W1 and W2's subject is the
+  `SYMBOLS` row, WP-220); `DIAGS`' row says which (WP-212, F-12).
   An update drops every row with
   **any** subject that is a changed, appeared, gone, drawn-in, newly
   extracted or no longer extracted file, an affected or ODR-affected key
@@ -3878,7 +3907,7 @@ a pass over a whole table of the state; **O(output)**.
     `INDEX`, `EDGES`, `FRAG_AT`, `EH_RECORDS`, `SYMBOLS` (with `at_file`,
     `at_index`), `NAMES` (WP-213), `SYMTAB`'s entries, **`SYMTAB_KEYS`** (recomputed: it
     follows from the `.symtab` blocks' places and the resolution),
-    `ODR_*`, `DIAGS`, and the derived layout rows (`DEFINED`,
+    `COPIES` (WP-220), `DIAGS`, and the derived layout rows (`DEFINED`,
     `SYM_PLACE`, `SIZES`, `SIZED`, `SEGMENTS`, `LAYOUT`, `OUTSECS`).
     **And every decision row of `S'` is compared with `P_U`'s** (the
     same list): a row that differs is a failure of (d), whatever the
@@ -3916,11 +3945,11 @@ a pass over a whole table of the state; **O(output)**.
 
   | cause | rows that change |
   |---|---|
-  | a changed, appeared, drawn-in or newly extracted file | its `FILES` row (hash, rank, flags, round (any supporting value, IN-71b); `POSITIONAL` recaptured or cleared, IN-28a), its `STAT` row (tuple re-taken), its ranges of `SECTIONS`, `MENTIONS`, `INDEX`, `EDGES`, `FRAG_AT`, `EH_RECORDS`, `SYMTAB`; its `FILE_INDEX.first_global` (WP-215); its `KEY_REFS`, `GROUPS`, `COMMONS`, `ODR_REFS` and `DIAGS` rows |
+  | a changed, appeared, drawn-in or newly extracted file | its `FILES` row (hash, rank, flags, round (any supporting value, IN-71b); `POSITIONAL` recaptured or cleared, IN-28a), its `STAT` row (tuple re-taken), its ranges of `SECTIONS`, `MENTIONS`, `INDEX`, `EDGES`, `FRAG_AT`, `EH_RECORDS`, `SYMTAB`; its `FILE_INDEX.first_global` (WP-215); its `KEY_REFS`, `GROUPS`, `COMMONS`, `COPIES` (WP-220) and `DIAGS` rows |
   | a gone or no longer extracted file | its row marked gone (extracted → `LAZY` with its defined rows kept), its ranges gone, its key-keyed rows deleted |
   | an input `stat`ed again but hashed equal (touched) | its `STAT` row (review-in77 M-8) |
   | the device stamps (IN-22a) | the device rows of `STAT` |
-  | an affected key | its `SYMBOLS` row (appended when new; `at_file`/`at_index`, IN-71), `RESOLVED`, `KEY_REFS`; a new key's `NAMES` row (WP-213) |
+  | an affected key | its `SYMBOLS` row (appended when new; `at_file`/`at_index`, IN-71), `RESOLVED`, `KEY_REFS`; a new key's `NAMES` row (WP-213); an ODR-affected key's `DIAGS` rows (IN-71d; its `COPIES` rows change only with their files, WP-220) |
   | a re-elected group | no row of its own (the keeper is the copy whose file has the least `FILES.rank`, not stored; WP-215 D2); the drawn-in files of IN-72 item 2a (review-in77 M-7) |
   | a section moved, killed or revived (IN-72 items 1-5, 11), in any file | its `SECTIONS` row, whether or not its file changed (review-in77 B-3); its file's `REGIONS` range when a region was opened, grown or moved (WP-213) |
   | a linker-defined key's value or a placed symbol's place | `DEFINED`, `SYM_PLACE` (IN-71c) |

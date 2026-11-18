@@ -386,6 +386,35 @@ pub struct HoleRow {
     pub tomb: bool,
 }
 
+/// `COPIES` (kind 55, key-keyed by `(key, file, index)`; IN-18e, IN-71d;
+/// WP-220): one row per global definition in a section of a live COMDAT
+/// copy, 24 bytes, for every input (GCC, Clang, kiln) unless `--odr=off`:
+/// what W1 and W2 compare (`mortar_odr::foreign::compare_copies`, the full
+/// link's comparator). Keyed by the symbol-table index too: one file can
+/// define one key in two groups. The copy's group is not stored: its
+/// `MENTIONS` row's section and that section's `SECTIONS.anchor`
+/// (`anchor_kind` 1: the signature). No rank is stored: the caller orders
+/// copies by the files' **current** `FILES.rank` (WP-220, WP-215 D2).
+/// Written by capture and U-2 (from `ChangedFile::odr` and U-8's
+/// result); read by U-8.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct CopyRow {
+    /// The `SYMBOLS` row: the key's first part. In
+    /// [`super::view::OdrRows::copies`]: the position in
+    /// `ChangedFile::keys`.
+    pub key: u32,
+    /// The `FILES` row: the key's second part.
+    pub file: u32,
+    /// The definition's symbol-table index in the file: the key's third
+    /// part (odr.md §9.1's seq, W's place).
+    pub index: u32,
+    /// `st_size`.
+    pub size: u64,
+    /// `st_type`.
+    pub typ: u8,
+    pub tomb: bool,
+}
+
 /// `COMMONS` (kind 46, key-keyed by `(key, file)`; IN-18e, IN-71b, IN-72
 /// item 11; WP-215 D6): one row per (key, live file with a common
 /// mention of it): that file's size and alignment (a file with several
@@ -620,6 +649,8 @@ mod tests {
         assert_eq!(edge, 17);
         let name = 8 + 4;
         assert_eq!(name, 12);
+        let copy = 4 + 4 + 4 + 8 + 1 + 1 + 2; // key, file, index, size, typ, tomb, pad
+        assert_eq!(copy, 24);
         // The structs' fields are the ones counted (a field added fails
         // here first).
         let MentionRow { symbol: _, kind: _, bind: _, typ: _, other: _, section: _ } =
@@ -636,6 +667,7 @@ mod tests {
         assert_eq!(FileTable::ALL.len(), FileTable::COUNT);
         let GroupRow { signature: _, file: _, tomb: _ } = GroupRow::default();
         let CommonRow { key: _, file: _, size: _, align: _, tomb: _ } = CommonRow::default();
+        let CopyRow { key: _, file: _, index: _, size: _, typ: _, tomb: _ } = CopyRow::default();
     }
 
     // spec: resolve.md §6.1 (the keeper is the live copy whose file has
