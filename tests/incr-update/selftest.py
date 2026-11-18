@@ -70,6 +70,35 @@ class FakeCanon:
         return list(self.diffs)
 
 
+def debug_state(rows):
+    """A format-5 state's header and directory as duty.state_debug_strs
+    reads them (no hashes): one DEBUG_STRS table of `rows`."""
+    body = b''.join(bytes([o]) + h.to_bytes(8, 'little') + off.to_bytes(4, 'little') for o, h, off in rows)
+    head = b'MORTARSR' + (5).to_bytes(4, 'little') + bytes(4) + (1).to_bytes(4, 'little') + bytes(80 - 20)
+    entry = ((57).to_bytes(4, 'little') + (13).to_bytes(4, 'little') + len(rows).to_bytes(8, 'little')
+             + bytes(24) + (152).to_bytes(8, 'little') + bytes(24))
+    return head + entry + body
+
+
+def debug_elf(sections):
+    """An ELF64 file of section headers only, with `sections` {name: bytes}."""
+    names = b'\0' + b''.join(n + b'\0' for n in sections) + b'.shstrtab\0'
+    data = b''.join(sections.values()) + names
+    shoff = 64 + len(data)
+    hdrs, at, nat = [bytes(64)], 64, 1
+    for n, b in list(sections.items()) + [(b'.shstrtab', names)]:
+        hdrs.append(nat.to_bytes(4, 'little') + (1).to_bytes(4, 'little') + bytes(16)
+                    + at.to_bytes(8, 'little') + len(b).to_bytes(8, 'little') + bytes(24))
+        at, nat = at + len(b), nat + len(n) + 1
+    eh = bytearray(64)
+    eh[:4] = b'\x7fELF'
+    eh[0x28:0x30] = shoff.to_bytes(8, 'little')
+    eh[0x3a:0x3c] = (64).to_bytes(2, 'little')
+    eh[0x3c:0x3e] = len(hdrs).to_bytes(2, 'little')
+    eh[0x3e:0x40] = (len(hdrs) - 1).to_bytes(2, 'little')
+    return bytes(eh) + data + b''.join(hdrs)
+
+
 def _verdict(reason='update'):
     v = judge.Verdict()
     v.reason = reason
@@ -192,6 +221,30 @@ def units(log=print):
          lambda r: r.startswith('FAIL COPIES row k differs') and 'not this update' in r)
     case('duty-odr-refs-provisional', dut(FakeCanon([('ODR_REFS', 'k', 'x')])),
          lambda r: r.startswith('FAIL ODR_REFS row k differs') and 'no cause' in r)
+
+    # DEBUG_STRS is judged against the output (WP-247; WP-228 R-2.3)
+    case('duty-debug-strs-held-out', dut(FakeCanon([(57, 'k', 'x')]), causes={'touched'}), 'pass (1 rows differ)')
+    vectors = [(b'', 0x93228a4de0eec5a2), (b'a', 0xaced12527fe5bff8), (b'abc', 0x989b4a209c1011c9),
+               (b'_start', 0xa9058601da6bbdae), (b'0123456789abcdef', 0x88de385a856cfb95),
+               (b'0123456789abcdefg', 0x14f37288a5f8073a),
+               (b'_ZNSt3__112basic_stringIcNS_11char_traitsIcEENS_9allocatorIcEEE6appendEPKcm'
+                b'XXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX', 0xd5923a012db1fc8a), (b'\x00\xff\x80\x7f', 0x07d2f360dee87cf0)]
+    case('debug-strs-hash-port', [k for k, v in vectors if duty.hash_bytes(k) != v], [])
+    strs = b'int\0main\0char\0'
+    good = [(0, duty.name_hash(b'int'), 0), (0, duty.name_hash(b'main'), 4), (0, duty.name_hash(b'char'), 9),
+            (0, duty.name_hash(b'ain'), 5), (1, duty.name_hash(b'a.c'), 0)]
+    elf = debug_elf({b'.debug_str': strs, b'.debug_line_str': b'a.c\0'})
+    case('debug-strs-right', duty.debug_strs_check(debug_state(good), elf), [])
+    case('debug-strs-row-wrong-bytes', duty.debug_strs_check(debug_state(good[:2] + [(0, good[2][1], 4)]), elf),
+         lambda r: any('does not name its string' in x for x in r) and any('at 9 is not found' in x for x in r))
+    case('debug-strs-string-missing', duty.debug_strs_check(debug_state(good[1:]), elf),
+         ['.debug_str: the string at 0 is not found'])
+    case('debug-strs-past-section', duty.debug_strs_check(debug_state(good + [(0, 7, 99)]), elf),
+         ['.debug_str: row (0x7, 99) does not name its string'])
+    case('debug-strs-bad-class', duty.debug_strs_check(debug_state(good + [(2, 7, 0)]), elf),
+         ['row (2, 0x7, 0): class 2'])
+    case('debug-strs-no-section', duty.debug_strs_check(debug_state(good), debug_elf({b'.debug_str': strs})),
+         ['.debug_line_str: 1 rows, no section'])
 
     # the report's detail word and a scenario's `expect-full:` (an update
     # under --gc-sections is `update-not-implemented (live)` by rule)

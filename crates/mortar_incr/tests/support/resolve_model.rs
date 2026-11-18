@@ -799,24 +799,40 @@ impl Joined {
     }
 }
 
-/// IN-71b "Live keys" (WP-215 R.6 3): a global key is live when a stored
-/// row gives it a mention by a live file or a `LAZY` definition (a
-/// `KEY_REFS` row: a `LAZY` member's undefined mentions are not stored)
-/// or an option names it. The test's stand-in for the rule as IN-78's
-/// `canon` applies it: U-2's `canon` replaces [`canon_live_keys`] when it
-/// lands (not on this branch).
-fn is_live_key(k: &str, key_refs: &BTreeSet<String>, named: &BTreeSet<String>) -> bool {
-    key_refs.contains(k) || named.contains(k)
-}
-
-/// The rows of the live keys only: what `canon` keeps (IN-78, dead keys
-/// dropped).
-fn canon_live_keys(
-    rows: BTreeMap<String, Row>,
-    key_refs: &BTreeSet<String>,
+/// IN-71b "Live keys" (WP-215 R.6 3) as IN-78's `canon` applies it: U-2's
+/// [`mortar_incr::state5::live_keys`] over a state of `keys` (the option
+/// bit set for the `named` ones), the `KEY_REFS` and `COMMONS` rows given
+/// by key name, and `files` (the `FILES` rows: gone files' rows do not
+/// count). The names of the live keys.
+fn live_key_names(
+    keys: &BTreeSet<String>,
+    key_refs: &BTreeMap<(String, u32), KeyRefRow>,
+    commons: &BTreeMap<(String, u32), (u64, u64)>,
     named: &BTreeSet<String>,
-) -> BTreeMap<String, Row> {
-    rows.into_iter().filter(|(k, _)| is_live_key(k, key_refs, named)).collect()
+    files: &[FileRow],
+) -> BTreeSet<String> {
+    let keys: Vec<&String> = keys.iter().chain(named).collect::<BTreeSet<_>>().into_iter().collect();
+    let id = |k: &str| keys.iter().position(|x| x.as_str() == k).expect("a key of the rows") as u32;
+    let mut m = MemoryState::default();
+    for k in &keys {
+        let name = m.intern(k.as_bytes());
+        m.symbols.push(SymbolRow {
+            kind: sym_kind::GLOBAL,
+            file: NONE,
+            name,
+            option: named.contains(*k),
+            ..SymbolRow::default()
+        });
+    }
+    m.resolved = vec![ResolvedRow::default(); keys.len()];
+    m.files = files.to_vec();
+    m.key_refs = key_refs.iter().map(|((k, _), r)| KeyRefRow { key: id(k), ..*r }).collect();
+    m.commons = commons
+        .iter()
+        .map(|((k, f), &(size, align))| CommonRow { key: id(k), file: *f, size, align, tomb: false })
+        .collect();
+    let live = mortar_incr::state5::live_keys(&m).expect("live keys");
+    keys.iter().zip(live).filter(|(_, l)| *l).map(|(k, _)| (*k).clone()).collect()
 }
 
 /// The update `old` -> `new` equals the full link of `new`: every key's
@@ -868,22 +884,42 @@ fn same_as_full(j: &Joined, d: &resolve::ResolveDelta, new: &Link, what: &str) {
         .map(|r| ((nk[r.key as usize].clone(), r.file), KeyRefRow { key: 0, ..*r }))
         .collect();
     assert_eq!(key_refs, want_refs, "{what}: KEY_REFS");
-    // Both sides through the rule (WP-215 R.6 3, ruled): a dead key (no
-    // `KEY_REFS` row, no option naming it) is dropped from the update's
-    // rows and from the full link's; no list of tolerated keys.
+    let mut commons: BTreeMap<(String, u32), (u64, u64)> = BTreeMap::new();
+    for c in &j.state.commons {
+        commons.insert((j.keys[c.key as usize].clone(), c.file), (c.size, c.align));
+    }
+    for c in &d.commons.delete {
+        commons.remove(&(j.name(d, c.key), c.file));
+    }
+    for c in &d.commons.put {
+        commons.insert((j.name(d, c.key), c.file), (c.size, c.align));
+    }
+    let want_commons: BTreeMap<(String, u32), (u64, u64)> = want
+        .commons
+        .iter()
+        .map(|c| ((nk[c.key as usize].clone(), c.file), (c.size, c.align)))
+        .collect();
+    assert_eq!(commons, want_commons, "{what}: COMMONS");
+    // Both sides through U-2's rule (WP-215 R.6 3, ruled; WP-247 h): a
+    // dead key (no live `KEY_REFS` or `COMMONS` row, no option naming it)
+    // is dropped from the update's rows and from the full link's; no list
+    // of tolerated keys.
     let named = new.option_names();
-    let live_after: BTreeSet<String> = key_refs.keys().map(|(k, _)| k.clone()).collect();
-    let want_live: BTreeSet<String> = want_refs.keys().map(|(k, _)| k.clone()).collect();
-    let rows = canon_live_keys(rows, &live_after, &named);
-    let want_rows = canon_live_keys(full.rows.clone(), &want_live, &named);
+    let all: BTreeSet<String> = rows.keys().chain(j.keys.iter()).cloned().collect();
+    let live_after = live_key_names(&all, &key_refs, &commons, &named, &want.files);
+    let want_keys: BTreeSet<String> = full.rows.keys().chain(nk.iter()).cloned().collect();
+    let want_live = live_key_names(&want_keys, &want_refs, &want_commons, &named, &want.files);
+    let rows: BTreeMap<String, Row> = rows.into_iter().filter(|(k, _)| live_after.contains(k)).collect();
+    let want_rows: BTreeMap<String, Row> =
+        full.rows.clone().into_iter().filter(|(k, _)| want_live.contains(k)).collect();
     assert_eq!(rows, want_rows, "{what}: RESOLVED");
     for k in &gone {
-        assert!(!is_live_key(k, &live_after, &named), "{what}: gone key {k} is live");
+        assert!(!live_after.contains(k), "{what}: gone key {k} is live");
     }
     // A dead key the update leaves (not gone) is undefined: no reader
     // gives it a definition.
     for (i, k) in j.keys.iter().enumerate() {
-        if !gone.contains(k) && !is_live_key(k, &live_after, &named) {
+        if !gone.contains(k) && !live_after.contains(k) {
             let r = affected.get(&(i as u32)).copied().unwrap_or(j.state.resolved[i]);
             assert_eq!(r.kind, def_kind::UNDEFINED, "{what}: dead key {k} left defined");
         }
@@ -904,22 +940,6 @@ fn same_as_full(j: &Joined, d: &resolve::ResolveDelta, new: &Link, what: &str) {
         let w = full.at.get(k).copied().unwrap_or((NONE, 0));
         assert_eq!(at.get(k).copied(), Some(w), "{what}: at of {k}");
     }
-    let mut commons: BTreeMap<(String, u32), (u64, u64)> = BTreeMap::new();
-    for c in &j.state.commons {
-        commons.insert((j.keys[c.key as usize].clone(), c.file), (c.size, c.align));
-    }
-    for c in &d.commons.delete {
-        commons.remove(&(j.name(d, c.key), c.file));
-    }
-    for c in &d.commons.put {
-        commons.insert((j.name(d, c.key), c.file), (c.size, c.align));
-    }
-    let want_commons: BTreeMap<(String, u32), (u64, u64)> = want
-        .commons
-        .iter()
-        .map(|c| ((nk[c.key as usize].clone(), c.file), (c.size, c.align)))
-        .collect();
-    assert_eq!(commons, want_commons, "{what}: COMMONS");
     let mut groups: BTreeSet<(Vec<u8>, u32)> = BTreeSet::new();
     for g in &j.state.groups {
         groups.insert((j.bytes(g.signature), g.file));
@@ -940,7 +960,7 @@ fn same_as_full(j: &Joined, d: &resolve::ResolveDelta, new: &Link, what: &str) {
         .new_keys
         .iter()
         .map(|n| String::from_utf8(n.name.clone()).unwrap())
-        .filter(|k| is_live_key(k, &live_after, &named))
+        .filter(|k| live_after.contains(k))
         .collect();
     let want_new: BTreeSet<String> =
         want_rows.keys().filter(|k| !j.keys.contains(k)).cloned().collect();

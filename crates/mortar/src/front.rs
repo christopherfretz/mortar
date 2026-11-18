@@ -1360,7 +1360,10 @@ pub fn front<'s>(
         }),
         properties: properties5,
         stack: mortar_layout::stack::file_notes(&inputs, &resolution),
-        option_keys: plan.option_keys(),
+        option_keys: mortar_incr::capture::option_names(
+            plan.option_keys(),
+            &mortar_resolve::tables::option_keys(&plan, &inputs.link.directives),
+        ),
     });
     drop(merge_eh);
     Some(Front {

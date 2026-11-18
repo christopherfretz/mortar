@@ -32,13 +32,15 @@ use crate::format::{
 };
 use crate::update::diags::{DiagRef, DiagRow, Subject};
 use crate::update::rows::{
-    CloneProbe, CommonRow, CopyRow, EdgeRow, FileIndexRow, FileRow, FileTable, FragRow, FragUseRow,
-    GroupRow, HoleRow, IndexRow, KeyRefRow, LocalRange, MentionRow, MetaRow, NameRow, RegionRow,
-    ResolvedRow, RowRange, SlotRow, SymbolRow, SymtabKeyRow, SymtabRow, key_ref_flags, sym_kind,
+    CloneProbe, CommonRow, CopyRow, DebugStrRow, EdgeRow, FileIndexRow, FileRow, FileTable,
+    FragRow, FragUseRow, GroupRow, HoleRow, IndexRow, KeyRefRow, LocalRange, MentionRow, MetaRow,
+    NameRow, RegionRow, ResolvedRow, RowRange, SlotRow, SymbolRow, SymtabKeyRow, SymtabRow,
+    key_ref_flags, sym_kind,
 };
 use crate::update::view::Rows;
 
 pub mod canon;
+pub mod columns;
 pub mod compact;
 pub mod read;
 pub mod write;
@@ -78,8 +80,9 @@ pub enum Class {
 /// R-1: provisional until WP-236; kinds 53 and 54 reserved for it).
 /// `EH_RECORDS` (13) and `FRAG_AT` (40) are format 4's only (WP-239: the
 /// `FILES` eh columns and `FRAG_USE`, 56, in their place); `FILE_INDEX`'s
-/// `EhRecords` range is always empty in format 5.
-pub const TABLES: [(u32, Class, usize); 37] = [
+/// `EhRecords` range is always empty in format 5. `DEBUG_STRS` (57,
+/// WP-228 R-2, seam 8; WP-247) is key-keyed with no tomb, as `NAMES`.
+pub const TABLES: [(u32, Class, usize); 38] = [
     (kind::META, Class::Whole, MetaRow::WIDTH),
     (kind::STAT, Class::AppendOnly, <StatRow as Rec>::WIDTH),
     (kind::FILES, Class::AppendOnly, FileRow::WIDTH),
@@ -117,6 +120,7 @@ pub const TABLES: [(u32, Class, usize); 37] = [
     (kind::NAMES, Class::KeyKeyed, NameRow::WIDTH),
     (kind::COPIES, Class::KeyKeyed, CopyRow::WIDTH),
     (kind::FRAG_USE, Class::FileKeyed, FragUseRow::WIDTH),
+    (kind::DEBUG_STRS, Class::KeyKeyed, DebugStrRow::WIDTH),
 ];
 
 /// The file-keyed tables of format 5 ([`FileTable::ALL`] without
@@ -154,6 +158,7 @@ pub fn name(k: u32) -> &'static str {
         kind::REGIONS => "REGIONS",
         kind::NAMES => "NAMES",
         kind::COPIES => "COPIES",
+        kind::DEBUG_STRS => "DEBUG_STRS",
         k => kind::name(k),
     }
 }
@@ -862,6 +867,23 @@ impl Rec for SymtabKeyRow {
     }
 }
 
+/// `DEBUG_STRS` (kind 57; WP-228 R-2, seam 8): `out` (`u8`,
+/// `rows::debug_str_class`: 0 or 1, another value refused), `hash`
+/// (`u64`), `offset` (`u32`): 13 bytes. No tomb.
+impl Rec for DebugStrRow {
+    const WIDTH: usize = 13;
+    fn put(&self, w: &mut W<'_>) {
+        w.u8(self.out).u64(self.hash).u32(self.offset);
+    }
+    fn get(r: &mut R<'_>) -> Self {
+        Self { out: r.u8(), hash: r.u64(), offset: r.u32() }
+    }
+    fn ok(&self) -> bool {
+        use crate::update::rows::debug_str_class;
+        matches!(self.out, debug_str_class::STR | debug_str_class::LINE_STR)
+    }
+}
+
 impl Rec for NameRow {
     const WIDTH: usize = 12;
     fn put(&self, w: &mut W<'_>) {
@@ -1002,6 +1024,10 @@ pub(crate) trait Keyed: Rec {
     fn key(&self, s: StrFn<'_>) -> Rows<Self::K>;
     fn tomb(&self) -> bool;
     fn set_tomb(&mut self, t: bool);
+    /// Rows of one key are not an error of the state (`DEBUG_STRS`: an
+    /// accelerator whose every hit the caller checks, WP-228 R-2.1): its
+    /// sorted parts are checked non-decreasing, not increasing.
+    const DUPLICATES: bool = false;
 }
 
 macro_rules! keyed {
@@ -1064,6 +1090,20 @@ impl Keyed for NameRow {
         false
     }
     fn set_tomb(&mut self, _t: bool) {}
+}
+
+/// `DEBUG_STRS` has no tomb (a string stays in the output until the
+/// compaction, IN-56) and may hold two rows of one key (WP-228 R-2.1).
+impl Keyed for DebugStrRow {
+    type K = (u8, u64);
+    fn key(&self, _s: StrFn<'_>) -> Rows<(u8, u64)> {
+        Ok((self.out, self.hash))
+    }
+    fn tomb(&self) -> bool {
+        false
+    }
+    fn set_tomb(&mut self, _t: bool) {}
+    const DUPLICATES: bool = true;
 }
 
 /// Rows of `T` from bytes (`bytes.len()` a multiple of the width), each
