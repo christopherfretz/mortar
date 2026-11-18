@@ -3875,8 +3875,9 @@ a pass over a whole table of the state; **O(output)**.
   to a scratch path, and `incr_state canon` compares `canon(S')` with
   `canon(C(U))` table by table, printing the first differing row. IN-79
   (a) already runs the full link of the same inputs, so the replay is
-  that same full link with `--mortar-replay-placement=<the update's map>` and no output
-  written: the added cost is the capture (part of every incremental-mode
+  IN-61's replay entry, given `P_U`'s decision rows (the map's decision
+  records read into a `LayoutRows`), run by a test binary the lane calls,
+  with no output written: the added cost is the capture (part of every incremental-mode
   full link) and a linear comparison, O(state), about the cost of reading
   the state whole (WP-105: 0.56 s on g10x, 0.20 s on `cxx-large-g`), not
   a second link. `duty_list_covers_differences` checks the table above

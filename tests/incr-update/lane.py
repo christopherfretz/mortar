@@ -375,7 +375,7 @@ SELF_TEST = (
     ('flip_word', 'gc_section_dies_then_revives', 2, 'verify'),
     ('elflint_bad', 'init_array_grows_then_shrinks', 1, 'elflint'),
     ('wrong_local', 'gc_section_dies_then_revives', 2, 'verify'),
-    ('prev_output', 'init_array_grows_then_shrinks', 2, 'equiv'),
+    ('prev_output', 'init_array_grows_then_shrinks', 2, 'verify'),
     ('no_exec', 'init_array_grows_then_shrinks', 1, 'run'),
     ('drop_delta', 'growth_step_moves_unchanged_then_edit_referrer', 1, 'oracle'),
 )

@@ -121,6 +121,13 @@ fn lane(a: &Args, extra: &[String]) -> Result<bool, String> {
     }
 }
 
+/// The gate's step (`cargo xtask ci`, after L10's smoke in `linktest`):
+/// the quick subset, quick and full gate alike (spec/harness.md
+/// "incr-update": the full matrix is not a gate step yet).
+pub fn ci(_quick: bool) -> bool {
+    main(&["--quick".to_owned()]) == ExitCode::SUCCESS
+}
+
 pub fn main(args: &[String]) -> ExitCode {
     let a = match Args::parse(args) {
         Ok(a) => a,

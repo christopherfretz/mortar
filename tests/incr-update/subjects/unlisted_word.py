@@ -2,8 +2,9 @@
 """A deliberately WRONG subject (WP-223): at the hop INCR_WRONG_AT, links as
 mortar does, claims an update with a plausible ranges file (exactly the
 bytes that differ from the previous output) and then changes one more word
-outside every range: a word of `.comment`, a section no other check reads
-(the `dirty` check, IN-75: a write the update did not list)."""
+outside every range: a byte of `.comment` (or, when `.comment` moved, the
+first byte outside every range) (the `dirty` check, IN-75: a write the
+update did not list)."""
 import os
 import sys
 
@@ -23,8 +24,12 @@ if rc == 0 and prev is not None:
     ranges = diff_ranges(prev, new)
     _c64, _m, S, _P = oracle.elf(new)
     com = next(s for s in S if s['name'] == '.comment')
-    off = com['off'] + 4
-    assert not any(o <= off < o + n for o, n in ranges)
+    # a byte of .comment outside every range; when .comment moved (every
+    # byte of it differs), any byte outside every range: `dirty` runs
+    # before the checks that read sections
+    import itertools
+    off = next(p for p in itertools.chain(range(com['off'], com['off'] + com['size']), range(len(new)))
+               if not any(o <= p < o + n for o, n in ranges))
     write_at(out, off, bytes([new[off] ^ 0x20]))
     claim_update(args, ranges, 'one word written outside its ranges')
 finish(rc)

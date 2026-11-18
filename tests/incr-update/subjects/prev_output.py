@@ -1,8 +1,11 @@
 #!/usr/bin/env python3
 """A deliberately WRONG subject (WP-223): at the hop INCR_WRONG_AT, hands
 back the PREVIOUS hop's output and map untouched, claiming an update with
-an empty ranges file (which is true: nothing changed). Found by `equiv`:
-the old map against the full link of the new inputs."""
+an empty ranges file (which is true: nothing changed). Found first by
+`verify` (b): the old map describes the inputs' old bytes, and plumb reads
+the inputs on disk. `equiv` and `run` would refuse it too (the program
+prints the old g_count); the brief allowed run or equiv: it is neither,
+it is the check before them."""
 import os
 import sys
 
