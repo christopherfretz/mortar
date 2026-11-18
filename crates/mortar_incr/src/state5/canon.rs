@@ -70,6 +70,7 @@ pub fn canon(bytes: &[u8]) -> Result<Canon, StateError> {
 ///
 /// # Errors
 /// `state-corrupt` for a reference with no image.
+#[allow(clippy::too_many_lines)] // one line per table
 pub fn canon_of(m: &MemoryState) -> Result<Canon, StateError> {
     let mut n = super::compact::normalize(m)?;
     n.meta.boot_id = [0; 16];

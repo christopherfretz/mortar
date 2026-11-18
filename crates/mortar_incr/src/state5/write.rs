@@ -18,7 +18,9 @@ use super::{
     table_index,
 };
 use crate::format::{Hash16, NONE, StatRow, StateError, Str, W, kind, stat_tag};
+use crate::format::{index_kind, patch_kind};
 use crate::ops::{WriteFailure, WriteOps};
+use crate::update::rows::edge_kind;
 use crate::update::rows::{FileIndexRow, FileTable, RowRange, file_flags};
 use crate::update::testing::MemoryState;
 use crate::update::view::{KeyEdits, Rows, StatePatch, StateView};
@@ -176,8 +178,6 @@ pub fn encode(m: &MemoryState) -> Result<Vec<u8>, StateError> {
     for (new, &old) in frag_order.iter().enumerate() {
         frag_map[old] = new as u64;
     }
-    use crate::format::{index_kind, patch_kind};
-    use crate::update::rows::edge_kind;
     let mut mentions = Vec::with_capacity(m.mentions.len());
     for (f, r) in &m.mentions {
         mentions.push((*f, crate::update::rows::MentionRow { section: sec(r.section)?, ..*r }));
@@ -428,7 +428,7 @@ impl PatchPlan {
 #[derive(Debug)]
 pub(crate) enum Planned {
     InPlace(InPlace),
-    Compact { core: Arc<Core>, state: MemoryState },
+    Compact { core: Arc<Core>, state: Box<MemoryState> },
 }
 
 /// The in-place patch: every block W5 writes, with its new bytes (each
@@ -566,6 +566,7 @@ impl Ed<'_> {
     /// put is inserted into the sorted append area. `stable_rows`: rows
     /// are named by number elsewhere (`FRAGS`, by `FRAG_AT`), so an insert
     /// that would move an area row is the compaction.
+    #[allow(clippy::too_many_lines, clippy::many_single_char_names)] // one arm per edit
     fn keyed<T: Keyed>(&mut self, k: u32, edits: &KeyEdits<T>, stable_rows: bool) -> Plan<()> {
         if edits.put.is_empty() && edits.delete.is_empty() {
             return Ok(());
@@ -744,7 +745,7 @@ pub fn plan_patch(view: &StateView<'_>, patch: &StatePatch) -> Result<PatchPlan,
     Ok(PatchPlan {
         compacts: true,
         reason: why,
-        inner: Some(Arc::new(Planned::Compact { core, state })),
+        inner: Some(Arc::new(Planned::Compact { core, state: Box::new(state) })),
     })
 }
 
@@ -884,7 +885,7 @@ fn plan_in_place(core: &Arc<Core>, p: &StatePatch) -> Plan<InPlace> {
         range!(fr.edges.as_deref(), FileTable::Edges);
         range!(fr.frag_at.as_deref(), FileTable::FragAt);
         range!(fr.eh_records.as_deref(), FileTable::EhRecords);
-        range!(fr.symtab.as_ref().map(|s| s.as_slice()), FileTable::Symtab);
+        range!(fr.symtab.as_ref().map(Option::as_slice), FileTable::Symtab);
         range!(fr.regions.as_deref(), FileTable::Regions);
         idx.gone = idx.gone || fr.gone;
         ed.put_rows(kind::FILE_INDEX, f, std::slice::from_ref(&idx))?;
@@ -967,8 +968,8 @@ fn plan_in_place(core: &Arc<Core>, p: &StatePatch) -> Plan<InPlace> {
         if *old == b && !must.contains(&(t, k)) {
             continue;
         }
-        if !lists.contains_key(&t) {
-            lists.insert(t, core.list(t)?);
+        if let std::collections::btree_map::Entry::Vacant(v) = lists.entry(t) {
+            v.insert(core.list(t)?);
         }
         blocks.insert((t, k), b);
     }

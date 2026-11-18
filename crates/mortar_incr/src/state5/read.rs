@@ -84,6 +84,9 @@ impl Src {
     }
 }
 
+/// Verified blocks by (table, block).
+type Blocks = HashMap<(usize, u64), Arc<Vec<u8>>>;
+
 /// An open state: the checked header and directory, the verified lists
 /// and blocks read so far, and the bytes read (IN-18c's test counts them).
 #[derive(Debug)]
@@ -92,7 +95,7 @@ pub(crate) struct Core {
     pub(crate) header: Header,
     pub(crate) dir: Vec<Entry>,
     lists: Mutex<HashMap<usize, Arc<Vec<Hash16>>>>,
-    blocks: Mutex<HashMap<(usize, u64), Arc<Vec<u8>>>>,
+    blocks: Mutex<Blocks>,
     read: AtomicU64,
 }
 
@@ -299,6 +302,7 @@ impl Core {
     /// The rows of a key-keyed table whose key is at least `lo` and while
     /// `more` holds, from the sorted body and the sorted append area
     /// (two binary searches; IN-18e), tombstones left out, in key order.
+    #[allow(clippy::many_single_char_names)]
     pub(crate) fn keyed<T: Keyed>(
         &self,
         k: u32,
@@ -615,6 +619,7 @@ pub fn size_report(bytes: &[u8]) -> Result<String, StateError> {
     use std::fmt::Write as _;
     let core = Core::open(Src::Bytes(bytes.to_vec()), None).map_err(to_state_error)?;
     let total = bytes.len() as u64;
+    #[allow(clippy::cast_precision_loss)] // a share for people
     let pct = |b: u64| if total == 0 { 0.0 } else { b as f64 * 100.0 / total as f64 };
     let mut out = String::new();
     let _ = writeln!(
@@ -864,6 +869,7 @@ fn synth_name(n: &[u8]) -> &'static [u8] {
 }
 
 impl LayoutOf<'_, '_> {
+    #[allow(clippy::trivially_copy_pass_by_ref)] // a view is borrowed
     fn sym_key(&self, row: u32) -> Rows<SymKey> {
         let s = self.view.symbol(SymbolId(row))?;
         Ok(if s.kind == sym_kind::LOCAL {
@@ -873,6 +879,7 @@ impl LayoutOf<'_, '_> {
         })
     }
 
+    #[allow(clippy::trivially_copy_pass_by_ref)]
     fn global(&self, row: u32) -> Rows<SymbolId> {
         self.sym_key(row)?.as_global().ok_or_else(|| corrupt(format!("SYMBOLS row {row}: a local")))
     }

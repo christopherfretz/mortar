@@ -60,7 +60,11 @@ fn run(args: &[String]) -> Result<ExitCode, String> {
                     all.extend_from_slice(r);
                 }
                 let h = mortar_digest::l128(&all);
-                let hex: String = h.iter().map(|b| format!("{b:02x}")).collect();
+                let mut hex = String::with_capacity(32);
+                for b in h {
+                    use std::fmt::Write as _;
+                    let _ = write!(hex, "{b:02x}");
+                }
                 println!("{:<12} {:>10} rows {hex}", state5::name(*k), rows.len());
             }
             Ok(ExitCode::SUCCESS)

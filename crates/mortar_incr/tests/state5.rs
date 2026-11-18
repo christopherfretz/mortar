@@ -14,7 +14,7 @@ use mortar_incr::update::rows::{
     file_flags, sym_kind,
 };
 use mortar_incr::update::testing::MemoryState;
-use mortar_incr::update::view::{FileRanges, StatePatch};
+use mortar_incr::update::view::{FileRanges, KeyEdits, StatePatch};
 
 fn add(pool: &mut Vec<u8>, b: &[u8]) -> Str {
     let off = u32::try_from(pool.len()).expect("small");
@@ -186,8 +186,7 @@ fn every_flipped_byte_is_state_corrupt() {
     }
     // every list byte, and one byte of every block (its first, middle and
     // last)
-    let probe = read::decode(&bytes).map(|_| ()).expect("clean");
-    let _ = probe;
+    assert!(read::decode(&bytes).is_ok(), "clean");
     let dir = state5::parse_directory(
         &state5::Header::parse(&bytes).expect("h"),
         &bytes[state5::HEADER..dir_end],
@@ -476,7 +475,7 @@ fn key_refs_single_mentioner() {
     assert_eq!(rows[0].file, 1);
     let m = read::decode(&bytes).expect("decode");
     let mut p = remove_file_1(&m);
-    p.frags = Default::default();
+    p.frags = KeyEdits::default();
     p.key_refs.delete.clear();
     p.key_refs.delete.push(rows[0]);
     let plan = state5::plan_patch(&view, &p).expect("plan");

@@ -322,6 +322,7 @@ pub fn directory_bytes(dir: &[Entry]) -> Vec<u8> {
 ///
 /// # Errors
 /// `state-corrupt`.
+#[allow(clippy::many_single_char_names)]
 pub fn parse_directory(h: &Header, b: &[u8]) -> Result<Vec<Entry>, StateError> {
     if mortar_digest::l128(b) != h.dir_hash {
         return Err(state_corrupt("directory hash differs"));

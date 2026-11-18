@@ -39,6 +39,7 @@ type Rows<T> = Result<T, IncrReason>;
 ///
 /// # Errors
 /// `state-corrupt`: a row the patch names that `m` does not hold.
+#[allow(clippy::too_many_lines, clippy::many_single_char_names)] // one block per class
 pub fn apply(m: &mut MemoryState, p: &StatePatch, frags_aux: usize) -> Rows<()> {
     macro_rules! whole {
         ($($f:ident),*) => {$(
@@ -287,7 +288,7 @@ fn diags(rows: &mut Vec<DiagRow>, e: &KeyEdits<DiagRow>) -> Rows<()> {
             None => rows.push(d),
         }
     }
-    rows.sort_by(|a, b| key(a).cmp(&key(b)));
+    rows.sort_by_key(key);
     Ok(())
 }
 
@@ -307,7 +308,7 @@ fn diags(rows: &mut Vec<DiagRow>, e: &KeyEdits<DiagRow>) -> Rows<()> {
 /// # Errors
 /// `state-corrupt` for a reference with no image in a map (IN-18f step 4:
 /// a defect).
-#[allow(clippy::too_many_lines)] // one block per referencing table
+#[allow(clippy::too_many_lines, clippy::many_single_char_names, clippy::items_after_statements)] // one block per referencing table
 pub fn normalize(m: &MemoryState) -> Result<MemoryState, StateError> {
     let bad = |what: &str| state_corrupt(format!("compaction: {what} has no image"));
     let old_pool = &m.strings;
@@ -347,9 +348,9 @@ pub fn normalize(m: &MemoryState) -> Result<MemoryState, StateError> {
             _ => globals.push(((file(r.at_file)?, r.at_index), i)),
         }
     }
-    globals.sort();
+    globals.sort_unstable();
     unmentioned.sort();
-    locals.sort();
+    locals.sort_unstable();
     let order: Vec<usize> = globals
         .iter()
         .map(|x| x.1)
@@ -447,10 +448,12 @@ pub fn normalize(m: &MemoryState) -> Result<MemoryState, StateError> {
         });
         // a key-parallel table shorter than SYMBOLS (a format-4 capture
         // has no SYMTAB_KEYS) reads as its empty rows, as the writer pads
-        n.resolved.push(m.resolved.get(i).copied().unwrap_or(crate::update::rows::ResolvedRow {
-            section: NONE,
-            ..Default::default()
-        }));
+        n.resolved.push(
+            m.resolved.get(i).copied().unwrap_or(crate::update::rows::ResolvedRow {
+                section: NONE,
+                ..Default::default()
+            }),
+        );
         n.symtab_keys.push(
             m.symtab_keys
                 .get(i)
@@ -492,12 +495,12 @@ pub fn normalize(m: &MemoryState) -> Result<MemoryState, StateError> {
     for r in &m.chunks {
         n.chunks.push(crate::format::ChunkRow { name: intern(r.name)?, ..r.clone() });
     }
-    n.order = m.order.clone();
-    n.segments = m.segments.clone();
+    n.order.clone_from(&m.order);
+    n.segments.clone_from(&m.segments);
     for r in &m.slots {
         n.slots.push(crate::format::SlotRow { symbol: sym(r.symbol)?, ..*r });
     }
-    n.sizes = m.sizes.clone();
+    n.sizes.clone_from(&m.sizes);
     for r in &m.sym_place {
         n.sym_place.push(crate::format::SymPlaceRow { symbol: sym(r.symbol)?, ..*r });
     }
@@ -515,9 +518,9 @@ pub fn normalize(m: &MemoryState) -> Result<MemoryState, StateError> {
     for r in &m.redirects {
         n.redirects.push(crate::format::RedirectRow { section: sec(r.section)?, ..*r });
     }
-    n.sized = m.sized.clone();
+    n.sized.clone_from(&m.sized);
     n.layout = m.layout.clone();
-    n.leaves = m.leaves.clone();
+    n.leaves.clone_from(&m.leaves);
     // File-keyed (sorted by new file, each file's rows in their order).
     fn per_file<T: Clone>(
         rows: &[(FileId, T)],
@@ -606,12 +609,12 @@ pub fn normalize(m: &MemoryState) -> Result<MemoryState, StateError> {
                 Subject::OdrKey { name, class } => {
                     Subject::OdrKey { name: intern(*name)?, class: *class }
                 }
-                other => other.clone(),
+                other => *other,
             });
         }
         n.diags.push(DiagRow { subjects, ..d.clone() });
     }
-    drop(intern);
+    let _ = &mut intern;
     // NAMES: the globals' index, rebuilt (it is derived from SYMBOLS).
     for (row, r) in n.symbols.iter().enumerate() {
         if matches!(r.kind, sym_kind::GLOBAL | sym_kind::VERSIONED) {
