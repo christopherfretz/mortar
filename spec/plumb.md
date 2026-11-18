@@ -321,7 +321,12 @@ the map claims coverage.
 or a wrong number of fields, is a `MapError`. A `common` record has five
 fields exactly in a map that says `incremental` and four elsewhere: a
 fifth field in a plain map, its absence in an incremental-mode map, or
-a `<file>` that names no earlier `file` record is a `MapError`. A plain
+a `<file>` that names no earlier `file` record is a `MapError`.
+**Transitional (WP-222, for the supervisor's ruling):** today's
+incremental-mode maps (base 294101b1) write four fields and no decision
+records; until the linker writes the decision records, a `common`
+without `<file>` is a `MapError` only in a map that has a decision
+record, so today's lane keeps its verdicts. A plain
 link's map is unchanged by the field (not one byte). A foreign map never has
 them (§3.4 to §3.6 do not change): GNU ld's and lld's `COMMON` and
 mold's `.common` stay `common` chunks, one per file, and their maps
@@ -377,12 +382,18 @@ of another length, or a `<file>` that names no earlier record is a
 (§6.8, with the other incremental records): a `region` whose `<out>`
 names no output section or several, or whose `[<addr>, <addr> +
 <capacity>)` is not inside `[sh_addr, sh_addr + sh_size]` of its section,
-is P-I2. **Nothing else of these records is judged** by the verifier:
-not the capacities, the order, the slots' addresses, the redirects, the
-fragments' offsets or the symbol blocks (H-1's (d) compares them with
-the state, IN-78); the coverage line counts them (`decision records: n
-read; region judged; capacity, order, slot, redirect, frag, symblock not
-judged`, §7.2). No record name collides with another record of this
+is P-I2; so are two `region`s of one output section whose ranges share
+a byte (WP-222: regions are disjoint by IN-30, so no correct writer
+states two that meet), and a `symblock` whose `<first> + <capacity>`
+exceeds `.symtab`'s `sh_info` (WP-222: a block and its reserve lie in
+the local area, IN-49a). **Nothing else of these records is judged** by
+the verifier: not the capacities, the order, the slots' addresses, the
+redirects, the fragments' offsets or the symbol blocks' other fields
+(H-1's (d) compares them with the state, IN-78); the coverage line
+counts them (`decision records: n read; region, symblock judged (place
+only); capacity, order, slot, redirect, frag not judged`, §7.2). The
+`slot` form with two fields after the word is `tls-ld`'s only (the
+module slot has no key): another `<kind>` there is a `MapError`. No record name collides with another record of this
 format (§3.2's grammar) or with the formats of §3.4-§3.6 (each read
 only under its own header; their text is a table, not record words).
 
@@ -3298,7 +3309,10 @@ Then a range must be one its section admits:
   WP-212 applied WP-202's §R.3): `<off>` equal to the section's
   `sh_size` and `<off> + <size>` at most the file offset of the next
   section in file order (or of the section header table, when none
-  follows), relative to the section's `sh_offset`. That hole holds zero
+  follows), relative to the section's `sh_offset` (WP-222: "the next
+  section" is the nearest file offset above this section's of a section
+  that occupies file bytes, not `NOBITS` and of size above 0; the end
+  of the file bounds it too, whichever comes first). That hole holds zero
   bytes (P-I5) and counts toward no section's coverage (P-I1 covers the
   allocated sections only; P-E6 sees zero file padding). A `hole` in a
   non-allocated section in any other form is P-I2. Not in a packed section
@@ -3506,9 +3520,12 @@ else. In the debug sections:
 6. Allocated relocation sections other than the `DT_RELA` table (such
    as `.rela.plt`) take `NONE` records only.
 7. The decision records (§3.2, `spec/image.md` I-78a): only each
-   `region`'s place inside its output section is judged here (P-I2);
-   the rest is H-1's (`spec/incr.md` IN-79 (d)), named in the coverage
-   line as not judged.
+   `region`'s place inside its output section, two regions of a
+   section that meet, and a `symblock` past `.symtab`'s local area are
+   judged here (P-I2, WP-222); the rest is H-1's (`spec/incr.md` IN-79
+   (d)), named in the coverage line as not judged. `spec/image.md`
+   I-78a still says "region judged" only: a sentence there is the
+   supervisor's (WP-222's record, F-2).
 
 Tests: `tests/dead.rs` (§9.2 (p)), `map::mortar::tests::s3_2_dead_*`.
 Cost (WP-091, measured; release `xtask plumb`, 3 runs each, host load
@@ -3573,7 +3590,10 @@ that section's name. From the program headers: the same count; at each
 index the same `p_type`, `p_flags` and `p_align`, and the same list of
 allocated section names of size above 0 whose `sh_addr` is inside
 `[p_vaddr, p_vaddr + p_memsz)`, counting the `SHF_TLS` sections in
-`PT_TLS` only and only those there (`.tbss` overlaps what follows it). From the file
+`PT_TLS` only and only those there (`.tbss` overlaps what follows it),
+and leaving `.pad.relro` out (WP-222, L10's L-2: L-64's pad is sized
+from the addresses, so it is empty in one layout and not in the other;
+its header still compares above, and each side's S20 and M6 judge it). From the file
 header: the same `e_ident` (class, data, OS ABI), `e_type`, `e_machine`,
 `e_flags`; and `e_entry`s that correspond. Sizes, addresses and offsets
 are not compared.
@@ -3588,12 +3608,18 @@ word. `.eh_frame` is apart (IN-34a: per-file CIEs in incremental mode,
 records that absorbed a 4-, 8- or 12-byte hole): a piece whose input
 record is a CIE (`CIE_id` 0) is not a unit of this rule; an FDE piece is,
 its size equal or (in `X` only) larger by 4, 8 or 12. Chunks: the
-`common` chunks by name and the `synthetic` chunks by `(name, k)` are
+`common` chunks by name and the `synthetic` chunks by `(name, k)` (`.pad.relro` aside, P-E1;
+its chunk record exists only when its size is above 0) are
 the same sets, and so are the `common` records by name (an update that
 allocates a common the full link does not, or the reverse, is P-E2),
 and a common's `<file>` names, on both sides, the file of one identity
 (a file by its identity, as the units' files are; another winning
-file is P-E2); `thunk` and `patch` chunks may differ (item 4). `fold`
+file is P-E2). The comparison is made only where both maps state the
+`<file>`; where one does not (a plain full link's map, §3.2), the
+common's winning file is **read, not judged** (WP-222: the verifier
+does not derive resolve.md §3.3's `≺`), and the equivalence summary
+names it: `equiv not judged: common <file> of n common(s): a map
+states none (resolve.md §3.3's winner is not derived)`; `thunk` and `patch` chunks may differ (item 4). `fold`
 records are the same set. Each identity of one side missing from the
 other is one finding.
 
@@ -3613,7 +3639,11 @@ other is one finding.
   `STT_NOTYPE`/`STB_LOCAL` with every other field of the form) is
   reported as P-E3 naming the field: mortar writes no other
   `STT_SECTION` entry and no other unnamed entry (`spec/synth.md`
-  S-79), so no correct writer makes one;
+  S-79), so no correct writer makes one. A side that holds an unnamed
+  `STT_SECTION` local of a section `k` other than 1 at `k`'s `sh_addr`
+  (GNU ld's section symbols; section 1's is then of the form) follows
+  another linker's convention: its fillers are not judged (WP-222), and
+  the equivalence summary names it (`equiv not judged`);
 - every symbol with a global, weak or unique binding is matched by name
   (a name defined twice in one table is P-E3) and has the same
   `st_info`, `st_other`, `st_size` and kind of `st_shndx` (undefined,
@@ -3629,7 +3659,13 @@ other is one finding.
   `(name, st_info, st_other, st_size, section name)` with corresponding
   values; their
   order and indexes may differ (a moved section's locals are
-  renumbered); `STT_SECTION` and `STT_FILE` symbols are compared without
+  renumbered); a local of a non-allocated section corresponds by the
+  identities of that section's `nplace` units: `(unit, offset)` for
+  each unit at `o` of size `z` with `o ≤ v − sh_addr ≤ o + z`, plus the
+  section's start and end (WP-222, L10's L-1: IN-51's slack moves the
+  debug units of an incremental-mode link, and the mapping symbols
+  clang puts on them, `$d`, moved with them; an address rule saw no
+  counterpart); `STT_SECTION` and `STT_FILE` symbols are compared without
   their values; the locals of `.eh_frame` are passed over (an input's
   mapping symbol at its CIE: per-file CIEs are in incremental mode only,
   IN-34a);

@@ -287,3 +287,125 @@ fn p_e2_common_file() {
         rejected_by_equiv(&other, &x, "common-file", "P-E2", "the common 'shared_c' is allocated from");
     }
 }
+
+/// ELF64 little endian: the section header of `name` (its file offset).
+fn shdr_at(b: &[u8], name: &str) -> usize {
+    let u16_at = |o: usize| u16::from_le_bytes([b[o], b[o + 1]]) as usize;
+    let u64_at = |o: usize| u64::from_le_bytes(b[o..o + 8].try_into().unwrap()) as usize;
+    let u32_at = |o: usize| u32::from_le_bytes(b[o..o + 4].try_into().unwrap()) as usize;
+    let (shoff, shentsize, shnum, shstrndx) = (u64_at(0x28), u16_at(0x3a), u16_at(0x3c), u16_at(0x3e));
+    let strs = u64_at(shoff + shstrndx * shentsize + 0x18);
+    (0..shnum)
+        .map(|i| shoff + i * shentsize)
+        .find(|&h| {
+            let n = strs + u32_at(h);
+            b[n..].starts_with(name.as_bytes()) && b[n + name.len()] == 0
+        })
+        .unwrap_or_else(|| panic!("no section {name}"))
+}
+
+/// L-64's `.pad.relro` of `k2a` (`tests/inset_stages/`, mortar's dynamic
+/// link): `x` its map with `incremental`, `f` the same link with the pad
+/// emptied (size 0, `PT_GNU_RELRO` shortened to match, no `chunk` record:
+/// the plain link of L10's L-2, whose RELRO end needed no pad).
+fn pad_pair(arch: &str) -> (Link, Link, PathBuf) {
+    let d = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/inset_stages").join(arch);
+    let out = std::fs::read(d.join("k2a")).unwrap();
+    let text = std::fs::read_to_string(d.join("k2a.map")).unwrap();
+    let parse = |t: &str| mortar_plumb::map::parse(Format::Mortar, t).unwrap();
+    // Stage 3 reads the line's files from the working directory: the
+    // map's paths (`file` and `arg` records) made absolute.
+    let abs = |w: &str| {
+        let p = d.join(w);
+        if p.is_file() { p.to_str().unwrap().to_string() } else { w.to_string() }
+    };
+    let text: String = text
+        .lines()
+        .map(|l| {
+            let mut w: Vec<String> = l.split(' ').map(str::to_string).collect();
+            match w[0].as_str() {
+                "file" => w[2] = abs(&w[2]),
+                "arg" => w[1] = abs(&w[1]),
+                _ => {}
+            }
+            format!("{}\n", w.join(" "))
+        })
+        .collect();
+    let xt = text.replacen("\noutput ", "\nincremental\noutput ", 1);
+    let x = Link { out: out.clone(), map: parse(&xt) };
+    let pad = shdr_at(&out, ".pad.relro");
+    let size = u64::from_le_bytes(out[pad + 0x20..pad + 0x28].try_into().unwrap());
+    assert!(size > 0, "{arch}: k2a has a pad");
+    let mut fo = out;
+    fo[pad + 0x20..pad + 0x28].copy_from_slice(&0u64.to_le_bytes());
+    let phoff = u64::from_le_bytes(fo[0x20..0x28].try_into().unwrap()) as usize;
+    let phnum = u16::from_le_bytes([fo[0x38], fo[0x39]]) as usize;
+    let addr = u64::from_le_bytes(fo[pad + 0x10..pad + 0x18].try_into().unwrap());
+    // Every segment that ends at the pad's end (`PT_GNU_RELRO` and its
+    // load segment) ends at its start.
+    for i in 0..phnum {
+        let p = phoff + i * 56;
+        let v = u64::from_le_bytes(fo[p + 0x10..p + 0x18].try_into().unwrap());
+        let m = u64::from_le_bytes(fo[p + 0x28..p + 0x30].try_into().unwrap());
+        if v + m == addr + size {
+            fo[p + 0x28..p + 0x30].copy_from_slice(&(m - size).to_le_bytes());
+        }
+    }
+    let ft: String = text
+        .lines()
+        .filter(|l| !l.starts_with("chunk synthetic .pad.relro "))
+        .map(|l| format!("{l}\n"))
+        .collect();
+    (x, Link { out: fo, map: parse(ft.trim_end()) }, d)
+}
+
+fn equiv_in(x: &Link, f: &Link, d: &Path) -> Equiv {
+    let mut files: Vec<(String, Vec<u8>)> = Vec::new();
+    for e in std::fs::read_dir(d).unwrap() {
+        let p = e.unwrap().path();
+        if let Some(n) = p.file_name().and_then(|n| n.to_str())
+            && (n.ends_with(".o") || n.ends_with(".a") || n.ends_with(".so"))
+        {
+            files.push((p.to_str().unwrap().to_string(), std::fs::read(&p).unwrap()));
+        }
+    }
+    let inputs: Vec<Input<'_>> = files.iter().map(|(p, b)| Input { path: p, bytes: b }).collect();
+    mortar_plumb::equiv::check(&x.out, &x.map, &f.out, &f.map, &inputs)
+}
+
+// §6.9 (WP-222, L10's L-2): `.pad.relro` of size 0 with no chunk record in
+// one side and of some size in the other is accepted by P-E1 and P-E2 (the
+// pad's size is a layout fact, L-64); the pad's flags still compare
+// (P-E1). The base verifier gave P-E2 "the synthetic chunk '.pad.relro'
+// (0) is only in the update" and P-E1 on the two program headers.
+#[test]
+fn p_e1_p_e2_pad_relro_may_be_empty_in_one_side() {
+    for arch in ["aarch64", "x86_64"] {
+        let (x, f, d) = pad_pair(arch);
+        // The edited F's RELRO end is no longer on a page (a plain link
+        // whose pad is empty has its end there already): its own P-D4
+        // findings are the fixture's, and only those.
+        let e = equiv_in(&x, &f, &d);
+        assert!(
+            e.findings.is_empty()
+                && e.x.findings.is_empty()
+                && e.f.findings.iter().all(|g| g.rule.id() == "P-D4"),
+            "{arch}: {:#?} {:#?} {:#?}",
+            lines(&e.findings),
+            lines(&e.x.findings),
+            lines(&e.f.findings)
+        );
+        let e = equiv_in(&f, &x, &d);
+        assert!(lines(&e.findings).is_empty(), "{arch} reversed: {:#?}", lines(&e.findings));
+        // The pad not writable in the update: P-E1 on its flags.
+        let mut xw = Link { out: x.out.clone(), map: x.map.clone() };
+        let pad = shdr_at(&xw.out, ".pad.relro");
+        xw.out[pad + 8] &= !1;
+        let e = equiv_in(&xw, &f, &d);
+        let got = lines(&e.findings);
+        assert!(
+            got.len() == 1 && got[0].starts_with("P-E1 ") && got[0].contains(".pad.relro"),
+            "{arch} flags: {got:#?}"
+        );
+    }
+}
