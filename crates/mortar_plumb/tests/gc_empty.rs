@@ -138,6 +138,7 @@ fn s3_3_collected_and_live_empty_sections_mutated() {
 fn s3_3_empty_comdat_copy_mutated() {
     let tomb =
         "R1 the reference to a section not in the output holds another value than the tombstone";
+    let gnu = "R1 a reference into a dropped COMDAT copy does not hold the linker's kept section + st_value + A (spec/plumb.md §5.8)";
     for arch in ARCHES {
         for (out, m, line) in &LINKS[3..] {
             let map = read_map(arch, m);
@@ -147,7 +148,16 @@ fn s3_3_empty_comdat_copy_mutated() {
             for (what, v) in [("an address", kept + 0x100), ("all ones", u64::MAX), ("1", 1)] {
                 let mut b = bytes.clone();
                 put(&mut b, addr + 8, v);
-                assert_eq!(findings(&verify(arch, &b, &map, line)), [tomb], "{arch} {out} {what}");
+                // GNU ld's redirect is judged as a kept copy (§5.8, WP-250).
+                let want = if out.ends_with(".gnu") {
+                    format!(
+                        "{gnu}{}",
+                        if what == "an address" { "" } else { "; it holds a tombstone" }
+                    )
+                } else {
+                    tomb.to_string()
+                };
+                assert_eq!(findings(&verify(arch, &b, &map, line)), [want], "{arch} {out} {what}");
             }
         }
     }

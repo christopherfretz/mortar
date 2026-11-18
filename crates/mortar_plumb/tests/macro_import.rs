@@ -58,7 +58,10 @@ fn verify_in(dir: &Path, out: &[u8], map_name: &str, format: Format) -> Report {
 /// The findings that are not a recorded anomaly of the map's linker
 /// (§10.2).
 fn unexpected<'r>(format: Format, out: &[u8], r: &'r Report) -> Vec<&'r Finding> {
-    r.findings.iter().filter(|f| mortar_plumb::anomaly::classify(format, out, f).is_none()).collect()
+    r.findings
+        .iter()
+        .filter(|f| mortar_plumb::anomaly::classify(format, out, f).is_none())
+        .collect()
 }
 
 fn put(out: &mut [u8], at: usize, w: usize, v: u64) {
@@ -114,7 +117,8 @@ fn gcc_fixtures() -> Vec<Gcc> {
                 .lines()
                 .map(|l| {
                     let p: Vec<&str> = l.split_whitespace().collect();
-                    let hex = |s: &str| u64::from_str_radix(s.trim_start_matches("0x"), 16).unwrap();
+                    let hex =
+                        |s: &str| u64::from_str_radix(s.trim_start_matches("0x"), 16).unwrap();
                     (hex(p[0]) as usize, p[1].parse().unwrap(), hex(p[2]))
                 })
                 .collect::<Vec<_>>();
@@ -383,7 +387,8 @@ fn tools_or_skip(arch: &str) -> Option<Tools> {
     t
 }
 
-const LINKERS: [(&str, Format); 3] = [("gnu", Format::Gnu), ("lld", Format::Lld), ("mold", Format::Mold)];
+const LINKERS: [(&str, Format); 3] =
+    [("gnu", Format::Gnu), ("lld", Format::Lld), ("mold", Format::Mold)];
 
 /// Links `objs` in `dir` with each reference linker (`-static -e entry`,
 /// a map), each output named after its linker.
@@ -473,7 +478,8 @@ fn reference_columns_on_gcc_g3() {
                 for f in ["a", "b", "c"] {
                     let src = fixture(&format!("src/{f}.{ext}"));
                     let cc = if lang == "c" { &t.cc } else { &t.cxx };
-                    let mut args = vec!["-O0", "-g3", if dw == 4 { "-gdwarf-4" } else { "-gdwarf-5" }];
+                    let mut args =
+                        vec!["-O0", "-g3", if dw == 4 { "-gdwarf-4" } else { "-gdwarf-5" }];
                     if lang == "cxx" {
                         args.extend(["-fno-exceptions", "-fno-rtti"]);
                     }
@@ -495,7 +501,11 @@ fn reference_columns_on_gcc_g3() {
                     let bad = unexpected(format, &out, &r);
                     assert!(bad.is_empty(), "{label}: {:?}\n{}", bad.first(), r.summary());
                     if format == Format::Gnu {
-                        assert!(r.coverage.verified_of(Via::KeptCopy) >= 40, "{label}\n{}", r.summary());
+                        assert!(
+                            r.coverage.verified_of(Via::KeptCopy) >= 40,
+                            "{label}\n{}",
+                            r.summary()
+                        );
                     }
                     let (off, _, size) = section(&out, ".debug_macro", false).unwrap();
                     let units = cu_imports(&out[off..off + size]);

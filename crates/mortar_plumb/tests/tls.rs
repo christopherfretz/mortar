@@ -262,7 +262,16 @@ fn s5_8_debug_references_verify_clean() {
                 assert!(cov.not_checked_of(Reason::Compressed) > 0, "{}\n{s}", link.label());
             } else {
                 assert_eq!(cov.not_checked_of(Reason::Compressed), 0, "{}\n{s}", link.label());
-                assert!(cov.verified_of(Via::Tombstone) > 0, "{}: no tombstone\n{s}", link.label());
+                // GNU ld's redirect counts as a kept copy (§5.8, WP-250).
+                let dead = cov.verified_of(Via::Tombstone) + cov.verified_of(Via::KeptCopy);
+                assert!(dead > 0, "{}: no tombstone or kept copy\n{s}", link.label());
+                if case == "debug-comdat" && link.label().ends_with("/bfd") {
+                    assert!(
+                        cov.verified_of(Via::KeptCopy) > 0,
+                        "{}: no kept copy\n{s}",
+                        link.label()
+                    );
+                }
             }
         }
     }

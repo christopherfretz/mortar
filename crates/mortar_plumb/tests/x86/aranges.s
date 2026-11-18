@@ -30,6 +30,11 @@ dead:
     .section .debug_grp,"G",@progbits,grp,comdat
 gnote:
     .long 0
+.ifdef FIRST
+    # The kept copy (a.o's) has another size: spec/image.md I-47a falls
+    # back to I-47's tombstone for b.o's reference (WP-250).
+    .long 0
+.endif
     .section .debug_aranges,"",@progbits
     .long end - ver
 ver:

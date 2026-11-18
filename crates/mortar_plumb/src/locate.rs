@@ -637,7 +637,11 @@ fn place_one(
                             .checked_next_multiple_of(s0.shdr.sh_addralign.max(1))?,
                         None => p.addr.checked_sub(image.sections[o].shdr.sh_addr)?,
                     };
-                    image.nonalloc_bytes(o, image.sections[o].shdr.sh_addr.wrapping_add(off), p.size)
+                    image.nonalloc_bytes(
+                        o,
+                        image.sections[o].shdr.sh_addr.wrapping_add(off),
+                        p.size,
+                    )
                 })
             };
             if let Some(i) = disambiguate(obj, &fits, outb, dropped) {

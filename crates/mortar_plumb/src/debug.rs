@@ -73,11 +73,16 @@ impl Engine<'_, '_> {
             .into_iter()
             .filter(|&m| keeper.secs.get(m).is_some_and(|s| s.name == d.name))
             .collect();
-        let sized: Vec<usize> =
-            same.iter().copied().filter(|&m| keeper.secs[m].shdr.sh_size == d.shdr.sh_size).collect();
+        let sized: Vec<usize> = same
+            .iter()
+            .copied()
+            .filter(|&m| keeper.secs[m].shdr.sh_size == d.shdr.sh_size)
+            .collect();
         let m = match (same.len(), sized.as_slice()) {
             (0, _) => return Some(Kept::Fallback("the keeper's copy has no member of its name")),
-            (_, []) => return Some(Kept::Fallback("the keeper's member of its name has another size")),
+            (_, []) => {
+                return Some(Kept::Fallback("the keeper's member of its name has another size"));
+            }
             (_, [m]) => *m,
             _ => {
                 return Some(Kept::Fallback(
@@ -121,10 +126,9 @@ impl Engine<'_, '_> {
             return GnuKept::None;
         }
         let keeper = &self.objs[ko];
-        let Some(m) = crate::fate::group_members(keeper, kg)
-            .into_iter()
-            .find(|&m| keeper.secs.get(m).is_some_and(|s| !s.consumed()) && defined_in(keeper, m) == mine)
-        else {
+        let Some(m) = crate::fate::group_members(keeper, kg).into_iter().find(|&m| {
+            keeper.secs.get(m).is_some_and(|s| !s.consumed()) && defined_in(keeper, m) == mine
+        }) else {
             return GnuKept::None;
         };
         match keeper.secs[m].place {
@@ -214,8 +218,8 @@ impl Engine<'_, '_> {
             // mold: the same, but 0 + A against a non-alloc target
             // (WP-250: a dropped `.debug_macro` copy plus 4 holds 4).
             Format::Mold => {
-                let nonalloc =
-                    dead.is_some_and(|(k, _, _)| self.objs[oi].secs.get(k).is_some_and(|s| !s.alloc()));
+                let nonalloc = dead
+                    .is_some_and(|(k, _, _)| self.objs[oi].secs.get(k).is_some_and(|s| !s.alloc()));
                 vec![if ranges {
                     1
                 } else if nonalloc {
@@ -256,9 +260,8 @@ impl Engine<'_, '_> {
                 },
             );
             if let Some(why) = fallback {
-                f.message.push_str(&format!(
-                    "; spec/image.md I-47a keeps the tombstone here: {why}"
-                ));
+                f.message
+                    .push_str(&format!("; spec/image.md I-47a keeps the tombstone here: {why}"));
             }
             f.expected = want.first().copied();
             f.found = Some(got);
