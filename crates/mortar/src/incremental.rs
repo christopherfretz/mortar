@@ -873,6 +873,46 @@ impl Session {
         Times::clone(&self.times)
     }
 
+    /// The `incremental:` line (and its `delta` lines) where
+    /// `--incremental-report` sends it: appended to the report file
+    /// (I-58b: in place, never created where the link may create no
+    /// file), or onto `stderr`. A full link's and an update's (WP-225).
+    pub fn emit_report(&self, line: &str, stderr: &mut String) {
+        match &self.report {
+            Some(Report::Stderr) => stderr.push_str(line),
+            Some(Report::File(path)) => {
+                // I-58b: appended in place, never created where the link
+                // may create no file.
+                let refused =
+                    match mortar_image::output::disposition(path, mortar_image::output::Use::Whole)
+                    {
+                        mortar_image::output::Disposition::Refused { reason, .. }
+                        | mortar_image::output::Disposition::Forbidden { reason, .. } => {
+                            Some(reason)
+                        }
+                        _ => None,
+                    };
+                let appended = refused.map_or_else(
+                    || {
+                        std::fs::OpenOptions::new()
+                            .create(true)
+                            .append(true)
+                            .open(path)
+                            .and_then(|mut file| file.write_all(line.as_bytes()))
+                    },
+                    |r| Err(std::io::Error::other(r)),
+                );
+                if let Err(e) = appended {
+                    let _ = writeln!(stderr, "incremental: cannot write the report: {e}");
+                }
+            }
+            None if !matches!(self.reason, None | Some(IncrReason::NoState(_))) => {
+                let _ = writeln!(stderr, "incremental: full ({})", words(self.reason.as_ref()));
+            }
+            None => {}
+        }
+    }
+
     /// After a successful full link: the state written and bound to the
     /// output, and the lines for standard error (the fall-back's, or the
     /// report's when it goes there).
@@ -954,39 +994,7 @@ impl Session {
         if let Some(d) = &dry {
             line.push_str(&d.lines);
         }
-        match &self.report {
-            Some(Report::Stderr) => stderr.push_str(&line),
-            Some(Report::File(path)) => {
-                // I-58b: appended in place, never created where the link
-                // may create no file.
-                let refused =
-                    match mortar_image::output::disposition(path, mortar_image::output::Use::Whole)
-                    {
-                        mortar_image::output::Disposition::Refused { reason, .. }
-                        | mortar_image::output::Disposition::Forbidden { reason, .. } => {
-                            Some(reason)
-                        }
-                        _ => None,
-                    };
-                let appended = refused.map_or_else(
-                    || {
-                        std::fs::OpenOptions::new()
-                            .create(true)
-                            .append(true)
-                            .open(path)
-                            .and_then(|mut file| file.write_all(line.as_bytes()))
-                    },
-                    |r| Err(std::io::Error::other(r)),
-                );
-                if let Err(e) = appended {
-                    let _ = writeln!(stderr, "incremental: cannot write the report: {e}");
-                }
-            }
-            None if !matches!(self.reason, None | Some(IncrReason::NoState(_))) => {
-                let _ = writeln!(stderr, "incremental: full ({})", words(self.reason.as_ref()));
-            }
-            None => {}
-        }
+        self.emit_report(&line, &mut stderr);
         stderr
     }
 

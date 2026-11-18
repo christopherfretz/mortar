@@ -66,6 +66,9 @@ pub struct Ctx<'c> {
     pub policy: Policy,
     pub pool: Pool,
     pub out_path: &'c Path,
+    /// The line's words (`Parsed::args`): the map's `arg` records, as the
+    /// driver gives them to the full link's front (F-9).
+    pub args: &'c [std::ffi::OsString],
 }
 
 impl std::fmt::Debug for Ctx<'_> {
@@ -107,8 +110,10 @@ pub fn run(
     // G-7: no update producer of the text map (`-Map`, `-M`,
     // `--print-map`), and none yet of the machine map's `arg` records or
     // of the dependency file: `(image)`, before anything is read.
+    // The machine map (`--mortar-map`) is U9's `map::update_map` (record
+    // 0.2; its `arg` records are the front's, as the full link's).
     let b = &ctx.plan.bookkeeping;
-    if b.map.is_some() || b.print_map || b.mortar_map.is_some() || b.dependency_file.is_some() {
+    if b.map.is_some() || b.print_map || b.dependency_file.is_some() {
         return Err(IncrReason::UpdateNotImplemented(Some(Unimplemented::Image)));
     }
     // M2a: one changed object, not an archive member (U4's member-level
@@ -125,7 +130,7 @@ pub fn run(
     let checked = Tuple::of(&out.metadata().map_err(|e| IncrReason::OutputChanged(e.to_string()))?);
     image_link(ctx, cwd, None, |f| {
         let reference = reference_of(session, &view, file, f, ctx, cwd, out)?;
-        write_identity(session, &view, ctx, out, checked, reference)
+        write_identity(session, &view, ctx, cwd, out, checked, reference)
     })
 }
 
@@ -136,6 +141,10 @@ struct Reference {
     refill: mortar_image::update::Refill,
     size: u64,
     state: mortar_incr::update::testing::MemoryState,
+    /// U9's machine map (`map::update_map`), rendered, when the line asks
+    /// for one; written after the output and the state (I-79: the maps of
+    /// a successful link only).
+    map: Option<Vec<u8>>,
 }
 
 /// **The reference of judgement (d)** (ruling M2a-1, G-11): the capture
@@ -186,15 +195,23 @@ fn reference_of(
         .map(|(chunk, _)| RefillChunk { chunk, reasons: 0 })
         .collect();
     let set = RefillSet { chunks, ..RefillSet::default() };
-    let (refill, size) = crate::image::with_link(f, ctx.store, &|_| {}, |l| {
-        mortar_image::update::refill(l, &delta, &SymtabPlan::default(), &set, &stored, out, &leaves)
-            .map(|u| (u, mortar_image::update::output_size(l)))
+    let symtab = SymtabPlan::default();
+    let want_map = ctx.plan.bookkeeping.mortar_map.is_some();
+    let (refill, size, map) = crate::image::with_link(f, ctx.store, &|_| {}, |l| {
+        let u = mortar_image::update::refill(l, &delta, &symtab, &set, &stored, out, &leaves)
+            .map_err(|e| match e {
+                mortar_image::update::RefillError::Fallback(r) => r,
+                mortar_image::update::RefillError::Failed(_) => image(),
+            })?;
+        let map = if want_map {
+            let m = mortar_image::map::update_map(l, &delta, &stored, &symtab)?;
+            Some(mortar_image::map::render(&m, &f.pool))
+        } else {
+            None
+        };
+        Ok::<_, IncrReason>((u, mortar_image::update::output_size(l), map))
     })
-    .map_err(|_| image())?
-    .map_err(|e| match e {
-        mortar_image::update::RefillError::Fallback(r) => r,
-        mortar_image::update::RefillError::Failed(_) => image(),
-    })?;
+    .map_err(|_| image())??;
     // The capture of `f` with the refill's binding parts.
     let tree = match meta.leaf_fn {
         0 => mortar_digest::TreeFn::L128,
@@ -230,7 +247,7 @@ fn reference_of(
     if files_rows > 1 || diffs.iter().any(|d| !allowed(d.kind)) {
         return Err(layout());
     }
-    Ok(Reference { refill, size, state })
+    Ok(Reference { refill, size, state, map })
 }
 
 /// U10 for the identity case: `write_with` the refill's ranges in place
@@ -240,6 +257,7 @@ fn write_identity(
     session: &Session,
     view: &StateView<'_>,
     ctx: &Ctx<'_>,
+    cwd: &Path,
     out: &std::fs::File,
     checked: Tuple,
     r: Reference,
@@ -294,16 +312,23 @@ fn write_identity(
             IncrReason::OutputChanged(format!("{step}: {error}"))
         }
     })?;
+    if let (Some(m), Some(bytes)) = (ctx.plan.bookkeeping.mortar_map.as_deref(), &r.map) {
+        let path = cwd.join(m);
+        mortar_image::output::write_whole(&path, bytes, 0o666)
+            .map_err(|(_, d)| IncrReason::OutputChanged(format!("map: {d:?}")))?;
+    }
     let c = &r.refill.counts;
-    Ok(Updated {
-        lines: format!(
-            "incremental: update ({:?}{}) changed=1 ranges={} bytes={} (M2a: O(link) twice over, the front and the whole state; no time is read from it)\n",
-            w.path,
-            w.copy_because.map(|b| format!(": {b}")).unwrap_or_default(),
-            c.ranges,
-            c.dirty
-        ),
-    })
+    let line = format!(
+        "incremental: update ({:?}{}) changed=1 ranges={} bytes={} (M2a: O(link) twice over, the front and the whole state; no time is read from it)\n",
+        w.path,
+        w.copy_because.map(|b| format!(": {b}")).unwrap_or_default(),
+        c.ranges,
+        c.dirty
+    );
+    // `--incremental-report`: the file, or standard error (the driver's).
+    let mut lines = String::new();
+    session.emit_report(&line, &mut lines);
+    Ok(Updated { lines })
 }
 
 /// Path (A) (record 0.1, ruling G-1): the WHOLE front over the new
@@ -329,6 +354,7 @@ pub fn image_link<T>(
     match front {
         Some(mut f) if quiet => {
             f.keep_leaves = true;
+            f.args = ctx.args.iter().map(|a| a.as_encoded_bytes().to_vec()).collect();
             go(&f)
         }
         _ => Err(IncrReason::UpdateNotImplemented(Some(Unimplemented::Diags))),

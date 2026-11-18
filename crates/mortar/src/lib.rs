@@ -364,6 +364,7 @@ fn invoke_with4(
                 policy: diagnostics.policy(),
                 pool,
                 out_path: &out_path,
+                args: &parsed.args,
             };
             let reason = match update::run(&s, &parsed, cwd, &ctx) {
                 // M2a: U5 on are not wired, so no update finishes yet; the
