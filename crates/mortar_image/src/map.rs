@@ -683,7 +683,14 @@ pub(crate) fn decisions_of(t: &crate::link::LinkTables<'_, '_>) -> Decisions {
             std::collections::BTreeMap::new();
         for (sid, p) in pl.place.iter() {
             let Some((c, at)) = p.get() else { continue };
-            if !fill_holes.contains_key(&c.0) || !l.liveness.is_live(sid) {
+            // A folded section (layout.md §4.1, `Folds`) takes no bytes:
+            // not a member, as the image plan skips it. No link folds
+            // today (the front's `Folds` is empty; `--icf` is refused by
+            // name, cli.md); WP-218 F-5.
+            if !fill_holes.contains_key(&c.0)
+                || !l.liveness.is_live(sid)
+                || l.layout.folds.is_folded(sid)
+            {
                 continue;
             }
             let Some((file, _)) = l.resolution.sh_index(sid) else { continue };

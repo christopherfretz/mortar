@@ -47,6 +47,7 @@ fn sources(arch: Arch, imm: u32, pad: usize) -> [String; 3] {
                 .to_owned(),
             "\t.data\n\t.globl d\nd:\t.quad 7\n\
              \t.section .rodata.str1.1,\"aMS\",@progbits,1\n\t.asciz \"hello\"\n\t.asciz \"world\"\n\
+             \t.section .rodata.cst8,\"aM\",@progbits,8\n\t.p2align 3\n\t.quad 0x1122334455667788\n\
              \t.section .note.GNU-stack,\"\",@progbits\n"
                 .to_owned(),
             format!(
@@ -62,6 +63,7 @@ fn sources(arch: Arch, imm: u32, pad: usize) -> [String; 3] {
                 .to_owned(),
             "\t.data\n\t.globl d\nd:\t.quad 7\n\
              \t.section .rodata.str1.1,\"aMS\",%progbits,1\n\t.asciz \"hello\"\n\t.asciz \"world\"\n\
+             \t.section .rodata.cst8,\"aM\",%progbits,8\n\t.p2align 3\n\t.quad 0x1122334455667788\n\
              \t.section .note.GNU-stack,\"\",%progbits\n"
                 .to_owned(),
             format!(
@@ -697,6 +699,18 @@ fn update_map_states_the_symtab_plan() {
             ] {
                 assert!(lines.contains(&want), "{arch:?}: no `{want}` in\n{with}");
             }
+            // F-4 (ruling 3): a fragment's class in the inputs' terms:
+            // `sh_flags` bits (SHF_MERGE 0x10, SHF_STRINGS 0x20),
+            // `sh_entsize`, `sh_addralign` in BYTES.
+            let frags: Vec<&str> = lines.iter().copied().filter(|l| l.starts_with("frag ")).collect();
+            assert!(
+                frags.iter().any(|l| l.split(' ').nth(2) == Some("30,1,1")),
+                "{arch:?}: the strings' class: {frags:?}"
+            );
+            assert!(
+                frags.iter().any(|l| l.split(' ').nth(2) == Some("10,8,8")),
+                "{arch:?}: the cst8 class: {frags:?}"
+            );
             let blocks: Vec<&str> =
                 lines.iter().copied().filter(|l| l.starts_with("symblock ")).collect();
             assert_eq!(blocks.len(), 3, "{arch:?}: {blocks:?}");
@@ -757,6 +771,59 @@ fn build_id_is_the_tree_over_the_whole_new_output() {
             assert!(counts.build_id_read < want.len() as u64, "{arch:?}: {counts:?}");
             let got = patched(&prev, &r, &b, want.len() as u64);
             assert_eq!(got[id.clone()], want[id.clone()], "{arch:?}: the update's id");
+        });
+    }
+}
+
+// spec: model.md §4.1 (a folded section has its target's place), image.md
+// I-78a (`region`: a run of one file's members), WP-218 F-5: a folded
+// section is not a member of its target's region (it takes no bytes; the
+// image plan skips it too). No link folds today (`--icf` is refused by
+// name); the fold is made here on a linked fixture's layout.
+#[test]
+fn a_folded_section_is_in_no_region() {
+    use mortar_core::column::Column;
+    use mortar_core::id::OptId;
+    use mortar_core::layout::Folds;
+    use mortar_image::map::render;
+    for arch in ARCHES {
+        let Some(fx) = Fixture::new(arch, "u6-fold") else { continue };
+        let l0 = fx.write("prev", None);
+        fx.with_front("prev", Some(&l0), |f, store| {
+            let regions = |f: &Front<'_>| -> Vec<String> {
+                let pool = Pool::new(1);
+                let m = mortar::image::with_link(f, store, &|_| {}, |l| {
+                    render(&mortar_image::link::map_of(l), &pool)
+                })
+                .unwrap();
+                String::from_utf8(m)
+                    .unwrap()
+                    .lines()
+                    .filter(|l| l.starts_with("region "))
+                    .map(str::to_owned)
+                    .collect()
+            };
+            let text_of = |f: &Front<'_>, name: &str| -> SectionId {
+                f.resolution.section_base[file_of(f, name)]
+                    .iter()
+                    .find(|&s| {
+                        f.layout.placement.place[s].get().is_some_and(|(c, _)| {
+                            f.layout.placement.chunks[c].name(&f.assignment)
+                                == Some(&b".text"[..])
+                        })
+                    })
+                    .unwrap()
+            };
+            let before = regions(f);
+            let (a, c) = (text_of(f, "a.o"), text_of(f, "c.o"));
+            let n = f.resolution.sections.len();
+            let mut folded = Column::filled(n, OptId::NONE);
+            folded[c] = OptId::some(a);
+            f.layout.folds = Folds { folded: Some(folded) };
+            f.layout.placement.place[c] = f.layout.placement.place[a];
+            let after = regions(f);
+            assert!(after.iter().all(|r| before.contains(r)), "{arch:?}: {before:?} -> {after:?}");
+            assert_eq!(after.len() + 1, before.len(), "{arch:?}: c.o's region gone: {after:?}");
         });
     }
 }
