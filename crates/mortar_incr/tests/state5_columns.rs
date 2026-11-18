@@ -88,6 +88,7 @@ type Reader = fn(&MemoryState) -> Vec<Option<String>>;
 
 /// One identity reader per listed reference: what each row's column
 /// names, by the named row's own identity (a path, a name, ...).
+#[allow(clippy::too_many_lines)]
 fn readers() -> BTreeMap<(u32, &'static str), Reader> {
     let mut r: BTreeMap<(u32, &'static str), Reader> = BTreeMap::new();
     r.insert((kind::META, "version"), |m| vec![st(m, m.meta.version)]);
@@ -200,18 +201,9 @@ fn readers() -> BTreeMap<(u32, &'static str), Reader> {
                     let r = m.file_index[f as usize].ranges[0];
                     (r.first..r.first + r.count).filter_map(|s| se(m, s)).collect()
                 } else {
-                    live_secs(m)
-                        .filter(|x| x.file == f)
-                        .filter_map(|x| {
-                            se(
-                                m,
-                                m.sections
-                                    .iter()
-                                    .position(|y| std::ptr::eq(x, y))
-                                    .map(|p| p as u32)
-                                    .unwrap_or(NONE),
-                            )
-                        })
+                    (0..m.sections.len() as u32)
+                        .filter(|&s| m.sections[s as usize].file == f)
+                        .filter_map(|s| se(m, s))
                         .collect()
                 };
                 Some(format!("{:?}: {secs:?}", fl(m, f)))
@@ -678,8 +670,7 @@ fn reseal(b: &mut [u8]) {
     let mut dir = state5::parse_directory(&h, &b[state5::HEADER..dir_end]).expect("directory");
     for e in &mut dir {
         let body = &b[e.body as usize..(e.body + e.body_len()) as usize];
-        let list: Vec<u8> =
-            body.chunks(state5::BLOCK).flat_map(|blk| mortar_digest::l128(blk)).collect();
+        let list: Vec<u8> = body.chunks(state5::BLOCK).flat_map(mortar_digest::l128).collect();
         assert_eq!(list.len() as u64, e.list_len());
         b[e.list as usize..(e.list + e.list_len()) as usize].copy_from_slice(&list);
         e.list_hash = mortar_digest::l128(&list);
@@ -704,7 +695,6 @@ fn entry(b: &[u8], k: u32) -> state5::Entry {
 /// canon, and the lazy view's per-file and per-key reads. `Err` if any
 /// refused; a panic is the test's failure.
 fn read_all(b: &[u8]) -> Result<(), String> {
-    use mortar_incr::update::view::StateRows;
     let m = read::decode(b).map_err(|e| format!("decode: {e}"))?;
     compact::normalize(&m).map_err(|e| format!("normalize: {e}"))?;
     state5::canon(b).map_err(|e| format!("canon: {e}"))?;
@@ -795,7 +785,7 @@ fn every_column_mutated_no_reader_panics() {
         if e.rows == 0 || *k == kind::STRINGS {
             continue;
         }
-        let width = e.width as u64;
+        let width = u64::from(e.width);
         // a file-keyed table: rows inside a file's range (slack rows are
         // never read)
         let rows: Vec<u64> = match FileTable::ALL.iter().position(|t| t.kind() == *k) {

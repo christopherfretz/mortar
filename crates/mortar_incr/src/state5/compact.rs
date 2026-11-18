@@ -705,7 +705,7 @@ pub fn normalize(m: &MemoryState) -> Result<MemoryState, StateError> {
         if crate::update::diags::file_unit(key.phase) {
             key.unit = file(key.unit)?;
         }
-        n.diags.push(DiagRow { subjects, refs, key, ..d.clone() });
+        n.diags.push(DiagRow { subjects, key, refs, ..d.clone() });
     }
     // In the writer's key order (WP-247 item 3): `encode` appends each
     // row's strings in this order, so a capture's and its decode's

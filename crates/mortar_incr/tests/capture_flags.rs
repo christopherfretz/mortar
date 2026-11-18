@@ -48,7 +48,7 @@ fn eh_fixed_is_ins_34a_sentence() {
     let gcc = cie(b"zR", &[0x1b]);
     let cxx = cie(b"zPLR", &[0x9b, 0, 0, 0, 0, 0x1b, 0x1b]);
     for b64 in [true, false] {
-        assert!(!eh_fixed(&section(&[gcc.clone()]), b64));
+        assert!(!eh_fixed(&section(std::slice::from_ref(&gcc)), b64));
         assert!(!eh_fixed(&section(&[gcc.clone(), fde(gcc.len()), cxx.clone()]), b64));
         assert!(!eh_fixed(&[], b64), "no records");
         assert!(!eh_fixed(&section(&[]), b64), "a terminator only");
@@ -84,7 +84,7 @@ fn eh_fixed_is_ins_34a_sentence() {
         assert!(eh_fixed(&section(&[gcc.clone(), c.clone()]), true), "{what}");
     }
     // past the terminator nothing is read (the walk stops at length 0)
-    let mut after = section(&[gcc.clone()]);
+    let mut after = section(std::slice::from_ref(&gcc));
     after.extend_from_slice(&cie(b"zR", &[0x00]));
     assert!(!eh_fixed(&after, true));
 }

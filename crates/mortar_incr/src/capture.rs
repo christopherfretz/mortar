@@ -957,17 +957,16 @@ pub fn object_flags(inputs: &Inputs<'_>, file: FileId) -> u8 {
         }
         let Ok(Some(range)) = sec.file_range() else { continue }; // NOBITS: no records
         let range = range.start as u64..range.end as u64;
-        let bytes = match inputs.resident(file, range.clone()) {
-            Some(b) => b,
-            None => {
-                buf.clear();
-                buf.resize((range.end - range.start) as usize, 0);
-                if inputs.copy_to(file, range, &mut buf).is_err() {
-                    flags |= file_flags::EH_FIXED;
-                    continue;
-                }
-                &buf[..]
+        let bytes = if let Some(b) = inputs.resident(file, range.clone()) {
+            b
+        } else {
+            buf.clear();
+            buf.resize((range.end - range.start) as usize, 0);
+            if inputs.copy_to(file, range, &mut buf).is_err() {
+                flags |= file_flags::EH_FIXED;
+                continue;
             }
+            &buf[..]
         };
         if eh_fixed(bytes, class64) {
             flags |= file_flags::EH_FIXED;
@@ -1628,6 +1627,7 @@ pub fn state5_bytes(state: &State, rows: Rows5, collide: bool) -> Result<Vec<u8>
 ///
 /// # Errors
 /// As [`state5_bytes`], but the encoding's.
+#[allow(clippy::too_many_lines)]
 pub fn state5_rows(
     state: &State,
     rows: Rows5,
