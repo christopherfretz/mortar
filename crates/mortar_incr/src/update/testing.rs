@@ -73,6 +73,189 @@ impl MemoryState {
         StateView::new(Box::new(self))
     }
 
+    /// The rows a format-4 state holds, as format 5 shapes them (WP-207
+    /// §C: U-1's "`StateView` for format 4"), so that a package can test
+    /// against the states of real full links before U-2 lands: `FILES`
+    /// with `rank = FileId << 20` and round 0; `MENTIONS` and the other
+    /// file-keyed rows by the file of their section; `KEY_REFS` as
+    /// `MENTIONS` transposed; `RESOLVED` one row per `SYMBOLS` row (a key
+    /// format 4 did not resolve: the default row); `GROUPS` from
+    /// `RESOLVED`'s kind-6 rows; `FRAGS` with `refs` 1; `META`'s build id
+    /// inline. **Not derivable from format 4**, left empty: `EDGES`,
+    /// `SYMTAB`, `SYMTAB_KEYS`, `COMMONS`, `ODR_*`, `DIAGS`, `LAZY` members
+    /// (format 4 stores none), and the boot id. `FILE_INDEX` gives each
+    /// file's position and count in these vectors.
+    #[must_use]
+    pub fn from_format4(s: &crate::format::State) -> Self {
+        let mut m = Self {
+            plan_hash: s.plan_hash,
+            probes: s.probes.clone(),
+            outsecs: s.outsecs.clone(),
+            chunks: s.chunks.clone(),
+            order: s.order.clone(),
+            segments: s.segments.clone(),
+            slots: s.slots.clone(),
+            sizes: s.sizes.clone(),
+            sym_place: s.sym_place.clone(),
+            defined: s.defined.clone(),
+            patches: s.patches.clone(),
+            redirects: s.redirects.clone(),
+            sized: s.sized.clone(),
+            layout: s.layout.clone(),
+            leaves: s.leaves.clone(),
+            stat: s.stat.clone(),
+            strings: s.strings.clone(),
+            sections: s.sections.clone(),
+            symbols: s.symbols.clone(),
+            ..Self::default()
+        };
+        let id = s.str(s.meta.build_id);
+        let mut build_id = [0u8; 64];
+        let n = id.len().min(64);
+        build_id[..n].copy_from_slice(&id[..n]);
+        m.meta = MetaRow {
+            version: s.meta.version,
+            machine: s.meta.machine,
+            class: s.meta.class,
+            output_kind: s.meta.output_kind,
+            leaf_fn: s.meta.leaf_fn,
+            file_size: s.meta.file_size,
+            sealed_start: s.meta.sealed_start,
+            sealed_end: s.meta.sealed_end,
+            build_id_len: u8::try_from(n).unwrap_or(0),
+            build_id,
+            ..MetaRow::default()
+        };
+        m.files = s
+            .files
+            .iter()
+            .enumerate()
+            .map(|(i, f)| FileRow {
+                kind: f.kind,
+                member: f.member,
+                flags: f.flags,
+                path: f.path,
+                mention: f.mention,
+                member_name: f.member_name,
+                member_ordinal: f.member_ordinal,
+                base: f.base,
+                len: f.len,
+                hash: f.hash,
+                rank: (i as u64) << 20,
+                round: 0,
+            })
+            .collect();
+        m.keyed_from_format4(s);
+        m.file_index = (0..m.files.len()).map(|f| m.index_row(FileId(f as u32))).collect();
+        m
+    }
+
+    /// [`Self::from_format4`]'s file-keyed, key-keyed and key-parallel
+    /// rows.
+    fn keyed_from_format4(&mut self, s: &crate::format::State) {
+        use crate::format::{NONE, def_kind};
+        let m = self;
+        let file_of =
+            |section: u32| FileId(s.sections.get(section as usize).map_or(NONE, |r| r.file));
+        for r in &s.mentions {
+            let row = MentionRow {
+                symbol: r.symbol,
+                kind: r.kind,
+                bind: r.bind,
+                typ: r.typ,
+                other: r.other,
+                section: r.section,
+            };
+            m.mentions.push((FileId(r.file), row));
+            let mut flags = r.other & super::rows::key_ref_flags::VISIBILITY;
+            if r.section != NONE {
+                flags |= super::rows::key_ref_flags::IN_SECTION;
+            }
+            m.key_refs.push(KeyRefRow {
+                key: r.symbol,
+                file: r.file,
+                def: r.kind,
+                bind: r.bind,
+                typ: r.typ,
+                flags,
+                tomb: false,
+            });
+        }
+        m.key_refs.sort_by_key(|r| (r.key, r.file));
+        m.resolved = vec![ResolvedRow::default(); s.symbols.len()];
+        for r in &s.resolved {
+            if r.kind == def_kind::COMDAT {
+                m.groups.push(GroupRow { signature: r.name, keeper: r.file, tomb: false });
+            } else if let Some(slot) = m.resolved.get_mut(r.symbol as usize) {
+                *slot = ResolvedRow {
+                    kind: r.kind,
+                    typ: r.typ,
+                    bind: r.bind,
+                    other: r.other,
+                    section: r.section,
+                    value: r.value,
+                    size: r.size,
+                };
+            }
+        }
+        m.index = s.index.iter().map(|r| (file_of(r.unit), *r)).collect();
+        m.frag_at = s.frag_at.iter().map(|r| (file_of(r.section), *r)).collect();
+        m.eh_records = s.eh_records.iter().map(|r| (file_of(r.section), r.clone())).collect();
+        m.frags = s
+            .frags
+            .iter()
+            .map(|f| FragRow {
+                out: f.out,
+                ordinal: f.ordinal,
+                hash: f.hash,
+                offset: f.offset,
+                refs: 1,
+                tomb: false,
+            })
+            .collect();
+        m.holes = s
+            .holes
+            .iter()
+            .map(|h| HoleRow {
+                chunk: h.chunk,
+                kind: h.kind,
+                offset: h.offset,
+                size: h.size,
+                tomb: false,
+            })
+            .collect();
+    }
+
+    /// `FILE_INDEX`'s row of `file` over these vectors (first position and
+    /// count of the file's rows; capacity = count).
+    fn index_row(&self, file: FileId) -> FileIndexRow {
+        use super::rows::{FileTable, RowRange};
+        fn range(at: impl Iterator<Item = bool>) -> RowRange {
+            let mut r = RowRange::default();
+            for (i, mine) in at.enumerate() {
+                if mine {
+                    if r.count == 0 {
+                        r.first = u32::try_from(i).unwrap_or(u32::MAX);
+                    }
+                    r.count += 1;
+                }
+            }
+            r.capacity = r.count;
+            r
+        }
+        let mut row = FileIndexRow::default();
+        row.ranges[FileTable::Sections as usize] =
+            range(self.sections.iter().map(|s| s.file == file.0));
+        row.ranges[FileTable::Mentions as usize] = range(self.mentions.iter().map(|r| r.0 == file));
+        row.ranges[FileTable::Index as usize] = range(self.index.iter().map(|r| r.0 == file));
+        row.ranges[FileTable::Edges as usize] = range(self.edges.iter().map(|r| r.0 == file));
+        row.ranges[FileTable::FragAt as usize] = range(self.frag_at.iter().map(|r| r.0 == file));
+        row.ranges[FileTable::EhRecords as usize] =
+            range(self.eh_records.iter().map(|r| r.0 == file));
+        row.ranges[FileTable::Symtab as usize] = range(self.symtab.iter().map(|r| r.0 == file));
+        row
+    }
+
     /// Append `s` to `STRINGS` and give its `Str`.
     pub fn intern(&mut self, s: &[u8]) -> Str {
         let off = u32::try_from(self.strings.len()).unwrap_or(u32::MAX);
@@ -281,5 +464,42 @@ mod tests {
         assert_eq!(refs.iter().map(|r| r.file).collect::<Vec<_>>(), [1, 2]);
         assert!(matches!(v.symbol(SymbolId(1)), Err(IncrReason::StateCorrupt(_))));
         assert_eq!(v.count(kind::SYMBOLS), 1);
+    }
+
+    // spec: WP-207 §C, U-1's "StateView for format 4"
+    #[test]
+    fn format4_rows_as_format5() {
+        use crate::format;
+        let mut s = format::State::default();
+        s.files.push(format::FileRow::default());
+        s.files.push(format::FileRow::default());
+        s.sections.push(SectionRow { file: 1, ..SectionRow::default() });
+        s.symbols.push(format::SymbolRow::default());
+        s.mentions.push(format::MentionRow {
+            file: 1,
+            symbol: 0,
+            section: 0,
+            other: 2,
+            ..format::MentionRow::default()
+        });
+        s.resolved.push(format::ResolvedRow {
+            symbol: 0,
+            section: 0,
+            value: 8,
+            ..format::ResolvedRow::default()
+        });
+        s.index.push(format::IndexRow { unit: 0, kind: 0, target: 0 });
+        let m = MemoryState::from_format4(&s);
+        let v = m.view();
+        assert_eq!(v.file(FileId(1)).unwrap().rank, 1 << 20);
+        assert_eq!(v.mentions_of(FileId(1)).unwrap().len(), 1);
+        assert_eq!(v.index_of(FileId(1)).unwrap().len(), 1);
+        assert_eq!(v.resolved(SymbolId(0)).unwrap().value, 8);
+        let refs = v.key_refs(SymbolId(0)).unwrap();
+        assert_eq!(
+            (refs[0].file, refs[0].flags),
+            (1, 2 | super::super::rows::key_ref_flags::IN_SECTION)
+        );
+        assert_eq!(v.file_index(FileId(1)).unwrap().ranges[0].count, 1);
     }
 }

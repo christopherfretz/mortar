@@ -916,4 +916,28 @@ mod tests {
         assert!(IncrReason::from_name("update-not-implemented", "nonsense").is_none());
         assert!(IncrReason::from_name("full requested", "").is_none());
     }
+
+    // spec: incr.md §7 (the type has exactly the table's reasons, in its
+    // order, and the update-not-implemented row names every detail word)
+    #[test]
+    fn names_are_the_spec_table() {
+        let text =
+            std::fs::read_to_string(concat!(env!("CARGO_MANIFEST_DIR"), "/../../spec/incr.md"))
+                .expect("spec/incr.md");
+        let start = text.find("\n## 7. Fall-backs").expect("§7");
+        let end = start + text[start..].find("\n## 8.").expect("§8");
+        let rows: Vec<&str> = text[start..end]
+            .lines()
+            .filter_map(|l| l.strip_prefix("| `"))
+            .filter_map(|l| l.split('`').next())
+            .collect();
+        assert_eq!(rows, IncrReason::NAMES);
+        let row = text[start..end]
+            .lines()
+            .find(|l| l.starts_with("| `update-not-implemented`"))
+            .expect("the row");
+        for w in Unimplemented::ALL {
+            assert!(row.contains(&format!("`{}`", w.word())), "{}", w.word());
+        }
+    }
 }
