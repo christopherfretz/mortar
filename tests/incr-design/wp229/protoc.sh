@@ -1,5 +1,5 @@
 #!/bin/bash
-# protoc.sh WORK MORTAR: WP-229 item 4, gdb's start-up without the GNU
+# protoc.sh WORK MORTAR [gcc|clang]: WP-229 item 4, gdb's start-up without the GNU
 # name index. protoc 3.21.12 (the bench's source) built static,
 # `-O0 -g -gsplit-dwarf`, by GCC 14 and Clang 19 (R14's build.sh), then
 # linked by mortar from cmake's own link line twice: plain (the index
@@ -10,12 +10,12 @@
 # cold run right after the link and 7 warm runs, interleaved; lldb the
 # same (`breakpoint set -n main`). The last line is `protoc: done`.
 set -u; ulimit -c 0
-W="$1"; M="$2"
+W="$1"; M="$2"; ONLY="${3:-gcc clang}"
 S=/Volumes/AgentWork/mortar-helper/.build/bench-work/src/4eab9b524aa5913c/protobuf-3.21.12
 mkdir -p "$W/bin"; ln -sf "$M" "$W/bin/ld"
 waitload() { while [ "$(cut -d. -f1 /proc/loadavg)" -ge 12 ]; do sleep 60; done; }
-t() { local s e; s=$(date +%s.%N); "$@" > /dev/null 2>&1; e=$(date +%s.%N); echo "$e - $s" | bc; }
-for c in gcc clang; do
+t() { local s e; s=$(date +%s.%N); "$@" > /dev/null 2>&1; e=$(date +%s.%N); awk -v s="$s" -v e="$e" 'BEGIN { printf "%.3f\n", e - s }'; }
+for c in $ONLY; do
   case $c in gcc) CC=/usr/bin/gcc CXX=/usr/bin/g++;; clang) CC=/usr/bin/clang-19 CXX=/usr/bin/clang++-19;; esac
   B="$W/build-$c"; mkdir -p "$B"
   if [ ! -x "$B/protoc" ]; then

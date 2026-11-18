@@ -1,6 +1,11 @@
 #!/bin/bash
-# skel.sh WORK MORTAR: WP-229 item 4 and ruling 8, AArch64 (native: the
-# programs run under gdb and lldb).
+# skel.sh WORK MORTAR [a64|x64]: WP-229 item 4 and ruling 8. a64 (the
+# default): native, the programs run under gdb and lldb. x64: objects by
+# x86_64-linux-gnu-g++ and clang++-22 --target=x86_64-linux-gnu, linked by
+# x86_64-linux-gnu-g++; each program runs under qemu-x86_64 -g PORT, and
+# gdb-multiarch (`target remote`) and lldb (`gdb-remote`) attach to it.
+# llvm-dwp runs under `timeout 60`: llvm-dwp 19 and 22 do not finish on
+# GCC 14's DWARF 5 m.dwo (alone, no linker involved).
 #
 # Per compiler (g++, clang++-22) and DWARF version (4, 5), with
 # -gsplit-dwarf, .dwo files present:
@@ -20,7 +25,7 @@
 # .dwo files moved away). llvm-dwarfdump --verify on each output. One
 # summary line per comparison; the last line is `skel: done`.
 set -u; ulimit -c 0
-W="$1"; M="$2"
+W="$1"; M="$2"; T="${3:-a64}"
 D=$(cd "$(dirname "$0")" && pwd)
 mkdir -p "$W/bin"; ln -sf "$M" "$W/bin/ld"
 cd "$W" || exit 1
@@ -99,8 +104,22 @@ norm() { sed -e 's/0x[0-9a-f]*/ADDR/g' -e 's/[Pp]rocess [0-9]*/process N/g' -e "
   -e '/^(UOnly) x = (a = 1, b = 3/!s/^(UOnly) x = .*/(UOnly) x = UNINITIALIZED/' \
   -e '/^x = {a = 1, b = 3/!s/^x = {.*/x = UNINITIALIZED/' | grep -v '^(lldb) quit'; }
 tr_run() { # dir out tag
-  ( cd "$1" && gdb -batch -nx -x ../g.cmd ./"$2" 2>&1 | norm > "$2.$3.gdb"
-    lldb -b -s ../l.cmd ./"$2" 2>&1 | norm > "$2.$3.lldb" )
+  if [ "$T" = a64 ]; then
+    ( cd "$1" && gdb -batch -nx -x ../g.cmd ./"$2" 2>&1 | norm > "$2.$3.gdb"
+      lldb -b -s ../l.cmd ./"$2" 2>&1 | norm > "$2.$3.lldb" )
+    return
+  fi
+  ( cd "$1" || exit 1
+    P=$((20000 + RANDOM % 30000))
+    sed -e "s/^run$/target remote localhost:$P\ncontinue/" -e 's/^quit$/kill\nquit/' ../g.cmd > g.x.cmd
+    timeout 120 qemu-x86_64 -g $P ./"$2" > /dev/null 2>&1 &
+    timeout 120 gdb-multiarch -batch -nx -x g.x.cmd ./"$2" 2>&1 | sed '/QEMU: Terminated/d' | norm > "$2.$3.gdb"
+    wait
+    P=$((20000 + RANDOM % 30000))
+    sed -e "s/^run$/gdb-remote localhost:$P\ncontinue/" -e 's/^quit$/kill\nquit/' ../l.cmd > l.x.cmd
+    timeout 120 qemu-x86_64 -g $P ./"$2" > /dev/null 2>&1 &
+    timeout 120 lldb -b -s l.x.cmd ./"$2" 2>&1 | sed '/QEMU: Terminated/d' | norm > "$2.$3.lldb"
+    wait )
 }
 cmpx() { # dir a b tag
   for t in gdb lldb; do
@@ -109,15 +128,21 @@ cmpx() { # dir a b tag
   done
 }
 for comp in g++ clang++-22; do for dw in 4 5; do
-  d="$comp-dwarf$dw"; mkdir -p "$d"; cp m.cc h.h "$d"/
+  d="$T-$comp-dwarf$dw"; mkdir -p "$d"; cp m.cc h.h "$d"/
   ( cd "$d" || exit 1
     F="-O0 -g -gdwarf-$dw -gsplit-dwarf -ffunction-sections -fdata-sections"
+    drv=$comp
+    if [ "$T" = x64 ]; then
+      case $comp in g++) comp=x86_64-linux-gnu-g++;; *) comp="$comp --target=x86_64-linux-gnu";; esac
+      drv=x86_64-linux-gnu-g++
+    fi
     $comp $F -c m.cc -o m.o
     genu 1; $comp $F -c u.cc -o u.o
-    args=$(nm --defined-only u.o | awk '$2 ~ /[TDBRVWutdbr]/ && $3 !~ /^\./ && $3 !~ /^\$/ {printf "--redefine-sym %s=o1_%s ", $3, $3}')
-    objcopy $args u.o dead.o
+    OC=objcopy; NM=nm; [ "$T" = x64 ] && OC=x86_64-linux-gnu-objcopy && NM=x86_64-linux-gnu-nm
+    args=$($NM --defined-only u.o | awk '$2 ~ /[TDBRVWutdbr]/ && $3 !~ /^\./ && $3 !~ /^\$/ {printf "--redefine-sym %s=o1_%s ", $3, $3}')
+    $OC $args u.o dead.o
     genu 2; $comp $F -c u.cc -o u.o
-    L="$comp -static -B$W/bin -Wl,--gc-sections"
+    L="$drv -static -B$W/bin -Wl,--gc-sections"
     $L m.o u.o -o plain 2> plain.err || echo "$d: plain link FAILED $(head -1 plain.err)"
     $L -Wl,--incremental=full m.o u.o -o full 2> full.err || echo "$d: full link FAILED $(head -1 full.err)"
     $L -Wl,--incremental=full m.o dead.o u.o -o emul 2> emul.err || echo "$d: emul link FAILED $(head -1 emul.err)"
@@ -136,7 +161,7 @@ for comp in g++ clang++-22; do for dw in 4 5; do
   cmpx "$d" plain full dwo; cmpx "$d" full emul dwo; cmpx "$d" full emuldrop dwo
   # dwp: one package per output, the .dwo files moved away.
   ( cd "$d" && mkdir -p dwos && for x in plain full emul emuldrop; do
-      llvm-dwp-22 -e $x -o $x.dwp 2> $x.dwp.err || echo "$d: llvm-dwp $x FAILED $(head -1 $x.dwp.err)"
+      timeout 60 llvm-dwp-22 -e $x -o $x.dwp 2> $x.dwp.err || echo "$d: llvm-dwp $x FAILED $(head -1 $x.dwp.err)"
     done && mv m.dwo u.dwo dwos/ )
   for x in plain full emul emuldrop; do tr_run "$d" $x dwp; done
   cmpx "$d" plain full dwp; cmpx "$d" full emul dwp; cmpx "$d" full emuldrop dwp
@@ -147,4 +172,4 @@ for comp in g++ clang++-22; do for dw in 4 5; do
   done
   ( cd "$d" && mv dwos/m.dwo dwos/u.dwo . && rmdir dwos )
 done; done
-echo "skel: done"
+echo "skel $T: done"
