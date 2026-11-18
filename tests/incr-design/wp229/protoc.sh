@@ -32,10 +32,11 @@ for c in $ONLY; do
   for v in plain incr; do
     case $v in plain) x="";; incr) x="-Wl,--incremental=full";; esac
     out="$W/protoc-$c-$v"
-    (cd "$B" && eval "${link/ -o protoc / -o $out } -B$W/bin $x") > "$W/link-$c-$v.log" 2>&1 \
+    line=$(echo "$link" | sed "s| -o [^ ]* | -o $out |")
+    (cd "$B" && eval "$line -B$W/bin $x") > "$W/link-$c-$v.log" 2>&1 \
       || { echo "protoc: $c $v link FAILED: $(head -2 "$W/link-$c-$v.log")"; continue; }
     sk=$(llvm-dwarfdump-22 --debug-info "$out" | grep -c 'DW_TAG_skeleton_unit\|DW_AT_GNU_dwo_name')
-    gi=$(readelf -SW "$out" | awk '/debug_gnu_pub/ {s += strtonum("0x" $6)} END {print s + 0}')
+    gi=0; for h in $(readelf -SW "$out" | sed 's/^ *\[ *[0-9]*\] //' | awk '$1 ~ /debug_gnu_pub/ {print $5}'); do gi=$((gi + 16#$h)); done
     echo "protoc: $c $v size=$(stat -c %s "$out") skeleton-units=$sk gnu-index-bytes=$gi runs: $("$out" --version 2>&1 | head -1)"
     echo "protoc: $c $v gdb-cold=$(cd "$B" && t gdb -batch -nx -ex 'break main' -ex 'info line main' "$out") s"
   done
