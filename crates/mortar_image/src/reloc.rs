@@ -708,6 +708,16 @@ pub(crate) fn relocate(
     }));
     let leads = deferred || img.records.leads(c.section);
     let except_table = c.name == b".gcc_except_table";
+    // I-47a: a dead local's value read in the keeper's COMDAT copy
+    // (`LinkTables::kept_copy_value`) is for a non-alloc referrer with a
+    // debug name only; any other referrer that reaches fill with a dead
+    // target keeps its P-1 value. Those referrers are `.gcc_except_table`
+    // (I-46: 0) and a non-alloc section without a debug name (the scan
+    // reports `DiscardedSection` there). Every other alloc referrer never
+    // gets here with a dead target: the scan reports the event, and a
+    // dead FDE is not written (resolve.md §6.3). An alloc clip pays one
+    // test of `c.alloc`.
+    let own_value = except_table || (!c.alloc && !mortar_arch::is_debug_name(c.name));
     let mut fault = false;
     for &i in picks.iter() {
         let Some(&rec) = view.at(i) else {
@@ -801,6 +811,16 @@ pub(crate) fn relocate(
                     continue;
                 }
             }
+        }
+        // I-47a's referrer condition (see `own_value`): a local that the
+        // scan saw as dead and that has a value has the keeper's value,
+        // which this referrer does not take.
+        if own_value
+            && sym.live
+            && rec.key.as_global().is_none()
+            && img.tables.scan_facts(rec.key, None).is_some_and(|f| f.dead)
+        {
+            sym.live = false;
         }
         let mut out = SectionOut::new(buf, a - base, c.addr.wrapping_add(base), c.alloc, c.name)
             .with_exec(c.exec);

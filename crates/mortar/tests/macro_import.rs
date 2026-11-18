@@ -10,6 +10,11 @@
 //!   without `GRP_COMDAT`; the keeper's copy collected by
 //!   `--gc-sections`). Each word is named by the tag its target starts
 //!   with in the output's `.debug_macro`: no layout is assumed.
+//! - [`i47a_referrers`]: the referrer's half of the condition: an alloc
+//!   referrer (`.gcc_except_table` under a dead FDE) keeps I-46's 0, a
+//!   dead FDE whose own field names the dropped copy is not written, a
+//!   non-alloc referrer without a debug name is refused, a debug-named
+//!   one gets the redirect; GNU ld agrees on each.
 //! - [`gcc_g3_imports_name_gnu_lds_units`]: GCC 14 `-g3` (C, C++; DWARF 4
 //!   and 5; AArch64 and x86-64), linked by mortar and by GNU ld from the
 //!   driver's static line: every `DW_MACRO_import` of mortar's output
@@ -305,6 +310,168 @@ fn i47a_branches_x86_64() {
 #[test]
 fn i47a_branches_i386() {
     branches(Arch::I386);
+}
+
+// ---------------------------------------------------------------------
+// The referrer's half of I-47a's condition: live, non-alloc, debug-named.
+
+/// The keeper `k.o`: `_start`, `g1`'s `.debug_macro` member (16 bytes)
+/// and `g_code`'s code with its FDE. Its `.debug_info` names the member,
+/// so x86-64's GAS gives it a section symbol, as `d.o`'s copy has: GNU
+/// ld's match needs one on both sides (WP-249 record §2.1).
+fn ref_keeper(arch: Arch) -> String {
+    let start = match arch {
+        Arch::Aarch64 => "    mov x8, #93\n    svc #0\n",
+        _ => "    movl $60, %eax\n    syscall\n",
+    };
+    format!(
+        "    .text\n    .globl _start\n_start:\n{start}\
+         \x20   .section .debug_macro,\"\",@progbits\n    .ascii \"PADPADPADPADPAD.\"\n\
+         \x20   .section .debug_macro,\"G\",@progbits,g1,comdat\n\
+         .Lk1:\n    .ascii \"SAMEkeep\"\n    .8byte 0\n\
+         \x20   .section .debug_info,\"\",@progbits\n    .4byte .Lk1\n\
+         \x20   .section .text.code,\"axG\",@progbits,g_code,comdat\n\
+         \x20   .globl codef\ncodef:\n    .cfi_startproc\n    ret\n    .cfi_endproc\n"
+    )
+}
+
+/// `d.o`: `g1`'s and `g_code`'s dropped copies. Its FDE (dead with its
+/// code) names an LSDA in `.gcc_except_table` whose word names `.Ld1`;
+/// `.debug_wp249` (non-alloc, a debug name) names `.Ld1` too.
+const REF_DROPPED: &str = "    .section .debug_macro,\"G\",@progbits,g1,comdat
+.Ld1:
+    .ascii \"SAMEdrop\"
+    .8byte 0
+    .section .text.code,\"axG\",@progbits,g_code,comdat
+    .globl codef
+codef:
+    .cfi_startproc
+    .cfi_personality 0x1b, .Lpers
+    .cfi_lsda 0x1b, .LLSDA
+    ret
+    .cfi_endproc
+.Lpers:
+    .section .gcc_except_table,\"a\",@progbits
+.LLSDA:
+    .ascii \"LSDAWORD\"
+    .4byte .Ld1
+    .section .debug_wp249,\"\",@progbits
+    .ascii \"DBUGWORD\"
+    .4byte .Ld1
+";
+
+/// `n.o`: a non-alloc referrer without a debug name.
+const REF_NOTE: &str = "    .section .debug_macro,\"G\",@progbits,g1,comdat
+.Ln1:
+    .ascii \"SAMEdrop\"
+    .8byte 0
+    .section .wp249note,\"\",@progbits
+    .ascii \"NOTEWORD\"
+    .4byte .Ln1
+";
+
+/// `e.o`: a hand-made `.eh_frame` whose FDE describes `g_code`'s dropped
+/// copy (dead) and whose LSDA field (absptr, 8 bytes) names `.Le1`.
+fn ref_eh(arch: Arch) -> String {
+    let (ty, code_align, ra, cfa) = match arch {
+        Arch::Aarch64 => ("@progbits", 4, 30, ".byte 0x0c, 31, 0"),
+        _ => ("@unwind", 1, 16, ".byte 0x0c, 7, 8"),
+    };
+    format!(
+        "    .section .debug_macro,\"G\",@progbits,g1,comdat\n.Le1:\n\
+         \x20   .ascii \"SAMEdrop\"\n    .8byte 0\n\
+         \x20   .section .text.code,\"axG\",@progbits,g_code,comdat\n.Lcode:\n    ret\n\
+         \x20   .section .eh_frame,\"a\",{ty}\n\
+         .Lcie:\n    .4byte .Lcie_end - .Lcie_id\n.Lcie_id:\n    .4byte 0\n    .byte 1\n\
+         \x20   .asciz \"zLR\"\n    .uleb128 {code_align}\n    .sleb128 -8\n    .uleb128 {ra}\n\
+         \x20   .uleb128 2\n    .byte 0x00\n    .byte 0x1b\n    {cfa}\n    .balign 8, 0\n\
+         .Lcie_end:\n.Lfde:\n    .4byte .Lfde_end - .Lfde_id\n.Lfde_id:\n\
+         \x20   .4byte .Lfde_id - .Lcie\n    .4byte .Lcode - .\n    .4byte 1\n\
+         \x20   .uleb128 8\n    .8byte .Le1\n    .balign 8, 0\n.Lfde_end:\n"
+    )
+}
+
+/// The 4-byte word after `tag` in `bytes`.
+fn word_after(bytes: &[u8], tag: &[u8], label: &str) -> u32 {
+    let at = find(bytes, tag).unwrap_or_else(|| panic!("{label}: no {}", String::from_utf8_lossy(tag)))
+        + tag.len();
+    u32::from_le_bytes(bytes[at..at + 4].try_into().unwrap())
+}
+
+fn referrers(arch: Arch) {
+    let dir = Scratch::new(&format!("i47a-ref-{}", arch.name()));
+    let Some(k) = assemble(arch, dir.path(), "k", &ref_keeper(arch)) else { return };
+    let Some(d) = assemble(arch, dir.path(), "d", REF_DROPPED) else { return };
+    let Some(n) = assemble(arch, dir.path(), "n", REF_NOTE) else { return };
+    let Some(e) = assemble(arch, dir.path(), "e", &ref_eh(arch)) else { return };
+    let link = |out: &str, objs: &[&PathBuf]| {
+        let mut args: Vec<&OsStr> =
+            ["-m", emulation(arch), "-static", "-e", "_start", "-o", out].map(OsStr::new).to_vec();
+        args.extend(objs.iter().map(|o| o.as_os_str()));
+        run_with(Command::new(MORTAR).args(&args).current_dir(dir.path()), b"", Duration::from_mins(5))
+    };
+    let label = arch.name();
+
+    // An alloc referrer, `.gcc_except_table` under a dead FDE: I-46's 0;
+    // a debug-named non-alloc referrer of the same target: the redirect.
+    let o = link("kd", &[&k, &d]);
+    assert!(o.success(), "{label} k d: {}", o.stderr_text());
+    let out = dir.join("kd");
+    let lsda = word_after(&section(&out, ".gcc_except_table"), b"LSDAWORD", label);
+    assert_eq!(lsda, 0, "{label}: .gcc_except_table field (I-46)");
+    let macro_ = section(&out, ".debug_macro");
+    let keep = find(&macro_, b"SAMEkeep").unwrap() as u32;
+    let dbug = word_after(&section(&out, ".debug_wp249"), b"DBUGWORD", label);
+    assert_eq!(dbug, keep, "{label}: .debug_wp249 field (I-47a)");
+    // The dead FDE is not written: one FDE (the keeper's), no LSDA CIE.
+    let eh = section(&out, ".eh_frame");
+    assert!(find(&eh, b"zPLR").is_none(), "{label}: the dead FDE's CIE is written");
+
+    // A dead FDE's own field naming `.Le1`: the FDE is not written.
+    let o = link("ke", &[&k, &e]);
+    assert!(o.success(), "{label} k e: {}", o.stderr_text());
+    let eh = section(&dir.join("ke"), ".eh_frame");
+    assert!(find(&eh, b"zLR").is_none(), "{label}: the dead FDE's CIE is written");
+    assert!(find(&section(&dir.join("ke"), ".debug_macro"), b"SAMEdrop").is_none());
+
+    // A non-alloc referrer without a debug name: refused (resolve.md
+    // §6.3), as before WP-249 and as GNU ld does.
+    let o = link("kn", &[&k, &n]);
+    assert!(!o.success(), "{label} k n: linked");
+    let err = o.stderr_text();
+    assert!(
+        err.contains("discarded section") && err.contains(".wp249note"),
+        "{label} k n: {err}"
+    );
+
+    // GNU ld agrees on each.
+    let Some(bfd) = arch.tool("ld.bfd") else {
+        assert!(!tools_required(), "{} is required", arch.gnu("ld.bfd"));
+        return;
+    };
+    let gnu = |out: &str, objs: &[&PathBuf]| {
+        let mut c = Command::new(&bfd);
+        c.args(["-static", "-e", "_start", "-o", out]).args(objs).current_dir(dir.path());
+        run_with(&mut c, b"", Duration::from_mins(2))
+    };
+    assert!(gnu("gkd", &[&k, &d]).success(), "{label}: GNU ld k d");
+    let g = dir.join("gkd");
+    assert_eq!(word_after(&section(&g, ".gcc_except_table"), b"LSDAWORD", label), 0);
+    let gkeep = find(&section(&g, ".debug_macro"), b"SAMEkeep").unwrap() as u32;
+    assert_eq!(word_after(&section(&g, ".debug_wp249"), b"DBUGWORD", label), gkeep);
+    assert!(!gnu("gkn", &[&k, &n]).success(), "{label}: GNU ld k n linked");
+}
+
+/// I-47a's referrer condition on AArch64.
+#[test]
+fn i47a_referrers_aarch64() {
+    referrers(Arch::Aarch64);
+}
+
+/// I-47a's referrer condition on x86-64.
+#[test]
+fn i47a_referrers_x86_64() {
+    referrers(Arch::X86_64);
 }
 
 // ---------------------------------------------------------------------

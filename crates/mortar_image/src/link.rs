@@ -640,7 +640,10 @@ impl<'a, 's> LinkTables<'a, 's> {
     /// asks, and an alloc `d` (a dropped copy's code) costs one flag test.
     /// `d` and `k` are of a kind placed as a whole (a `Merge` or
     /// `.eh_frame` member is not redirected: its value is not
-    /// `k`'s address plus an offset).
+    /// `k`'s address plus an offset). The referrer's half of the
+    /// condition (live, non-alloc, debug-named) is fill's
+    /// (`reloc.rs`, `own_value`): the value is per key, and only a
+    /// debug-named non-alloc referrer takes it.
     fn kept_copy_value(&self, d: SectionId, v: u64) -> Option<Valued> {
         use mortar_core::resolution::{DropReason, SectionState};
         let r = self.link.resolution;
