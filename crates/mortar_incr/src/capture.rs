@@ -110,6 +110,7 @@ fn hole_byte(kind: HoleKind) -> u8 {
         HoleKind::DeadDebug => hole_kind::DEAD_DEBUG,
         HoleKind::DeadFragment => hole_kind::DEAD_FRAGMENT,
         HoleKind::DeadCie => hole_kind::DEAD_CIE,
+        HoleKind::DeadSlot => hole_kind::DEAD_SLOT,
     }
 }
 
@@ -122,6 +123,7 @@ fn hole_of(b: u8) -> Result<HoleKind, String> {
         hole_kind::DEAD_DEBUG => HoleKind::DeadDebug,
         hole_kind::DEAD_FRAGMENT => HoleKind::DeadFragment,
         hole_kind::DEAD_CIE => HoleKind::DeadCie,
+        hole_kind::DEAD_SLOT => HoleKind::DeadSlot,
         _ => return Err(format!("hole kind {b}")),
     })
 }
@@ -409,6 +411,7 @@ impl Symbols<'_, '_> {
                     ordinal: 0,
                     name: strings.add(k.name),
                     version: k.version.map_or(Str::default(), |v| strings.add(v)),
+                    option: false,
                 }
             }
             SymKind::Local(sym) => {
@@ -421,6 +424,7 @@ impl Symbols<'_, '_> {
                     ordinal: l.ordinal,
                     name: strings.add(l.name),
                     version: Str::default(),
+                    option: false,
                 }
             }
         };

@@ -2745,7 +2745,7 @@ impl LinkTables<'_, '_> {
                     _ => c.name(l.assignment)?,
                 };
                 let kind = match h.kind {
-                    HoleKind::Fill => None,
+                    HoleKind::Fill | HoleKind::DeadSlot => None,
                     HoleKind::EhPad if h.size >= 16 => None,
                     HoleKind::EhPad => return None,
                     HoleKind::Debug | HoleKind::AbbrevTable | HoleKind::DeadDebug => {

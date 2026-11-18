@@ -335,6 +335,13 @@ pub struct SymbolRow {
     /// entries, from `first_global`).
     pub at_file: u32,
     pub at_index: u32,
+    /// Format 5 only (WP-214 seam 6; `spec/incr.md` IN-18e): the key is
+    /// named by an option that gives it a row whether or not a file
+    /// mentions it (`mortar_core::plan::Plan::option_keys`, model.md
+    /// §2.3). Stored in byte 1 of format 5's row (one of the three pad
+    /// bytes after `kind`: 0 bytes); format 4 writes the pad as 0 and reads
+    /// `false`.
+    pub option: bool,
 }
 
 /// `FRAG_AT` (WP-094, format version 3; version 4: the third field is
@@ -590,6 +597,8 @@ pub mod hole_kind {
     pub const DEAD_DEBUG: u8 = 4;
     pub const DEAD_FRAGMENT: u8 = 5;
     pub const DEAD_CIE: u8 = 6;
+    /// A retired slot (seam 6; format 5 only: format 4 never writes it).
+    pub const DEAD_SLOT: u8 = 7;
 }
 
 /// `HOLES`: a range of a chunk no live unit owns (IN-3, IN-3a, IN-30),
@@ -922,6 +931,7 @@ impl Row for SymbolRow {
             version: r.s(),
             at_file: r.u32(),
             at_index: r.u32(),
+            option: false,
         }
     }
 }

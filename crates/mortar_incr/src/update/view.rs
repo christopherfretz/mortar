@@ -22,8 +22,8 @@ use mortar_core::{ChunkId, FileId, OutSecId, SectionId, SymbolId};
 use super::diags::DiagRow;
 use super::rows::{
     CommonRow, CopyRow, EdgeRow, FileIndexRow, FileRow, FragRow, FragUseRow, GroupRow, HoleRow,
-    IndexRow, KeyRefRow, MentionRow, MetaRow, NameRow, OdrClassRow, OdrRefRow, RegionRow,
-    ResolvedRow, SlotRow, SymbolRow, SymtabKeyRow, SymtabRow,
+    IndexRow, KeyRefRow, LocalRange, MentionRow, MetaRow, NameRow, OdrClassRow, OdrRefRow,
+    RegionRow, ResolvedRow, SlotRow, SymbolRow, SymtabKeyRow, SymtabRow,
 };
 use crate::format::{
     ChunkRow, DefinedRow, EhRow, LayoutRow, OutSecRow, PatchRow, ProbeRow, RedirectRow, SectionRow,
@@ -393,8 +393,11 @@ pub struct ChangedFile {
     /// position in [`ChangedFiles::appeared`]) for an appeared file.
     pub file: FileId,
     pub change: Change,
-    /// Its `FILES` row as the new bytes give it (hash, flags; `rank` and
-    /// `round` are U-2's and U-3's).
+    /// Its `FILES` row as the new bytes give it (hash, flags, `stack` and
+    /// `properties` from the full link's own producers over the new bytes;
+    /// `round` is U-3's). `rank`: the JOIN sets an appeared file's (IN-18e's
+    /// midpoint of its neighbours') before the first `extract`; every other
+    /// file keeps its stored rank (seam 6).
     pub row: FileRow,
     /// The id its first new section takes: its sections are
     /// `first_section .. first_section + sections.len()`, past the
@@ -417,7 +420,9 @@ pub struct ChangedFile {
     /// no longer extracted file.
     pub first_global: u32,
     /// Its `MENTIONS` rows, `symbol` = position in `keys`; the `k`-th is
-    /// symbol-table entry `first_global + k`, none skipped (D7).
+    /// symbol-table entry `first_global + k`, none skipped (D7). A row's
+    /// `section` (when not `NONE`) is `first_section + k` for the `k`-th
+    /// entry of [`ChangedFile::sections`] (seam 6).
     pub mentions: Vec<MentionRow>,
     /// The `st_value` and `st_size` of each mention, position for position
     /// with `mentions` (WP-215 seam 3, G1): made by the capture function
@@ -578,6 +583,22 @@ pub struct FileRanges {
     pub frag_uses: Option<Vec<FragUseRow>>,
     pub eh_records: Option<Vec<EhRow>>,
     pub symtab: Option<Option<SymtabRow>>,
+    /// The file's local keys (`FILE_INDEX.locals`; WP-214 seam 6, ruling
+    /// 1). **This field is how the patch tells "replaced" from "moved":**
+    /// `Some(new)` means the file's symbol table is replaced (`Changed`,
+    /// `Appeared`, `Extracted`, `NoLongerExtracted`): U-2's `plan_patch`
+    /// marks every row of the file's STORED range `GONE` (read through its
+    /// `FILE_INDEX` row: O(that file's locals), no pass over `SYMBOLS`)
+    /// and stores `new`, which is the run of [`StatePatch::symbols`]'
+    /// `append` rows that are this file's locals (contiguous, by index;
+    /// `count` 0 for a file with none, or one no longer extracted). `None`
+    /// keeps the range (a drawn-in or only moved file, same bytes). A
+    /// `gone` file's stored range is marked `GONE` whatever this is. The
+    /// join builds it from [`super::resolve::ResolveDelta::new_keys`]; the
+    /// old locals are never listed in `ResolveDelta::gone` or as
+    /// `symbols.set` rows. A `new` that is not such a run is
+    /// `state-corrupt` (U-2 checks it against the appended rows).
+    pub locals: Option<LocalRange>,
     /// `REGIONS` (kind 51): rewritten when a region of the file was opened,
     /// grown or moved (IN-78's derived table).
     pub regions: Option<Vec<RegionRow>>,
@@ -641,6 +662,11 @@ pub struct StatePatch {
     /// never deleted (a `GONE` key keeps its row).
     pub names: KeyEdits<NameRow>,
     // key-parallel
+    /// `SYMBOLS`: a set never changes a row's `option` bit (U-2 keeps the
+    /// stored one; seam 6, ruling 2); an appended row's is `false` (every
+    /// name an option gives has a row from the capture). The join
+    /// debug-asserts that every name of `Plan::option_keys` finds a row
+    /// with the bit.
     pub symbols: ParallelEdits<SymbolRow>,
     pub resolved: ParallelEdits<ResolvedRow>,
     pub symtab_keys: ParallelEdits<SymtabKeyRow>,

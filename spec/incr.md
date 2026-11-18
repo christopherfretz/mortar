@@ -897,7 +897,8 @@ program is the program a from-scratch link would have made.
   output that a full link of the current inputs would not write, left by
   an update: an allocated hole (IN-3), a dead debug contribution (§6),
   a dead fragment of a merged section (L-147, S-110), an unused CIE in
-  `.eh_frame`. The decision tables record every dead range as
+  `.eh_frame`, a retired slot (IN-72 item 7: its words 0,
+  `HoleKind::DeadSlot`, a `hole` line in the map; WP-214 seam 6). The decision tables record every dead range as
   (output section, offset, length, kind), and the map lists them
   (`dead` lines, §8.2). Invariant (B) holds outside them (IN-1). Inside
   them the verifier checks, independently of the linker and of the
@@ -1461,7 +1462,7 @@ with each phase fed from the state for unchanged files:
   | 32 | `MENTIONS` | file `FILES` row, key `SYMBOLS` row, kind `u8` (0 undefined, 1 in a section, 2 absolute, 3 common), `st_bind u8`, `st_type u8`, `st_other u8`, section `SECTIONS` row (kind 1; else `NONE`) (16) | one per (live object, global key in its symbol table), strictly ascending by (file, key). An entry the file's symbol table repeats keeps the first. |
   | 33 | `RESOLVED` | kind `u8` (0..5 as `MENTIONS` plus 4 linker-defined and 5 shared object; 6 COMDAT keeper; 7 live file), `st_type u8`, `st_bind u8`, `st_other u8`, key `SYMBOLS` row (kinds 0..5; else `NONE`), file `FILES` row (the definer, the keeper or the live file; `NONE` for kinds 0 and 4), section `SECTIONS` row (kind 1; else `NONE`), value `u64` (`st_value` for kinds 1..3; the definer's symbol index for kind 5, and for a definition outside an object's symbol table, which is recorded as kind 2; else 0), size `u64` (`st_size`; for a common, the resolved size), name str (kind 6: the group signature; else empty) (40). An undefined key has `st_bind` 2 when weak, else 1, and its resolved visibility in `st_other`; a linker-defined key only its visibility. A definition in a section the reader keeps no id for is recorded as kind 2, in both tables. | first one row per key the resolution names (kinds 0..5), ascending by key; then one per COMDAT group with a keeper, ascending by signature bytes; then one per live file, ascending by file |
   | 34 | `INDEX` | unit `SECTIONS` row, kind `u8` (0 global, 1 section, 2 slot, 3 `.eh_frame`, 4 link order, 5 local slot), pad 3, target `u32` (a `SYMBOLS` row for kinds 0 and 2; a `SECTIONS` row for 1, 3, 4 and 5) (12) | one per (unit, kind, target), strictly ascending in that order |
-  | 39 | `HOLES` | chunk `CHUNKS` row, kind `u8` (`mortar_core::layout::HoleKind`: 0 fill, 1 `.eh_frame` padding, 2 debug, 3 abbreviation table, 4 dead debug, 5 dead fragment, 6 dead CIE), pad 3, offset `u64`, size `u64` (24) | one per range of a chunk no live unit owns (IN-3, IN-3a, IN-30), ascending by (chunk, offset), never overlapping, inside the chunk's size (a capacity tail is not a hole, L-141) (WP-062) |
+  | 39 | `HOLES` | chunk `CHUNKS` row, kind `u8` (`mortar_core::layout::HoleKind`: 0 fill, 1 `.eh_frame` padding, 2 debug, 3 abbreviation table, 4 dead debug, 5 dead fragment, 6 dead CIE; format 5 adds 7 dead slot, WP-214 seam 6), pad 3, offset `u64`, size `u64` (24) | one per range of a chunk no live unit owns (IN-3, IN-3a, IN-30), ascending by (chunk, offset), never overlapping, inside the chunk's size (a capacity tail is not a hole, L-141) (WP-062) |
 
   `INDEX` records the references of every kept allocated section and of
   every `.eh_frame` input of a live object file, read from its
@@ -1579,7 +1580,12 @@ with each phase fed from the state for unchanged files:
   (WP-211, review-wp207 §7: the whole read alone, 201 ms on `cxx-large-g`
   and 562 ms on g10x, exceeds protoc's whole budget, so the go/no-go gate
   of §10 would be missed by design). The only whole reads are the
-  compaction (IN-18f), `incr_state` and the tests' `canon`; a
+  compaction (IN-18f), `incr_state` and the tests' `canon`, and two
+  named reads of `FILES` whole (WP-214 seam 6): the property pass of
+  IN-72 item 10 (only when a file of the change differs in `FILES.stack`
+  or `FILES.properties` from its stored row, appears or goes) and
+  `LayoutRows::eh_ranges` (only for IN-34a's whole rewrite of
+  `.eh_frame`, itself O(records)); a
   `StateView` is built lazily, per block. The update's own `Placement`
   (IN-72's `LayoutDelta`) is sparse in the same way (WP-216 R-3): it
   names the files whose sections it places and the chunks whose holes it
@@ -1594,7 +1600,17 @@ with each phase fed from the state for unchanged files:
   count and the capacity of the file's range, a `gone` flag (a file
   removed by an update: its ranges are dead until the next compaction),
   and `first_global` (`u32`: its `.symtab`'s `sh_info`, 0 for a file
-  without one; the index of its `MENTIONS` rows, IN-18e; WP-215 D7).
+  without one; the index of its `MENTIONS` rows, IN-18e; WP-215 D7), and
+  `locals` (`first`, `count`: `u32` each, 8 bytes; WP-214 seam 6): the
+  file's local keys, ONE contiguous run of `SYMBOLS` rows, by
+  symbol-table index. The capture writes a file's locals together
+  (IN-18e's row order); an update that replaces a file's symbol table
+  (`Changed`, `Appeared`, `Extracted`, `NoLongerExtracted`:
+  `FileRanges::locals` is `Some`) appends its new locals as one block,
+  names it here, and marks every row of the old run `GONE`; a gone
+  file's old run is marked `GONE`; a drawn-in or only moved file keeps
+  its run (`None`). That costs O(the file's locals), never a pass over
+  `SYMBOLS`. The compaction recomputes the runs.
   The reader checks that the ranges are in bounds and do not overlap.
 - **IN-18e [v1] Format version 5: every table, its class and its patch
   rule** (rewritten by WP-207; review-in77 B-5, M-9). Every table of the
@@ -1653,7 +1669,23 @@ with each phase fed from the state for unchanged files:
     `eh_offset` (bytes from the `.eh_frame` chunk's start),
     `eh_capacity` (records and pad), `eh_records` (kept records; 0: no
     range). Record sizes are not stored (IN-34a). A chunk past `u32`
-    refuses the state (`state-limit`, §7).
+    refuses the state (`state-limit`, §7). A fourth, `eh_fdes` (`u32`,
+    WP-243 via seam 6): the FDEs among the records, written wherever
+    `eh_records` is; `.eh_frame_hdr`'s new size is the stored chunk's
+    FDE count minus the changed files' stored `eh_fdes` plus their new
+    ones (IN-72 item 5).
+  - **`FILES`** gains what the full link's two note merges read from ONE
+    file (WP-214 seam 6, ruling 3): `stack` (`u8`: the file's
+    `.note.GNU-stack` as layout.md L-84 reads it, 0 absent, 1 without
+    and 2 with `SHF_EXECINSTR`) and `properties` (a `Str`, 8 bytes: the
+    file's own `.note.gnu.property` properties after synth.md S-126, each
+    `pr_type` (`u32`), length (`u32`) and value, ascending by type,
+    `update::rows::encode_properties`; empty for none; the capture
+    interns each distinct value once). 0 and empty for a file that is
+    not a relocatable object or is `LAZY`. IN-72 item 10 reads them.
+  - **`FRAGS`** gains `size` (`u32`, 4 bytes; WP-242 C via seam 6): the
+    fragment's bytes, a function of its identity (a dead string
+    fragment's hole is this long).
   - **`SLOTS`** gains `refs` (`u32`): the live files whose
     `KEY_REFS.demand` needs the slot (a local's slot, IN-28b: 1).
   - `EH_RECORDS` has no reader in an update after this design (the
@@ -1673,7 +1705,18 @@ with each phase fed from the state for unchanged files:
   (`u32`: the non-local symbol-table entries named `foo@V` or `foo@@V`
   over the link's relocatable objects and archive members, extracted or
   not; IN-71 Versions): 8 bytes. What the command line gives (the root
-  keys, `--wrap`, `--defsym`) is passed in, never stored (IN-71).
+  keys, `--wrap`, `--defsym`) is passed in, never stored (IN-71), with one
+  exception (WP-214 seam 6, ruling 2): **`SYMBOLS.option`**, a bit in
+  byte 1 of the row (one of format 4's three pad bytes after `kind`: 0
+  bytes), set by the capture on the row of every name
+  `mortar_core::plan::Plan::option_keys` gives (`--wrap`'s three names,
+  `--defsym`'s name and base: the names that have a row whether or not a
+  file mentions them, model.md §2.3) and never changed by an update (a
+  state is bound to its command line, `options-changed`; a key with the
+  bit is never `GONE`). The dead-key rule of the canon, the compaction
+  and `incr_state` reads the bit and needs no command line. `-e`, `-u`,
+  `EXTERN` and `--require-defined` give no row (a name no file mentions
+  has none in a full link either) and so no bit.
 
   **Shrinking.** `MENTIONS` drops its `file` column (the range gives
   it): 12 bytes a row. `RESOLVED` drops `symbol` (its row is the key's),
@@ -2495,7 +2538,11 @@ with each phase fed from the state for unchanged files:
     bytes. A difference of 4, 8 or 12 bytes between a range's capacity
     and its records is absorbed by the range's last record: its length
     grows by that many bytes of `DW_CFA_nop` (S-47 already pads records
-    this way). A hole of 16 bytes or more is **one padding CIE**:
+    this way). In the placement DATA that rest is a short
+    `HoleKind::EhPad` entry (never at offset 0), as the full link's
+    `eh_pads` reads it; in the BYTES and the map it is the last record's
+    padding, never a `hole` line or a padding CIE (WP-243, seam 6;
+    `mortar_core::incr::EhRange::capacity`). A hole of 16 bytes or more is **one padding CIE**:
     `length` = hole − 4 (u32), `CIE_id` 0 (u32), version 1, augmentation
     `""` (one 0 byte), code alignment 1 (ULEB `01`), data alignment −4
     (SLEB `7c`, on every target: no FDE uses the CIE, so its factors
@@ -3427,7 +3474,12 @@ a pass over a whole table of the state; **O(output)**.
      **current rank** (S-46's order is the load order: `FILES.rank`
      composed with the update's ranks, never the `FILES` row number);
      stored: the file's `.eh_frame` range (`FILES`' eh columns,
-     `LayoutRows::eh_range_of`). Output (`LayoutDelta::eh`):
+     `LayoutRows::eh_range_of`), with its FDE count (`eh_fdes`); for the
+     whole rewrite every range by current rank (`LayoutRows::eh_ranges`,
+     a named whole read of `FILES`, IN-18c). `.eh_frame_hdr` is sized
+     without reading unchanged ranges: the stored chunk's FDE count,
+     minus the changed files' stored `eh_fdes`, plus their new ones
+     (WP-243, seam 6). Output (`LayoutDelta::eh`):
      the ranges rewritten (file, offset, capacity, each record's offset),
      or the section rewritten whole with every range. A range's unused
      tail is 0 bytes, 4, 8 or 12 bytes absorbed into its last record, or
@@ -3484,7 +3536,15 @@ a pass over a whole table of the state; **O(output)**.
      local has no identity across versions) and the new version's demand
      appended. A file's old demand subtracts one from each slot its
      `KEY_REFS.demand` needs, its new demand adds one; a slot at 0 is
-     retired, a new one appended. (P-5) **The scan reads a target's
+     retired, a new one appended. The delta carries every `SLOTS` row it
+     writes in four disjoint lists sorted by `(kind, index)`, each row as
+     it is after the update (WP-242 B, seam 6): `slots_appended` (an
+     index past its kind's stored count), `slots_dead` (refs above 0 → 0),
+     `slots_revived` (0 → above 0: its old index, written again) and
+     `slots_recounted` (one count above 0 → another: the row only, no
+     byte). "A hole" is a `HOLES` row of kind `DeadSlot` over the retired
+     slot's words (plumb.md P-E5 compares the GOT's words outside the
+     update's holes); a revival removes it. (P-5) **The scan reads a target's
      resolution only through one value, `mortar_arch::SymFacts`
      (`ScanTables::sym`, computed by `mortar_scan::view::View::facts`)**:
      when that value of a key changes and the key has a referrer in an
@@ -3513,7 +3573,22 @@ a pass over a whole table of the state; **O(output)**.
       `new-output-section`. An allocated note section (`.note.gnu.property`,
       `.note.ABI-tag`, `.note.stapsdt`, any `SHT_NOTE`) changing size:
       `property-changed` (review-in72 m-2; the reason keeps its name;
-      `note_abi_tag_size_change`). An
+      `note_abi_tag_size_change`). **The merged properties and the stack
+      flag** (WP-214 seam 6, ruling 3; the join's): if no file of the
+      change differs in `FILES.stack` or `FILES.properties` (the new
+      bytes' values against its stored row) and no file appears, goes,
+      is newly or no longer extracted, nothing is read. Otherwise one
+      pass over the column of every live relocatable object (the named
+      whole read of IN-18c) computes the merged value with the stored
+      values and with the update's, by the SAME merge functions as the
+      full link (S-95's over the files' properties; L-84's over their
+      stack notes and the unchanged `-z execstack` option): unequal is
+      `property-changed` (a full link); equal goes on. No counters; exact
+      also when the only limiting file goes. *Tests (the capture package
+      and the join, on real objects):* a file recompiled without
+      `-fcf-protection` / `-mbranch-protection` falls back by name; the
+      sole limiting file leaving falls back by name; an ordinary edit
+      reads nothing. An
       output section's alignment growing past its stored address's:
       `reserve-exhausted`.
   11. **Commons.** **v1** (WP-216 R-2): commons stay in the commons
@@ -4052,8 +4127,9 @@ a pass over a whole table of the state; **O(output)**.
     (WP-215), `STAT`, `MENTIONS`, `KEY_REFS`, `RESOLVED`, `GROUPS`,
     `COMMONS`,
     `INDEX`, `EDGES`, `FRAG_USE`, `EH_RECORDS`, `FRAGS.refs`,
-    `SLOTS.refs`, `KEY_REFS.demand` (WP-239), `SYMBOLS` (with `at_file`,
-    `at_index`), `NAMES` (WP-213), `SYMTAB`'s entries, **`SYMTAB_KEYS`** (recomputed: it
+    `SLOTS.refs`, `KEY_REFS.demand` (WP-239), `FILES`' `eh_fdes`,
+    `stack` and `properties`, `FILE_INDEX.locals`, `FRAGS.size` (seam 6),
+    `SYMBOLS` (with `at_file`, `at_index`, `option`), `NAMES` (WP-213), `SYMTAB`'s entries, **`SYMTAB_KEYS`** (recomputed: it
     follows from the `.symtab` blocks' places and the resolution),
     `COPIES` (WP-220), `DIAGS`, and the derived layout rows (`DEFINED`,
     `SYM_PLACE`, `SIZES`, `SIZED`, `SEGMENTS`, `LAYOUT`, `OUTSECS`).
@@ -4093,8 +4169,8 @@ a pass over a whole table of the state; **O(output)**.
 
   | cause | rows that change |
   |---|---|
-  | a changed, appeared, drawn-in or newly extracted file | its `FILES` row (hash, rank, flags, round (any supporting value, IN-71b); `POSITIONAL` recaptured or cleared, IN-28a), its `STAT` row (tuple re-taken), its ranges of `SECTIONS`, `MENTIONS`, `INDEX`, `EDGES`, `FRAG_USE`, `EH_RECORDS`, `SYMTAB`; its `FILES` eh columns (WP-239); its `FILE_INDEX.first_global` (WP-215; from `ChangedFile::first_global`, the new version's `sh_info`, WP-215 seam 3; always written, never kept from the stored row: `update::view::FileRanges::first_global`, WP-239 seam 5, U-2's F-10); its `KEY_REFS`, `GROUPS`, `COMMONS`, `COPIES` (WP-220) and `DIAGS` rows |
-  | a gone or no longer extracted file | its row marked gone (extracted → `LAZY` with its defined rows kept), its ranges gone, its key-keyed rows deleted |
+  | a changed, appeared, drawn-in or newly extracted file | its `FILES` row (hash, rank, flags, round (any supporting value, IN-71b); `POSITIONAL` recaptured or cleared, IN-28a), its `STAT` row (tuple re-taken), its ranges of `SECTIONS`, `MENTIONS`, `INDEX`, `EDGES`, `FRAG_USE`, `EH_RECORDS`, `SYMTAB`; its `FILES` eh columns (WP-239; `eh_fdes`, `stack`, `properties`: seam 6); its `FILE_INDEX.locals` and the `SYMBOLS` rows of its old run marked `GONE` when its symbol table is replaced (seam 6); its `FILE_INDEX.first_global` (WP-215; from `ChangedFile::first_global`, the new version's `sh_info`, WP-215 seam 3; always written, never kept from the stored row: `update::view::FileRanges::first_global`, WP-239 seam 5, U-2's F-10); its `KEY_REFS`, `GROUPS`, `COMMONS`, `COPIES` (WP-220) and `DIAGS` rows |
+  | a gone or no longer extracted file | its row marked gone (extracted → `LAZY` with its defined rows kept), its ranges gone, its key-keyed rows deleted, its locals' `SYMBOLS` run marked `GONE` (seam 6) |
   | an input `stat`ed again but hashed equal (touched) | its `STAT` row (review-in77 M-8) |
   | the device stamps (IN-22a) | the device rows of `STAT` |
   | an affected key | its `SYMBOLS` row (appended when new; `at_file`/`at_index`, IN-71), `RESOLVED`, `KEY_REFS`; a new key's `NAMES` row (WP-213); an ODR-affected key's `DIAGS` rows (IN-71d; its `COPIES` rows change only with their files, WP-220) |
@@ -4586,7 +4662,7 @@ update), reported as `incremental: full (<reason>)` (IN-10). With
 | `symbol-kind-changed` | a global that an unchanged file references changed type to or from `STT_GNU_IFUNC` or `STT_TLS`, became absolute or the reverse, or changed `st_other` bits other than the visibility (IN-26; in a static executable binding, visibility and common ↔ definition are refills, IN-71) | v1; [later] refill the referrers when their relocation types are stored |
 | `symtab-exhausted` | a `.symtab` local block's move finds the local tail reserve full, or `.symtab`'s or `.strtab`'s file slack is exhausted (IN-49a) | v1; [later] rewrite both whole at the file's end (S-112), an update still |
 | `new-output-section` | an output section or segment appears or disappears | v1; [later] when it can go at the end of its segment's reserve |
-| `property-changed` | an allocated note section (`.note.gnu.property`, S-114, and any other `SHT_NOTE`: `.note.ABI-tag`, `.note.stapsdt`) changes size (IN-72 item 10; widened by WP-207, review-in72 m-2) | v1 |
+| `property-changed` | an allocated note section (`.note.gnu.property`, S-114, and any other `SHT_NOTE`: `.note.ABI-tag`, `.note.stapsdt`) changes size (IN-72 item 10; widened by WP-207, review-in72 m-2), or the merged `.note.gnu.property` value or `PT_GNU_STACK`'s `PF_X` differs from the stored link's (IN-72 item 10's one pass over `FILES.properties` and `FILES.stack`; WP-214 seam 6) | v1 |
 | `dynamic-changed` | `DT_NEEDED`'s order changes or `.dynamic`'s spares run out (IN-42) | v1 |
 | `debug-compaction` | IN-57 | v1; [later] the debug-only rewrite |
 | `debug-name-index` | IN-55 | v1; [later] neutralized sets |

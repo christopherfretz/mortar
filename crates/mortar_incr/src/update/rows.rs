@@ -75,6 +75,74 @@ pub struct FileRow {
     pub eh_offset: u32,
     pub eh_capacity: u32,
     pub eh_records: u32,
+    /// The FDEs among `eh_records` (WP-243, seam 6;
+    /// `mortar_core::incr::StoredEhRange::fdes`): written wherever
+    /// `eh_records` is.
+    pub eh_fdes: u32,
+    /// What the full link's `PT_GNU_STACK` rule (layout.md L-84,
+    /// `mortar_layout::stack`) reads from this one file: its
+    /// `.note.GNU-stack`, a [`file_stack`] value (WP-214 seam 6, ruling 3).
+    /// 0 for a file that is not a relocatable object, and for a `LAZY` row
+    /// (it takes no part until extracted, when it is a changed file).
+    pub stack: u8,
+    /// What the full link's property merge (synth.md S-94..S-96,
+    /// `mortar_synth::notes::PropertyPlan::new`) reads from this one file:
+    /// the file's own properties after S-126 (its notes combined by each
+    /// property's rule), as [`encode_properties`] writes them, in
+    /// `STRINGS`; empty when the file has none (or no note, or is not a
+    /// relocatable object, or is `LAZY`). The capture interns each
+    /// distinct value once. WP-214 seam 6, ruling 3.
+    pub properties: Str,
+}
+
+/// [`FileRow::stack`]: `mortar_layout::stack::StackNote` as a byte.
+pub mod file_stack {
+    /// No `.note.GNU-stack` section.
+    pub const ABSENT: u8 = 0;
+    /// A note without `SHF_EXECINSTR`.
+    pub const NON_EXEC: u8 = 1;
+    /// A note with `SHF_EXECINSTR`.
+    pub const EXEC: u8 = 2;
+}
+
+/// [`FileRow::properties`]' bytes: per property, ascending by `pr_type`,
+/// `pr_type` (`u32` LE), the value's length (`u32` LE) and the value's
+/// bytes (unpadded). One producer and one reader (this pair) for the
+/// capture, the join and the tools.
+#[must_use]
+pub fn encode_properties(props: &[(u32, &[u8])]) -> Vec<u8> {
+    let mut out = Vec::new();
+    for (t, v) in props {
+        out.extend_from_slice(&t.to_le_bytes());
+        out.extend_from_slice(&u32::try_from(v.len()).unwrap_or(u32::MAX).to_le_bytes());
+        out.extend_from_slice(v);
+    }
+    out
+}
+
+/// [`encode_properties`]' inverse.
+///
+/// # Errors
+/// `state-corrupt`: bytes that do not split into properties, or types not
+/// ascending.
+pub fn decode_properties(bytes: &[u8]) -> Result<Vec<(u32, Vec<u8>)>, IncrReason> {
+    let bad = || IncrReason::StateCorrupt("FILES.properties: malformed".into());
+    let word = |b: &[u8], at: usize| -> Option<u32> {
+        Some(u32::from_le_bytes(b.get(at..at + 4)?.try_into().ok()?))
+    };
+    let mut out: Vec<(u32, Vec<u8>)> = Vec::new();
+    let mut at = 0;
+    while at < bytes.len() {
+        let t = word(bytes, at).ok_or_else(bad)?;
+        let n = word(bytes, at + 4).ok_or_else(bad)? as usize;
+        let v = bytes.get(at + 8..at + 8 + n).ok_or_else(bad)?;
+        if out.last().is_some_and(|p| p.0 >= t) {
+            return Err(bad());
+        }
+        out.push((t, v.to_vec()));
+        at += 8 + n;
+    }
+    Ok(out)
 }
 
 /// `FILE_INDEX` (kind 41, append-only, parallel to `FILES`; IN-18d): per
@@ -90,8 +158,24 @@ pub struct FileIndexRow {
     /// file without one): the `k`-th row of its `MENTIONS` range is entry
     /// `first_global + k` (IN-18e, WP-215 D7). 4 bytes.
     pub first_global: u32,
+    /// The file's local keys: ONE contiguous run of `SYMBOLS` rows (WP-214
+    /// seam 6, ruling 1). The capture writes a file's locals together (IN-18e's
+    /// row order: by file rank, then index); an update that replaces the
+    /// file's symbol table appends its new locals as one block and names
+    /// that block here ([`super::view::FileRanges::locals`]). 8 bytes.
+    pub locals: LocalRange,
     /// The file was removed by an update: its ranges are dead.
     pub gone: bool,
+}
+
+/// A file's local keys in `SYMBOLS` ([`FileIndexRow::locals`]): rows
+/// `first .. first + count`, each `sym_kind::LOCAL` with `file` and
+/// `at_file` this file, by symbol-table index. `count` 0: none (`first`
+/// is then 0).
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct LocalRange {
+    pub first: u32,
+    pub count: u32,
 }
 
 /// One file's range of a file-keyed table (rows).
@@ -161,8 +245,16 @@ pub mod sym_kind {
 /// (`SymbolId`), in IN-18e's one row order (globals by first mentioning
 /// file's rank and `at_index`, unmentioned keys by name, locals by file
 /// rank and index); an update appends. Same columns as format 4's
-/// `format::SymbolRow` with [`sym_kind`]. Written by capture and U-2 (from
-/// U-3's `ResolveDelta`); read by U-3, U-5, U-8, U-9.
+/// `format::SymbolRow` with [`sym_kind`], and its `option` bit (WP-214
+/// seam 6, ruling 2): set by the capture on the row of every name
+/// `mortar_core::plan::Plan::option_keys` gives (the one enumeration the
+/// input phase reads to give those names rows, model.md §2.3), never
+/// changed by an update (a state is bound to its command line:
+/// `options-changed`), so the dead-key rule of the canon, the compaction
+/// and the tools needs no command line. A key with the bit is never
+/// `GONE`. A file's locals are one run ([`FileIndexRow::locals`]).
+/// Written by capture and U-2 (from U-3's `ResolveDelta`); read by U-3,
+/// U-5, U-8, U-9.
 pub type SymbolRow = crate::format::SymbolRow;
 
 /// `MENTIONS` (kind 32, file-keyed; IN-18e "Shrinking"): one row per
@@ -382,7 +474,11 @@ pub struct FragRow {
     pub hash: Hash16,
     /// Bytes from the merged chunk's start.
     pub offset: u64,
-    /// Live pieces naming it; 0: a dead range (IN-72 item 6).
+    /// Its bytes (WP-242 C, seam 6; 4 bytes a row): a function of its
+    /// identity.
+    pub size: u32,
+    /// Files with a `FRAG_USE` row naming it; 0: a dead range (IN-72 item
+    /// 6).
     pub refs: u32,
     pub tomb: bool,
 }
@@ -698,6 +794,35 @@ mod tests {
         assert_eq!(name, 12);
         let copy = 4 + 4 + 4 + 8 + 1 + 1 + 2; // key, file, index, size, typ, tomb, pad
         assert_eq!(copy, 24);
+        // FILES' format-5 columns after format 4's: rank, round, the four
+        // eh columns, stack, properties (WP-239, WP-243, seam 6)
+        let files_added = 8 + 4 + 4 * 4 + 1 + 8;
+        assert_eq!(files_added, 37);
+        let locals = 4 + 4;
+        assert_eq!(locals, 8);
+        let FileRow {
+            kind: _,
+            member: _,
+            flags: _,
+            path: _,
+            mention: _,
+            member_name: _,
+            member_ordinal: _,
+            base: _,
+            len: _,
+            hash: _,
+            rank: _,
+            round: _,
+            eh_offset: _,
+            eh_capacity: _,
+            eh_records: _,
+            eh_fdes: _,
+            stack: _,
+            properties: _,
+        } = FileRow::default();
+        let FileIndexRow { ranges: _, first_global: _, locals: _, gone: _ } =
+            FileIndexRow::default();
+        let LocalRange { first: _, count: _ } = LocalRange::default();
         // The structs' fields are the ones counted (a field added fails
         // here first).
         let MentionRow { symbol: _, kind: _, bind: _, typ: _, other: _, section: _ } =
@@ -743,6 +868,22 @@ mod tests {
         let w = winning_common(&[c(4, 8, 16, false), c(6, 4, 4, false), c(1, 64, 64, true)], rank);
         assert_eq!(w, Ok(Some(c(6, 8, 16, false))));
         assert_eq!(winning_common(&[c(1, 8, 8, true)], rank), Ok(None));
+    }
+
+    // spec: incr.md IN-18e (`FILES.properties`: type, length, bytes,
+    // ascending; WP-214 seam 6)
+    #[test]
+    fn properties_round_trip() {
+        let and: &[u8] = &3u32.to_le_bytes();
+        let pauth: &[u8] = &[1; 16];
+        let b = encode_properties(&[(0xc000_0002, and), (0xc000_0001, pauth)]);
+        assert!(decode_properties(&b).is_err(), "not ascending");
+        let b = encode_properties(&[(0xc000_0001, pauth), (0xc000_0002, and)]);
+        assert_eq!(b.len(), 8 + 16 + 8 + 4);
+        let d = decode_properties(&b).unwrap();
+        assert_eq!(d, [(0xc000_0001, pauth.to_vec()), (0xc000_0002, and.to_vec())]);
+        assert_eq!(decode_properties(&[]).unwrap(), []);
+        assert!(decode_properties(&b[..b.len() - 1]).is_err());
     }
 
     // spec: incr.md IN-18e (`NAMES`' hash: name, a zero byte, version)

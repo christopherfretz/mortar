@@ -92,7 +92,9 @@ impl MemoryState {
     /// `SYMTAB`, `SYMTAB_KEYS`, `COMMONS`, `ODR_*`, `COPIES` (format 4
     /// stores no `st_size` and no symbol-table index), `DIAGS`, `LAZY` members
     /// (format 4 stores none), and the boot id. `FILE_INDEX` gives each
-    /// file's position and count in these vectors. WP-215's shapes:
+    /// file's position and count in these vectors, and its locals' run of
+    /// `SYMBOLS` rows. Seam 6's `SYMBOLS.option`, `FILES.stack` and
+    /// `FILES.properties` are not in format 4: `false`, 0 and empty. WP-215's shapes:
     /// `GROUPS` holds **the keeper's row only** (format 4 stores the
     /// keeper, not the other copies: a group's other live copies are
     /// missing); `META.iterations` 1 and `META.versioned` 0 (format 4
@@ -168,6 +170,10 @@ impl MemoryState {
                 eh_offset: 0,
                 eh_capacity: 0,
                 eh_records: 0,
+                eh_fdes: 0,
+                // Format 4 stores neither (seam 6): no note, no property.
+                stack: 0,
+                properties: Str::default(),
             })
             .collect();
         m.keyed_from_format4(s);
@@ -248,6 +254,8 @@ impl MemoryState {
                 class: f.ordinal,
                 hash: f.hash,
                 offset: f.offset,
+                // Format 4 stores no size (seam 6): 0.
+                size: 0,
                 refs: 1,
                 tomb: false,
             })
@@ -293,6 +301,11 @@ impl MemoryState {
             range(self.eh_records.iter().map(|r| r.0 == file));
         row.ranges[FileTable::Symtab as usize] = range(self.symtab.iter().map(|r| r.0 == file));
         row.ranges[FileTable::Regions as usize] = range(self.regions.iter().map(|r| r.0 == file));
+        // The file's locals: the run of `SYMBOLS` rows (seam 6); format
+        // 4's capture writes them together, as format 5's does.
+        let local = |r: &SymbolRow| r.kind == super::rows::sym_kind::LOCAL && r.file == file.0;
+        let r = range(self.symbols.iter().map(local));
+        row.locals = super::rows::LocalRange { first: r.first, count: r.count };
         row
     }
 
@@ -576,6 +589,34 @@ mod tests {
         );
         assert_eq!(v.file_index(FileId(1)).unwrap().ranges[0].count, 1);
         assert_eq!(v.meta().unwrap().iterations, 1);
+    }
+
+    // spec: incr.md IN-18d, IN-18e (a file's local keys are one run of
+    // `SYMBOLS` rows named by its `FILE_INDEX` row; WP-214 seam 6)
+    #[test]
+    fn file_locals_are_one_run() {
+        use super::super::rows::{LocalRange, sym_kind};
+        use crate::format;
+        let mut s = format::State::default();
+        s.files.extend([format::FileRow::default(), format::FileRow::default()]);
+        s.files.push(format::FileRow::default());
+        let local = |file, index| format::SymbolRow {
+            kind: sym_kind::LOCAL,
+            file,
+            at_file: file,
+            at_index: index,
+            ..format::SymbolRow::default()
+        };
+        s.symbols.push(format::SymbolRow::default());
+        s.symbols.extend([local(1, 3), local(1, 5), local(2, 1)]);
+        let m = MemoryState::from_format4(&s);
+        let v = m.view();
+        let at = |f| v.file_index(FileId(f)).unwrap().locals;
+        assert_eq!(at(0), LocalRange::default());
+        assert_eq!(at(1), LocalRange { first: 1, count: 2 });
+        assert_eq!(at(2), LocalRange { first: 3, count: 1 });
+        assert!(!v.symbol(SymbolId(1)).unwrap().option);
+        assert_eq!(v.file(FileId(1)).unwrap().properties, Str::default());
     }
 
     // spec: incr.md IN-18e (`GROUPS` by (signature, file), `COMMONS` by
