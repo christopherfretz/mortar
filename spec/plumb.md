@@ -3771,7 +3771,11 @@ the two links' diagnostics (IN-5, L10; `spec/incr.md` IN-63).
 symbol whose address has two identities (above); merged strings of a
 non-allocated `merged` section (their references are checked by content
 on each side, §5.6); thunks' and patches' placement (only the values
-they carry); `.symtab`'s order of local symbols.
+they carry); `.symtab`'s order of local symbols; a common's `<file>`
+where a map does not state it, and the fillers of a side that writes
+another linker's section symbols (both named in the summary, WP-222);
+`.pad.relro`'s size and segment (each side's S20 and M6 judge it,
+WP-222).
 
 **Rulings** (the coordinator, 2026-11-16, on WP-092's questions; each
 rule above is as ruled):
@@ -3805,7 +3809,9 @@ rule above is as ruled):
 11. IN-62's command is `cargo xtask plumb --equiv X.map F.map X F` (§8);
     `incr.md` says so (WP-092b).
 
-Tests: `tests/equiv.rs` (§9.2 (q)).
+Tests: `tests/equiv.rs` (§9.2 (q)); `tests/symfill.rs` (WP-222: fillers,
+the file slack, `.strtab`'s dead names, the decision records, a
+common's `<file>`, L10's L-1 and L-2).
 
 ### 6.10 `.gdb_index` (WP-098)
 
@@ -4050,10 +4056,15 @@ with the ODR runtime also `ODR runtime: outputs, entries, imports`,
 WP-197), and for an output with a
 `.gdb_index` its version, units, address entries and names and the rules
 that judged it (`gdb index: ...`, §6.10), for each side of `--equiv`
-whose map says `incremental` the fillers P-E3 passed over (`fillers=<n>`,
-§6.9), and for a map with decision records (§3.2) `decision records: n
-read; region judged; capacity, order, slot, redirect, frag, symblock not
-judged`. A stripped dynamic output
+whose map says `incremental` the fillers P-E3 passed over (`symbol
+table: fillers=<n>` in the side's summary, `, fillers=<n>` at the end
+of `cargo xtask plumb --equiv`'s `X:`/`F:` line; §6.9), for `--equiv`
+what it read and did not judge (`equiv not judged: ...`, §6.9: a
+common's `<file>` a map does not state, a side's fillers under another
+linker's section symbols), and for a map with decision records (§3.2)
+`decision records: n read; region, symblock judged (place only);
+capacity, order, slot, redirect, frag not judged`. A plain map's lines
+gain no word (WP-222). A stripped dynamic output
 (no `.symtab`; WP-164) adds one line, a `-r` output its `relocatable`
 and `composition` lines (§14.6), `stripped output (no .symtab),
 not judged: a; b`, naming each clause a rule could not judge without the
