@@ -1,21 +1,19 @@
-# WIP: WP-228 (G-1) part B, branch `wp/228-incr-debug-b`
+# WIP: WP-228 (G-1) part B2, branch `wp/228-incr-debug-b`
 
-Part A and step 1 are done and ruled (`/Volumes/AgentWork/mortar-helper/briefs/wp-228-rulings.md`,
-last section "After part A" wins). Base e14dd5f4 (the pair base).
+Rulings: `/Volumes/AgentWork/mortar-helper/briefs/wp-228-rulings.md`, last section "After B1".
 
-Done (B1):
-- Seam 8, ONE commit 4f721d3e: `format::kind::DEBUG_STRS` (57),
-  `rows::DebugStrRow` (13 bytes, no tomb), `rows::debug_str_class`,
-  `StateRows::debug_str` (provided `Ok(None)`), `IncrReason::{DebugComdatKeeper,
-  DebugGrowth}` with their two rows in `spec/incr.md` section 7.
-- Gate on the branch head (seam 4f721d3e + the cherry-picked baseline 0592b43d): logs in `.build/target-wp-154/wp228/b/gate/`
-  (script `wp228/b/gate.sh`). Accepted failures: exactly the 7
-  `mortar --test debuggers` tests (`incr_dwarf_{c_gcc,cxx_gxx,cxx_clangxx,fortran_gfortran}`,
-  `incr_sessions_{c_gcc,cxx_gxx,cxx_clangxx}`) until WP-253.
-- DWARF64 inputs exist (GCC 14 and Clang 19 `-gdwarf64`, both targets;
-  `wp228/b/dw64/`); mortar links them (plain link). R-2.6: no name added.
+Done (commits): seam 8a 1144efcd; R-1 f7975165; `update/debug.rs` +
+`tests/update_debug.rs` 1324c248 (23 decision tests, green); record
+part B2 1e9781e4 (`spec/landed/incr/WP-228.md` "Step 2, part B2").
 
-Next: WAIT for the supervisor's word on B1 (R-1's line, the questions in the
-hand-back). Then B2: R-1 commit in `crates/mortar_layout/src/delta.rs`,
-then `update/debug.rs`, then `tests/update_debug.rs`, the record, the gate.
-Do NOT start `update/debug.rs` before the word.
+Gate: script `.build/target-wp-154/wp228/b2/gate.sh`, logs in `wp228/b2/gate/`.
+
+NOT done (next agent, in this order):
+1. The test-only writer under `crates/mortar_incr/tests/` that applies a
+   `DebugPlan` to a copy of a full link's output (relocate the changed
+   file's debug sections at their new places, `neutral::unit` for each
+   hole, appended strings, aranges), then every named test of the record
+   B2.2 compared with a full link via gdb, lldb, `llvm-dwarfdump --verify`,
+   readelf (and `cargo xtask plumb` once WP-253 is picked).
+2. WP-229 §8: list what G-1 takes over.
+3. Rulings on record B2.3 (the mortar_incr -> mortar_layout edge etc.).
