@@ -38,7 +38,17 @@ conflicts in favour of the seam; report what conflicted. Report size with re-key
   symbols_row_order_is_the_stated_one).
 - examples/incr_state.rs (convert/canon/compare/size).
 
+## Seam (2026-11-18)
+- Picked 89c735e4 85c3b28e 526d4940 61f26084 cleanly (aa01b0d1..dc89edb7); adapted in 14bfc96a:
+  GROUPS (sig,file), COMMONS (key,file), COPIES 55 (24 B), META iterations/versioned in old pads,
+  FILE_INDEX first_global (104 B), capture refuses a short sym map. Test seam_rows_round_trip_and_patch.
+- incr_state convert rebuilds GROUPS/COMMONS/COPIES from format-4 SECTIONS/MENTIONS for the size gate.
+- RULING NEEDED: StatePatch/FileRanges cannot carry first_global (no field) -> U-2 cannot write it on update.
+- STRINGS growth/update (protoc member): median 46 KB, p90 231 KB, max 1.23 MB vs area 139 KB.
+- at_file: capture = first among ALL inputs (capture.rs first_mentions); output .symtab = SymbolId order (S-75).
+
 ## Next
+0. size2.sh results -> record; full gates; record; delete WIP.md.
 1. size gate: `.build/target-wp-116/wp214/size.sh cxx-medium-g-static` (protoc), then cxx-large-g (delete the 1 GB output).
 2. Seam commits (U-3, then U-8) when hashes arrive: cherry-pick, adapt GROUPS/COMMONS/META/FILE_INDEX/MENTIONS, COPIES.
 3. Not done: capture.rs SYMBOLS order (normalize applies it in the format-5 writer instead; format-4 bytes unchanged),
