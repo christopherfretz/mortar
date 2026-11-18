@@ -27,6 +27,8 @@ fn odr_until_it_lands() {
         sections: Vec::new(),
         keys: Vec::new(),
         mentions: Vec::new(),
+        values: Vec::new(),
+        first_global: 0,
         index: Vec::new(),
         edges: Vec::new(),
         eh_records: Vec::new(),

@@ -56,13 +56,44 @@ pub struct ResolveDelta {
     pub reelected: Vec<(Vec<u8>, FileId, FileId)>,
 }
 
+/// `resolve`'s result (WP-215 seam 3, G1): the complete delta, or the
+/// unchanged files it needs read first. A partial delta is never
+/// returned: the join cannot use one by mistake.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Resolution {
+    /// Every affected key resolved: the delta (boxed: the variants'
+    /// sizes differ by some 300 bytes).
+    Delta(Box<ResolveDelta>),
+    /// Unchanged files that become a key's definer, a common's winning
+    /// file or a group's keeper, whose `st_value`/`st_size` (or section
+    /// rows) the update does not have: sorted, none of them in `changed`.
+    /// The join reads each as `Change::DrawnIn` (its rows and
+    /// `ChangedFile::values` from its bytes, after IN-75's `STAT` check),
+    /// adds it to `changed`, and calls `resolve` again with the same
+    /// extraction. They count toward IN-16's bound (the join's).
+    DrawIn(Vec<FileId>),
+}
+
+/// At most this many `resolve` calls per update (WP-215 seam 3): a
+/// `DrawnIn` file's mentions equal its stored rows (else IN-75's check
+/// fails first), so it adds no affected key and changes no candidate or
+/// winner; the second call has every winner's values and asks for
+/// nothing. A `DrawIn` asked for while `changed` already holds a
+/// `DrawnIn` file is therefore impossible unless a drawn-in file's bytes
+/// disagree with its stored rows: `resolve` gives `input-changed` then.
+pub const RESOLVE_CALLS: usize = 2;
+
 /// Resolve the affected keys (WP-211 §C; IN-71). Called by the join after
 /// `extract` (IN-70 U5). `options`: the link's roots, `--wrap` (applied
 /// when a stored row is read) and `--defsym` keys, passed in (WP-215
 /// D3-D5).
 ///
+/// A `DrawnIn` file adds no affected key (its mentions are its stored
+/// ones); its values stand in for the stored link's unknown ones.
+///
 /// # Errors
 /// A §7 reason (`symbol-kind-changed`, `closure-iterated`,
+/// `input-changed` (a second draw-in, [`RESOLVE_CALLS`]),
 /// `state-corrupt`, ...). Until U-3 lands: `update-not-implemented
 /// (resolve)`.
 pub fn resolve(
@@ -70,7 +101,7 @@ pub fn resolve(
     changed: &ChangedFiles,
     extraction: &Extraction,
     options: &OptionKeys,
-) -> Result<ResolveDelta, IncrReason> {
+) -> Result<Resolution, IncrReason> {
     let _ = (view, changed, extraction, options);
     Err(IncrReason::UpdateNotImplemented(Some(Unimplemented::Resolve)))
 }
