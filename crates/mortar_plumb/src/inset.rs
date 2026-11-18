@@ -342,7 +342,7 @@ impl Positional<'_> {
 
 /// A path normalized lexically: `.` and empty components dropped, `..`
 /// removing the component before it.
-fn norm(p: &str) -> String {
+pub(crate) fn norm(p: &str) -> String {
     let abs = p.starts_with('/');
     let mut out: Vec<&str> = Vec::new();
     for c in p.split('/') {

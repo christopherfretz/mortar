@@ -65,6 +65,73 @@ fn p1(msg: impl Into<String>) -> Finding {
     Finding::new(Rule::Rel(1), msg)
 }
 
+/// The members of the thin archives the `-r` line names (§2.2): the
+/// archive's path, the member's name, and its own path normalized
+/// lexically (the stored path, from the archive's directory). Read from
+/// the `-r` link's source; an archive it cannot read gives nothing.
+fn thin_of(src: &dyn Source, r: &RModel) -> Vec<(String, String, String)> {
+    let archives: BTreeSet<&str> = r.members.iter().map(|(p, _)| p.as_str()).collect();
+    let mut out = Vec::new();
+    for i in 0..src.count() {
+        let path = src.path(i);
+        if !archives.contains(path) {
+            continue;
+        }
+        let Ok(n) = usize::try_from(src.len(i)) else { continue };
+        let mut b = vec![0u8; n];
+        if src.read_at(i, 0, &mut b).is_err() || !b.starts_with(b"!<thin>\n") {
+            continue;
+        }
+        let Ok(a) = mortar_elf::archive::Archive::parse(&b) else { continue };
+        for m in a.members().filter_map(Result::ok) {
+            if let mortar_elf::archive::Content::External { path: stored } = m.content() {
+                let own = crate::locate::thin_member_path(path, stored);
+                out.push((
+                    path.to_string(),
+                    String::from_utf8_lossy(m.name()).into_owned(),
+                    crate::inset::norm(&own),
+                ));
+            }
+        }
+    }
+    out
+}
+
+/// A link's thin members named the way the `-r` map names them (§14.5,
+/// WP-232): GNU ld's map names a thin archive's member by its own path
+/// alone (`m1.o`), mold's by `archive(path as opened)`; both become
+/// `(archive, member name)`. A bare path is a member only when exactly one
+/// member of the `-r` line's thin archives has it as its own path and no
+/// word of the link's line is that path (a file named both as an object
+/// and through a thin archive is not told apart: not renamed).
+fn alias_thin(side: &mut Side<'_>, thin: &[(String, String, String)], line: Option<&[String]>) {
+    if thin.is_empty() {
+        return;
+    }
+    let plain: BTreeSet<String> =
+        line.unwrap_or(&[]).iter().map(|w| crate::inset::norm(w)).collect();
+    for k in &mut side.keys {
+        let found: Vec<&(String, String, String)> = match &k.1 {
+            None => {
+                let own = crate::inset::norm(&k.0);
+                if plain.contains(&own) {
+                    continue;
+                }
+                thin.iter().filter(|t| t.2 == own).collect()
+            }
+            Some(m) => thin
+                .iter()
+                .filter(|t| t.0 == k.0 && t.1 != *m && t.2 == crate::inset::norm(m))
+                .collect(),
+        };
+        if let [t] = found.as_slice() {
+            k.0.clone_from(&t.0);
+            k.1 = Some(t.1.clone());
+        }
+    }
+    side.by_key = side.keys.iter().enumerate().map(|(i, k)| (k.clone(), i)).collect();
+}
+
 /// The words of a link's line: mortar's `arg` records, else the caller's.
 fn words(l: &Link<'_>) -> Option<Vec<String>> {
     if l.map.format == Format::Mortar {
@@ -1253,10 +1320,10 @@ fn exclusions(l: &[String], rl: &[String], r: &RModel, d: &Side<'_>) -> Vec<(cha
         // input set is judged by §3.8 on its own link).
         let paths: BTreeSet<&str> = r.members.iter().map(|(p, _)| p.as_str()).collect();
         let in_d: BTreeSet<(String, String)> = d
-            .objs
+            .keys
             .iter()
-            .filter(|o| paths.contains(o.path.as_str()))
-            .filter_map(|o| o.member.clone().map(|m| (o.path.clone(), m)))
+            .filter(|k| paths.contains(k.0.as_str()))
+            .filter_map(|k| k.1.clone().map(|m| (k.0.clone(), m)))
             .collect();
         if in_d != r.members {
             x.push((
@@ -1413,7 +1480,7 @@ pub fn compose(direct: &Link<'_>, via: &Link<'_>, rmap: &Partial<'_>) -> Report 
     let d = side("direct link", direct.output, &ds, direct.map, lwords.as_deref());
     let vwords = words(via);
     let v = side("link through -r", via.output, &vs, via.map, vwords.as_deref());
-    let (d, v) = match (d, v) {
+    let (mut d, mut v) = match (d, v) {
         (Ok(d), Ok(v)) => (d, v),
         (d, v) => {
             for e in [d.err(), v.err()].into_iter().flatten() {
@@ -1423,6 +1490,9 @@ pub fn compose(direct: &Link<'_>, via: &Link<'_>, rmap: &Partial<'_>) -> Report 
             return report;
         }
     };
+    let thin = thin_of(rmap.link.src, &r);
+    alias_thin(&mut d, &thin, lwords.as_deref());
+    alias_thin(&mut v, &thin, vwords.as_deref());
     let excl =
         exclusions(lwords.as_deref().unwrap_or(&[]), rwords.as_deref().unwrap_or(&[]), &r, &d);
     if !excl.is_empty() {

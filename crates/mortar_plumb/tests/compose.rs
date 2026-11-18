@@ -226,11 +226,21 @@ fn read_as(dir: &Path, format: Format, out: &str, line: Vec<String>) -> Read {
     let text = std::fs::read_to_string(dir.join(format!("{out}.map"))).unwrap();
     let map = mortar_plumb::map::parse(format, &text)
         .unwrap_or_else(|e| panic!("{out}: map line {}: {}", e.line, e.message));
-    let files = map
+    let mut files: Vec<(String, Vec<u8>)> = map
         .paths()
         .into_iter()
         .filter_map(|p| std::fs::read(dir.join(p)).ok().map(|b| (p.to_string(), b)))
         .collect();
+    // A thin archive's members are files of their own (§2.2).
+    let thin: Vec<String> =
+        files.iter().flat_map(|(p, b)| mortar_plumb::thin_members(p, b)).collect();
+    for p in thin {
+        if !files.iter().any(|f| f.0 == p)
+            && let Ok(b) = std::fs::read(dir.join(&p))
+        {
+            files.push((p, b));
+        }
+    }
     Read { out: bytes, files, map, line, format }
 }
 
@@ -1003,6 +1013,102 @@ fn judge_merged(arch: Arch) {
     bad.append(&mut b);
     eprintln!("{log}");
     assert!(bad.is_empty(), "{arch:?}:\n{}", bad.join("\n"));
+}
+
+// ---- WP-232: a thin archive's members in the final link's map ----
+
+/// RL-7's `r-thin-whole-archive`, libc-free: mortar's `-r` of a thin
+/// archive's members (its map: `lib/libthin.a ../sub/t1.o`), final-linked
+/// by GNU ld (its map names a thin member by its own path,
+/// `lib/../sub/t1.o`) and by lld (`lib/libthin.a(../sub/t1.o)`), with and
+/// without `--whole-archive`. P-P1 judges each (exclusion (a) does not
+/// apply: both closures hold the same members), with no finding.
+fn judge_thin(arch: Arch) {
+    let Some(t) = Tools::find(arch) else {
+        eprintln!("skipped: the {arch:?} tools are not installed");
+        return;
+    };
+    if t.mortar.is_none() {
+        eprintln!("skipped: mortar is not built");
+        return;
+    }
+    let scratch = Scratch::new(&format!("plumb-compose-thin-{}", arch.name()));
+    let dir = scratch.path();
+    std::fs::create_dir_all(dir.join("sub")).unwrap();
+    std::fs::create_dir_all(dir.join("lib")).unwrap();
+    for (name, text) in [
+        ("sub/t1.c", "int t1_value(void) { return 11; }\n"),
+        ("sub/t2.c", "int t2_value(void) { return 22; }\n"),
+        (
+            "tmain.c",
+            "int t1_value(void); int t2_value(void);\n\
+             __attribute__((used)) void *const keep[] = { (void *)t1_value, (void *)t2_value };\n\
+             void _start(void) { for (;;) ; }\n",
+        ),
+    ] {
+        std::fs::write(dir.join(name), text).unwrap();
+        let obj = name.replace(".c", ".o");
+        run_ok(dir, &t.gcc, &s(&["-O2", "-c", name, "-o", &obj]))
+            .unwrap_or_else(|e| panic!("{arch:?}: {e}"));
+    }
+    run_ok(dir, &t.ar, &s(&["rcsT", "lib/libthin.a", "sub/t1.o", "sub/t2.o"]))
+        .unwrap_or_else(|e| panic!("{arch:?}: {e}"));
+    let mut log = String::new();
+    let mut bad = Vec::new();
+    for (tag, arch_words) in [
+        ("whole", &["--whole-archive", "lib/libthin.a", "--no-whole-archive"][..]),
+        ("lazy", &["lib/libthin.a"][..]),
+    ] {
+        let rout = format!("thin-{tag}.mortar.o");
+        let w =
+            words(&t, L::Mortar, &rout, &["-r", "-u", "t1_value", "-u", "t2_value"], arch_words);
+        if let Err(e) = link(&t, L::Mortar, dir, &w) {
+            let _ = writeln!(log, "{arch:?} thin {tag}: mortar -r refused: {e}");
+            if arch == Arch::Aarch64 {
+                bad.push(format!("{arch:?} thin {tag}: mortar -r: {e}"));
+            }
+            continue;
+        }
+        let r = read(dir, L::Mortar, &rout, w);
+        let mut dline = vec!["tmain.o"];
+        dline.extend(arch_words);
+        for fl in [L::Bfd, L::Lld] {
+            let dout = format!("td.{tag}.{}", fl.name());
+            let vout = format!("tv.{tag}.{}", fl.name());
+            let d = final_link(&t, fl, dir, &dout, &[], &dline);
+            let v = final_link(&t, fl, dir, &vout, &[], &["tmain.o", rout.as_str()]);
+            let (Ok(d), Ok(v)) = (d, v) else {
+                bad.push(format!("{arch:?} thin {tag} {}: final links", fl.name()));
+                continue;
+            };
+            let rep = p1(&d, &v, &r, &rout);
+            let cov = rep.coverage.composition.clone().unwrap_or_default();
+            let f = p1_findings(&rep);
+            let _ = writeln!(
+                log,
+                "{arch:?} thin {tag} final {}: judged {}, not judged {:?}, {} findings",
+                fl.name(),
+                cov.judged,
+                cov.not_judged,
+                f.len()
+            );
+            if cov.judged != 1 || !f.is_empty() {
+                bad.push(format!(
+                    "{arch:?} thin {tag} final {}: judged {}, {:?}, {f:?}",
+                    fl.name(),
+                    cov.judged,
+                    cov.not_judged
+                ));
+            }
+        }
+    }
+    eprintln!("{log}");
+    assert!(bad.is_empty(), "{arch:?}:\n{}", bad.join("\n"));
+}
+
+#[test]
+fn p_p1_thin_aarch64() {
+    judge_thin(Arch::Aarch64);
 }
 
 #[test]
