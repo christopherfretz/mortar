@@ -3,11 +3,22 @@
 //! `llvm-dwarfdump`, gdb, lldb) pass over, and the neutral abbreviation
 //! table the neutral `.debug_info` units name.
 
-/// The neutral abbreviation table (IN-51b): code 1, `DW_TAG_compile_unit`,
-/// no children, `DW_AT_lo_user` as `DW_FORM_block`, then the two zeros
-/// ending the attribute list. The table ends at the next 0 code: its hole
-/// is one byte longer, written 0 (`mortar_layout::slack::ABBREV_TABLE`).
-pub const ABBREV_TABLE: [u8; 8] = [0x01, 0x11, 0x00, 0x80, 0x40, 0x09, 0x00, 0x00];
+/// The neutral abbreviation table (IN-51b), one table of four
+/// abbreviations, each without children and ending with the two zeros of
+/// its attribute list: code 1, `DW_TAG_compile_unit`, `DW_AT_lo_user` as
+/// `DW_FORM_block` (IN-51's block unit); code 2, `DW_TAG_type_unit`, the
+/// same ([`ABBREV_TYPE_UNIT`]); code 3, `DW_TAG_compile_unit`,
+/// `DW_AT_addr_base` then the block ([`ABBREV_ADDR_BASE`]); code 4, the
+/// same with `DW_AT_GNU_addr_base` ([`ABBREV_GNU_ADDR_BASE`]). The table
+/// ends at the next 0 code: its hole is one byte longer, written 0
+/// (`mortar_layout::slack::ABBREV_TABLE`, 38). Every incremental-mode
+/// output with debug information holds it, whatever its inputs.
+pub const ABBREV_TABLE: [u8; 37] = [
+    0x01, 0x11, 0x00, 0x80, 0x40, 0x09, 0x00, 0x00, // code 1
+    0x02, 0x41, 0x00, 0x80, 0x40, 0x09, 0x00, 0x00, // code 2
+    0x03, 0x11, 0x00, 0x73, 0x17, 0x80, 0x40, 0x09, 0x00, 0x00, // code 3
+    0x04, 0x11, 0x00, 0xb3, 0x42, 0x17, 0x80, 0x40, 0x09, 0x00, 0x00, // code 4
+];
 
 /// The length of `v` as a ULEB128.
 fn uleb_len(mut v: u64) -> u64 {
@@ -429,6 +440,12 @@ mod tests {
         assert_eq!(&ABBREV_TYPE_UNIT[..2], &[2, 0x41]);
         assert_eq!(&ABBREV_ADDR_BASE[..1], &[3]);
         assert_eq!(&ABBREV_GNU_ADDR_BASE[..1], &[4]);
+        // The one table is the four abbreviations in code order.
+        let mut one = ABBREV_TABLE[..8].to_vec();
+        one.extend_from_slice(&ABBREV_TYPE_UNIT);
+        one.extend_from_slice(&ABBREV_ADDR_BASE);
+        one.extend_from_slice(&ABBREV_GNU_ADDR_BASE);
+        assert_eq!(&one[..], &ABBREV_TABLE[..]);
     }
 
     /// Not a check: the bytes of the forms, for the scripts that place them
