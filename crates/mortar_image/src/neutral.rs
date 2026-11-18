@@ -60,7 +60,7 @@ fn block(out: &mut Vec<u8>, size: u64) -> Option<()> {
 /// the offset of the table holding [`ABBREV_ADDR_BASE`] and
 /// [`ABBREV_GNU_ADDR_BASE`]. A skeleton unit (`DW_UT_skeleton`, a DWARF 4
 /// unit with `DW_AT_GNU_dwo_name`) takes this form or [`unit`]'s: its
-/// dwo_id is inside the block. `None` below the minimum.
+/// `dwo_id` is inside the block. `None` below the minimum.
 #[must_use]
 pub fn info_addr_base(
     size: u64,
@@ -442,6 +442,7 @@ mod tests {
     #[test]
     #[ignore = "run by tests/incr-design/wp228/place.py --rust"]
     fn emit_forms() {
+        use std::fmt::Write as _;
         let (Some(req), Some(out)) =
             (std::env::var_os("MORTAR_NEUTRAL_REQ"), std::env::var_os("MORTAR_NEUTRAL_OUT"))
         else {
@@ -458,26 +459,24 @@ mod tests {
                     info_addr_base(n(1), n(2) as u16, n(3) as u8, n(4) as u32, n(5) as u32)
                 }
                 Some("type") => type_unit(n(1), n(2) as u8, n(3) as u32, type_signature(n(4))),
-                Some("table") => Some(match w[1] {
-                    "compile" => ABBREV_TABLE.to_vec(),
+                Some("table") if w[1] == "compile" => Some(ABBREV_TABLE.to_vec()),
+                Some("table") => {
                     // The one table of the four abbreviations and its end
                     // (IN-51b as proposed; ABBREV_TABLE once its commit
                     // lands).
-                    _ => {
-                        let mut t = ABBREV_TABLE[..8].to_vec();
-                        t.extend_from_slice(&ABBREV_TYPE_UNIT);
-                        t.extend_from_slice(&ABBREV_ADDR_BASE);
-                        t.extend_from_slice(&ABBREV_GNU_ADDR_BASE);
-                        t.push(0);
-                        t
-                    }
-                }),
+                    let mut t = ABBREV_TABLE[..8].to_vec();
+                    t.extend_from_slice(&ABBREV_TYPE_UNIT);
+                    t.extend_from_slice(&ABBREV_ADDR_BASE);
+                    t.extend_from_slice(&ABBREV_GNU_ADDR_BASE);
+                    t.push(0);
+                    Some(t)
+                }
                 _ => None,
             };
             match bytes {
                 Some(b) => {
                     for x in b {
-                        lines.push_str(&format!("{x:02x}"));
+                        let _ = write!(lines, "{x:02x}");
                     }
                 }
                 None => lines.push_str("none"),
