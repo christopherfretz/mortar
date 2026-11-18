@@ -21,7 +21,7 @@ use crate::map::{Format, IncludedBy, Map, MapFile};
 use crate::report::{Finding, Rule};
 use crate::store::{At, Loc};
 use mortar_elf::consts::{
-    SHF_ALLOC, SHF_MERGE, SHN_X86_64_LCOMMON, STB_LOCAL, STB_WEAK, STT_FILE, STT_FUNC,
+    SHF_ALLOC, SHF_MERGE, SHN_X86_64_LCOMMON, SHT_GROUP, STB_LOCAL, STB_WEAK, STT_FILE, STT_FUNC,
     STT_GNU_IFUNC, STT_SECTION,
 };
 use mortar_elf::{Object, SymbolSection};
@@ -162,7 +162,10 @@ impl crate::dynmodel::Staging for Stager {
             })
             .collect();
         self.set.sources = Some(src);
-        self.live = self.set.closure(false, true).0;
+        // D-12 item 3's `first(k)`: the last iteration's (resolve §4.1).
+        let c = self.set.closure_with(false, true, false, self.set.asn(false));
+        self.live = c.live;
+        self.first = c.first;
         objs.iter()
             .map(|o| {
                 let id = Ident { path: norm(&o.path), member: o.member.clone() };
@@ -234,6 +237,12 @@ struct File {
     /// A shared object's soname, or its name as the line writes it
     /// (dyn.md D-19a's identity).
     soname: Option<String>,
+    /// Its COMDAT groups (resolve §6.1), in section-index order: each
+    /// one's signature, an index into [`Inputs::sigs`].
+    groups: Vec<u32>,
+    /// The defined mentions in a section of one of [`File::groups`]:
+    /// `(mention index, group index)` (resolve §4.1's iterations, §6.2).
+    grouped: Vec<(u32, u32)>,
 }
 
 /// A root key and the item position it is read at (GNU ld reads `EXTERN`
@@ -283,6 +292,32 @@ struct Inputs {
     /// `--export-dynamic-symbol`: roots this reader does not expand.
     export_globs: bool,
     lld_fortran_common: bool,
+    /// The COMDAT signatures, interned (resolve §6.1).
+    sigs: Vec<Box<[u8]>>,
+    sig_ids: HashMap<Box<[u8]>, u32>,
+}
+
+/// The iterated closure of resolve §4.1 ([`Inputs::closure_with`]).
+struct Closure {
+    /// `L`: the live files.
+    live: Vec<bool>,
+    /// Per extracted file, the pulling file and key.
+    why: Vec<(u32, u32)>,
+    /// `C`: per file, per group, whether that copy is dropped.
+    dropped: Vec<Vec<bool>>,
+    /// `first(K)` of the last iteration's `T`.
+    first: Vec<u32>,
+    /// The number of iterations.
+    iterations: u32,
+}
+
+/// What [`Inputs::object`] reads of an object.
+#[derive(Default)]
+struct Summary {
+    mentions: Vec<(u32, u8)>,
+    listed: bool,
+    groups: Vec<u32>,
+    grouped: Vec<(u32, u32)>,
 }
 
 /// A file up to this size is read whole, once (a caller's [`Files`] may
@@ -406,6 +441,8 @@ impl Inputs {
             lld_fortran_common: words
                 .iter()
                 .any(|w| w == "--fortran-common" || w == "-fortran-common"),
+            sigs: Vec::new(),
+            sig_ids: HashMap::default(),
         };
         let wrap = crate::wrap::Wrap::new(line.wrap.iter().cloned());
         // File 0.
@@ -421,6 +458,8 @@ impl Inputs {
             alt: None,
             listed: false,
             soname: None,
+            groups: Vec::new(),
+            grouped: Vec::new(),
         };
         // The roots of resolve §4.2.
         let entry = line.entry.clone().or_else(|| line.script_entry.clone());
@@ -601,6 +640,8 @@ impl Inputs {
                         alt: None,
                         listed: false,
                         soname: Some(soname),
+                        groups: Vec::new(),
+                        grouped: Vec::new(),
                     });
                 }
                 Item::Relocatable { path, group, whole, lib } => {
@@ -634,7 +675,7 @@ impl Inputs {
                                 }
                             };
                             let member = String::from_utf8_lossy(&name).into_owned();
-                            let (mentions, listed) = s
+                            let Summary { mentions, listed, groups, grouped } = s
                                 .object(&src, at, &wrap)
                                 .map_err(|e| format!("{path}({member}): {e}"))?;
                             if at.file != i {
@@ -652,11 +693,13 @@ impl Inputs {
                                 alt,
                                 listed,
                                 soname: None,
+                                groups,
+                                grouped,
                             });
                         }
                     } else {
                         let len = src.lens[i];
-                        let (mentions, listed) = s
+                        let Summary { mentions, listed, groups, grouped } = s
                             .object(&src, At { file: i, base: 0, len }, &wrap)
                             .map_err(|e| format!("{path}: {e}"))?;
                         s.files.push(File {
@@ -671,6 +714,8 @@ impl Inputs {
                             alt: None,
                             listed,
                             soname: None,
+                            groups,
+                            grouped,
                         });
                     }
                 }
@@ -686,7 +731,7 @@ impl Inputs {
         src: &dyn crate::Source,
         at: At,
         wrap: &crate::wrap::Wrap,
-    ) -> Result<(Vec<(u32, u8)>, bool), String> {
+    ) -> Result<Summary, String> {
         let skel = crate::store::skeleton(src, at)?;
         let view = skel.view(at.len);
         let o = Object::parse_view(view).map_err(|e| e.to_string())?;
@@ -696,8 +741,40 @@ impl Inputs {
                 && sec.name().is_ok_and(|n| n != b".eh_frame")
         });
         let Some(t) = o.symbols().map_err(|e| e.to_string())? else {
-            return Ok((Vec::new(), listed));
+            return Ok(Summary { listed, ..Summary::default() });
         };
+        // resolve §6.1: the COMDAT groups in section-index order, each
+        // one's signature (its symbol's name; for an `STT_SECTION` symbol
+        // the name of the section it refers to), and which group each
+        // member section is in (the first group that lists it).
+        let mut groups = Vec::new();
+        let mut in_group: HashMap<u32, u32> = HashMap::default();
+        for sec in o.sections() {
+            if sec.sh_type() != SHT_GROUP {
+                continue;
+            }
+            let g = sec.group().map_err(|e| e.to_string())?;
+            if !g.is_comdat() {
+                continue;
+            }
+            let sym = t.get(g.signature()).map_err(|e| e.to_string())?;
+            let mut sig = t.name(&sym).map_err(|e| e.to_string())?.to_vec();
+            if sym.sym_type() == STT_SECTION || sig.is_empty() {
+                if let SymbolSection::Section(k) =
+                    t.section_of(g.signature(), &sym).map_err(|e| e.to_string())?
+                {
+                    sig = o.section(k).and_then(|x| x.name()).map_err(|e| e.to_string())?.to_vec();
+                }
+            }
+            let id = self.sig(&sig);
+            let gi = groups.len() as u32;
+            groups.push(id);
+            for m in g.members() {
+                let m = m.map_err(|e| e.to_string())?;
+                in_group.entry(m.0).or_insert(gi);
+            }
+        }
+        let mut grouped = Vec::new();
         let mut out = Vec::new();
         for (idx, sym) in t.iter() {
             if idx.0 == 0 || sym.binding() == STB_LOCAL {
@@ -725,8 +802,17 @@ impl Inputs {
                     let k = self.key(name);
                     out.push((k, COMMON | if weak { WEAK } else { 0 }));
                 }
-                _ => {
+                w => {
                     let bits = DEF | data | if weak { WEAK } else { 0 };
+                    if let SymbolSection::Section(k) = w
+                        && let Some(&g) = in_group.get(&k.0)
+                    {
+                        let n = out.len() as u32;
+                        grouped.push((n, g));
+                        if find(name, b"@@").is_some() {
+                            grouped.push((n + 1, g));
+                        }
+                    }
                     // §9.4: `foo@@V` is `foo`, and binds `foo@V` too.
                     if let Some(at) = find(name, b"@@") {
                         let base = &name[..at];
@@ -743,12 +829,34 @@ impl Inputs {
                 }
             }
         }
-        Ok((out, listed))
+        Ok(Summary { mentions: out, listed, groups, grouped })
+    }
+
+    /// The id of COMDAT signature `sig`, interned.
+    fn sig(&mut self, sig: &[u8]) -> u32 {
+        if let Some(&i) = self.sig_ids.get(sig) {
+            return i;
+        }
+        let i = self.sigs.len() as u32;
+        self.sigs.push(sig.into());
+        self.sig_ids.insert(sig.into(), i);
+        i
     }
 
     /// `first(K)` and `cfirst(K)` of resolve §4.1, file 0 defining
     /// `extra` as well.
     fn targets(&self, extra: &[u32]) -> (Vec<u32>, Vec<u32>) {
+        self.targets_without(extra, None)
+    }
+
+    /// [`Self::targets`], not counting, when `gone` is given, the
+    /// mentions of a file live in it defined in a section its dropped
+    /// copies hold (resolve §4.1 step 3: `gone` is `(L_i, C_i)`).
+    fn targets_without(
+        &self,
+        extra: &[u32],
+        gone: Option<(&[bool], &[Vec<bool>])>,
+    ) -> (Vec<u32>, Vec<u32>) {
         let n = self.keys.len();
         let mut first = vec![NONE; n];
         let mut cfirst = vec![NONE; n];
@@ -756,9 +864,25 @@ impl Inputs {
             first[k as usize] = 0;
             cfirst[k as usize] = 0;
         }
+        let mut skip: Vec<bool> = Vec::new();
         for (i, f) in self.files.iter().enumerate() {
+            skip.clear();
+            if let Some((live, dropped)) = gone
+                && live[i]
+                && dropped[i].iter().any(|&d| d)
+            {
+                skip.resize(f.mentions.len(), false);
+                for &(m, g) in &f.grouped {
+                    if dropped[i][g as usize] {
+                        skip[m as usize] = true;
+                    }
+                }
+            }
             let i = i as u32;
-            for &(k, b) in &f.mentions {
+            for (j, &(k, b)) in f.mentions.iter().enumerate() {
+                if skip.get(j).copied().unwrap_or(false) {
+                    continue;
+                }
                 let k = k as usize;
                 if b & (DEF | COMMON) != 0 && first[k] == NONE {
                     first[k] = i;
@@ -776,12 +900,69 @@ impl Inputs {
         (first, cfirst)
     }
 
+    /// The keepers of resolve §6.1 over the relocatable objects `live`
+    /// holds: per file, per group of [`File::groups`], whether that copy
+    /// is dropped. `comdat[G]` is the least `FileId` among the live files
+    /// with a group of signature `G`, the first by section index there;
+    /// every other copy is dropped.
+    fn keepers(&self, live: &[bool]) -> Vec<Vec<bool>> {
+        let mut kept = vec![false; self.sigs.len()];
+        self.files
+            .iter()
+            .enumerate()
+            .map(|(i, f)| {
+                if !live[i] || !matches!(f.kind, Kind::Object | Kind::Member) {
+                    return vec![false; f.groups.len()];
+                }
+                f.groups
+                    .iter()
+                    .map(|&g| std::mem::replace(&mut kept[g as usize], true))
+                    .collect()
+            })
+            .collect()
+    }
+
+    /// resolve §4.1 step 2: whether a mention feeds back after an
+    /// iteration that made `live` live, dropped `dropped` and had the
+    /// targets `first`, `cfirst`: a defined non-local mention of a
+    /// relocatable object live in it, in a section a dropped copy holds,
+    /// when that object is `first(K)` or `cfirst(K)` for its key `K` or,
+    /// for a versioned `foo@V` mention, for the unversioned `foo`.
+    fn feeds_back(
+        &self,
+        live: &[bool],
+        dropped: &[Vec<bool>],
+        first: &[u32],
+        cfirst: &[u32],
+    ) -> bool {
+        let names = self.names();
+        self.files.iter().enumerate().any(|(i, f)| {
+            let me = i as u32;
+            let is_target = |k: u32| first[k as usize] == me || cfirst[k as usize] == me;
+            live[i]
+                && matches!(f.kind, Kind::Object | Kind::Member)
+                && f.grouped.iter().any(|&(m, g)| {
+                    if !dropped[i][g as usize] {
+                        return false;
+                    }
+                    let k = f.mentions[m as usize].0;
+                    is_target(k)
+                        || names
+                            .get(k as usize)
+                            .and_then(|n| n.iter().position(|&c| c == b'@').map(|at| &n[..at]))
+                            .and_then(|base| self.keys.get(base))
+                            .is_some_and(|&b| is_target(b))
+                })
+        })
+    }
+
     /// The closure of resolve §4.1 over the roots of §4.2: the live files,
     /// and for each extracted file the pulling file and key. `upper`:
     /// the uncertain roots followed and the uncertain definitions not
     /// counted; else the reverse. `commons`: the edges of a common.
     fn closure(&self, upper: bool, commons: bool) -> (Vec<bool>, Vec<(u32, u32)>) {
-        self.closure_with(upper, commons, false, self.asn(upper))
+        let c = self.closure_with(upper, commons, false, self.asn(upper));
+        (c.live, c.why)
     }
 
     /// Which [`ASN`] mentions are edges in a bound: the last stage's
@@ -795,22 +976,65 @@ impl Inputs {
         }
     }
 
-    /// [`Self::closure`]; `plain`: the [`VPLAIN`] mentions edges too;
-    /// `asn`: which [`ASN`] mentions are.
-    fn closure_with(
+    /// [`Self::closure`], iterated over the dropped COMDAT copies as
+    /// resolve §4.1 states it (WP-200, WP-231); `plain`: the [`VPLAIN`]
+    /// mentions edges too; `asn`: which [`ASN`] mentions are.
+    fn closure_with(&self, upper: bool, commons: bool, plain: bool, asn: Asn<'_>) -> Closure {
+        let extra: &[u32] = if upper { &[] } else { &self.maybe_defined };
+        let n = self.files.len();
+        // Step 1: T_1, L_1 from the roots, C_1.
+        let (mut first, mut cfirst) = self.targets(extra);
+        let mut live: Vec<bool> = self.files.iter().map(|f| !f.lazy).collect();
+        let mut why = vec![(NONE, NONE); n];
+        self.close(&first, &cfirst, &mut live, &mut why, upper, commons, plain, asn);
+        let mut dropped = self.keepers(&live);
+        let mut before: Option<(Vec<bool>, Vec<Vec<bool>>)> = None;
+        let mut iterations = 1;
+        // Step 2: the trigger.
+        while self.feeds_back(&live, &dropped, &first, &cfirst) {
+            // Step 3: T_{i+1}, never lower than T_i (NONE, no file, is
+            // later than every file); L_{i+1} from the roots and L_i;
+            // C_{i+1}.
+            let (f2, c2) = self.targets_without(extra, Some((&live, &dropped)));
+            let f2: Vec<u32> = f2.iter().zip(&first).map(|(a, b)| *a.max(b)).collect();
+            let c2: Vec<u32> = c2.iter().zip(&cfirst).map(|(a, b)| *a.max(b)).collect();
+            // Step 4: the end, when the iteration would repeat the one
+            // before (T_{i+1} = T_i, L_i = L_{i-1}, C_i = C_{i-1}).
+            if f2 == first
+                && c2 == cfirst
+                && before.as_ref().is_some_and(|(l, d)| *l == live && *d == dropped)
+            {
+                break;
+            }
+            before = Some((live.clone(), dropped));
+            first = f2;
+            cfirst = c2;
+            self.close(&first, &cfirst, &mut live, &mut why, upper, commons, plain, asn);
+            dropped = self.keepers(&live);
+            iterations += 1;
+        }
+        Closure { live, why, dropped, first, iterations }
+    }
+
+    /// One closure of resolve §4.1 under the targets `first`, `cfirst`
+    /// from the roots of §4.2 and every file `live` already holds (an
+    /// extracted member stays; its pulling reference stays the first
+    /// found).
+    #[allow(clippy::too_many_arguments)] // the bound's switches
+    fn close(
         &self,
+        first: &[u32],
+        cfirst: &[u32],
+        live: &mut [bool],
+        why: &mut [(u32, u32)],
         upper: bool,
         commons: bool,
         plain: bool,
         asn: Asn<'_>,
-    ) -> (Vec<bool>, Vec<(u32, u32)>) {
-        let extra: &[u32] = if upper { &[] } else { &self.maybe_defined };
-        let (first, cfirst) = self.targets(extra);
+    ) {
         let n = self.files.len();
-        let mut live: Vec<bool> = self.files.iter().map(|f| !f.lazy).collect();
-        let mut why = vec![(NONE, NONE); n];
         let mut work: Vec<u32> = (0..n as u32).filter(|&i| live[i as usize]).collect();
-        let mut pull = |t: u32, from: u32, k: u32, live: &mut Vec<bool>, work: &mut Vec<u32>| {
+        let mut pull = |t: u32, from: u32, k: u32, live: &mut [bool], work: &mut Vec<u32>| {
             if t != NONE && !live[t as usize] {
                 live[t as usize] = true;
                 why[t as usize] = (from, k);
@@ -821,20 +1045,19 @@ impl Inputs {
             if r.uncertain && !upper {
                 continue;
             }
-            pull(first[r.key as usize], 0, r.key, &mut live, &mut work);
+            pull(first[r.key as usize], 0, r.key, live, &mut work);
         }
         while let Some(f) = work.pop() {
             let src = asn.of(f as usize);
             for &(k, b) in &self.files[f as usize].mentions {
                 if b & UNDEF != 0 || (plain && b & VPLAIN != 0) || (src && b & ASN != 0) {
-                    pull(first[k as usize], f, k, &mut live, &mut work);
+                    pull(first[k as usize], f, k, live, &mut work);
                 }
                 if commons && b & COMMON != 0 {
-                    pull(cfirst[k as usize], f, k, &mut live, &mut work);
+                    pull(cfirst[k as usize], f, k, live, &mut work);
                 }
             }
         }
-        (live, why)
     }
 
     fn label(&self, i: usize) -> String {
@@ -859,13 +1082,42 @@ impl Inputs {
         m
     }
 
+    /// The demoted mention that would explain lazy file `i` (resolve
+    /// §6.2): a mention of a file live in `c`, defined in a copy `c`
+    /// drops, of a key `i` defines; as `the demoted mention `K` of FILE
+    /// (its dropped copy of COMDAT group `G`)`. `None` when there is none.
+    fn demoted_only(&self, i: usize, c: &Closure) -> Option<String> {
+        let names = self.names();
+        let defines = |k: u32| {
+            self.files[i].mentions.iter().any(|&(x, b)| x == k && b & (DEF | COMMON) != 0)
+        };
+        self.files.iter().enumerate().find_map(|(j, f)| {
+            if !c.live[j] || j == i {
+                return None;
+            }
+            f.grouped.iter().find_map(|&(m, g)| {
+                let k = f.mentions[m as usize].0;
+                (c.dropped[j][g as usize] && defines(k)).then(|| {
+                    format!(
+                        "the demoted mention `{}` of {} (its dropped copy of COMDAT group `{}`)",
+                        String::from_utf8_lossy(names.get(k as usize).copied().unwrap_or(b"")),
+                        self.label(j),
+                        String::from_utf8_lossy(&self.sigs[f.groups[g as usize] as usize]),
+                    )
+                })
+            })
+        })
+    }
+
     /// mortar's map: the closure exactly (§3.8 rule 1).
     #[allow(clippy::too_many_lines)] // one pass per bound and its findings
     fn strict(&self, map: &Map) -> Verdict {
-        let (lo, why) = self.closure(false, true);
-        let (hi, _) = self.closure(true, true);
-        let (hv, _) = self.closure_with(true, true, true, self.asn(true));
-        let (ha, _) = self.closure_with(true, true, false, Asn::All);
+        let low = self.closure_with(false, true, false, self.asn(false));
+        let (lo, why) = (&low.live, &low.why);
+        let high = self.closure_with(true, true, false, self.asn(true));
+        let hi = &high.live;
+        let hv = self.closure_with(true, true, true, self.asn(true)).live;
+        let ha = self.closure_with(true, true, false, Asn::All).live;
         let names = self.names();
         let name = |k: u32| {
             String::from_utf8_lossy(names.get(k as usize).copied().unwrap_or(b"")).into_owned()
@@ -901,6 +1153,10 @@ impl Inputs {
                     format!("{mf} is in the link and {VERSIONED_PLAIN}")
                 } else if cands.iter().any(|&i| ha[i]) {
                     format!("{mf} is in the link and {UNNEEDED_AS_NEEDED}")
+                } else if let Some(d) = cands.iter().find_map(|&i| self.demoted_only(i, &high)) {
+                    format!(
+                        "{mf} is in the link and no root or live reference reaches it, only {d} (resolve §6.2: a demoted mention pulls nothing)"
+                    )
                 } else {
                     format!(
                         "{mf} is in the link and no root or live reference reaches it (resolve §4.1)"
@@ -974,6 +1230,9 @@ impl Inputs {
         );
         if self.export_globs {
             c.push_str("; extra not judged: --export-dynamic-symbol roots not expanded");
+        }
+        if low.iterations > 1 {
+            let _ = write!(c, "; resolve §4.1's closure iterated {} times", low.iterations);
         }
         v.coverage = c;
         v
@@ -1517,13 +1776,24 @@ mod tests {
     /// definition, `O` a data definition, `W` a weak function definition,
     /// `U` a strong reference, `w` a weak reference, `C` a common.
     fn obj(syms: &[(&str, char)]) -> Vec<u8> {
+        gobj(syms, &[])
+    }
+
+    /// [`obj`] with COMDAT groups: each `(signature, defined)` is a
+    /// section `.text.<signature>` in a `GRP_COMDAT` group whose
+    /// signature is the symbol of that name (one of `syms`), and the
+    /// definitions named in `defined` are in that section.
+    #[allow(clippy::too_many_lines)] // the ELF file, field by field
+    fn gobj(syms: &[(&str, char)], groups: &[(&str, &[&str])]) -> Vec<u8> {
+        let ng = groups.len() as u32;
+        let (shstr_i, str_i, sym_i) = (2 + 2 * ng, 3 + 2 * ng, 4 + 2 * ng);
         let mut strtab = vec![0u8];
         let mut symtab = vec![0u8; 24];
         for (n, k) in syms {
             let name = strtab.len() as u32;
             strtab.extend_from_slice(n.as_bytes());
             strtab.push(0);
-            let (bind, ty, shndx): (u8, u8, u16) = match k {
+            let (bind, ty, mut shndx): (u8, u8, u16) = match k {
                 'D' => (1, 2, 1),
                 'O' => (1, 1, 1),
                 'W' => (2, 2, 1),
@@ -1532,6 +1802,9 @@ mod tests {
                 'C' => (1, 1, 0xfff2),
                 _ => panic!("kind {k}"),
             };
+            if let Some(g) = groups.iter().position(|(_, d)| d.contains(n)) {
+                shndx = 2 + 2 * g as u16;
+            }
             symtab.extend_from_slice(&name.to_le_bytes());
             symtab.push(bind << 4 | ty);
             symtab.push(0);
@@ -1539,10 +1812,24 @@ mod tests {
             symtab.extend_from_slice(&(if shndx == 0xfff2 { 4u64 } else { 0 }).to_le_bytes());
             symtab.extend_from_slice(&4u64.to_le_bytes());
         }
-        let shstr = b"\0.text\0.shstrtab\0.strtab\0.symtab\0".to_vec();
+        let mut shstr = b"\0.text\0.shstrtab\0.strtab\0.symtab\0.group\0".to_vec();
+        let mut gname = Vec::new();
+        for (sig, _) in groups {
+            gname.push(shstr.len() as u32);
+            shstr.extend_from_slice(format!(".text.{sig}").as_bytes());
+            shstr.push(0);
+        }
         let mut f = vec![0u8; 64];
         let text_off = f.len();
         f.extend_from_slice(&[0u8; 16]);
+        let mut gdata = Vec::new();
+        for (g, (sig, _)) in groups.iter().enumerate() {
+            let at = f.len();
+            f.extend_from_slice(&1u32.to_le_bytes());
+            f.extend_from_slice(&(2 + 2 * g as u32).to_le_bytes());
+            let si = 1 + syms.iter().position(|(n, _)| n == sig).expect("the signature") as u32;
+            gdata.push((at, si));
+        }
         let shstr_off = f.len();
         f.extend_from_slice(&shstr);
         let str_off = f.len();
@@ -1553,8 +1840,10 @@ mod tests {
         let sym_off = f.len();
         f.extend_from_slice(&symtab);
         let sh_off = f.len();
+        #[allow(clippy::too_many_arguments)]
         let sh = |name: u32,
                   ty: u32,
+                  flags: u64,
                   off: usize,
                   size: usize,
                   link: u32,
@@ -1564,7 +1853,7 @@ mod tests {
             let mut h = Vec::new();
             h.extend_from_slice(&name.to_le_bytes());
             h.extend_from_slice(&ty.to_le_bytes());
-            h.extend_from_slice(&(if ty == 1 { 6u64 } else { 0 }).to_le_bytes());
+            h.extend_from_slice(&flags.to_le_bytes());
             h.extend_from_slice(&0u64.to_le_bytes());
             h.extend_from_slice(&(off as u64).to_le_bytes());
             h.extend_from_slice(&(size as u64).to_le_bytes());
@@ -1575,10 +1864,14 @@ mod tests {
             h
         };
         f.extend_from_slice(&[0u8; 64]);
-        f.extend(sh(1, 1, text_off, 16, 0, 0, 4, 0));
-        f.extend(sh(7, 3, shstr_off, shstr.len(), 0, 0, 1, 0));
-        f.extend(sh(17, 3, str_off, strtab.len(), 0, 0, 1, 0));
-        f.extend(sh(25, 2, sym_off, symtab.len(), 3, 1, 8, 24));
+        f.extend(sh(1, 1, 6, text_off, 16, 0, 0, 4, 0));
+        for (g, &(at, si)) in gdata.iter().enumerate() {
+            f.extend(sh(gname[g], 1, 0x206, text_off, 16, 0, 0, 4, 0));
+            f.extend(sh(33, 17, 0, at, 8, sym_i, si, 4, 4));
+        }
+        f.extend(sh(7, 3, 0, shstr_off, shstr.len(), 0, 0, 1, 0));
+        f.extend(sh(17, 3, 0, str_off, strtab.len(), 0, 0, 1, 0));
+        f.extend(sh(25, 2, 0, sym_off, symtab.len(), str_i, 1, 8, 24));
         f[..4].copy_from_slice(b"\x7fELF");
         f[4] = 2;
         f[5] = 1;
@@ -1589,8 +1882,8 @@ mod tests {
         f[40..48].copy_from_slice(&(sh_off as u64).to_le_bytes());
         f[52..54].copy_from_slice(&64u16.to_le_bytes());
         f[58..60].copy_from_slice(&64u16.to_le_bytes());
-        f[60..62].copy_from_slice(&5u16.to_le_bytes());
-        f[62..64].copy_from_slice(&2u16.to_le_bytes());
+        f[60..62].copy_from_slice(&((sym_i + 1) as u16).to_le_bytes());
+        f[62..64].copy_from_slice(&(shstr_i as u16).to_le_bytes());
         f
     }
 
@@ -1982,5 +2275,165 @@ mod tests {
         assert_eq!(s.roots, vec!["k_fn", "j_fn", "a b", "c", "d"]);
         assert_eq!(s.assigned, vec!["q"]);
         assert!(script(r#"EXTERN("INPUT")"#).is_ok());
+    }
+
+    /// WP-200's shape: wb.o's copy of `g` (with a weak `hx` in it) is
+    /// dropped for wa.o's, `wu.o` refers to `hx` strongly, and a lazy
+    /// file defines `hx`.
+    fn wp200(wb_global: bool, wu_hx: bool) -> Vec<(&'static str, Vec<u8>)> {
+        let wu: Vec<(&str, char)> = if wu_hx {
+            vec![("_start", 'D'), ("Y", 'U'), ("g", 'U'), ("hx", 'U')]
+        } else {
+            vec![("_start", 'D'), ("Y", 'U'), ("g", 'U')]
+        };
+        let wb = gobj(
+            &[("g", 'W'), ("hx", if wb_global { 'D' } else { 'W' }), ("Y", 'D')],
+            &[("g", &["g", "hx"])],
+        );
+        vec![
+            ("wu.o", obj(&wu)),
+            ("wa.o", gobj(&[("g", 'W')], &[("g", &["g"])])),
+            ("libwb.a", ar(&[("wb.o", wb.clone())])),
+            ("wb.o", wb),
+            ("hx.o", obj(&[("hx", 'D')])),
+            ("libhx.a", ar(&[("hx.o", obj(&[("hx", 'D')]))])),
+            (
+                "libhxg.a",
+                ar(&[("hxg.o", gobj(&[("g", 'W'), ("hx", 'D')], &[("g", &["g"])]))]),
+            ),
+            ("libwa2.a", ar(&[("wa2.o", gobj(&[("g", 'W'), ("A", 'D')], &[("g", &["g"])]))])),
+            (
+                "wb2.o",
+                gobj(
+                    &[("g", 'W'), ("hx", 'W'), ("Y", 'D'), ("A", 'U')],
+                    &[("g", &["g", "hx"])],
+                ),
+            ),
+        ]
+    }
+
+    fn iterations(line: &str, files: &Mem) -> u32 {
+        let w = words(line);
+        let l = Line::parse(&w, files);
+        let s = Inputs::read(&l, &w, files).unwrap();
+        s.closure_with(false, true, false, s.asn(false)).iterations
+    }
+
+    /// resolve §4.1's iterations (WP-200): once wa.o keeps `g`, wb.o's
+    /// copy is dropped and its `hx` no definition for `first`, so wu.o's
+    /// strong reference extracts the member that defines `hx`, wherever
+    /// the files are on the line and whatever kind of lazy file it is.
+    #[test]
+    fn s3_8_a_dropped_copy_s_definition_stops_counting() {
+        let f = mem(wp200(false, true));
+        for (line, want) in [
+            ("wu.o wa.o wb.o libhx.a", &["wu.o", "wa.o", "wb.o", "libhx.a(hx.o)"][..]),
+            ("wa.o wb.o wu.o libhx.a", &["wa.o", "wb.o", "wu.o", "libhx.a(hx.o)"]),
+            ("wa.o wb.o libhx.a wu.o", &["wa.o", "wb.o", "libhx.a(hx.o)", "wu.o"]),
+            ("wu.o wa.o libwb.a libhx.a", &["wu.o", "wa.o", "libwb.a(wb.o)", "libhx.a(hx.o)"]),
+            (
+                "wu.o wa.o --start-group libwb.a libhx.a --end-group",
+                &["wu.o", "wa.o", "libwb.a(wb.o)", "libhx.a(hx.o)"],
+            ),
+            ("wu.o wa.o wb.o --start-lib hx.o --end-lib", &["wu.o", "wa.o", "wb.o", "hx.o"]),
+            // The member with its own copy of `g`, after wa.o: its copy
+            // is dropped too, and its `hx` (outside the group) defines
+            // the key.
+            ("wu.o wa.o wb.o libhxg.a", &["wu.o", "wa.o", "wb.o", "libhxg.a(hxg.o)"]),
+            // The keeper extracted after the copy it drops is read
+            // (§6.1: the lowest FileId keeps).
+            (
+                "wu.o --start-group libwa2.a wb2.o --end-group libhx.a",
+                &["wu.o", "libwa2.a(wa2.o)", "wb2.o", "libhx.a(hx.o)"],
+            ),
+            ("wu.o libwa2.a wb2.o libhx.a", &["wu.o", "libwa2.a(wa2.o)", "wb2.o", "libhx.a(hx.o)"]),
+        ] {
+            assert_eq!(live(line, &f), want, "{line}");
+            assert_eq!(iterations(line, &f), 2, "{line}");
+        }
+        // The archive before the copy: its member is first(hx) and taken
+        // in the first iteration; the member with the copy before wa.o
+        // keeps it. One iteration each.
+        for (line, want) in [
+            ("wu.o wa.o libhx.a wb.o", &["wu.o", "wa.o", "libhx.a(hx.o)", "wb.o"][..]),
+            ("wu.o libhxg.a wa.o wb.o", &["wu.o", "libhxg.a(hxg.o)", "wa.o", "wb.o"]),
+        ] {
+            assert_eq!(live(line, &f), want, "{line}");
+            assert_eq!(iterations(line, &f), 1, "{line}");
+        }
+        // mortar's map: the member is required, and its absence is M11
+        // by the reference that pulls it (the old model, which counted
+        // wb.o's dropped `hx`, passed this map and called the member
+        // extra).
+        let line = words("wu.o wa.o wb.o libhx.a");
+        let v = judge(&map_of(&["wu.o", "wa.o", "wb.o", "libhx.a(hx.o)"]), Some(&line), &f);
+        assert!(v.findings.is_empty(), "{:?}", ids(&v));
+        assert_eq!(
+            v.coverage,
+            "input set: files judged 4 of 4 (in the link 4, required 4); resolve §4.1's closure iterated 2 times"
+        );
+        let v = judge(&map_of(&["wu.o", "wa.o", "wb.o"]), Some(&line), &f);
+        assert_eq!(
+            ids(&v),
+            ["M11 libhx.a(hx.o) is not in the link: wu.o refers to `hx` and it is the target (resolve §4.1)"]
+        );
+        let line = words("wu.o --start-group libwa2.a wb2.o --end-group libhx.a");
+        let v = judge(&map_of(&["wu.o", "libwa2.a(wa2.o)", "wb2.o"]), Some(&line), &f);
+        assert_eq!(
+            ids(&v),
+            ["M11 libhx.a(hx.o) is not in the link: wu.o refers to `hx` and it is the target (resolve §4.1)"]
+        );
+    }
+
+    /// resolve §6.2 (WP-200, the supervisor's ruling): a demoted mention
+    /// pulls nothing, whatever its binding. wb.o's `hx` is GLOBAL in its
+    /// dropped copy and nothing else refers to `hx`: the member is not
+    /// in the closure, before or after, and a map that has it is M12
+    /// naming the mention.
+    #[test]
+    fn s3_8_a_demoted_mention_pulls_nothing() {
+        let f = mem(wp200(true, false));
+        for (line, want) in [
+            ("wu.o wa.o wb.o libhx.a", &["wu.o", "wa.o", "wb.o"][..]),
+            ("wu.o wa.o libhx.a wb.o", &["wu.o", "wa.o", "wb.o"]),
+            ("wu.o wa.o wb.o --start-lib hx.o --end-lib", &["wu.o", "wa.o", "wb.o"]),
+        ] {
+            assert_eq!(live(line, &f), want, "{line}");
+        }
+        let line = words("wu.o wa.o wb.o libhx.a");
+        let v = judge(&map_of(&["wu.o", "wa.o", "wb.o", "libhx.a(hx.o)"]), Some(&line), &f);
+        assert_eq!(
+            ids(&v),
+            [
+                "M12 libhx.a(hx.o) is in the link and no root or live reference reaches it, only the demoted mention `hx` of wb.o (its dropped copy of COMDAT group `g`) (resolve §6.2: a demoted mention pulls nothing)"
+            ]
+        );
+        // A weak one the same.
+        let f = mem(wp200(false, false));
+        let v = judge(&map_of(&["wu.o", "wa.o", "wb.o", "libhx.a(hx.o)"]), Some(&line), &f);
+        assert_eq!(v.findings.len(), 1);
+        assert!(v.findings[0].message.contains("only the demoted mention `hx` of wb.o"));
+        // The copy kept (wb.o before wa.o): its `hx` is a definition and
+        // first(hx); nothing is demoted, the member plain M12.
+        let line = words("wu.o wb.o wa.o libhx.a");
+        let v = judge(&map_of(&["wu.o", "wb.o", "wa.o", "libhx.a(hx.o)"]), Some(&line), &f);
+        assert_eq!(
+            ids(&v),
+            ["M12 libhx.a(hx.o) is in the link and no root or live reference reaches it (resolve §4.1)"]
+        );
+    }
+
+    /// resolve §4.1 step 2: a dropped copy whose definitions are no
+    /// key's target does not iterate; identical copies never do.
+    #[test]
+    fn s3_8_no_mismatched_copy_runs_once() {
+        let f = mem(vec![
+            ("m.o", obj(&[("_start", 'D'), ("g", 'U'), ("x", 'U')])),
+            ("a.o", gobj(&[("g", 'W')], &[("g", &["g"])])),
+            ("b.o", gobj(&[("g", 'W'), ("x", 'U')], &[("g", &["g"])])),
+            ("lib.a", ar(&[("x.o", obj(&[("x", 'D')]))])),
+        ]);
+        assert_eq!(live("m.o a.o b.o lib.a", &f), ["m.o", "a.o", "b.o", "lib.a(x.o)"]);
+        assert_eq!(iterations("m.o a.o b.o lib.a", &f), 1);
     }
 }
