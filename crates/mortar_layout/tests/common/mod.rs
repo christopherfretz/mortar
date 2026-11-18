@@ -75,6 +75,9 @@ pub struct World {
 fn kind_of(s: &Sec) -> SectionKind {
     if s.name == b".note.GNU-stack" {
         SectionKind::Stack
+    } else if s.name == b".eh_frame" {
+        // Placed by its records, in the `.eh_frame` chunk (WP-243).
+        SectionKind::EhFrame
     } else if s.ty == SHT_NOBITS {
         SectionKind::Nobits
     } else if s.ty == SHT_NOTE {

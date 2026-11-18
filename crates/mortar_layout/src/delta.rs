@@ -14,7 +14,9 @@
 //! and its `FILES` row's `.eh_frame` columns, the `FRAGS` row of each
 //! fragment key whose count changes (item 6, `frags`), and `HOLES` of the
 //! chunks a touched region, a new region or a dead or revived fragment is
-//! in, or of an output section that lost a member (item 10). Nothing else.
+//! in, or of an output section that lost a member (item 10), or of
+//! `.eh_frame` when a file of `changes` or `input.eh` has records or a
+//! range (item 5, `eh`). Nothing else.
 //!
 //! What it gives (`spec/landed/incr/WP-216.md` §2): `placement` has the
 //! stored whole tables, updated (chunks grown or moved by the growth steps,
@@ -29,12 +31,12 @@
 //! `LayoutRows` gives).
 //!
 //! Every refusal is a reason of `spec/incr.md` §7 by name; what this
-//! package cannot do (IN-72 item 4's rewrite; item 5 wholesale; item 6's
-//! dead string, WP-242 finding C; item 7's recounted, revived or retired
-//! PLT/IPLT slot, findings B and F) is `update-not-implemented (layout)`,
-//! never a guess; item 7's new slot is `reserve-exhausted` (finding D).
-//! Commons are not placed by an update in v1 (WP-216 R-2: the join's
-//! `update-not-implemented (common)`).
+//! package cannot do (IN-72 item 4's rewrite; item 5's whole rewrite,
+//! `delta/eh.rs`; item 6's dead string, WP-242 finding C; item 7's
+//! recounted, revived or retired PLT/IPLT slot, findings B and F) is
+//! `update-not-implemented (layout)`, never a guess; item 7's new slot is
+//! `reserve-exhausted` (finding D). Commons are not placed by an update in
+//! v1 (WP-216 R-2: the join's `update-not-implemented (common)`).
 
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -61,6 +63,7 @@ use crate::order::text_category;
 use crate::slack::{self, Slack};
 use crate::target::Target;
 
+mod eh;
 mod frags;
 mod slots;
 
@@ -96,8 +99,10 @@ pub fn layout(
         files.entry(c.file).or_default().push(i);
     }
     let ids: Vec<FileId> = files.keys().copied().collect();
-    item_5_refused(stored, input, &ids)?;
     let base = Base::read(stored, target)?;
+    // Item 5 (WP-243): its whole rewrite needs every `FILES` row with a
+    // range, which `LayoutRows` does not give (F-1): none is passed.
+    let eh = eh::item_5(stored, input.eh, &ids, &base.chunks, None)?;
     let mut u = Update::new(&base, changes);
     for (&file, members) in &files {
         u.file(stored, file, members)?;
@@ -113,35 +118,29 @@ pub fn layout(
     u.growth()?;
     u.holes(stored)?;
     u.left_empty(stored)?;
+    if let Some(o) = &eh {
+        u.chunks[o.layout.chunk].size = o.size;
+    }
     let mut delta = u.finish()?;
     delta.files = files.into_keys().collect();
     delta.slots_dead = slots_dead;
     delta.slots_appended = slots_appended;
-    Ok(delta)
-}
-
-// Item 5 is refused wholesale until it is built (the supervisor's word on
-// WP-216's seam 4): a file of the update with kept `.eh_frame` records, in
-// its new version (`input`) or its old one (its stored range), is
-// `update-not-implemented (layout)`; so is a non-empty list in `input` for
-// any file. An accessor the stored rows do not give is the same reason (its
-// provided body). Item 6 is `frags`, item 7 `slots` (WP-242).
-
-/// Item 5 (`.eh_frame`, IN-34a): refused wholesale (WP-243's).
-fn item_5_refused(
-    stored: &StoredLayout<'_>,
-    input: &LayoutInput<'_>,
-    files: &[FileId],
-) -> Result<(), IncrReason> {
-    if input.eh.iter().any(|f| !f.records.is_empty()) {
-        return Err(not_implemented());
-    }
-    for &file in files {
-        if stored.eh_range_of(file)?.is_some() {
+    if let Some(o) = eh {
+        let c = o.layout.chunk;
+        let Err(at) = delta.hole_chunks.binary_search(&c) else {
+            debug_assert!(false, "the .eh_frame chunk is item 5's alone");
             return Err(not_implemented());
-        }
+        };
+        delta.hole_chunks.insert(at, c);
+        let mut holes = std::mem::take(&mut delta.placement.holes).into_vec();
+        holes.extend(o.holes);
+        holes.sort_by_key(|h| (h.chunk, h.offset));
+        delta.placement.holes = holes.into_boxed_slice();
+        delta.holes.extend(o.made);
+        delta.holes.sort_by_key(|h| (h.chunk, h.offset));
+        delta.eh = Some(o.layout);
     }
-    Ok(())
+    Ok(delta)
 }
 
 // ---- small helpers ----------------------------------------------------------
@@ -359,11 +358,12 @@ impl Base {
         {
             return Fate::Ignore;
         }
-        // Item 5: `.eh_frame` (IN-34a), refused wholesale (§Q).
+        // Item 5: `.eh_frame` (IN-34a) is placed nowhere, as in the full
+        // link: its records are the synthetic chunk's (`delta/eh.rs`).
         if name == b".eh_frame"
             || (self.machine == Machine::X86_64 && s.sh_type == SHT_X86_64_UNWIND)
         {
-            return Fate::Refuse(Refusal::EhFrame);
+            return Fate::Ignore;
         }
         // Debug first: a merged `.debug_*` section has no fragments (R-1).
         if !alloc && (name.starts_with(b".debug_") || name.starts_with(b".zdebug")) {
@@ -507,7 +507,6 @@ enum Why {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Refusal {
-    EhFrame,
     Debug,
     NoOutput,
     Property,
@@ -530,8 +529,6 @@ enum Fate {
 impl Refusal {
     fn reason(self, name: &[u8]) -> IncrReason {
         match self {
-            // Item 5: refused wholesale (`spec/landed/incr/WP-216.md` §Q).
-            Self::EhFrame => not_implemented(),
             Self::Debug => IncrReason::UpdateNotImplemented(Some(Unimplemented::Debug)),
             Self::NoOutput => IncrReason::NewOutputSection(text(name)),
             Self::Property => IncrReason::PropertyChanged(format!("{}: flags or type", text(name))),
@@ -917,9 +914,9 @@ impl<'b, 'c> Update<'b, 'c> {
             };
             match base.fate(&shape, true) {
                 Fate::Fixed { why, .. } => killed_fixed.push((p.clone(), why)),
-                // A dead `.eh_frame` or merged section of a changed file
-                // is refused with its new version; a killed debug
-                // section is G-1's.
+                // A dead `.eh_frame` section is item 5's (`eh`), a dead
+                // merged section's pieces item 6's (`frags`); a killed
+                // debug section is G-1's.
                 Fate::Refuse(Refusal::Debug) => return Err(Refusal::Debug.reason(&p.name)),
                 _ => {}
             }

@@ -298,3 +298,253 @@ fn eh_frame_of_real_objects_reads_back() {
     let (c, f) = check("ld-r", std::slice::from_ref(&r), &readelf, &dd, &dir);
     eprintln!("ld -r: {c} CIEs, {f} FDEs");
 }
+
+// ---- WP-243: the per-file selection (`spec/incr.md` IN-34a) -----------------
+
+/// A link of real objects for the per-file selection: file 0 is the
+/// internal file; `.eh_frame` relocations are resolved by name over every
+/// file (first definition wins), and a COMDAT group's members are dead in
+/// every file but the first with its signature (resolve.md §6.1, by load
+/// order). `only` makes a view of one file's objects with the same
+/// resolution and liveness: what an update's front gives the join for a
+/// changed file.
+struct Corpus {
+    data: Vec<&'static [u8]>,
+    defs: std::collections::HashMap<Vec<u8>, Target>,
+    ids: std::collections::HashMap<Vec<u8>, SymbolId>,
+    dead: std::collections::HashSet<SectionId>,
+    /// Per file (index `file - 1`): a section's `SHT_RELA` section.
+    rela: Vec<std::collections::HashMap<u32, u32>>,
+}
+
+/// Section ids of a corpus: `file << 22 | index`.
+fn csid(file: u32, index: u32) -> SectionId {
+    assert!(file < 1 << 10 && index < 1 << 22, "corpus id space");
+    SectionId(file << 22 | index)
+}
+
+impl Corpus {
+    fn new(data: Vec<Vec<u8>>) -> Self {
+        let data: Vec<&'static [u8]> =
+            data.into_iter().map(|d| &*Box::leak(d.into_boxed_slice())).collect();
+        let mut c = Self {
+            data,
+            defs: std::collections::HashMap::new(),
+            ids: std::collections::HashMap::new(),
+            dead: std::collections::HashSet::new(),
+            rela: Vec::new(),
+        };
+        let mut groups: std::collections::HashSet<Vec<u8>> = std::collections::HashSet::new();
+        for f in 1..=c.data.len() as u32 {
+            let obj = Object::parse(c.data[f as usize - 1]).unwrap();
+            let t = obj.symbols().unwrap();
+            let mut rela = std::collections::HashMap::new();
+            for s in obj.sections() {
+                if s.sh_type() == SHT_RELA {
+                    rela.insert(s.header().sh_info, s.index().0);
+                }
+                if s.sh_type() == SHT_GROUP {
+                    let g = s.group().unwrap();
+                    if !g.is_comdat() {
+                        continue;
+                    }
+                    let t = t.as_ref().unwrap();
+                    let sym = t.get(g.signature()).unwrap();
+                    let name = t.name(&sym).unwrap().to_vec();
+                    if !groups.insert(name) {
+                        for m in g.members() {
+                            c.dead.insert(csid(f, m.unwrap().0));
+                        }
+                    }
+                }
+            }
+            c.rela.push(rela);
+            let Some(t) = t else { continue };
+            for (i, sym) in t.globals() {
+                let name = t.name(&sym).unwrap().to_vec();
+                let n = c.ids.len() as u32;
+                c.ids.entry(name.clone()).or_insert(SymbolId(n));
+                if let Ok(SymbolSection::Section(s)) = t.section_of(i, &sym) {
+                    c.defs
+                        .entry(name)
+                        .or_insert(Target::Section { section: csid(f, s.0), value: sym.st_value });
+                }
+            }
+        }
+        c
+    }
+
+    fn live(&self, s: SectionId) -> bool {
+        !self.dead.contains(&s)
+    }
+}
+
+/// [`Corpus`] whole, or one file of it.
+struct View<'a> {
+    c: &'a Corpus,
+    only: Option<u32>,
+}
+
+impl Link<'static> for View<'_> {
+    fn files(&self) -> u32 {
+        self.c.data.len() as u32 + 1
+    }
+    fn object(&self, file: FileId) -> Option<Object<'static>> {
+        if self.only.is_some_and(|f| f != file.0) {
+            return None;
+        }
+        let d = self.c.data.get((file.0 as usize).checked_sub(1)?)?;
+        Some(Object::parse(d).unwrap())
+    }
+    fn section_id(&self, file: FileId, index: SectionIndex) -> Option<SectionId> {
+        Some(csid(file.0, index.0))
+    }
+    fn section(&self, file: FileId, index: SectionIndex) -> Option<LinkSection> {
+        let obj = Object::parse(self.c.data[file.0 as usize - 1]).unwrap();
+        let s = obj.section(index).ok()?;
+        if index.0 == 0
+            || matches!(s.sh_type(), SHT_REL | SHT_RELA | SHT_SYMTAB | SHT_STRTAB | SHT_GROUP)
+        {
+            return None;
+        }
+        let kind = if s.name().unwrap() == b".eh_frame" {
+            SectionKind::EhFrame
+        } else {
+            SectionKind::Regular
+        };
+        let reloc = self.c.rela[file.0 as usize - 1].get(&index.0).map_or(0, |&r| r);
+        Some(LinkSection {
+            id: csid(file.0, index.0),
+            kind,
+            out: OutSecId(0),
+            reloc: SectionIndex(reloc),
+        })
+    }
+    fn global(&self, file: FileId, index: SymbolIndex, _first: u32) -> Result<Target, What> {
+        let obj = Object::parse(self.c.data[file.0 as usize - 1]).unwrap();
+        let t = obj.symbols().unwrap().unwrap();
+        let sym = t.get(index).unwrap();
+        let name = t.name(&sym).unwrap();
+        Ok(self
+            .c
+            .defs
+            .get(name)
+            .copied()
+            .unwrap_or(Target::Undefined { symbol: self.c.ids[name], weak: sym.st_info >> 4 == 2 }))
+    }
+    fn bytes(&self, _: FileId, s: &Section<'static>) -> Result<Cow<'static, [u8]>, What> {
+        s.data().map(Cow::Borrowed).map_err(|e| What::Malformed(e.to_string()))
+    }
+    fn class(&self) -> Class {
+        Class::Elf64
+    }
+    fn form(&self) -> RelocForm {
+        RelocForm::Rela
+    }
+}
+
+/// The objects of `paths`: each an object, or an archive whose members
+/// are taken in order.
+fn objects_of(paths: &[PathBuf]) -> Vec<Vec<u8>> {
+    let mut out = Vec::new();
+    for p in paths {
+        let bytes = std::fs::read(p).unwrap_or_else(|e| panic!("{}: {e}", p.display()));
+        if bytes.starts_with(b"!<arch>\n") {
+            let a = mortar_elf::archive::Archive::parse(&bytes).unwrap();
+            for m in a.members() {
+                let m = m.unwrap();
+                if let Some(d) = m.data()
+                    && d.starts_with(b"\x7fELF")
+                {
+                    out.push(d.to_vec());
+                }
+            }
+        } else {
+            out.push(bytes);
+        }
+    }
+    out
+}
+
+/// IN-34a's per-file selection checked over `files`: for every file with
+/// an `.eh_frame`, `EhPlan::select_in` with `per_file` over that file
+/// alone (its own phase 60 parse, as an update's front gives it) equals
+/// the full link's `select_in` with `per_file` restricted to the file.
+/// Returns (files with an `.eh_frame`, records kept).
+fn per_file_selection_equal(label: &str, files: Vec<Vec<u8>>) -> (usize, usize) {
+    let machine = Object::parse(&files[0]).unwrap().machine();
+    let a64 = mortar_a64::A64::M1;
+    let x64 = mortar_x64::X64::M1;
+    let arch: &dyn mortar_arch::Arch = match machine {
+        mortar_elf::Machine::AArch64 => &a64,
+        mortar_elf::Machine::X86_64 => &x64,
+        mortar_elf::Machine::I386 => panic!("{label}: 64-bit targets only"),
+    };
+    let corpus = Corpus::new(files);
+    let pool = Pool::new(2);
+    let whole = View { c: &corpus, only: None };
+    let phase = mortar_merge::phase::run(&pool, &whole, &ArchRelocs(arch))
+        .unwrap_or_else(|p| panic!("{label}: phase 60: {p:?}"));
+    let src = MergeEh::new(&phase.eh, &whole).unwrap();
+    let diag = collector();
+    let full = EhPlan::select_in(&src, |s| corpus.live(s), true, &pool, &diag).unwrap();
+    let mut by_file: BTreeMap<u32, Vec<mortar_core::layout::EhRecord>> = BTreeMap::new();
+    for r in &full {
+        by_file.entry(r.section.0 >> 22).or_default().push(*r);
+    }
+    let with_eh: std::collections::BTreeSet<u32> =
+        phase.eh.sections.iter().map(|s| s.section.0 >> 22).collect();
+    for &f in &with_eh {
+        let one = View { c: &corpus, only: Some(f) };
+        let p1 = mortar_merge::phase::run(&pool, &one, &ArchRelocs(arch))
+            .unwrap_or_else(|p| panic!("{label}: file {f}: phase 60: {p:?}"));
+        let s1 = MergeEh::new(&p1.eh, &one).unwrap();
+        let alone = EhPlan::select_in(&s1, |s| corpus.live(s), true, &pool, &diag).unwrap();
+        let restricted = by_file.get(&f).map_or(&[][..], Vec::as_slice);
+        assert_eq!(alone, restricted, "{label}: file {f}: per-file selection differs");
+    }
+    let report = diag.finish();
+    assert!(!report.failed(), "{label}: {}", text(&report));
+    (with_eh.len(), full.len())
+}
+
+// spec: incr.md IN-34a (S-44's de-duplication per file: the full link's
+// selection restricted to a file is the file's own selection), WP-239 §6
+// (the first test of the eh package). Always over the C++ objects and crt
+// files of `compile` per 64-bit target with tools; over more objects and
+// archives when `MORTAR_EH_SELECT_SETS` names them (`;` between sets, `,`
+// between the paths of one set; protoc's in WP-243's record).
+#[test]
+fn select_in_per_file_equals_restricted_full_selection() {
+    let mut sets: Vec<(String, Vec<PathBuf>)> = Vec::new();
+    let mut dirs = Vec::new();
+    for arch in [mortar_testutil::target::Arch::Aarch64, mortar_testutil::target::Arch::X86_64] {
+        let (Some(gcc), Some(cxx)) = (arch.tool("gcc"), arch.tool("g++")) else { continue };
+        let sub = Scratch::new(&format!("synth-select-{arch:?}"));
+        let mut objs = Vec::new();
+        for name in ["one", "two"] {
+            let src = sub.write(&format!("{name}.cc"), CXX.replace("ONE", name));
+            let obj = sub.join(format!("{name}.o"));
+            let out = run(&cxx, ["-O0", "-c", src.to_str().unwrap(), "-o", obj.to_str().unwrap()]);
+            assert!(out.success(), "{}", out.stderr_text());
+            objs.push(obj);
+        }
+        let mut all: Vec<PathBuf> =
+            ["crt1.o", "crti.o", "crtbeginT.o"].iter().map(|n| crt(&gcc, n)).collect();
+        all.extend(objs);
+        all.extend(["crtend.o", "crtn.o"].iter().map(|n| crt(&gcc, n)));
+        if all.iter().all(|p| p.is_file()) {
+            sets.push((format!("{arch:?} gcc"), all));
+        }
+        dirs.push(sub);
+    }
+    if let Ok(v) = std::env::var("MORTAR_EH_SELECT_SETS") {
+        for (k, set) in v.split(';').filter(|s| !s.is_empty()).enumerate() {
+            sets.push((format!("set {k}"), set.split(',').map(PathBuf::from).collect()));
+        }
+    }
+    for (label, paths) in sets {
+        let (files, records) = per_file_selection_equal(&label, objects_of(&paths));
+        eprintln!("{label}: {files} files with .eh_frame, {records} records: equal");
+    }
+}
