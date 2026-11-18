@@ -907,16 +907,16 @@ impl SymtabPlan {
         // The room of each block, then the tail reserve (the last fill).
         let last_fill = self.segs.iter().rposition(|s| s.seg == Seg::Fill);
         let (mut block, mut total) = ((0u32, 0u64), 0u32);
-        for i in 0..n {
-            match self.segs[i].seg {
+        for (i, (s, size)) in self.segs.iter().zip(sizes.iter_mut()).enumerate() {
+            match s.seg {
                 Seg::Null | Seg::Globals => block = (0, 0),
-                Seg::Fill if Some(i) == last_fill => sizes[i] = (tail_room(total), 0),
+                Seg::Fill if Some(i) == last_fill => *size = (tail_room(total), 0),
                 Seg::Fill => {
-                    sizes[i] = block_room(block.0, block.1);
+                    *size = block_room(block.0, block.1);
                     total += block.0;
                     block = (0, 0);
                 }
-                _ => block = (block.0 + sizes[i].0, block.1 + sizes[i].1),
+                _ => block = (block.0 + size.0, block.1 + size.1),
             }
         }
         let mut segs = self.segs.to_vec();

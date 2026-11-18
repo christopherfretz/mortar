@@ -242,13 +242,13 @@ fn room_with_patches_equals_a_new_plan() {
         offset,
         kind: PatchKind::Thunk(ThunkTarget::Sym { key: main, addend: 0 }),
     };
-    let (syms, secs, _) = program();
+    let (syms, sections, _) = program();
     let sets: [Vec<Patch>; 4] =
         [vec![], vec![thunk(0), thunk(16)], (0..40).map(|k| thunk(16 * k)).collect(), vec![]];
-    let mut p = full(&syms, &secs, ROOM, &[]);
+    let mut p = full(&syms, &sections, ROOM, &[]);
     for patches in &sets {
         p = p.with_patches(&syms, patches);
-        assert_eq!(p, full(&syms, &secs, ROOM, patches), "{} patches", patches.len());
+        assert_eq!(p, full(&syms, &sections, ROOM, patches), "{} patches", patches.len());
     }
 }
 
@@ -649,7 +649,7 @@ fn tail_reserve_exhausted_by_name() {
         let mut rows = layout();
         rows.symtab_tables.tail_capacity = cap;
         let stored = StoredLayout::new(&rows);
-        let got = plan(&stored, &delta(&rows, &[1]), &[a_c.clone()], &[]);
+        let got = plan(&stored, &delta(&rows, &[1]), std::slice::from_ref(&a_c), &[]);
         match (got, want) {
             (Ok(p), Ok((first, capacity, tail_first, tail_capacity))) => {
                 assert_eq!((p.blocks[0].1.first, p.blocks[0].1.capacity), (first, capacity));
@@ -733,7 +733,7 @@ fn growth_step_remaps_the_rest() {
     let mut d = delta(&rows, &[1]);
     d.growth_steps = vec![GrowthStep { out: OutSecId(0), step: 0x1000 }];
     let a_c = FileSymbols { file: FileId(1), locals: vec![lsym(b"s1", STT_FUNC, Some(0), 0)] };
-    let p = plan(&stored, &d, &[a_c.clone()], &[added(9, b"g", 3)]).unwrap();
+    let p = plan(&stored, &d, std::slice::from_ref(&a_c), &[added(9, b"g", 3)]).unwrap();
     // File 1's block (4..10) and the appended global (84) are written.
     assert_eq!(p.remap, [(1, 4), (10, 84)]);
     // No growth step: nothing remapped.
@@ -758,7 +758,7 @@ fn gc_revived_section_has_its_locals() {
         file: FileId(2),
         locals: vec![lsym(b"s2", STT_OBJECT, Some(3), 0), lsym(b"rev", STT_FUNC, Some(4), 8)],
     };
-    let p = plan(&stored, &d, &[b_c.clone()], &[]).unwrap();
+    let p = plan(&stored, &d, std::slice::from_ref(&b_c), &[]).unwrap();
     rows.assert_o_change(1);
     assert_eq!(
         p.entries,

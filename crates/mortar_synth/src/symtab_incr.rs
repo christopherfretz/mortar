@@ -147,102 +147,7 @@ pub fn plan(
     let str_limit = tables.strtab_size.saturating_add(tables.strtab_slack);
     let mut str_end = tables.strtab_size;
     for fs in order {
-        let old = stored.symtab_block(fs.file)?;
-        let mut names = Vec::new();
-        let mut rows = Vec::with_capacity(fs.locals.len());
-        for l in &fs.locals {
-            let (shndx, value) = cx.value(l.section, l.value, l.info)?;
-            let name = fixed_name(l.name).map_or_else(
-                || {
-                    let at = names.len() as u64;
-                    names.extend_from_slice(l.name);
-                    names.push(0);
-                    Name::Region(at)
-                },
-                Name::Fixed,
-            );
-            rows.push((name, l.info, l.other, shndx, value, l.size));
-        }
-        let Ok(n) = u32::try_from(rows.len()) else {
-            return Err(exhausted("a block of more than 2^32 entries"));
-        };
-        let bytes = names.len() as u64;
-        // .symtab: in place, or the tail reserve.
-        let (first, capacity) = match old {
-            Some(b) if n <= b.capacity => (b.first, b.capacity),
-            None if n == 0 => continue,
-            _ => {
-                let want = n.saturating_add(block_room(n, 0).0);
-                let cap = if want <= tail.1 {
-                    want
-                } else if n <= tail.1 {
-                    tail.1
-                } else {
-                    return Err(exhausted(".symtab's local tail reserve"));
-                };
-                let first = tail.0;
-                tail = (tail.0 + cap, tail.1 - cap);
-                if let Some(b) = old
-                    && b.capacity > 0
-                {
-                    out.fillers.push((b.first, b.first + b.capacity));
-                }
-                (first, cap)
-            }
-        };
-        // .strtab: the file's region, or a new one at the end.
-        let (str_at, str_cap) = match old {
-            Some(b) if bytes <= b.strtab_capacity => (b.strtab_offset, b.strtab_capacity),
-            _ => {
-                let cap = bytes + block_room(n.max(1), bytes).1;
-                let at = str_end;
-                str_end = at.saturating_add(cap);
-                if str_end > str_limit {
-                    return Err(exhausted(".strtab's file slack"));
-                }
-                if let Some(b) = old
-                    && b.strtab_capacity > 0
-                {
-                    out.strtab_dead.push((b.strtab_offset, b.strtab_capacity));
-                }
-                (at, cap)
-            }
-        };
-        if bytes < str_cap {
-            out.strtab_dead.push((str_at + bytes, str_cap - bytes));
-        }
-        if bytes > 0 {
-            out.strtab.push((str_at, names));
-        }
-        for (k, (name, info, other, shndx, value, size)) in rows.into_iter().enumerate() {
-            let name = match name {
-                Name::Fixed(o) => o,
-                Name::Region(at) => st_name(str_at + at)?,
-            };
-            out.entries.push(SymtabEntry {
-                index: first + k as u32,
-                name,
-                info,
-                other,
-                shndx,
-                value,
-                size,
-            });
-        }
-        if n < capacity {
-            out.fillers.push((first + n, first + capacity));
-        }
-        out.blocks.push((
-            fs.file,
-            SymtabBlock {
-                first,
-                count: n,
-                capacity,
-                strtab_offset: str_at,
-                strtab_len: bytes,
-                strtab_capacity: str_cap,
-            },
-        ));
+        rewrite_file(&mut cx, fs, &mut out, &mut tail, &mut str_end, str_limit)?;
     }
     // The global area: appended globals, in key order.
     let mut appended: Vec<&GlobalChange<'_>> = globals
@@ -252,32 +157,8 @@ pub fn plan(
     appended.sort_by_key(|g| g.key);
     let old_end = area.first + area.count;
     let mut end = old_end;
-    let mut buf: Vec<u8> = Vec::new();
     let names_at = str_end;
-    for g in appended {
-        let Some(_) = g.section else { return Err(not_built()) };
-        let (shndx, value) = cx.value(g.section, g.value, g.info)?;
-        let name = match fixed_name(g.name) {
-            Some(o) => o,
-            None => {
-                let at = names_at + buf.len() as u64;
-                buf.extend_from_slice(g.name);
-                buf.push(0);
-                st_name(at)?
-            }
-        };
-        out.entries.push(SymtabEntry {
-            index: end,
-            name,
-            info: g.info,
-            other: g.other,
-            shndx,
-            value,
-            size: g.size,
-        });
-        out.globals.push((g.key, end, name));
-        end = end.checked_add(1).ok_or_else(|| exhausted(".symtab's entries"))?;
-    }
+    let buf = append_globals(&mut cx, &appended, &mut out, &mut end, names_at)?;
     str_end = names_at.saturating_add(buf.len() as u64);
     if str_end > str_limit {
         return Err(exhausted(".strtab's file slack"));
@@ -323,6 +204,151 @@ pub fn plan(
     Ok(out)
 }
 
+/// One file's block of an update (IN-49a): in place or in the tail
+/// reserve, its names in its region or a new one at `.strtab`'s end.
+fn rewrite_file(
+    cx: &mut Cx<'_, '_>,
+    fs: &FileSymbols<'_>,
+    out: &mut SymtabPlan,
+    tail: &mut (u32, u32),
+    str_end: &mut u64,
+    str_limit: u64,
+) -> Result<(), IncrReason> {
+    let old = cx.stored.symtab_block(fs.file)?;
+    let mut names = Vec::new();
+    let mut rows = Vec::with_capacity(fs.locals.len());
+    for l in &fs.locals {
+        let (shndx, value) = cx.value(l.section, l.value, l.info)?;
+        let name = fixed_name(l.name).map_or_else(
+            || {
+                let at = names.len() as u64;
+                names.extend_from_slice(l.name);
+                names.push(0);
+                Name::Region(at)
+            },
+            Name::Fixed,
+        );
+        rows.push((name, l.info, l.other, shndx, value, l.size));
+    }
+    let Ok(n) = u32::try_from(rows.len()) else {
+        return Err(exhausted("a block of more than 2^32 entries"));
+    };
+    let bytes = names.len() as u64;
+    // .symtab: in place, or the tail reserve.
+    let (first, capacity) = match old {
+        Some(b) if n <= b.capacity => (b.first, b.capacity),
+        None if n == 0 => return Ok(()),
+        _ => {
+            let want = n.saturating_add(block_room(n, 0).0);
+            let cap = if want <= tail.1 {
+                want
+            } else if n <= tail.1 {
+                tail.1
+            } else {
+                return Err(exhausted(".symtab's local tail reserve"));
+            };
+            let first = tail.0;
+            *tail = (tail.0 + cap, tail.1 - cap);
+            if let Some(b) = old
+                && b.capacity > 0
+            {
+                out.fillers.push((b.first, b.first + b.capacity));
+            }
+            (first, cap)
+        }
+    };
+    // .strtab: the file's region, or a new one at the end.
+    let (str_at, str_cap) = match old {
+        Some(b) if bytes <= b.strtab_capacity => (b.strtab_offset, b.strtab_capacity),
+        _ => {
+            let cap = bytes + block_room(n.max(1), bytes).1;
+            let at = *str_end;
+            *str_end = at.saturating_add(cap);
+            if *str_end > str_limit {
+                return Err(exhausted(".strtab's file slack"));
+            }
+            if let Some(b) = old
+                && b.strtab_capacity > 0
+            {
+                out.strtab_dead.push((b.strtab_offset, b.strtab_capacity));
+            }
+            (at, cap)
+        }
+    };
+    if bytes < str_cap {
+        out.strtab_dead.push((str_at + bytes, str_cap - bytes));
+    }
+    if bytes > 0 {
+        out.strtab.push((str_at, names));
+    }
+    for (k, (name, info, other, shndx, value, size)) in rows.into_iter().enumerate() {
+        let name = match name {
+            Name::Fixed(o) => o,
+            Name::Region(at) => st_name(str_at + at)?,
+        };
+        out.entries.push(SymtabEntry {
+            index: first + k as u32,
+            name,
+            info,
+            other,
+            shndx,
+            value,
+            size,
+        });
+    }
+    if n < capacity {
+        out.fillers.push((first + n, first + capacity));
+    }
+    out.blocks.push((
+        fs.file,
+        SymtabBlock {
+            first,
+            count: n,
+            capacity,
+            strtab_offset: str_at,
+            strtab_len: bytes,
+            strtab_capacity: str_cap,
+        },
+    ));
+    Ok(())
+}
+
+/// The appended globals' entries (at `*end` on), in the order given; their
+/// names' bytes, at `names_at` in `.strtab`.
+fn append_globals(
+    cx: &mut Cx<'_, '_>,
+    appended: &[&GlobalChange<'_>],
+    out: &mut SymtabPlan,
+    end: &mut u32,
+    names_at: u64,
+) -> Result<Vec<u8>, IncrReason> {
+    let mut buf: Vec<u8> = Vec::new();
+    for g in appended {
+        let Some(_) = g.section else { return Err(not_built()) };
+        let (shndx, value) = cx.value(g.section, g.value, g.info)?;
+        let name = if let Some(o) = fixed_name(g.name) {
+            o
+        } else {
+            let at = names_at + buf.len() as u64;
+            buf.extend_from_slice(g.name);
+            buf.push(0);
+            st_name(at)?
+        };
+        out.entries.push(SymtabEntry {
+            index: *end,
+            name,
+            info: g.info,
+            other: g.other,
+            shndx,
+            value,
+            size: g.size,
+        });
+        out.globals.push((g.key, *end, name));
+        *end = end.checked_add(1).ok_or_else(|| exhausted(".symtab's entries"))?;
+    }
+    Ok(buf)
+}
+
 /// A name of a planned entry: in the fixed table (S-86), or at a byte
 /// offset in its block's names.
 #[derive(Debug, Clone, Copy)]
@@ -350,13 +376,12 @@ impl Cx<'_, '_> {
         info: u8,
     ) -> Result<(u32, u64), IncrReason> {
         let Some(id) = section else { return Ok((u32::from(SHN_ABS), value)) };
-        let place = match self.places.get(&id) {
-            Some(p) => *p,
-            None => {
-                let p = self.layout.place_of(self.stored, id)?;
-                self.places.insert(id, p);
-                p
-            }
+        let place = if let Some(p) = self.places.get(&id) {
+            *p
+        } else {
+            let p = self.layout.place_of(self.stored, id)?;
+            self.places.insert(id, p);
+            p
         };
         let (PlaceNow::Here(p) | PlaceNow::Stored(p)) = place else { return Err(not_built()) };
         // Placed nowhere (merged pieces, `.eh_frame`): v1 does not plan it.
@@ -404,11 +429,11 @@ pub fn area_after_removals(first: u32, end: u32, removed: &[u32]) -> (u32, Vec<(
     let mut end = end;
     for &r in removed.iter().rev() {
         let last = end - 1;
-        if r != last {
+        if r == last {
+            at.remove(&last);
+        } else {
             let from = at.remove(&last).unwrap_or(last);
             at.insert(r, from);
-        } else {
-            at.remove(&last);
         }
         end = last;
     }
