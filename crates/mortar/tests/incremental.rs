@@ -2645,7 +2645,12 @@ fn same_size_programs() -> Vec<(Prog, &'static str, &'static str)> {
 
 /// `a.o` recompiled with the immediate `imm` in place of 42.
 fn same_size_edit(prog: &Prog, text: &str, from: &str, imm: &str) {
-    let src = prog.scratch.write("a.s", text.replace(from, &from.replace("42", imm)));
+    recompile(prog, &text.replace(from, &from.replace("42", imm)));
+}
+
+/// `a.o` recompiled from `source`.
+fn recompile(prog: &Prog, source: &str) {
+    let src = prog.scratch.write("a.s", source);
     let gcc = prog.arch.tool("gcc").unwrap();
     let obj = prog.path("a.o");
     let g =
@@ -2703,6 +2708,94 @@ impl mortar_incr::ops::WriteOps for FailRenameOnto {
     ) -> std::io::Result<()> {
         mortar_incr::ops::StdOps.copy_range(from, to, len)
     }
+}
+
+/// Ruling M2a-2's cases of the identity check (the capture of the
+/// front against the stored state): an edit of `a.o` of the same size,
+/// `(a64 from, to)` and `(x64 from, to)` in the sources; `update` whether
+/// it must be an update in place (else a full link by `(layout)`). Either
+/// way the output equals the full link of the new inputs.
+fn identity_case(case: &str, a64: (&str, &str), x64: (&str, &str), update: bool) {
+    let programs = same_size_programs();
+    assert!(programs.len() == 2 || !tools_required(), "{} of the 2 programs built", programs.len());
+    for (prog, text, _) in programs {
+        let arch = prog.arch;
+        let (from, to) = if arch == AARCH64 { a64 } else { x64 };
+        assert!(text.contains(from), "{case}: {from:?} is not in the source");
+        let o = prog.mortar_env("o", &["--incremental"], &[]);
+        assert!(o.success(), "{arch:?}: {}", o.stderr_text());
+        let before = prog.bytes("o").len();
+        recompile(&prog, &text.replace(from, to));
+        // `--incremental=update` (it ignores `small-output`; a fall-back
+        // is its error).
+        let o = prog.mortar_env("o", &["--incremental=update", "--incremental-report"], &[]);
+        let err = o.stderr_text();
+        if !update {
+            assert!(!o.success(), "{arch:?} {case}: updated: {err}");
+            assert!(
+                err.contains("cannot update: update-not-implemented (layout)"),
+                "{arch:?} {case}: {err}"
+            );
+            continue;
+        }
+        assert!(o.success(), "{arch:?} {case}: {err}");
+        assert!(err.contains("incremental: update (InPlace)"), "{arch:?} {case}: {err}");
+        let o = prog.mortar_env("full", &["--incremental=full"], &[]);
+        assert!(o.success(), "{arch:?} {case}: {}", o.stderr_text());
+        let (got, want) = (prog.bytes("o"), prog.bytes("full"));
+        assert_eq!(got.len(), before, "{arch:?} {case}: the edit is not of the same size");
+        if let Some(i) = got.iter().zip(&want).position(|(a, b)| a != b) {
+            panic!("{arch:?} {case}: the output differs from the full link at {i:#x}");
+        }
+        assert_eq!(got.len(), want.len(), "{arch:?} {case}: sizes");
+        state_equals_capture_of_its_placement(&prog, arch, case);
+    }
+}
+
+/// M2a-2: a GLOBAL symbol whose size changes (`_start`'s `.size`, the
+/// bytes the same): its `RESOLVED` row differs: `(layout)`.
+#[test]
+fn identity_check_refuses_a_symbol_size_change() {
+    identity_case(
+        "global symbol size",
+        ("\tsvc #0\n", "\tsvc #0\n\t.size _start, 8\n"),
+        ("\tsyscall\n", "\tsyscall\n\t.size _start, 8\n"),
+        false,
+    );
+}
+
+/// M2a-2: a LOCAL symbol whose size changes (`sfn`'s `.size`): no state
+/// row holds a local's size (it is in `.symtab`'s bytes only, which the
+/// refill rewrites), so the update runs; it equals the full link.
+#[test]
+fn identity_check_updates_a_local_symbol_size_change() {
+    let r = ("\tret\n", "\tret\n\t.size sfn, 4\n");
+    identity_case("local symbol size", r, r, true);
+}
+
+/// M2a-2 (i): a relocation to another key at the same size (an immediate
+/// becomes an address): a new reference of the changed file: `(layout)`.
+#[test]
+fn identity_check_refuses_a_new_relocation() {
+    identity_case(
+        "new relocation",
+        ("mov x0, #42", "adr x0, word2"),
+        ("movl $42, %edi", "movl $word, %edi"),
+        false,
+    );
+}
+
+/// M2a-2: a merged string of the same size changes (`world` -> `wurld`):
+/// the ruling wants an update that equals the full link. FINDING (M2a2):
+/// the fragment's identity IS state rows (`FRAGS`, kind 11, keyed by the
+/// content hash, and the file's `FRAG_USE`, kind 56): the capture differs
+/// there (the same offsets, the hash of the string at offset 9 changed),
+/// so the identity check refuses it `(layout)`. Ignored until ruled.
+#[test]
+#[ignore = "M2a2 finding: FRAGS/FRAG_USE are keyed by the content hash; ruling asked"]
+fn identity_check_updates_a_merged_string_change() {
+    let r = ("\"world\"", "\"wurld\"");
+    identity_case("merged string", r, r, true);
 }
 
 /// Ruling M2a-4 (IN-77e): a write step of an update that fails FAILS the

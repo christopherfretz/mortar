@@ -320,12 +320,30 @@ fn reference_of(
     let new = mortar_incr::state5::canon::canon_of(&state)
         .map_err(|e| IncrReason::StateCorrupt(e.to_string()))?;
     let diffs = mortar_incr::state5::canon::compare(&new, &old, &stored);
-    let files_rows = diffs.iter().filter(|d| d.kind == kind::FILES).count();
-    let allowed = |k: u32| matches!(k, kind::META | kind::STAT | kind::LEAVES | kind::FILES);
-    if files_rows > 1 || diffs.iter().any(|d| !allowed(d.kind)) {
+    if !identity(&diffs, file) {
         return Err(layout());
     }
     Ok(Reference { refill, size, state, map })
+}
+
+/// Whether the differences of the capture against the stored state are
+/// those of the identity case (ruling M2a-2): only
+/// - `META`'s fields of the output's binding: the build id, the boot id,
+///   `output_synced` (W5's) and `compactions` (a history field), which the
+///   canonical form clears (`state5::canon::canon_of`), so a `META`
+///   difference that remains is any OTHER field: refused;
+/// - the output's `STAT` stamp tuple (cleared by the canonical form) and
+///   the changed input's `STAT` row (its stamps and hash);
+/// - `LEAVES` (the leaves and their root: the bytes changed);
+/// - the ONE `FILES` row of the changed file (`row <id>`: the canonical
+///   `FILES` table is in id order; its stamps and hash).
+fn identity(diffs: &[mortar_incr::state5::canon::CanonDiff], file: FileId) -> bool {
+    let row = format!("row {}", file.0);
+    diffs.iter().all(|d| match d.kind {
+        kind::STAT | kind::LEAVES => true,
+        kind::FILES => d.row == row,
+        _ => false,
+    })
 }
 
 #[allow(
