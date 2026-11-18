@@ -20,6 +20,7 @@
 //! U7 (`live::live`, whose `LiveDelta` feeds `SectionChange::live`).
 
 pub mod probe;
+pub mod stored_rows;
 pub mod write;
 
 use std::path::{Path, PathBuf};
