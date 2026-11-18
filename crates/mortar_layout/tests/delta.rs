@@ -967,6 +967,34 @@ fn section_without_output_is_new_output_section() {
     assert_eq!(e.name(), "new-output-section", "{e:?}");
 }
 
+// spec: incr.md IN-72 item 10 and §7's `update-not-implemented (debug)`
+// (WP-245, the capture package's question: an output section the stored
+// link has no `OUTSECS` row for, brought by a changed file, is refused
+// by `layout` before any byte is written, so no later row is renumbered:
+// a non-allocated section `new-output-section`, a `.debug_*` one, as a
+// GCC stub's `.debug_aranges` among kiln/hod objects, `(debug)`)
+#[test]
+fn appearing_non_alloc_output_section_is_refused() {
+    for m in [Machine::X86_64, Machine::AArch64] {
+        let s0 = first(m, &two_text_files());
+        for (name, want) in [
+            (&b".my_info"[..], "new-output-section"),
+            (&b".debug_aranges"[..], "update-not-implemented"),
+        ] {
+            let mut files = s0.files();
+            files[0].push(sec(name, SHT_PROGBITS, 0, 48, 0));
+            let (changes, _) = changes_of(&s0, &Edit::new(files).changed(&[1]));
+            let e = layout(&StoredLayout::new(&s0.mem), &input(&changes), &s0.world.target)
+                .err()
+                .unwrap();
+            assert_eq!(e.name(), want, "{m:?} {e:?}");
+            if want == "update-not-implemented" {
+                assert_eq!(e, IncrReason::UpdateNotImplemented(Some(Unimplemented::Debug)));
+            }
+        }
+    }
+}
+
 // spec: incr.md IN-72 item 9 (the island keeps its first-link capacity;
 // `_etext` (DEFINED) does not move in U7 but by a growth step; a tail in
 // the island cannot take a region: reserve-exhausted, WP-216 F-3)
