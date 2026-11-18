@@ -374,3 +374,112 @@ fn live_roots_are_resolves_roots() {
         assert_eq!(stored, resolved, "{}: live_roots through find_key vs Outcome::roots", l.label);
     }
 }
+
+/// F6's input: `-u gonly`, `gonly` defined only in a member of a COMDAT
+/// group whose copy loses the election (b.o's copy, first, wins and has
+/// no `gonly`): nothing marks a section that is not kept (P0-2).
+#[test]
+fn root_in_a_lost_comdat_copy_agrees() {
+    for (arch, cc, _) in TARGETS {
+        let src = [
+            Source { name: "m.c", text: LO_M },
+            Source { name: "b.s", text: LO_B_GROUP },
+            Source {
+                name: "a.s",
+                text: "  .section .text.g,\"axG\",%progbits,grp,comdat\n  .globl gfun\n\
+                       \x20 .type gfun,%function\ngfun:\n  ret\n  .globl gonly\ngonly:\n  ret\n",
+            },
+        ];
+        let Some(l) = line(&format!("f6 {arch}"), cc, &["-O1"], &src, &["-u", "gonly"]) else {
+            continue;
+        };
+        agrees(&l);
+    }
+}
+
+/// `-s` and `-S` (the review's "not tried": globals and debug sections
+/// under stripping) on roots.sh s1's inputs.
+#[test]
+fn stripped_links_agree() {
+    for (arch, cc, _) in TARGETS {
+        for strip in ["-s", "-S"] {
+            let src = [
+                Source { name: "a.c", text: "int main(void){ return 0; }\n" },
+                Source {
+                    name: "b.c",
+                    text: "int myinit(void){ return 40; }\nint other(void){ return 1; }\n",
+                },
+            ];
+            let label = format!("strip{strip} {arch}");
+            let flags = ["-O1", "-g", "-ffunction-sections"];
+            let Some(l) = line(&label, cc, &flags, &src, &[strip, "-init=myinit"]) else {
+                continue;
+            };
+            agrees(&l);
+        }
+    }
+}
+
+/// A thin archive (the review's "not tried"): w.o's weak definitions
+/// through `ar rcsT`.
+#[test]
+fn thin_archive_agrees() {
+    for (arch, cc, _) in TARGETS {
+        let src = [
+            Source { name: "m.c", text: "int wf(void);\nint main(void){ return wf(); }\n" },
+            Source {
+                name: "w.c",
+                text: "__attribute__((weak)) int wf(void){ return 1; }\n\
+                       __attribute__((weak)) int wg(void){ return 2; }\n",
+            },
+        ];
+        let Some(mut l) =
+            line(&format!("thin {arch}"), cc, &["-O1", "-ffunction-sections"], &src, &[])
+        else {
+            continue;
+        };
+        let ar = if arch == "x86-64" { "x86_64-linux-gnu-ar" } else { "ar" };
+        let o = std::process::Command::new(ar)
+            .args(["rcsT", "libw.a", "w.c.o"])
+            .current_dir(&l.dir)
+            .output()
+            .expect("ar");
+        assert!(o.status.success(), "{ar}: {}", String::from_utf8_lossy(&o.stderr));
+        let lib = l.dir.join("libw.a").display().to_string();
+        for a in &mut l.args {
+            if a.ends_with("/w.c.o") {
+                a.clone_from(&lib);
+            }
+        }
+        agrees(&l);
+    }
+}
+
+/// The oracle fails, naming the first difference, when the rows or the
+/// hash are wrong: every `EDGES` row but the `ROOT`s removed (a section
+/// differs), and `META.live_hash` changed (the hash differs).
+#[test]
+fn the_oracle_names_a_difference() {
+    let (arch, cc, _) = TARGETS[0];
+    let src = [
+        Source { name: "a.c", text: "int main(void){ return 0; }\n" },
+        Source { name: "b.c", text: "int myinit(void){ return 40; }\n" },
+    ];
+    let Some(l) =
+        line(&format!("neg {arch}"), cc, &["-O1", "-ffunction-sections"], &src, &["-init=myinit"])
+    else {
+        return;
+    };
+    let (m, _) = rows5(&l);
+    let store = store();
+    let f = front5(&l, &store);
+    assert!(mortar::incremental::live_check(&f, &m).is_ok_and(|v| v.contains("agree")));
+    let mut cut = m.clone();
+    cut.edges.retain(|(_, e)| e.kind == edge_kind::ROOT);
+    let why = mortar::incremental::live_check(&f, &cut).expect_err("rows removed");
+    assert!(why.contains("walk live=false, full mark live=true"), "{why}");
+    let mut bad = m;
+    bad.meta.live_hash[0] ^= 1;
+    let why = mortar::incremental::live_check(&f, &bad).expect_err("hash changed");
+    assert!(why.starts_with("META.live_hash"), "{why}");
+}
