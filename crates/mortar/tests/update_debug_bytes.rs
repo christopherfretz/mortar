@@ -37,12 +37,15 @@
 //! not have, beyond IN-51b's accepted ones). `MORTAR_WP228_KEEP=<dir>`
 //! keeps each `U`, `F` and their maps there for `cargo xtask plumb`.
 //!
-//! Several changed files are taken (`Edit::more`, in link order). A file
-//! the new link no longer has (IN-52) is NOT written on bytes: the image
-//! of the old layout without it breaks the layout's synthetic tables
-//! (`.symtab`'s per-file locals and sizes, which are the update's symbol
-//! table, not G-1's); IN-52 is judged by the decision test
-//! `removed_file_contributions_neutral` only.
+//! Several changed files are taken (`Edit::more`, in link order), C, C++
+//! or Fortran (`f.f90`, GCC). A file the new link no longer has (IN-52) is
+//! NOT written on bytes: removing it is not a debug-only edit (its code,
+//! `.eh_frame` records and symbols leave the allocated image: the image of
+//! the old layout without it fails the layout's rules, `eh_records` out
+//! of range, B4), so its bytes need the join's allocated update; IN-52 is
+//! judged by the decision test `removed_file_contributions_neutral`, by
+//! the B3-7 refusal here (`dwarf4_split_…`, with a removed file) and by
+//! the emulation (`place.py`) through the verifier.
 
 mod support;
 
@@ -375,6 +378,60 @@ const SPLIT4_GONE: Edit = Edit {
     ..LINES
 };
 
+/// The stem of [`FORTRAN`]'s Fortran file (`f.f90`, compiled by the GCC
+/// driver, which runs gfortran's `f951`).
+const FORTRAN_STEM: &str = "f";
+
+/// The source extension of `stem`.
+fn src_ext(cfg: Cfg, stem: &str) -> &'static str {
+    if stem == FORTRAN_STEM { "f90" } else { cfg.ext() }
+}
+
+/// The old `f.f90` of [`FORTRAN`]: a C-callable function, no runtime call
+/// (the C driver's link line has no `libgfortran`).
+const F_OLD: &str = "integer(c_int) function f_value(v) bind(c, name='f_value')
+  use iso_c_binding
+  implicit none
+  integer(c_int), value :: v
+  integer :: t
+  t = v + 1
+  f_value = t
+end function f_value
+";
+
+/// IN-50 and IN-56 on a gfortran unit (WP-228 B4 item 6): `f.f90`
+/// changed by a line shift and a renamed local (lines in place, the new
+/// name appended); `b` unchanged in its bytes.
+const FORTRAN: Edit = Edit {
+    name: "fortran",
+    b_old: B_OLD,
+    b: B_OLD,
+    info: Some(Taken::InPlace),
+    more: &[(
+        FORTRAN_STEM,
+        F_OLD,
+        Some(
+            "! three
+! more
+! lines
+integer(c_int) function f_value(v) bind(c, name='f_value')
+  use iso_c_binding
+  implicit none
+  integer(c_int), value :: v
+  integer :: t_renamed_for_wp228
+  t_renamed_for_wp228 = v + 1
+  f_value = t_renamed_for_wp228
+end function f_value
+",
+        ),
+        None,
+    )],
+    flags: &[],
+    gdb: &["info scope f_value", "info line f_value", "info address f_value", "list f_value"],
+    langs: &[false],
+    addr: None,
+};
+
 /// What C++ adds to every source: COMDAT code shared by `a` and `b`
 /// (an inline function, a template instance), so that `b`'s units name
 /// dropped copies.
@@ -550,7 +607,11 @@ impl Fixture {
 
     /// The text of `stem` in the language of `cfg`.
     fn text(cfg: Cfg, stem: &str, body: &str) -> String {
-        if cfg.cxx { format!("{body}{}", cxx_tail(stem)) } else { body.to_owned() }
+        if cfg.cxx && stem != FORTRAN_STEM {
+            format!("{body}{}", cxx_tail(stem))
+        } else {
+            body.to_owned()
+        }
     }
 
     fn new(cfg: Cfg, edit: Edit) -> Option<Self> {
@@ -563,7 +624,7 @@ impl Fixture {
             vec![Source { name: Box::leak(format!("a.{ext}").into_boxed_str()), text: "" }];
         for stem in Self::stems(edit) {
             sources.push(Source {
-                name: Box::leak(format!("{stem}.{ext}").into_boxed_str()),
+                name: Box::leak(format!("{stem}.{}", src_ext(cfg, stem)).into_boxed_str()),
                 text: "",
             });
         }
@@ -598,7 +659,7 @@ impl Fixture {
             }
         };
         for (stem, old, new) in versions {
-            let src = format!("{stem}.{ext}");
+            let src = format!("{stem}.{}", src_ext(cfg, stem));
             scratch.write(&src, Self::text(cfg, stem, old));
             version(&src, stem, 1);
             std::fs::remove_file(scratch.join(format!("{src}.o"))).unwrap();
@@ -625,9 +686,8 @@ impl Fixture {
             .args
             .iter()
             .filter_map(|a| {
-                let ext = self.cfg.ext();
                 for stem in Self::stems(self.edit) {
-                    if a.ends_with(&format!("/{stem}.{ext}.o")) {
+                    if a.ends_with(&format!("/{stem}.{}.o", src_ext(self.cfg, stem))) {
                         let o = self.scratch.join(format!("{stem}{v}.o"));
                         return self.present(stem, v).then(|| o.display().to_string());
                     }
@@ -1670,6 +1730,15 @@ fn dwarf4_split_changed_file_is_debug_unit_kind() {
             }
         }
     }
+}
+
+// spec: incr.md IN-50, IN-56 on gfortran objects (WP-228 B4 item 6):
+// a changed Fortran file among C files (GCC, DWARF 4 and 5, both
+// targets).
+#[test]
+fn fortran_unit_edit_reads_as_the_full_link() {
+    let cfgs: Vec<Cfg> = configs(C_ONLY).into_iter().filter(|c| c.cc == Cc::Gcc).collect();
+    scenario_on(FORTRAN, &cfgs);
 }
 
 // ---- item 4: the update's debug steps at scale ------------------------------------
