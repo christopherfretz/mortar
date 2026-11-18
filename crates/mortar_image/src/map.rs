@@ -882,6 +882,27 @@ pub(crate) fn decisions_of(t: &crate::link::LinkTables<'_, '_>) -> Decisions {
     d
 }
 
+/// Seam 6 (IN-72 item 7): a retired slot has no `slot` record (its words
+/// are zero, a `DeadSlot` hole's `hole` line); an appended or revived one
+/// is the placement's.
+fn drop_dead_slots(d: &mut Decisions, layout: &mortar_core::incr::LayoutDelta) {
+    use mortar_core::layout::SlotKind;
+    if layout.slots_dead.is_empty() {
+        return;
+    }
+    let kind_of = |k: SlotKind| match k {
+        SlotKind::Got => MapSlotKind::Got,
+        SlotKind::Plt => MapSlotKind::Plt,
+        SlotKind::Iplt => MapSlotKind::Iplt,
+        SlotKind::TlsDesc => MapSlotKind::TlsDesc,
+        SlotKind::TlsGd => MapSlotKind::TlsGd,
+        SlotKind::TlsIe => MapSlotKind::GotTprel,
+    };
+    d.slots.retain(|s| {
+        !layout.slots_dead.iter().any(|x| kind_of(x.kind) == s.kind && x.index == s.index)
+    });
+}
+
 /// The map of an update (WP-211 §C; `spec/image.md` I-78a; WP-218, U-6):
 /// the full link's records of `link` (the update's output `P_U`: its
 /// `Placement` is the materialized one), `incremental`, the decision
@@ -952,24 +973,8 @@ pub fn update_map(
         keyed.sort_by_key(|k| (k.0, k.1));
         m.dead = keyed.into_iter().map(|k| k.2).collect();
     }
-    // Seam 6 (IN-72 item 7): a retired slot has no `slot` record (its
-    // words are zero, a `DeadSlot` hole's `hole` line); an appended or
-    // revived one is the placement's.
-    if let Some(d) = &mut m.decisions
-        && !layout.slots_dead.is_empty()
-    {
-        use mortar_core::layout::SlotKind;
-        let kind_of = |k: SlotKind| match k {
-            SlotKind::Got => MapSlotKind::Got,
-            SlotKind::Plt => MapSlotKind::Plt,
-            SlotKind::Iplt => MapSlotKind::Iplt,
-            SlotKind::TlsDesc => MapSlotKind::TlsDesc,
-            SlotKind::TlsGd => MapSlotKind::TlsGd,
-            SlotKind::TlsIe => MapSlotKind::GotTprel,
-        };
-        d.slots.retain(|s| {
-            !layout.slots_dead.iter().any(|x| kind_of(x.kind) == s.kind && x.index == s.index)
-        });
+    if let Some(d) = &mut m.decisions {
+        drop_dead_slots(d, layout);
     }
     // The plan's blocks, then every other file's stored block.
     let mut all: Vec<(mortar_core::FileId, mortar_core::incr::SymtabBlock)> = symtab.blocks.clone();
@@ -1434,7 +1439,7 @@ mod tests {
         assert_eq!(OutputKind::Relocatable.token(), "relocatable");
     }
 
-    #[allow(clippy::unreadable_literal)]
+    #[allow(clippy::unreadable_literal, clippy::too_many_lines)]
     fn decisions_map() -> Map {
         Map {
             files: vec![MapFile { path: b"a.o".to_vec(), member: None }],
