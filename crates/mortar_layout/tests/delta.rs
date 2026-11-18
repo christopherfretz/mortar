@@ -1392,7 +1392,8 @@ fn items_5_6_7_refused_wholesale() {
     let r = StoredEhRange { offset: 0, capacity: 40, records: 1 };
     assert_eq!(old(&|m| m.eh_ranges.push((f1, r))), Some(not_implemented()));
     let fu = StoredFragUse { file: f1, out: OutSecId(0), class: 0, hash: [1; 16] };
-    assert_eq!(old(&|m| m.frag_uses.push(fu)), Some(not_implemented()));
+    // Item 6 is built (WP-242): a use with no `FRAGS` row is corrupt.
+    assert_eq!(old(&|m| m.frag_uses.push(fu)).map(|e| e.name()), Some("state-corrupt"));
     let key = mortar_core::id::SymbolId(3);
     let got = mortar_core::demands::DemandFlags::GOT;
     let slot = StoredKeyRef { key, file: f1, demand: got };
@@ -1433,6 +1434,42 @@ fn output_section_left_empty_is_new_output_section() {
     assert_eq!(d.killed.len(), 1, "{d:?}");
 }
 
+// spec: incr.md IN-72 item 10 (WP-216 F-6's corner, WP-242: a
+// zero-capacity region holding only dead empty sections between two
+// paddings; the byte proof never keeps the output section: the paddings
+// together are shorter than the largest alignment, at most the chunk's)
+#[test]
+fn f6_corner_empty_region_between_paddings() {
+    for m in [Machine::X86_64, Machine::AArch64] {
+        // .data: 1 byte (align 1), an empty section (align 8), 8 bytes
+        // (align 16), one file each.
+        let files = vec![
+            vec![text(b".text.a", 16), sec(b".data", SHT_PROGBITS, WA, 1, 0)],
+            vec![text(b".text.b", 16), sec(b".data", SHT_PROGBITS, WA, 0, 3)],
+            vec![text(b".text.c", 16), sec(b".data", SHT_PROGBITS, WA, 8, 4)],
+        ];
+        let s0 = first(m, &files);
+        let e = s0.addr(2, 2).unwrap();
+        assert!(e > s0.addr(1, 2).unwrap() + 1, "a padding before the empty section");
+        assert!(s0.addr(3, 2).unwrap() > e, "and one after it");
+        // Every member dead: refused.
+        let all = Edit::new(s0.files()).changed(&[1, 2, 3]).dead(&[(1, 2), (2, 2), (3, 2)]);
+        let r = hop(&s0, &all).err().unwrap();
+        assert_eq!(r.name(), "new-output-section", "{m:?} {r:?}");
+        // The two with bytes dead, the empty one live: a full link has no
+        // chunk for it (L-159); refused, never kept.
+        let two = Edit::new(s0.files()).changed(&[1, 3]).dead(&[(1, 2), (3, 2)]);
+        let r = hop(&s0, &two).err().unwrap();
+        assert_eq!(r.name(), "new-output-section", "{m:?} {r:?}");
+        // One live byte left (file 1's): 1 byte in a 16-aligned chunk is
+        // not proof of a live section, so it is refused too (the error
+        // F-6 accepts: toward a refusal).
+        let one = Edit::new(s0.files()).changed(&[3]).dead(&[(3, 2)]);
+        let r = hop(&s0, &one).err().unwrap();
+        assert_eq!(r.name(), "new-output-section", "{m:?} {r:?}");
+    }
+}
+
 // ---- R-3: the one reader ----------------------------------------------------
 
 // spec: incr.md IN-18c, IN-72 (WP-216 R-3: the sparse placement names its
@@ -1462,4 +1499,663 @@ fn sparse_placement_names_files_and_touched_chunks() {
         .find(|c| d.hole_chunks.binary_search(c).is_err())
         .unwrap();
     assert_eq!(d.holes_of(&stored, untouched).unwrap(), s0.mem.holes_in(untouched).unwrap());
+}
+
+// ---- item 6: merged pieces (WP-242) -----------------------------------------
+//
+// The model: every file has `.rodata.cst8` (1: constants),
+// `.rodata.str1.1` (2: strings) and a second `.rodata.cst8` (3: a COMDAT
+// copy, kept or not), nothing else (so an update is item 6's alone). A file's pieces are those of its live, kept merged
+// sections. The first link is a full link of the World with those merged
+// sections split (one `Merged` chunk of `.rodata`); an update is `layout`
+// over the stored rows with every section of each file of the update
+// given as its own row (a merged section's pieces are not a row's place,
+// so the file's version is its pieces), and its delta is applied to the
+// rows. After every hop the rows are compared with the rows a model
+// computes from scratch for the new files: `FRAGS` keys and refs (the live
+// ones; a dead range keeps its row at 0), `FRAG_USE`; and the merged
+// chunk is checked as `Layout::check`'s §4.2 would (every live fragment
+// inside the chunk, aligned, no two overlapping, no hole over one; every
+// dead constant a fill hole of its bytes).
+
+const CST: MergeClass = MergeClass { strings: false, entsize: 8, align: 3 };
+const STR: MergeClass = MergeClass { strings: true, entsize: 1, align: 0 };
+
+/// A merged piece's content: a constant (8 bytes) or a string of `size`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+struct Pc {
+    strings: bool,
+    id: u8,
+    size: u64,
+}
+
+impl Pc {
+    fn class(self) -> MergeClass {
+        if self.strings { STR } else { CST }
+    }
+    fn hash(self) -> [u8; 16] {
+        let mut h = [0; 16];
+        h[0] = self.id;
+        h[1] = u8::from(self.strings);
+        h[2] = self.size as u8;
+        h
+    }
+}
+
+/// One file of the model.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+struct MFile {
+    live: bool,
+    cst: Vec<u8>,
+    strs: Vec<(u8, u64)>,
+    inl: Vec<u8>,
+    inl_kept: bool,
+}
+
+fn mfile(cst: &[u8]) -> MFile {
+    MFile { live: true, cst: cst.to_vec(), ..MFile::default() }
+}
+
+impl MFile {
+    /// Per merged section index (1, 2, 3): live, kept, its pieces.
+    fn sections(&self) -> [(u32, bool, bool, Vec<Pc>); 3] {
+        let cst = self.cst.iter().map(|&id| Pc { strings: false, id, size: 8 }).collect();
+        let strs = self.strs.iter().map(|&(id, size)| Pc { strings: true, id, size }).collect();
+        let inl: Vec<Pc> = self.inl.iter().map(|&id| Pc { strings: false, id, size: 8 }).collect();
+        [
+            (1, self.live && !self.cst.is_empty(), true, cst),
+            (2, self.live && !self.strs.is_empty(), true, strs),
+            (3, self.live && !self.inl.is_empty(), self.inl_kept, inl),
+        ]
+    }
+    /// Its live pieces, in (section, offset) order.
+    fn pieces(&self) -> Vec<(u32, u64, Pc)> {
+        let mut v = Vec::new();
+        for (i, live, kept, list) in self.sections() {
+            if !(live && kept) {
+                continue;
+            }
+            let mut off = 0;
+            for p in list {
+                v.push((i, off, p));
+                off += p.size;
+            }
+        }
+        v
+    }
+}
+
+type FKey = (OutSecId, u32, [u8; 16]);
+
+/// A merged link's stored state.
+struct MState {
+    world: World,
+    mem: MemoryLayout,
+    model: Vec<MFile>,
+    rodata: OutSecId,
+    /// Files new to the state (no rows yet: they appear in an update).
+    absent: Vec<u32>,
+    /// Every content's size.
+    sizes: BTreeMap<FKey, u64>,
+}
+
+fn mworld(machine: Machine, model: &[MFile]) -> World {
+    let ro = SHF_ALLOC | SHF_MERGE;
+    let mut files: Vec<Vec<Sec>> = model
+        .iter()
+        .map(|_| {
+            vec![
+                sec(b".rodata.cst8", SHT_PROGBITS, ro, 64, 3),
+                sec(b".rodata.str1.1", SHT_PROGBITS, ro | SHF_STRINGS, 64, 0),
+                sec(b".rodata.cst8", SHT_PROGBITS, ro, 64, 3),
+            ]
+        })
+        .collect();
+    // A last file (not in the model, never in an update): code and data
+    // after `.rodata`'s `PT_LOAD`, as in a program.
+    files.push(vec![text(b".text", 64), data(b".data", 64)]);
+    let mut w = world(machine, &files);
+    for f in 1..=model.len() as u32 {
+        for i in 1..=3 {
+            let s = w.sid(f, i);
+            w.resolution.sections[s].kind = mortar_core::resolution::SectionKind::Merge;
+        }
+    }
+    w
+}
+
+/// The first link (or a compaction: a full link) of `model`; `absent`
+/// files are dead in it and have no rows.
+fn mfirst(model: &[MFile], absent: &[u32]) -> MState {
+    mfirst_on(Machine::X86_64, model, absent)
+}
+
+fn mfirst_on(machine: Machine, model: &[MFile], absent: &[u32]) -> MState {
+    use mortar_core::split::Frag;
+    let mut w = mworld(machine, model);
+    // Liveness, and the fragments by first occurrence.
+    let mut frags: Vec<(Pc, SectionId, u64)> = Vec::new();
+    for (k, m) in model.iter().enumerate() {
+        let f = k as u32 + 1;
+        let here = m.live && !absent.contains(&f);
+        for (i, live, kept, _) in m.sections() {
+            let s = w.sid(f, i);
+            w.liveness.live[s] = here && live && kept;
+        }
+        if !here {
+            continue;
+        }
+        for (i, off, p) in m.pieces() {
+            if !frags.iter().any(|(q, _, _)| *q == p) {
+                frags.push((p, w.sid(f, i), off));
+            }
+        }
+    }
+    // Offsets: strings, then constants, each at its alignment.
+    let mut off_of = vec![0u64; frags.len()];
+    let mut at = 0u64;
+    for strings in [true, false] {
+        for (k, (p, _, _)) in frags.iter().enumerate() {
+            if p.strings == strings {
+                let a = 1u64 << p.class().align;
+                at = at.next_multiple_of(a);
+                off_of[k] = at;
+                at += p.size;
+            }
+        }
+    }
+    w.split.frags = Column::from_vec(
+        frags
+            .iter()
+            .map(|(p, s, off)| Frag {
+                section: *s,
+                offset: *off as u32,
+                size: p.size as u32,
+                align: p.class().align,
+            })
+            .collect(),
+    )
+    .unwrap();
+    w.merge.frag_off = Column::from_vec(off_of.clone()).unwrap();
+    w.liveness.frag_live = Column::filled(frags.len() as u32, true);
+    let (a, placed) = w.run(&Pool::sequential()).expect("first link");
+    w.check(&a, &placed).expect("the first link passes Layout::check");
+    let regions = regions_of_full_link(&w, &a, &placed.placement);
+    let mut mem = capture(&w, &a, &placed.placement, &regions);
+    let rodata =
+        a.outsecs.iter().find(|(_, o)| o.name == b".rodata").map(|(id, _)| id).expect(".rodata");
+    mem.sections.retain(|s| !absent.contains(&s.file.0));
+    let (refs, uses) = mmodel(model, absent, rodata);
+    for (k, (p, _, _)) in frags.iter().enumerate() {
+        let key = (rodata, p.class().word(), p.hash());
+        mem.frags.push(mortar_core::incr::StoredFrag {
+            out: key.0,
+            class: key.1,
+            hash: key.2,
+            offset: off_of[k],
+            refs: refs[&key],
+        });
+    }
+    mem.frags.sort_by_key(|f| (f.out, f.class, f.hash));
+    mem.frag_uses = uses.into_iter().collect();
+    let mut sizes = BTreeMap::new();
+    for (p, _, _) in &frags {
+        sizes.insert((rodata, p.class().word(), p.hash()), p.size);
+    }
+    let st =
+        MState { world: w, mem, model: model.to_vec(), rodata, absent: absent.to_vec(), sizes };
+    mcheck(&st);
+    st
+}
+
+/// The rows a full link of `model` gives, from scratch: `FRAGS` refs by
+/// key (files naming it), `FRAG_USE`.
+fn mmodel(
+    model: &[MFile],
+    absent: &[u32],
+    out: OutSecId,
+) -> (BTreeMap<FKey, u32>, std::collections::BTreeSet<StoredFragUse>) {
+    let mut refs: BTreeMap<FKey, u32> = BTreeMap::new();
+    let mut uses = std::collections::BTreeSet::new();
+    for (k, m) in model.iter().enumerate() {
+        let f = k as u32 + 1;
+        if !m.live || absent.contains(&f) {
+            continue;
+        }
+        let mut mine = std::collections::BTreeSet::new();
+        for (_, _, p) in m.pieces() {
+            mine.insert((out, p.class().word(), p.hash()));
+        }
+        for key in mine {
+            *refs.entry(key).or_default() += 1;
+            uses.insert(StoredFragUse { file: FileId(f), out: key.0, class: key.1, hash: key.2 });
+        }
+    }
+    (refs, uses)
+}
+
+/// The rows against the model, and the merged chunk as §4.2 would check
+/// it.
+fn mcheck(st: &MState) {
+    let (refs, uses) = mmodel(&st.model, &st.absent, st.rodata);
+    let live: BTreeMap<FKey, u32> = st
+        .mem
+        .frags
+        .iter()
+        .filter(|f| f.refs > 0)
+        .map(|f| ((f.out, f.class, f.hash), f.refs))
+        .collect();
+    assert_eq!(live, refs, "FRAGS (live keys, refs) = the model's");
+    let have: std::collections::BTreeSet<StoredFragUse> =
+        st.mem.frag_uses.iter().copied().collect();
+    assert_eq!(have.len(), st.mem.frag_uses.len(), "FRAG_USE rows distinct");
+    assert_eq!(have, uses, "FRAG_USE = the model's");
+    let keys: Vec<FKey> = st.mem.frags.iter().map(|f| (f.out, f.class, f.hash)).collect();
+    assert!(keys.windows(2).all(|w| w[0] < w[1]), "FRAGS keys distinct, sorted");
+    // The merged chunk.
+    let (c, ch) = st
+        .mem
+        .chunks
+        .iter()
+        .enumerate()
+        .find(|(_, c)| c.kind == ChunkKind::Merged(st.rodata))
+        .expect("the merged chunk");
+    let c = ChunkId(c as u32);
+    assert!(ch.size <= ch.capacity, "size within capacity");
+    let holes: Vec<Hole> = st.mem.holes.iter().filter(|h| h.chunk == c).copied().collect();
+    let mut runs: Vec<(u64, u64)> = Vec::new();
+    for f in &st.mem.frags {
+        let size = st.sizes[&(f.out, f.class, f.hash)];
+        let align = 1u64 << ((f.class >> 24) & 0x7f);
+        assert!(f.offset.is_multiple_of(align) && align <= 1u64 << ch.align, "aligned");
+        assert!(f.offset + size <= ch.size, "inside the chunk");
+        if f.refs > 0 {
+            runs.push((f.offset, f.offset + size));
+            assert!(
+                !holes.iter().any(|h| h.offset < f.offset + size && f.offset < h.offset + h.size),
+                "no hole over a live fragment"
+            );
+        } else if f.class >> 31 == 0 {
+            let fill = Hole { chunk: c, offset: f.offset, size: 8, kind: HoleKind::Fill };
+            assert!(holes.contains(&fill), "a dead constant is a fill hole");
+        }
+    }
+    runs.sort_unstable();
+    assert!(runs.windows(2).all(|w| w[0].1 <= w[1].0), "no two live fragments overlap");
+}
+
+/// A merged update: `next` the new model, `files` the files of the update
+/// (1-based); those in `st.absent` appear. `extra` adjusts the input.
+#[allow(clippy::too_many_lines, reason = "the input, then the delta applied row by row")]
+fn mhop_with(
+    st: &MState,
+    next: &[MFile],
+    files: &[u32],
+    extra: &dyn Fn(&mut Vec<FilePieces>),
+) -> Result<(MState, LayoutDelta), IncrReason> {
+    let w = &st.world;
+    let mut changes = Vec::new();
+    let mut pieces = Vec::new();
+    for &f in files {
+        let m = &next[f as usize - 1];
+        let appear = st.absent.contains(&f);
+        let mut fp = FilePieces { file: FileId(f), pieces: Vec::new() };
+        let secs = m.sections();
+        for i in 1..=3u32 {
+            let s = w.sid(f, i);
+            let h = &w.headers[s];
+            let x = &secs[i as usize - 1];
+            let (live, kept) = (x.1, x.2);
+            changes.push(SectionChange {
+                id: s,
+                file: FileId(f),
+                index: i,
+                key: SectionKey { anchor: Anchor::None, name: h.name },
+                ordinal: u32::from(i == 3),
+                old: (!appear).then_some(s),
+                sh_type: h.sh_type,
+                sh_flags: h.flags,
+                size: h.size,
+                align: 1u64 << h.align,
+                live,
+                kept,
+            });
+        }
+        for (i, off, p) in m.pieces() {
+            fp.pieces.push(MergedPiece {
+                section: w.sid(f, i),
+                offset: off,
+                size: p.size,
+                out: st.rodata,
+                class: p.class(),
+                hash: p.hash(),
+            });
+        }
+        pieces.push(fp);
+    }
+    changes.sort_by_key(|c| c.id);
+    extra(&mut pieces);
+    let stored = StoredLayout::new(&st.mem);
+    let inp = LayoutInput { changes: &changes, pieces: &pieces, ..LayoutInput::default() };
+    let d = layout(&stored, &inp, &w.target)?;
+    // The delta applied to the rows.
+    let mut mem = st.mem.clone();
+    mem.chunks = d.placement.chunks.as_slice().to_vec();
+    mem.segments = d.placement.segments.as_slice().to_vec();
+    mem.defined = d.placement.defined.to_vec();
+    mem.tls = d.placement.tls;
+    mem.entry = d.placement.entry;
+    mem.holes.retain(|h| d.hole_chunks.binary_search(&h.chunk).is_err());
+    for &c in &d.hole_chunks {
+        mem.holes.extend(d.holes_of(&stored, c).unwrap());
+    }
+    mem.holes.sort_by_key(|h| (h.chunk, h.offset));
+    for r in &d.frags {
+        match mem.frags.iter_mut().find(|f| (f.out, f.class, f.hash) == (r.out, r.class, r.hash)) {
+            Some(f) => *f = *r,
+            None => mem.frags.push(*r),
+        }
+    }
+    mem.frags.sort_by_key(|f| (f.out, f.class, f.hash));
+    mem.frag_uses.retain(|u| !files.contains(&u.file.0));
+    for fp in &pieces {
+        let mut keys = std::collections::BTreeSet::new();
+        for p in &fp.pieces {
+            keys.insert((p.out, p.class.word(), p.hash));
+        }
+        mem.frag_uses.extend(keys.into_iter().map(|k| StoredFragUse {
+            file: fp.file,
+            out: k.0,
+            class: k.1,
+            hash: k.2,
+        }));
+    }
+    mem.frag_uses.sort();
+    for c in &changes {
+        let place = match d.place_of(&stored, c.id).unwrap() {
+            PlaceNow::Here(p) | PlaceNow::Stored(p) => p,
+            PlaceNow::NotPlaced => Place::NONE,
+        };
+        if let Some(s) = mem.sections.iter_mut().find(|s| s.id == c.id) {
+            s.place = place;
+        } else {
+            let h = &w.headers[c.id];
+            mem.sections.push(StoredSection {
+                id: c.id,
+                file: c.file,
+                index: c.index,
+                anchor_kind: 0,
+                anchor: Vec::new(),
+                name: h.name.to_vec(),
+                ordinal: c.ordinal,
+                sh_type: h.sh_type,
+                sh_flags: h.flags,
+                size: h.size,
+                align: 1u64 << h.align,
+                place,
+            });
+        }
+    }
+    mem.sections.sort_by_key(|s| s.id);
+    mem.regions.extend(d.regions_opened.iter().copied());
+    let mut sizes = st.sizes.clone();
+    for m in next {
+        for (_, _, p) in m.pieces() {
+            sizes.insert((st.rodata, p.class().word(), p.hash()), p.size);
+        }
+    }
+    let absent = st.absent.iter().copied().filter(|f| !files.contains(f)).collect();
+    let n = MState {
+        world: st.world.clone(),
+        mem,
+        model: next.to_vec(),
+        rodata: st.rodata,
+        absent,
+        sizes,
+    };
+    mcheck(&n);
+    Ok((n, d))
+}
+
+fn mhop(st: &MState, next: &[MFile], files: &[u32]) -> Result<(MState, LayoutDelta), IncrReason> {
+    mhop_with(st, next, files, &|_| {})
+}
+
+/// The `FRAGS` row of constant `id` in a state.
+fn frag_row(st: &MState, id: u8) -> mortar_core::incr::StoredFrag {
+    let p = Pc { strings: false, id, size: 8 };
+    *st.mem.frags.iter().find(|f| f.hash == p.hash() && f.class == CST.word()).unwrap()
+}
+
+// spec: incr.md IN-72 item 6 (a changed file: its old uses -1, its new
+// distinct fragments +1; a new key appended at the merged chunk's tail; a
+// constant at 0 is a fill hole; FRAGS.refs exact, IN-78)
+#[test]
+fn item6_changed_file_counts_exact() {
+    for m in [Machine::X86_64, Machine::AArch64] {
+        item6_changed_file_counts_exact_on(m);
+    }
+}
+
+fn item6_changed_file_counts_exact_on(m: Machine) {
+    let s0 = mfirst_on(m, &[mfile(&[1, 2, 2]), mfile(&[2, 3]), mfile(&[3])], &[]);
+    assert_eq!(frag_row(&s0, 2).refs, 2, "counted per FILE, not per piece");
+    let tail = s0.mem.chunks.iter().find(|c| c.kind == ChunkKind::Merged(s0.rodata)).unwrap().size;
+    // File 1: drops 1, keeps 2, adds 4 twice.
+    let (s1, d) = mhop(&s0, &[mfile(&[2, 4, 4]), mfile(&[2, 3]), mfile(&[3])], &[1]).unwrap();
+    assert_eq!(frag_row(&s1, 1).refs, 0, "a dead range keeps its row");
+    assert_eq!(frag_row(&s1, 2), frag_row(&s0, 2), "unchanged count: no row");
+    let four = frag_row(&s1, 4);
+    assert_eq!((four.refs, four.offset), (1, tail.next_multiple_of(8)), "appended at the tail");
+    assert_eq!(d.frags.len(), 2, "{:?}", d.frags);
+    assert!(
+        d.holes.iter().any(|h| h.offset == frag_row(&s0, 1).offset && h.kind == HoleKind::Fill)
+    );
+    assert!(d.moved.is_empty() && d.killed.is_empty() && d.revived.is_empty());
+}
+
+// spec: incr.md IN-72 item 6 (an appeared file, a gone file; a drawn-in
+// archive member, then no longer extracted)
+#[test]
+fn item6_appeared_gone_drawn_in() {
+    for m in [Machine::X86_64, Machine::AArch64] {
+        item6_appeared_gone_drawn_in_on(m);
+    }
+}
+
+fn item6_appeared_gone_drawn_in_on(m: Machine) {
+    let base = [mfile(&[1, 2]), mfile(&[2]), mfile(&[2, 5]), mfile(&[6])];
+    // File 4 is new to the state; file 3 a member not extracted.
+    let mut first = base.clone();
+    first[2].live = false;
+    let s0 = mfirst_on(m, &first, &[4]);
+    assert!(s0.mem.frag_uses.iter().all(|u| u.file != FileId(3) && u.file != FileId(4)));
+    // Appeared (4) and drawn in (3) together.
+    let (s1, _) = mhop(&s0, &base, &[3, 4]).unwrap();
+    assert_eq!(frag_row(&s1, 2).refs, 3);
+    // File 1 gone; file 3 no longer extracted.
+    let mut next = base.clone();
+    next[0].live = false;
+    next[2].live = false;
+    let (s2, d) = mhop(&s1, &next, &[1, 3]).unwrap();
+    assert_eq!(frag_row(&s2, 2).refs, 1);
+    assert_eq!(frag_row(&s2, 1).refs, 0);
+    assert_eq!(frag_row(&s2, 5).refs, 0);
+    assert!(d.killed.is_empty() && d.moved.is_empty(), "merged sections are not placed: {d:?}");
+}
+
+// spec: incr.md IN-72 item 6 (a COMDAT keeper moving to another file: the
+// old keeper's pieces contribute nothing, the new keeper's count once)
+#[test]
+fn item6_comdat_keeper_moves() {
+    for m in [Machine::X86_64, Machine::AArch64] {
+        item6_comdat_keeper_moves_on(m);
+    }
+}
+
+fn item6_comdat_keeper_moves_on(m: Machine) {
+    let mut a = mfile(&[1]);
+    a.inl = vec![7, 8];
+    a.inl_kept = true;
+    let mut b = mfile(&[8]);
+    b.inl = vec![7, 8];
+    let s0 = mfirst_on(m, &[a.clone(), b.clone()], &[]);
+    assert_eq!((frag_row(&s0, 7).refs, frag_row(&s0, 8).refs), (1, 2));
+    a.inl_kept = false;
+    b.inl_kept = true;
+    let (s1, d) = mhop(&s0, &[a, b], &[1, 2]).unwrap();
+    // 7: one keeper either way; 8: file 1 named it only through its copy,
+    // file 2 through both: 2 -> 1.
+    assert_eq!((frag_row(&s1, 7).refs, frag_row(&s1, 8).refs), (1, 1));
+    assert_eq!(d.frags.len(), 1, "{:?}", d.frags);
+}
+
+// spec: incr.md IN-72 item 6 (three hops: edit, inverse, edit again; a
+// fragment whose count rises from 0 revives at its offset, its fill hole
+// gone, rewritten by U-6; then edit A, then B; a compaction between two
+// edits drops the dead ranges, counts unchanged)
+#[test]
+fn item6_three_hops_and_compaction() {
+    for m in [Machine::X86_64, Machine::AArch64] {
+        item6_three_hops_and_compaction_on(m);
+    }
+}
+
+fn item6_three_hops_and_compaction_on(m: Machine) {
+    let v0 = [mfile(&[1, 2]), mfile(&[2, 3])];
+    let v1 = [mfile(&[2, 4]), mfile(&[2, 3])];
+    let s0 = mfirst_on(m, &v0, &[]);
+    let (s1, _) = mhop(&s0, &v1, &[1]).unwrap();
+    let dead = frag_row(&s1, 1);
+    assert_eq!(dead.refs, 0);
+    // Inverse: 1 revives in place (rewritten from the piece), 4 dies.
+    let (s2, d2) = mhop(&s1, &v0, &[1]).unwrap();
+    let back = frag_row(&s2, 1);
+    assert_eq!((back.refs, back.offset), (1, dead.offset), "revived at its offset");
+    let was = s1.mem.frags.iter().find(|f| f.hash == back.hash).unwrap();
+    assert_eq!(was.refs, 0, "U-6 reads 'rises from 0' from the stored row");
+    assert!(d2.frags.contains(&back));
+    assert!(!s2.mem.holes.iter().any(|h| h.offset == back.offset && h.size == 8));
+    // Edit again: 4 revives, nothing appended.
+    let size2 = s2.mem.chunks.iter().find(|c| c.kind == ChunkKind::Merged(s0.rodata)).unwrap().size;
+    let (s3, _) = mhop(&s2, &v1, &[1]).unwrap();
+    let size3 = s3.mem.chunks.iter().find(|c| c.kind == ChunkKind::Merged(s0.rodata)).unwrap().size;
+    assert_eq!(size2, size3, "no append");
+    // Edit A then B.
+    let v4 = [mfile(&[2, 4, 9]), mfile(&[2, 3])];
+    let (s4, _) = mhop(&s3, &v4, &[1]).unwrap();
+    let v5 = [mfile(&[2, 4, 9]), mfile(&[9])];
+    let (s5, _) = mhop(&s4, &v5, &[2]).unwrap();
+    assert_eq!(frag_row(&s5, 9).refs, 2);
+    assert_eq!(frag_row(&s5, 2).refs, 1);
+    // A compaction (a full link of the same files) between two edits.
+    let c = mfirst_on(m, &v5, &[]);
+    assert!(c.mem.frags.iter().all(|f| f.refs > 0), "dead ranges gone");
+    let live = |s: &MState| -> Vec<(FKey, u32)> {
+        s.mem
+            .frags
+            .iter()
+            .filter(|f| f.refs > 0)
+            .map(|f| ((f.out, f.class, f.hash), f.refs))
+            .collect()
+    };
+    assert_eq!(live(&c), live(&s5), "counts unchanged");
+    let (c1, _) = mhop(&c, &v1, &[1, 2]).unwrap();
+    assert_eq!(frag_row(&c1, 9).refs, 0);
+}
+
+// spec: incr.md IN-72 item 6 (strings: a new string appended; a string at
+// 0 is refused by name, finding C: its length is not stored; a dead string
+// that revives takes back its `DeadFragment` hole)
+#[test]
+fn item6_strings() {
+    let mut a = mfile(&[1]);
+    a.strs = vec![(1, 5)];
+    let mut b = mfile(&[2]);
+    b.strs = vec![(1, 5)];
+    let s0 = mfirst(&[a.clone(), b.clone()], &[]);
+    // Appended.
+    let mut a1 = a.clone();
+    a1.strs.push((2, 3));
+    let (s1, d) = mhop(&s0, &[a1, b.clone()], &[1]).unwrap();
+    assert_eq!(d.frags.len(), 1);
+    assert_eq!(d.frags[0].refs, 1);
+    // Falls to 0: refused.
+    let mut a2 = a.clone();
+    a2.strs.clear();
+    let mut b2 = b.clone();
+    b2.strs.clear();
+    assert_eq!(mhop(&s1, &[a2, b2], &[1, 2]).err(), Some(not_implemented()));
+    // A dead string (as a state with its hole would hold it) revives.
+    let mut s = mfirst(&[a.clone(), b.clone()], &[]);
+    let hash = Pc { strings: true, id: 1, size: 5 }.hash();
+    let r = s.mem.frags.iter_mut().find(|f| f.hash == hash).unwrap();
+    r.refs = 0;
+    let at = r.offset;
+    let c = s.mem.chunks.iter().position(|c| c.kind == ChunkKind::Merged(s.rodata)).unwrap();
+    let hole = Hole { chunk: ChunkId(c as u32), offset: at, size: 5, kind: HoleKind::DeadFragment };
+    s.mem.holes.push(hole);
+    s.mem.holes.sort_by_key(|h| (h.chunk, h.offset));
+    s.mem.frag_uses.retain(|u| u.hash != hash);
+    let mut b3 = b.clone();
+    b3.strs.clear();
+    s.model = vec![MFile { strs: Vec::new(), ..a.clone() }, b3.clone()];
+    let (s4, d4) = mhop(&s, &[a, b3], &[1]).unwrap();
+    assert!(d4.frags.iter().any(|f| f.hash == hash && f.refs == 1 && f.offset == at));
+    assert!(!s4.mem.holes.contains(&hole), "its hole gone");
+}
+
+// spec: incr.md IN-72 item 6 ("its tail exhausted: reserve-exhausted"; R-1:
+// a `.debug_*` piece is never counted, `(debug)`; a merged section whose
+// pieces the join did not give is refused, never guessed)
+#[test]
+fn item6_refusals() {
+    let s0 = mfirst(&[mfile(&[1]), mfile(&[2])], &[]);
+    // Past the merged chunk's capacity: item 3's growth step (the
+    // segment's reserve), and past that `reserve-exhausted`.
+    let many: Vec<u8> = (10..250).collect();
+    let (_, d) = mhop(&s0, &[mfile(&many), mfile(&[2])], &[1]).unwrap();
+    assert_eq!(d.growth_steps.len(), 1, "{:?}", d.growth_steps);
+    assert_eq!(d.growth_steps[0].out, s0.rodata);
+    let mut huge = mfile(&[1]);
+    huge.strs = vec![(1, 1 << 40)];
+    let e = mhop(&s0, &[huge, mfile(&[2])], &[1]).err().unwrap();
+    assert_eq!(e.name(), "reserve-exhausted", "{e:?}");
+    // A piece of a section the update does not name.
+    let e = mhop_with(&s0, &[mfile(&[1]), mfile(&[2])], &[1], &|p| {
+        p[0].pieces[0].section = SectionId(10_000);
+    })
+    .err();
+    assert_eq!(e, Some(not_implemented()), "a piece of no section of the update");
+    // No pieces given for a live merged section.
+    let e = mhop_with(&s0, &[mfile(&[1]), mfile(&[2])], &[1], &|p| p.clear()).err();
+    assert_eq!(e, Some(not_implemented()));
+}
+
+// spec: incr.md IN-72 item 6 (R-1: `.debug_*` has no fragments; a piece of
+// one is `(debug)`, never counted)
+#[test]
+fn item6_debug_piece_is_debug() {
+    let files = vec![vec![text(b".text", 16)], vec![text(b".text", 16)]];
+    let s0 = first(Machine::X86_64, &files);
+    let mut next = s0.files();
+    next[0].push(sec(b".debug_str", SHT_PROGBITS, SHF_MERGE | SHF_STRINGS, 32, 0));
+    let (changes, _) = changes_of(&s0, &Edit::new(next).changed(&[1]));
+    let dbg = changes.iter().find(|c| c.key.name == b".debug_str").unwrap().id;
+    let pieces = [FilePieces {
+        file: FileId(1),
+        pieces: vec![MergedPiece {
+            section: dbg,
+            offset: 0,
+            size: 4,
+            out: OutSecId(0),
+            class: STR,
+            hash: [3; 16],
+        }],
+    }];
+    let rows = Counting::new(&s0.mem);
+    let inp = LayoutInput { pieces: &pieces, ..input(&changes) };
+    let e = layout(&StoredLayout::new(&rows), &inp, &s0.world.target).err();
+    assert_eq!(e, Some(IncrReason::UpdateNotImplemented(Some(Unimplemented::Debug))));
+    assert_eq!(rows.frags.load(Ordering::Relaxed), 0, "never counted");
 }

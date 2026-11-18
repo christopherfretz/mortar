@@ -10,9 +10,10 @@
 //! `ORDER`, `SEGMENTS`, `OUTSECS`, `PATCHES`, `REDIRECTS`, `SYM_PLACE`,
 //! `DEFINED`, `LAYOUT`; `SLOTS` only when a file changed), and per file of
 //! `changes` its `SECTIONS`, `REGIONS`, `FRAG_USE` and `KEY_REFS` ranges
-//! and its `FILES` row's `.eh_frame` columns, and `HOLES` of the chunks a touched region or a new
-//! region is in, or of an output section that lost a member (item 10).
-//! Nothing else.
+//! and its `FILES` row's `.eh_frame` columns, the `FRAGS` row of each
+//! fragment key whose count changes (item 6, `frags`), and `HOLES` of the
+//! chunks a touched region, a new region or a dead or revived fragment is
+//! in, or of an output section that lost a member (item 10). Nothing else.
 //!
 //! What it gives (`spec/landed/incr/WP-216.md` §2): `placement` has the
 //! stored whole tables, updated (chunks grown or moved by the growth steps,
@@ -24,8 +25,8 @@
 //! `LayoutRows` gives).
 //!
 //! Every refusal is a reason of `spec/incr.md` §7 by name; what this
-//! package cannot do (IN-72 item 4's rewrite; items 5, 6 and 7 wholesale
-//! until WP-239's ruling on the stored state) is `update-not-implemented
+//! package cannot do (IN-72 item 4's rewrite; items 5 and 7 wholesale;
+//! item 6's dead string, WP-242 finding C) is `update-not-implemented
 //! (layout)`, never a guess. Commons are not placed by an update in v1
 //! (WP-216 R-2: the join's `update-not-implemented (common)`).
 
@@ -53,6 +54,8 @@ use crate::headers::Header;
 use crate::order::text_category;
 use crate::slack::{self, Slack};
 use crate::target::Target;
+
+mod frags;
 
 /// Place the update's sections in the stored layout (WP-211 §C; IN-72).
 /// `input.changes`: every section of every changed, appeared, drawn-in or
@@ -87,13 +90,13 @@ pub fn layout(
     }
     let ids: Vec<FileId> = files.keys().copied().collect();
     item_5_refused(stored, input, &ids)?;
-    item_6_refused(stored, input, &ids)?;
     item_7_refused(stored, input, &ids)?;
     let base = Base::read(stored, target)?;
     let mut u = Update::new(&base, changes);
     for (&file, members) in &files {
         u.file(stored, file, members)?;
     }
+    u.merged = frags::item_6(&base, &mut u.chunks, stored, input, &ids, &u.pieces)?;
     u.items_7_and_link_order(stored)?;
     u.overflow()?;
     u.growth()?;
@@ -104,15 +107,13 @@ pub fn layout(
     Ok(delta)
 }
 
-// Items 5, 6 and 7 are refused wholesale until they are built (the
+// Items 5 and 7 are refused wholesale until they are built (the
 // supervisor's word on WP-216's seam 4), one clause per item so that each
 // can be taken by its own package: a file of the update with kept
-// `.eh_frame` records, merged pieces or a slot demand, in its new version
-// (`input`) or its old one (its stored range), is `update-not-implemented
-// (layout)`; so is a non-empty list in `input` for any file. An accessor the
-// stored rows do not give is the same reason (its provided body). A merged
-// section placed whole and kept at its place (S-6) is not a piece and stays
-// item 4's.
+// `.eh_frame` records or a slot demand, in its new version (`input`) or its
+// old one (its stored range), is `update-not-implemented (layout)`; so is a
+// non-empty list in `input` for any file. An accessor the stored rows do not
+// give is the same reason (its provided body). Item 6 is `frags` (WP-242).
 
 /// Item 5 (`.eh_frame`, IN-34a): refused wholesale (WP-243's).
 fn item_5_refused(
@@ -125,23 +126,6 @@ fn item_5_refused(
     }
     for &file in files {
         if stored.eh_range_of(file)?.is_some() {
-            return Err(not_implemented());
-        }
-    }
-    Ok(())
-}
-
-/// Item 6 (merged pieces): refused wholesale.
-fn item_6_refused(
-    stored: &StoredLayout<'_>,
-    input: &LayoutInput<'_>,
-    files: &[FileId],
-) -> Result<(), IncrReason> {
-    if input.pieces.iter().any(|f| !f.pieces.is_empty()) {
-        return Err(not_implemented());
-    }
-    for &file in files {
-        if !stored.frag_uses_of(file)?.is_empty() {
             return Err(not_implemented());
         }
     }
@@ -387,19 +371,20 @@ impl Base {
         {
             return Fate::Refuse(Refusal::EhFrame);
         }
+        // Debug first: a merged `.debug_*` section has no fragments (R-1).
+        if !alloc && (name.starts_with(b".debug_") || name.starts_with(b".zdebug")) {
+            return Fate::Refuse(Refusal::Debug);
+        }
         // Item 6: merged pieces. A section of this shape is placed whole
         // when its previous version had a place (synth.md S-6); otherwise
-        // it is pieces, refused wholesale (§Q).
+        // its pieces are `frags`' (WP-242).
         if s.flags & SHF_MERGE != 0
             && s.sh_type == SHT_PROGBITS
             && s.flags & (SHF_WRITE | SHF_EXECINSTR | SHF_TLS) == 0
             && s.size > 0
             && !placed_before
         {
-            return Fate::Refuse(Refusal::Merged);
-        }
-        if !alloc && (name.starts_with(b".debug_") || name.starts_with(b".zdebug")) {
-            return Fate::Refuse(Refusal::Debug);
+            return Fate::Pieces;
         }
         let oname: &[u8] = if self.machine == Machine::X86_64 && s.flags & SHF_X86_64_LARGE != 0 {
             match large_output(s) {
@@ -529,7 +514,6 @@ enum Why {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Refusal {
     EhFrame,
-    Merged,
     Debug,
     NoOutput,
     Property,
@@ -543,6 +527,8 @@ enum Fate {
     Region { out: OutSecId, cat: u8 },
     /// Kept at its place and size, or refused by `why`.
     Fixed { out: OutSecId, why: Why },
+    /// Merged pieces (item 6, `frags`): the section is not placed.
+    Pieces,
     /// Placed by a part of IN-72 the update cannot do.
     Refuse(Refusal),
 }
@@ -550,9 +536,8 @@ enum Fate {
 impl Refusal {
     fn reason(self, name: &[u8]) -> IncrReason {
         match self {
-            // Items 5 and 6: refused wholesale until WP-239's ruling on
-            // the stored state (`spec/landed/incr/WP-216.md` §Q).
-            Self::EhFrame | Self::Merged => not_implemented(),
+            // Item 5: refused wholesale (`spec/landed/incr/WP-216.md` §Q).
+            Self::EhFrame => not_implemented(),
             Self::Debug => IncrReason::UpdateNotImplemented(Some(Unimplemented::Debug)),
             Self::NoOutput => IncrReason::NewOutputSection(text(name)),
             Self::Property => IncrReason::PropertyChanged(format!("{}: flags or type", text(name))),
@@ -665,6 +650,10 @@ struct Update<'b, 'c> {
     made: Vec<Hole>,
     /// The touched chunks (`holes` replaces their stored holes), sorted.
     hole_chunks: Vec<ChunkId>,
+    /// The live, kept changes whose pieces are item 6's.
+    pieces: BTreeSet<SectionId>,
+    /// Item 6's result.
+    merged: frags::Merged,
 }
 
 impl<'b, 'c> Update<'b, 'c> {
@@ -687,6 +676,8 @@ impl<'b, 'c> Update<'b, 'c> {
             holes: Vec::new(),
             made: Vec::new(),
             hole_chunks: Vec::new(),
+            pieces: BTreeSet::new(),
+            merged: frags::Merged::default(),
         }
     }
 
@@ -789,6 +780,9 @@ impl<'b, 'c> Update<'b, 'c> {
             }
             match fate {
                 Fate::Ignore => {}
+                Fate::Pieces => {
+                    self.pieces.insert(c.id);
+                }
                 Fate::Refuse(r) => return Err(r.reason(c.key.name)),
                 Fate::Fixed { out, why } => {
                     // Kept at its place and size, or refused.
@@ -1199,13 +1193,20 @@ impl<'b, 'c> Update<'b, 'c> {
         for h in &self.pads {
             by_chunk.entry(h.chunk).or_default().1.push(*h);
         }
+        // Item 6: dead constants' fills; revived fragments' holes go.
+        for c in self.merged.chunks() {
+            by_chunk.entry(c).or_default();
+        }
+        for h in &self.merged.made {
+            by_chunk.entry(h.chunk).or_default().1.push(*h);
+        }
         let mut all = Vec::new();
         let mut made = Vec::new();
         self.hole_chunks = by_chunk.keys().copied().collect();
         for (chunk, (ranges, new)) in by_chunk {
             let old = stored.holes_in(chunk)?;
             let mut kept = Vec::new();
-            for h in &old {
+            for h in old.iter().filter(|h| !self.merged.gone.contains(h)) {
                 // The parts of a stored hole outside every touched region.
                 let mut pieces = vec![(h.offset, h.offset + h.size)];
                 for &(s, e) in &ranges {
@@ -1258,7 +1259,20 @@ impl<'b, 'c> Update<'b, 'c> {
     /// long therefore holds a live section; a non-body chunk (merged,
     /// synthetic) with bytes is live. Anything else is taken as empty: an
     /// output section whose only members left are empty sections is
-    /// refused too (a refusal, never a kept empty output section).
+    /// refused too (a refusal, never a kept empty output section). An
+    /// empty section the update places does not count as placing a member
+    /// (WP-242: the corner of F-6, a full link gives an output section
+    /// whose live members are all empty no chunk, L-159).
+    ///
+    /// Why the proof never keeps an empty output section (WP-242, F-6's
+    /// corner): between two holes (or a hole and the chunk's ends) with no
+    /// live byte between them, the bytes are padding before empty members
+    /// and regions only, each placed at the next multiple of its
+    /// alignment; for powers of two, rounding up by `a` then by `b` is
+    /// rounding up by `max(a, b)`, so the run is shorter than the largest
+    /// alignment in it, which is at most the chunk's (`admit` only raises
+    /// it). Two paddings around a zero-capacity region of dead empty
+    /// sections are one such run.
     fn left_empty(&self, stored: &StoredLayout<'_>) -> Result<(), IncrReason> {
         let base = self.base;
         let out_of = |at: Option<(ChunkId, u64)>| {
@@ -1268,7 +1282,9 @@ impl<'b, 'c> Update<'b, 'c> {
         let mut lost: BTreeSet<OutSecId> = BTreeSet::new();
         for (i, now) in self.place.iter().enumerate() {
             let now = out_of(*now);
-            placed.extend(now);
+            if self.changes[i].size > 0 {
+                placed.extend(now);
+            }
             let before = out_of(self.prev[i].as_ref().and_then(|p| p.place.get()));
             if let Some(o) = before
                 && now != Some(o)
@@ -1277,6 +1293,9 @@ impl<'b, 'c> Update<'b, 'c> {
             }
         }
         lost.extend(self.orphans.iter().filter_map(|o| out_of(o.place.get())));
+        // Item 6: a fragment fell to 0 / one rose or was appended.
+        lost.extend(self.merged.died.iter().copied());
+        placed.extend(self.merged.rose.iter().copied());
         for out in lost.difference(&placed) {
             if !self.holds_live_byte(stored, *out)? {
                 let name = base.names.get(out).map_or_else(String::new, |n| text(n));
@@ -1290,6 +1309,11 @@ impl<'b, 'c> Update<'b, 'c> {
 
     /// Whether a chunk of `out` holds a run of non-hole bytes at least its
     /// alignment long, or is a non-body chunk with bytes ([`Self::left_empty`]).
+    /// A merged chunk with no hole and bytes holds a live fragment (its
+    /// bytes are fragments and the padding before them, L-147); with holes
+    /// (dead fragments) it takes the body's proof: padding before a
+    /// fragment is shorter than its alignment, which is at most the
+    /// chunk's.
     fn holds_live_byte(
         &self,
         stored: &StoredLayout<'_>,
@@ -1300,14 +1324,19 @@ impl<'b, 'c> Update<'b, 'c> {
             if chunk.size == 0 {
                 continue;
             }
-            if !matches!(chunk.kind, ChunkKind::Body(_)) {
+            let mut holes: Vec<Hole> = match chunk.kind {
+                ChunkKind::Body(_) | ChunkKind::Merged(_) => {
+                    if self.hole_chunks.binary_search(&c).is_ok() {
+                        self.holes.iter().filter(|h| h.chunk == c).copied().collect()
+                    } else {
+                        stored.holes_in(c)?
+                    }
+                }
+                _ => return Ok(true),
+            };
+            if matches!(chunk.kind, ChunkKind::Merged(_)) && holes.is_empty() {
                 return Ok(true);
             }
-            let mut holes: Vec<Hole> = if self.hole_chunks.binary_search(&c).is_ok() {
-                self.holes.iter().filter(|h| h.chunk == c).copied().collect()
-            } else {
-                stored.holes_in(c)?
-            };
             holes.sort_by_key(|h| h.offset);
             let align = 1u64 << chunk.align.min(63);
             let mut at = 0u64;
@@ -1447,7 +1476,7 @@ impl<'b, 'c> Update<'b, 'c> {
             files: Vec::new(),
             hole_chunks: self.hole_chunks,
             eh: None,
-            frags: Vec::new(),
+            frags: self.merged.rows,
             slots_appended: Vec::new(),
             slots_dead: Vec::new(),
         })
