@@ -333,13 +333,12 @@ fn policy(r: &DiagRow) -> Policy {
         // the same outcome, the same warning (§2.2).
         "skipped-incompatible" => Policy::Probe,
         "executable-stack" => Policy::Stack,
-        code if reference_site(code) && (code == "undefined-symbol" || !r.refs.is_empty()) => {
+        // A key's reference-site warning, a dormant row included (§2.4);
+        // `gnu-warning` at another phase is the file-level `.gnu.warning`
+        // (resolve's, phase 30): its subjects decide.
+        code if reference_site(code) && (code == "undefined-symbol" || r.key.phase == SCAN) => {
             key.map_or(Policy::Subjects, Policy::Site)
         }
-        // `gnu-warning` without references: the file-level `.gnu.warning`
-        // (resolve's, phase 30), or one of a key with no reference stored
-        // (never written: every such warning lists one).
-        "gnu-warning" if r.key.phase == SCAN => key.map_or(Policy::Subjects, Policy::Site),
         code if code.starts_with("odr-") && code != "odr-abi-mismatch" => {
             match (key, r.subjects.iter().any(|s| matches!(s, Subject::OdrKey { .. }))) {
                 (Some(k), false) => Policy::Odr(k),
@@ -426,7 +425,10 @@ impl Site<'_, '_> {
         let fresh_capped = (fresh_refs.len() as u64) < fresh_count;
         let total = unchanged.len() as u64 + fresh_count;
         if total == 0 {
-            return Ok(None);
+            // A warned key no reference reaches: its dormant row (§2.4),
+            // so that a later reference in a file an update reads has its
+            // message while the holder is not read.
+            return Ok(head.1.and_then(|h| dormant(&head.0, self.key, h)));
         }
         let mut unchanged = unchanged;
         sort_refs(&mut unchanged, rank)?;
@@ -528,6 +530,20 @@ impl Site<'_, '_> {
         let name = String::from_utf8_lossy(&self.view.string(section.name)?).into_owned();
         Ok(Place::section(file, name, r.offset))
     }
+}
+
+/// The dormant row of a `.gnu.warning.K` holder whose key no reference
+/// reaches (WP-221 §2.4): the message and the holder, no reference; key
+/// `(70, holder, u64::MAX)`; stored, never printed ([`emit`] skips it).
+#[must_use]
+pub fn dormant(d: &Diagnostic, key: SymbolId, holder: FileId) -> Option<DiagRow> {
+    let k = mortar_diag::Key { phase: SCAN, unit: holder.0, seq: u64::MAX };
+    row(k, &strip(d), vec![Subject::Key(key), Subject::File(holder)], Vec::new())
+}
+
+/// Whether a row is a dormant one ([`dormant`]).
+fn is_dormant(r: &DiagRow) -> bool {
+    r.code == "gnu-warning" && r.key.phase == SCAN && r.ref_count == 0
 }
 
 /// The places a reference-site diagnostic lists, in order.
@@ -680,6 +696,9 @@ pub fn emit(
     ranks.dedup();
     let dense = |x: u64| u32::try_from(ranks.partition_point(|&r| r < x)).unwrap_or(u32::MAX);
     for (r, (phase, unit, seq)) in rows.iter().zip(keys) {
+        if is_dormant(r) {
+            continue;
+        }
         let d = diagnostic(r).ok_or_else(|| corrupt("a row that does not read back"))?;
         let key = if file_unit(phase) {
             mortar_diag::Key { phase, unit: dense(unit), seq }
