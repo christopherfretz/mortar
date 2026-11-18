@@ -420,18 +420,22 @@ fn input_rewritten_after_u4_is_input_changed() {
 fn symtab_shrink_onto_another_section_is_refused() {
     for arch in ARCHES {
         let Some(fx) = Fixture::new(arch, "u6-shrink") else { continue };
-        let [_, _, c] = sources(arch, 42, 0);
-        fx.assemble("c", &(c.clone() + "\t.globl zz_gone\n\t.set zz_gone, 0x1234\n"));
+        let [_, _, c_s] = sources(arch, 42, 0);
+        fx.assemble("c", &(c_s.clone() + "\t.globl zz_gone\n\t.set zz_gone, 0x1234\n"));
         fx.write("prev", None);
         let prev = std::fs::read(fx.path("prev")).unwrap();
-        fx.assemble("c", &c);
+        fx.assemble("c", &c_s);
         fx.write("want", None);
         let want = std::fs::read(fx.path("want")).unwrap();
         let (o, n) = (section_range(&prev, b".symtab"), section_range(&want, b".symtab"));
         assert_eq!(o.start, n.start, "{arch:?}: the table stays in place");
         assert!(o.end > n.end, "{arch:?}: the table shrinks: {o:?} -> {n:?}");
-        let s = section_range(&want, b".strtab");
-        assert!(s.start < o.end, "{arch:?}: .strtab {s:?} in the old tail {:?}", n.end..o.end);
+        let strtab = section_range(&want, b".strtab");
+        assert!(
+            strtab.start < o.end,
+            "{arch:?}: .strtab {strtab:?} in the old tail {:?}",
+            n.end..o.end
+        );
         fx.with_front("want", None, |f, store| {
             let c_o = file_of(f, "c.o");
             let delta = LayoutDelta { files: vec![c_o], ..LayoutDelta::default() };
