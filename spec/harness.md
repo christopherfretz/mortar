@@ -2002,26 +2002,46 @@ jobs with stable check names, the same concurrency rule, read-only
 | AArch64 programs under test | native | `qemu-aarch64 -L /usr/aarch64-linux-gnu` |
 | x86-64 programs under test | `qemu-x86_64 -L /usr/x86_64-linux-gnu` | native |
 | i386 programs under test | `qemu-i386 -L /usr/i686-linux-gnu` | the same |
-| job | `gate`: `cargo xtask ci` | the same |
+| jobs | `tests`: `cargo xtask ci --step fmt --step clippy --step test`; `links`: the other steps | the same |
 | fan-in check | `check` | `check-x86_64` |
 
 1. **Two lanes.** `ci.yml` calls `ci-lane.yml` with `ubuntu-24.04-arm`
-   and with `ubuntu-24.04`; their jobs show up as `arm / gate` and
-   `x86_64 / gate`. The fan-in jobs `check` (AArch64) and `check-x86_64`
-   pass only when every job of their lane succeeded: they run with
-   `if: always()`, so a failed, cancelled or skipped lane fails them
-   rather than counting as passed. They are plain jobs, not a matrix, so
-   their names do not change when a lane's jobs do.
-2. **The whole gate, one job per lane.** The `gate` job runs
-   `cargo xtask ci` (all of "ci": fmt, clippy, the tests, the link tests
-   on all three architectures) through `scripts/env.sh`, with
-   `MORTAR_REQUIRE_TOOLS=1`. hod and kiln split their gate into parallel
-   jobs by `--step`; mortar's takes about a quarter of an hour (rule 11),
-   and every job pays its set-up again, so it is one job until it grows
-   past half an hour. `--step` is there to split it (`test` alone is
-   most of it; an assertion of `xtask/tests/hosted_ci.rs` then changes
-   with it).
-3. **The reference environment.** The job runs in
+   and with `ubuntu-24.04`; their jobs show up as `arm / tests`,
+   `arm / links`, `x86_64 / tests` and `x86_64 / links`. The fan-in jobs
+   `check` (AArch64) and `check-x86_64` pass only when both jobs of their
+   lane succeeded: they run with `if: always()`, so a failed, cancelled
+   or skipped lane fails them rather than counting as passed. GitHub
+   documents `needs.<job>.result` (success, failure, cancelled or
+   skipped) but not how the jobs of a called workflow add up to it, so
+   the lane also passes out each job's own result as an output
+   (`jobs.<job>.result`, documented for a reusable workflow's outputs),
+   and a fan-in requires the lane's result and both outputs to be
+   `success`; an output a lane never set is empty and fails it. They are
+   plain jobs, not a matrix, so their names do not change when a lane's
+   jobs do.
+2. **The whole gate, two jobs per lane.** Each lane runs all of "ci"
+   (fmt, clippy, the tests, the link tests on all three architectures,
+   the census, the Mason step, the sweep, static-identical) in two jobs
+   side by side on its runner, each with the whole set-up, through
+   `scripts/env.sh` and with `MORTAR_REQUIRE_TOOLS=1`, as hod and kiln
+   split theirs by `--step`: `tests` runs `cargo xtask ci --step fmt
+   --step clippy --step test`, and `links` every other step of
+   `xtask::ci` (`--step linktest --step census --step mason --step sweep
+   --step static-identical`), with the link-test results (rule 5).
+   `xtask/tests/hosted_ci.rs` checks that each step of `xtask::ci` is
+   run by exactly one of the two, so a new step must be placed. The gate
+   was one job until it grew past half an hour: run 44308473975 took 37
+   minutes on the AArch64 runner and 41.5 on the x86-64 one, and run
+   44300379924's x86-64 lane was cancelled by its limit during the
+   sweep. Its steps on x86-64: fmt and clippy 1 minute, `test` 21 (about
+   60 test binaries, none over 95 seconds), `linktest` 15, census 1,
+   mason under 1, sweep about 4, static-identical about 3, and the set-up
+   about 2 per job. The cut is the one that halves it: `test` and the
+   cargo checks are one half, the steps that link and run programs the
+   other, about 24 and 26 minutes with their set-up; each job's limit is
+   40 minutes, half as much again. A lane takes as long as its longer
+   job.
+3. **The reference environment.** Each job runs in
    `buildpack-deps:trixie-scm`: Debian 13, the distribution of the
    development container, with git, curl and procps (what checkout and
    the Rust set-up need) and none of the `-dev` libraries of the full
@@ -2087,15 +2107,16 @@ jobs with stable check names, the same concurrency rule, read-only
      `--check` in every gate, so the development machine's gate fails
      when it lacks a tool of the list: the list cannot fall behind the
      tests, nor the machines behind the list, unnoticed.
-5. **Results.** After the gate, whether it passed or not (unless the run
-   was cancelled), `scripts/ci-summary.py` writes the link tests' table
+5. **Results.** After the `links` job's steps, whether they passed or
+   not (unless the run was cancelled), `scripts/ci-summary.py` writes the link tests' table
    of outcomes per linker and architecture, and every record whose
    outcome fails a run, to the job summary, from
    `$CARGO_TARGET_DIR/linktest/results.tsv` ("Results and exit status";
    removed before the gate, so a restored cache cannot show an older
    run's), and the file is uploaded as the artifact
    `linktest-results-<cache key>` (kept 14 days). No results file means
-   the gate stopped before its link-test step.
+   the job stopped before its link-test step. The `tests` job has
+   neither.
 6. **Triggers.** `ci.yml` runs on a `push` to `main`, on every
    `pull_request` and on `merge_group` (the merge queue), always the plain
    gate; and by hand (`workflow_dispatch`: Actions, "ci", "Run workflow",
@@ -2103,13 +2124,20 @@ jobs with stable check names, the same concurrency rule, read-only
    (`cargo xtask ci --no-fail-fast`, "ci"). The repository and its Actions
    logs are public: nothing the gate prints may name the machine it was
    developed on (paths, user names).
-7. **Caches.** `Swatinem/rust-cache`, `shared-key` `ci-arm` or
-   `ci-x86_64` (rust-cache adds the Rust version, the hashes of
+7. **Caches.** `Swatinem/rust-cache`, one `shared-key` per lane and
+   job: `ci-arm-tests`, `ci-arm-links`, `ci-x86_64-tests`,
+   `ci-x86_64-links` (rust-cache adds the Rust version, the hashes of
    `Cargo.lock` and the manifests, and the job's environment to the key):
    `~/.cargo` and the builds of the dependencies, not of the workspace
    crates (a fresh checkout gives every source a new mtime, so cargo
-   rebuilds them anyway). The `gate` job saves it, also when the gate
-   failed. With one third-party dependency tree (`signal-hook`, for
+   rebuilds them anyway). Each job saves its own, also when it failed.
+   Not one key for both: an Actions cache entry is never overwritten,
+   so of two jobs saving one key only the first to finish writes it; and
+   with one saver the entry holds that job's dependency builds (`tests`:
+   clippy's check builds and `cargo test --workspace`'s dev builds;
+   `links`: xtask's dev build), which serve the other job only as far as
+   they happen to include its own. A key each restores exactly what that
+   job built, for one more entry of some tens of MB per lane. With one third-party dependency tree (`signal-hook`, for
    xtask) an entry is some tens of MB; the Rust toolchain itself is
    downloaded by each job.
 8. **Concurrency.** One run per ref at a time (`ci-<ref>`). A newer run
@@ -2132,12 +2160,15 @@ jobs with stable check names, the same concurrency rule, read-only
     fix is in the test (or in `xtask::linktest::target`), never a skip of
     the lane, and a named skip only where the host itself is the reason
     ("Named skips").
-11. **Time and cost.** A run is four jobs: two `gate` jobs and two
-    fan-in jobs of a few seconds. Measured (`spec/landed/harness/WP-015.md`),
-    a `gate` job takes about 16 minutes on `ubuntu-24.04-arm` and about
-    19 on `ubuntu-24.04`, of which the set-up (packages, Rust, cache) is
-    2 to 3 minutes and `cargo test` most of the rest. Standard runners
-    are free for a public repository.
+11. **Time and cost.** A run is six jobs: a `tests` and a `links` job
+    per lane, and two fan-in jobs of a few seconds. The gate in one job
+    took about 16 minutes on `ubuntu-24.04-arm` and about 19 on
+    `ubuntu-24.04` when it was first measured
+    (`spec/landed/harness/WP-015.md`), and 37 and 41.5 in run
+    44308473975 (rule 2), of which the set-up (packages, Rust, cache) is
+    2 to 3 minutes; split, each job is expected to take about half of
+    that, plus its set-up. Standard runners are free for a public
+    repository.
 
 ### A test's subject decides its tools
 
