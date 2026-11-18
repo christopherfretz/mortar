@@ -1,11 +1,12 @@
-# PENDING (RL-7): `partial mortar` is refused until RL-7 lifts the `-r` refusal ("unsupported option: -r"); rename this file to .test with it.
 # RL-6 (WP-186): mortar's own `-r` of the D.3 C shape (spec/harness.md
 # "partial mortar"): the lane links it with `--mortar-map` and judges it
 # by stage R (spec/plumb.md §14), checks its mode (0644, I-R3) and links
 # it a second time to compare the bytes (I-R11, LT-R4); then every
 # linker of the matrix final-links it (LT-R1, LT-R3) and the program
-# prints what the direct link prints.
+# prints what the direct link prints. AArch64 only: RL-7's cut (RL-9
+# lifts x86-64 and i386 at -r).
 #@ spec: harness.md "Relocatable outputs"
+#@ arch: aarch64
 
 cc -O1 -fcommon -ffunction-sections -fdata-sections c1.c -o c1.o
 cc -O1 -fcommon -ffunction-sections -fdata-sections c2.c -o c2.o

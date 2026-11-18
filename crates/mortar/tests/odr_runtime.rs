@@ -163,14 +163,25 @@ fn refusals_and_the_no_op() {
         "{}",
         o.stderr_text()
     );
-    // `-r` is refused today (RL-7); the option adds nothing to that line:
-    // the same diagnostics as the line without it.
+    // At `-r` the option is a no-op (spec/cli.md C-R2b; RL-7, WP-187):
+    // the line links, nothing is checked, and no runtime object is added:
+    // the output is the plain line's, byte for byte.
     let mut c = Command::new(MORTAR);
     c.args(["-r", "main.o", "-o", "r0.o"]).current_dir(cx.scratch.path());
     let plain = run_with(&mut c, b"", Duration::from_mins(1));
-    let mut c = Command::new(MORTAR);
-    c.args(["-r", "--odr-runtime=fatal", "main.o", "-o", "r0.o"]).current_dir(cx.scratch.path());
-    let o = run_with(&mut c, b"", Duration::from_mins(1));
-    assert_eq!(o.success(), plain.success());
-    assert_eq!(o.stderr_text(), plain.stderr_text(), "-r is a no-op");
+    if std::env::consts::ARCH != "aarch64" {
+        // RL-7's cut is AArch64: x86-64 stays refused by RL-9's name.
+        assert!(plain.stderr_text().contains("x86-64 output with -r"), "{}", plain.stderr_text());
+        return;
+    }
+    assert!(plain.success(), "{}", plain.stderr_text());
+    for mode in ["report", "fatal"] {
+        let mut c = Command::new(MORTAR);
+        c.args(["-r", &format!("--odr-runtime={mode}"), "main.o", "-o", "r1.o"])
+            .current_dir(cx.scratch.path());
+        let o = run_with(&mut c, b"", Duration::from_mins(1));
+        assert!(o.success(), "{mode}: {}", o.stderr_text());
+        assert_eq!(o.stderr_text(), plain.stderr_text(), "-r is a no-op");
+        assert_eq!(cx.bytes("r1.o"), cx.bytes("r0.o"), "{mode}: no runtime object at -r");
+    }
 }

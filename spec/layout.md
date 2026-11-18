@@ -1936,7 +1936,18 @@ B.2, B.5; `tests/relocatable-design/work/facts.log`).
     the AArch64 properties even when every input has BTI. The `-z`
     keywords that add a property at `-r` in GNU ld are refused at `-r`
     (`spec/cli.md` C-R2a).
-  - `.gnu.warning*` sections are copied by name (all three).
+  - `.gnu.warning*` sections are copied by name, and nothing is warned
+    at `-r` (lld's and mold's form). GNU ld 2.44 differs: it drops the
+    file-level `.gnu.warning` and prints its text at `-r`, keeps
+    `.gnu.warning.SYM`, and warns at `-r` for the references among its
+    inputs (WP-187's measurement on AArch64, GNU ld 2.44, lld 19, mold
+    2.37; the first version said "all three"). mortar carries both so
+    that the file-level warning reaches the final link, which gives it
+    when the `-r` output is linked in, as a direct link gives it when the
+    file is. The cost, named: a reference to `SYM` that the `-r` merges
+    into `SYM`'s own file is warned by no later link (resolve.md §10:
+    only another file's reference warns). *Test:*
+    `crates/mortar/tests/relocatable.rs` `r_gnu_warning_carried`.
   - `.ctors*` and `.dtors*` are copied by name: L-40's refusal and L-56
     are final-link rules.
   - `.init_array.N`, `.fini_array.N`, `.ctors.N` stay separate output
@@ -2152,7 +2163,11 @@ B.2, B.5; `tests/relocatable-design/work/facts.log`).
      `(FileId, section index)`, where a merged note (L-R1) and the Mason
      container (MT-30) take the place of their first input. Under
      `--unique` each piece is its own output section, at its own
-     position;
+     position. A `.note.GNU-stack` that only the option writes (L-R6a's
+     "all absent" row) has no piece and no input position: it comes
+     after every other output section of this step (WP-187; GNU ld
+     places it by its script, so the measured order differs and no
+     reference gives this one);
   4. each `SHT_GROUP` immediately before its first member;
   5. each relocation section immediately after its target section;
   6. then `.symtab`, `.symtab_shndx` (when I-R4 needs one), `.strtab`

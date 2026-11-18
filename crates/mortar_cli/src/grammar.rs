@@ -109,8 +109,8 @@ impl Parsed {
     /// first: a no-op, a conflict (a parse error already) or an `acts` row
     /// is not refused by its final-link status; a row refused at `-r`, or
     /// an `acts` row whose package has not landed, is (its refusal is
-    /// `<option> with -r`, [`Parsed::refusals`]). `-r` itself keeps its
-    /// final-link refusal until the join (RL-7).
+    /// `<option> with -r`, [`Parsed::refusals`]). `-r` itself is
+    /// supported since the join (RL-7, WP-187).
     #[must_use]
     pub fn refused_uses(&self) -> Vec<&Use> {
         self.refused_landed(&[]).into_iter().map(|(u, _)| u).collect()
@@ -175,11 +175,10 @@ impl Parsed {
     /// TEST-ONLY SEAM (WP-182): [`Parsed::refusals`] as they will be once
     /// the packages `landed` names (`"RL-7"`, `"RL-8"`, `"RL-10"`,
     /// `"RL-11"`) have landed: an `acts` row of `spec/cli.md` §3.16 whose
-    /// `until` package is listed acts instead of being refused. With
-    /// `["RL-7"]` a `-r` line is checked as it will be after the join,
-    /// which lifts `unsupported option: -r`. The link never calls it with
-    /// a package that has not landed; `refusals()` is
-    /// `refusals_landed(&[])`.
+    /// `until` package is listed acts instead of being refused. RL-7 has
+    /// landed (WP-187: `-r` and `-Ur` are supported rows), so `"RL-7"`
+    /// changes nothing. The link never calls it with a package that has
+    /// not landed; `refusals()` is `refusals_landed(&[])`.
     #[doc(hidden)]
     #[must_use]
     pub fn refusals_landed(&self, landed: &[&str]) -> Vec<(Key, Diagnostic)> {
@@ -1165,9 +1164,6 @@ fn at_r(use_: &Use, landed: &[&str]) -> AtRUse {
         AtRClass::Acts => match at.until {
             None => AtRUse::Final,
             Some(u) if landed.contains(&u.package) => AtRUse::Accepted,
-            // `-r` and `-Ur` themselves: their final-link refusal
-            // (`unsupported option: -r`) until the join (RL-7).
-            Some(u) if u.refusal == r::RELOCATABLE_OUTPUT => AtRUse::Final,
             _ => {
                 let d = r::refused_with_r(&name_at_r(use_));
                 let d = if matches!(use_.row().lands, Lands::Script(ScriptRole::Script)) {

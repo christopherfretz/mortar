@@ -59,7 +59,7 @@ semantics (`spec/arch.md`).
 |---|---|---|
 | a shared object among the inputs | `Refused{Feature, "shared objects as input"}` | M2 |
 | `-shared` | (already refused as an option, `spec/cli.md`) | M4 |
-| `-r` | `Refused{Feature, "relocatable output (-r)"}` (§11) | M4-r: the join of the first `-r` package (§11, WP-154's cut) |
+| `-r` | `Refused{Feature, "relocatable output (-r)"}` (§11) | lifted by the join of the first `-r` package (RL-7, WP-187; §11); the shapes later packages own stay refused by name (`spec/diag.md` §4.4) |
 | `--version-script`, `--dynamic-list`, `--export-dynamic-symbol-list`, `-Bsymbolic*`, `--exclude-libs` | option refusals | M4 (`--export-dynamic` and `--export-dynamic-symbol` for executables: M2; the list files `--dynamic-list` and `--export-dynamic-symbol-list`: M4, `spec/dyn.md` §15 Q9, closed) |
 | `--wrap`, `--defsym`, `-y` | option refusals | M4 (`--start-lib` landed with WP-152, §4.8) |
 | `.gnu.linkonce.*` sections | `Refused{Feature, ".gnu.linkonce sections"}` (§6.6) | an input that needs it |
@@ -2125,9 +2125,11 @@ that has no bytes in the output has no address.
 
 ## 11. `-r` [M4-r; planned: WP-154's cut, record `spec/landed/layout/WP-154.md`]
 
-Until the join of the first `-r` package this is refused: `-r` is an
+Until the join of the first `-r` package this was refused: `-r` was an
 option refusal (`spec/cli.md` §3.16) and this spec's
-`Refused{Feature, "relocatable output (-r)"}`. The rules below were
+`Refused{Feature, "relocatable output (-r)"}`. The join (RL-7,
+WP-187) lifted both for AArch64; `mortar_resolve::relocatable::resolve`
+is the product's path since. The rules below were
 measured with GNU ld 2.44, lld 22 and mold 2.37.1 (record §B.3;
 `tests/relocatable-design/work/facts.log`, `options.log`). §3's rows are
 unchanged. What a partial link changes is which questions resolution

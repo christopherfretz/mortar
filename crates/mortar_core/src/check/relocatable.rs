@@ -483,7 +483,9 @@ impl Validator<'_, '_, '_> {
 
     /// MD-R1: one `Body(o, 0)` per output section with a placed piece, of
     /// its type and flags; the output section of the `.eh_frame` inputs
-    /// has none (the synthetic `.eh_frame` chunk is its content).
+    /// has none (the synthetic `.eh_frame` chunk is its content). The one
+    /// body with no piece is L-R6a's empty stack note made by an option
+    /// (WP-187).
     fn bodies(&self) -> Check {
         let cx = self.cx;
         let p = &self.layout.placement;
@@ -538,8 +540,12 @@ impl Validator<'_, '_, '_> {
         }
         for (o, b) in body.iter().enumerate() {
             if let Some(id) = b {
+                // L-R6a: the empty `.note.GNU-stack` that `-z execstack` or
+                // `-z noexecstack` makes when no input has one.
+                let made = p.chunks[*id].size == 0
+                    && cx.assignment.outsecs[OutSecId(o as u32)].name == b".note.GNU-stack";
                 need(
-                    content[o],
+                    content[o] || made,
                     R,
                     || "MD-R1: a body of an output section with no live piece".into(),
                     [Row::Chunk(*id)],

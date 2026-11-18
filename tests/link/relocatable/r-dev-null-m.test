@@ -1,0 +1,28 @@
+# RL-7 (WP-187): `ld -r -m EMULATION /dev/null` (record
+# spec/landed/layout/WP-154.md §B.3: GNU ld writes an empty ET_REL; lld
+# needs `-m`, mold refuses without it; spec/cli.md C-R5): `partial mortar`
+# gives `-m`, and the output is an empty ET_REL of the target, judged by
+# stage R and linked twice (LT-R4). A final link takes it as an input
+# that adds nothing.
+#@ spec: cli.md "3.16"
+#@ spec: harness.md "Relocatable outputs"
+#@ arch: aarch64
+#@ requires: eu-elflint
+
+cc -O2 main.c -o main.o
+partial mortar -o empty.o /dev/null
+partial bfd -m %{emulation} -o empty.bfd.o /dev/null
+check readelf -hW empty.o
+  has: Type: *REL (Relocatable file)
+  has: Machine: *%{machine}
+check readelf -hW empty.bfd.o
+  has: Type: *REL (Relocatable file)
+check elflint empty.o
+
+link gcc -static main.o empty.o -o via
+run via
+  stdout: 5
+
+#--- main.c
+#include <stdio.h>
+int main(void) { printf("%d\n", 5); return 0; }

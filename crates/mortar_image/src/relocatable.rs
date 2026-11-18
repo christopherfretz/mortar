@@ -95,6 +95,10 @@ pub struct RelocatableLink<'a, 's> {
     pub build_id: Option<TreeStyle>,
     /// The command line's words, for the map's `arg` records.
     pub args: &'a [Vec<u8>],
+    /// RV-R3's names with no key
+    /// (`mortar_resolve::relocatable::undefined_without_key`), written
+    /// after the keys' entries (I-R4; WP-187).
+    pub undefined: &'a [Box<[u8]>],
 }
 
 impl std::fmt::Debug for RelocatableLink<'_, '_> {
@@ -806,9 +810,9 @@ fn group_index(link: &RelocatableLink<'_, '_>, frame: &Frame, g: SectionId) -> O
 /// when they all agree, else `STT_NOTYPE` (RV-R3).
 const UNSET: u8 = 0xff;
 
-impl<'s> Symbols<'s> {
+impl<'l> Symbols<'l> {
     #[allow(clippy::too_many_lines)]
-    fn new(link: &RelocatableLink<'_, 's>, frame: &Frame) -> Result<Self, Failed> {
+    fn new(link: &'l RelocatableLink<'_, '_>, frame: &Frame) -> Result<Self, Failed> {
         let inputs = link.inputs;
         let files = inputs.files.len() as usize;
         // Item 3, per live object in parallel.
@@ -999,6 +1003,20 @@ impl<'s> Symbols<'s> {
             };
             global_out[k] = first_global + globals.len() as u32;
             globals.push(entry);
+        }
+        // RV-R3: the `-u` (and `EXTERN`) names no input mentions, which
+        // have no key: `STB_GLOBAL` `SHN_UNDEF` `STT_NOTYPE` after the keys,
+        // in argument order (WP-182 §C; WP-187).
+        for name in link.undefined {
+            globals.push(Entry {
+                name: Name::Plain(name),
+                info: STB_GLOBAL << 4 | STT_NOTYPE,
+                other: 0,
+                shndx: u32::from(SHN_UNDEF),
+                section: false,
+                value: 0,
+                size: 0,
+            });
         }
         let xindex = frame
             .secsym
@@ -1458,6 +1476,27 @@ pub fn build_id_plan(
 pub fn property_plan(
     link: &RelocatableLink<'_, '_>,
 ) -> Result<Option<mortar_synth::PropertyPlan>, Failed> {
+    let diag = mortar_diag::Collector::new(mortar_diag::Policy::default());
+    match property_plan_with(link, &diag) {
+        Ok(p) => Ok(p),
+        Err(f) if diag.has_errors() => {
+            let _ = f;
+            Err(collected(diag, "the property note merge failed"))
+        }
+        Err(f) => Err(f),
+    }
+}
+
+/// [`property_plan`], with the merge's warnings (S-95's, as in a final
+/// link) emitted into `diag` (the link's collector; WP-187).
+///
+/// # Errors
+///
+/// [`property_plan`]'s. The errors are also in `diag`.
+pub fn property_plan_with(
+    link: &RelocatableLink<'_, '_>,
+    diag: &mortar_diag::Collector,
+) -> Result<Option<mortar_synth::PropertyPlan>, Failed> {
     use mortar_synth::notes::ObjectNotes;
     let mut paths = Vec::new();
     let mut per: Vec<Vec<(SectionId, Vec<u8>, u64)>> = Vec::new();
@@ -1489,7 +1528,6 @@ pub fn property_plan(
         per.iter().map(|v| v.iter().map(|(s, b, a)| (*s, b.as_slice(), *a)).collect()).collect();
     let objects: Vec<ObjectNotes<'_>> =
         paths.iter().zip(&borrowed).map(|(p, s)| ObjectNotes { path: p, sections: s }).collect();
-    let diag = mortar_diag::Collector::new(mortar_diag::Policy::default());
     let arch = link.arch;
     let processor = |t: u32| arch.property_merge(t);
     match mortar_synth::PropertyPlan::new(
@@ -1497,10 +1535,12 @@ pub fn property_plan(
         link.arch.facts().class,
         &processor,
         false,
-        &diag,
+        diag,
     ) {
         Ok(p) => Ok(p.exists().then_some(p)),
-        Err(_) => Err(collected(diag, "the property note merge failed")),
+        Err(_) => Err(Failed {
+            diagnostics: vec![(key0(0), internal("the property note merge failed"))],
+        }),
     }
 }
 
@@ -1535,7 +1575,7 @@ struct Part<'b> {
 struct Image<'l, 'a, 's> {
     link: &'l RelocatableLink<'a, 's>,
     frame: Frame,
-    syms: Symbols<'s>,
+    syms: Symbols<'l>,
     groups: Groups,
     property: Option<mortar_synth::PropertyPlan>,
     build_id: Option<mortar_synth::notes::BuildIdPlan>,
@@ -1562,7 +1602,7 @@ pub fn write(
     if !link.layout.eh_removed.is_empty() {
         return Err(one(
             key0(0),
-            later("removed .eh_frame records at -r", "RL-8 (spec/layout.md L-R6)"),
+            mortar_diag::relocatable::refused_eh_records_removed(),
         ));
     }
     let img = prepare(link)?;

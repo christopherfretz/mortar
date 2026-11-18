@@ -57,12 +57,8 @@ fn r_kind_spellings() {
         assert!(errors(&parsed).is_empty(), "{spelling}: {:?}", errors(&parsed));
         assert_eq!(parsed.plan.kind, OutputKind::Relocatable, "{spelling}");
         assert_eq!(parsed.plan.ur, spelling == "-Ur", "{spelling}");
-        // Until the join: the final-link refusal of the option itself.
-        assert_eq!(
-            render(&parsed.refusals()),
-            [format!("ld: error: unsupported option: {spelling}")],
-            "{spelling}"
-        );
+        // Since the join (RL-7, WP-187) the option itself is not refused.
+        assert!(render(&parsed.refusals()).is_empty(), "{spelling}: {:?}", parsed.refusals());
         assert!(after_join(&parsed).is_empty(), "{spelling}: {:?}", after_join(&parsed));
     }
     // `-no-pie` with `-r` is `-r` (C-R2), in either order.
@@ -404,11 +400,8 @@ fn r_driver_lines() {
         assert_eq!(errors(&parsed), want_errors, "{driver} {variant}: {args:?}");
         assert_eq!(parsed.plan.kind, OutputKind::Relocatable, "{driver} {variant}");
         assert_eq!(after_join(&parsed), want_refusals, "{driver} {variant}: {args:?}");
-        // Until the join every one of them is refused by `-r` itself.
-        assert!(
-            render(&parsed.refusals()).contains(&"ld: error: unsupported option: -r".to_owned()),
-            "{driver} {variant}"
-        );
+        // Since the join (RL-7, WP-187) the product's refusals are these.
+        assert_eq!(render(&parsed.refusals()), want_refusals, "{driver} {variant}");
     }
     assert_eq!(lines, 399);
     assert_eq!(not_run, 42);

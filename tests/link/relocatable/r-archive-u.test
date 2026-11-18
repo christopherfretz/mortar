@@ -1,0 +1,38 @@
+# RL-7 (WP-187): `-u SYM` is an extraction root at -r (spec/resolve.md
+# RV-R2): the member that defines it is linked in, the other is not; the
+# output judged by stage R, linked twice (LT-R4), and final-linked by every
+# linker of the matrix.
+#@ spec: resolve.md "11"
+#@ spec: harness.md "Relocatable outputs"
+#@ arch: aarch64
+#@ requires: eu-elflint
+
+cc -O2 m1.c -o m1.o
+cc -O2 m2.c -o m2.o
+cc -O2 main.c -o main.o
+ar rcs libm12.a m1.o m2.o
+partial mortar -u m2_value -o picked.o libm12.a
+partial bfd -m %{emulation} -u m2_value -o picked.bfd.o libm12.a
+check nm picked.o
+  has: T m2_value$
+  not: m1_value
+check nm picked.bfd.o
+  has: T m2_value$
+  not: m1_value
+check elflint picked.o
+
+link gcc -static main.o m2.o -o direct
+run direct
+  stdout: 22
+link gcc -static main.o picked.o -o via
+run via
+  stdout: 22
+
+#--- m1.c
+int m1_value(void) { return 11; }
+#--- m2.c
+int m2_value(void) { return 22; }
+#--- main.c
+#include <stdio.h>
+int m2_value(void);
+int main(void) { printf("%d\n", m2_value()); return 0; }
