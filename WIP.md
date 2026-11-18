@@ -1,11 +1,16 @@
 # WP-238 WIP (step 1: design with experiments)
 
-Done: the enumerator refactor in `crates/mortar_live/src/gc.rs` (`Walk::edges`,
-`To`, `Via`, `record_to`); the probe `gc/probe.rs` behind feature
-`wp238-probe` (experiment code, deleted in step 2); scripts in
-`tests/incr-design/wp238/` (plaincost.sh, l10drive.py, emulate.py, copies of
-livemodel.py/oracle.py from `.build/review-incr`).
-Next: run the experiments (scratch `.build/target-wp-125/wp238/`), write
-`spec/landed/incr/WP-238.md` "Step 1", hand back, wait for the ruling.
-Resume: `.build/target-wp-125/wp238/build.sh [probe]` builds mortar-new /
-mortar-probe; `mortar-base` is ffdda274's binary (delete after timings).
+Record: `spec/landed/incr/WP-238.md` "Step 1" (committed; the "running:"
+marks are amended when the scratch's `chain1.sh` ends).
+Running: `.build/target-wp-125/wp238/chain1.sh` > `chain1.log`, in this order:
+- the L10 drives `l10-<cfg>.log`, one per configuration;
+- `si.log` (static-identical);
+- the cost logs: `cost-default.log`, `cost-t1.log`, `cost-large.log`;
+- `lane.log`.
+Its last line is "FINAL chain1".
+Then:
+- fill in the medians, the AGREE counts and the skip-rule frequency;
+- delete `mortar-base`, `mortar-probe` and `mortar-probe2/3` after the timings, and the `l10-*` work dirs;
+- remove `/tmp/mortar-wp238-bWI1Ed`;
+- hand back.
+Scripts: `tests/incr-design/wp238/` (`l10drive.py`, `emulate.py`, `gscen.sh`, `plaincost.sh`).
