@@ -1901,3 +1901,24 @@ fn where_differ(a: &[u8], b: &[u8]) -> String {
         (at - state5::HEADER) % state5::ENTRY
     )
 }
+
+// spec: WP-247 item 3 on real states: `MORTAR_WP247_STATES=<path>[:<path>]`
+// names format-5 states written by real links (protoc, clang `-g`:
+// `MORTAR_INCR_STATE5` in a testhooks build); each decodes, normalizes
+// and encodes to the same bytes. Without the variable: nothing.
+#[test]
+fn real_states_round_trip_byte_equal() {
+    let Some(list) = std::env::var_os("MORTAR_WP247_STATES") else { return };
+    for path in std::env::split_paths(&list) {
+        let bytes = std::fs::read(&path).expect("a state");
+        let back = read::decode(&bytes).unwrap_or_else(|e| panic!("{}: {e}", path.display()));
+        let again = full(&back);
+        assert!(
+            again == bytes,
+            "{}: not byte-equal: {}",
+            path.display(),
+            where_differ(&bytes, &again)
+        );
+        eprintln!("{}: {} bytes, byte-equal", path.display(), bytes.len());
+    }
+}
