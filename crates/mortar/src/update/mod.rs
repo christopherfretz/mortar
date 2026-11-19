@@ -1307,6 +1307,93 @@ fn shadow_near(
     {
         let _ = write!(s, " hole {:?} [{:#x},{:#x});", h.kind, h.offset, h.offset + h.size);
     }
+    // WP-255e2 S2-1: every member of the index near `x`, zero-sized ones
+    // included (`sections_in` skips them), with its file and alignment.
+    if let Ok(m) = mortar_image::link::clip_members(l)
+        && let Some(list) = m.by_chunk.get(&id)
+    {
+        for mm in list {
+            let Some((_, off)) = pl.place.get(mm.section).and_then(|p| p.get()) else { continue };
+            if off + 0x80 < at || off > at + 0x80 {
+                continue;
+            }
+            let (file, size) = f
+                .resolution
+                .sh_index(mm.section)
+                .and_then(|(file, i)| match &f.inputs.files.get(file)?.reader {
+                    mortar_core::inputs::Reader::Object(o) => {
+                        o.section(i).ok().map(|h| (file.0, h.size()))
+                    }
+                    _ => None,
+                })
+                .unwrap_or((u32::MAX, u64::MAX));
+            let _ = write!(
+                s,
+                " index {} file {file} at {off:#x} size {size:#x} align {};",
+                mm.section.0, mm.align
+            );
+        }
+    }
+    s
+}
+
+/// WP-255e2 S2-1's evidence at file offset `x` of chunk `id`: the stored
+/// holes (the state before this update), the `REGIONS` rows of the chunk,
+/// the previous output's bytes and front 2's bytes over `[x-0x48, x+0x10)`.
+fn s21_evidence(
+    stored: &mortar_core::incr::StoredLayout<'_>,
+    view: &StateView<'_>,
+    f: &crate::front::Front<'_>,
+    out: &std::fs::File,
+    front2: &mortar_image::update::Refill,
+    x: u64,
+) -> String {
+    use std::fmt::Write as _;
+    let pl = &f.layout.placement;
+    let Some((id, c)) = pl
+        .chunks
+        .iter()
+        .find(|(_, c)| c.in_file() && c.offset <= x && x < c.offset + c.size.max(c.capacity))
+    else {
+        return "no chunk".into();
+    };
+    let at = x - c.offset;
+    let mut s = String::new();
+    if let Ok(hs) = stored.holes_in(id) {
+        for h in hs.iter().filter(|h| h.offset < at + 0x80 && at < h.offset + h.size + 0x80) {
+            let _ = write!(s, " stored hole {:?} [{:#x},{:#x});", h.kind, h.offset, h.offset + h.size);
+        }
+    }
+    let files = view.count(kind::FILES);
+    for file in 0..u32::try_from(files).unwrap_or(0) {
+        if let Ok(rs) = stored.regions_of(FileId(file)) {
+            for r in rs.iter().filter(|r| r.chunk == id) {
+                if r.offset < at + 0x100 && at < r.offset + r.capacity + 0x100 {
+                    let _ = write!(
+                        s,
+                        " region file {file} ordinal {} [{:#x},{:#x});",
+                        r.ordinal,
+                        r.offset,
+                        r.offset + r.capacity
+                    );
+                }
+            }
+        }
+    }
+    let lo = x.saturating_sub(0x48);
+    let mut old = vec![0u8; 0x58];
+    if std::os::unix::fs::FileExt::read_exact_at(out, &mut old, lo).is_ok() {
+        let starts: Vec<u64> = front2.ranges.iter().map(|r| r.offset).collect();
+        let _ = write!(s, " bytes at {lo:#x}: previous");
+        for b in &old {
+            let _ = write!(s, " {b:02x}");
+        }
+        let _ = write!(s, "; front 2");
+        for (i, b) in old.iter().enumerate() {
+            let v = refill_byte(front2, &starts, lo + i as u64).unwrap_or(*b);
+            let _ = write!(s, " {v:02x}");
+        }
+    }
     s
 }
 
@@ -1518,7 +1605,13 @@ fn shadow_255e(
                             let h: String = h.chars().take_while(char::is_ascii_hexdigit).collect();
                             u64::from_str_radix(&h, 16).ok()
                         })
-                        .map(|x| shadow_near(l, f, x))
+                        .map(|x| {
+                            format!(
+                                "{}{}",
+                                shadow_near(l, f, x),
+                                s21_evidence(stored, view, f, out, front2, x)
+                            )
+                        })
                         .unwrap_or_default();
                     format!(
                         "finding: 255e shadow: clip plan: internal: {text}; clips {at:?}; near: \
