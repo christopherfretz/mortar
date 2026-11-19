@@ -189,9 +189,14 @@ fn facts_of<'f>(
     move |i| match f.resolution.section_id(file, i) {
         Some(id) => {
             let row = f.resolution.sections[id];
-            SectionFact { kind: row.kind, kept: row.is_kept(), out: f.assignment.out(id) }
+            SectionFact {
+                kind: row.kind,
+                kept: row.is_kept(),
+                out: f.assignment.out(id),
+                reloc: row.reloc,
+            }
         }
-        None => SectionFact { kind: SectionKind::Null, kept: false, out: None },
+        None => SectionFact { kind: SectionKind::Null, kept: false, out: None, reloc: SectionIndex(0) },
     }
 }
 

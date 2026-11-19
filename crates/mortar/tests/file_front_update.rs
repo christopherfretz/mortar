@@ -328,9 +328,14 @@ fn update_split_problem_falls_back_as_split() {
         assert_eq!(merge.len(), 1, "{}: the string section", line.label);
         let facts = |i: SectionIndex| {
             if merge.contains(&i.0) {
-                SectionFact { kind: SectionKind::Merge, kept: true, out: Some(OutSecId(1)) }
+                SectionFact {
+                    kind: SectionKind::Merge,
+                    kept: true,
+                    out: Some(OutSecId(1)),
+                    reloc: SectionIndex(0),
+                }
             } else {
-                SectionFact { kind: SectionKind::Null, kept: false, out: None }
+                SectionFact { kind: SectionKind::Null, kept: false, out: None, reloc: SectionIndex(0) }
             }
         };
         let r = split_of(ff, &old, &facts, &ArchRelocs(f.arch.get()), &f.pool).map(|x| x.file);

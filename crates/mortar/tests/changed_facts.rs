@@ -193,8 +193,8 @@ fn changed_facts_and_split_of_an_edited_file() {
             let r = f.resolution.sections[id];
             let want_out = f.assignment.out(id);
             assert_eq!(
-                (fact.kind, fact.kept),
-                (r.kind, r.is_kept()),
+                (fact.kind, fact.kept, fact.reloc),
+                (r.kind, r.is_kept(), r.reloc),
                 "{}",
                 what(&format!("section {i}"))
             );
@@ -209,7 +209,7 @@ fn changed_facts_and_split_of_an_edited_file() {
                 if fact.kept { kept_comdat += 1 } else { dropped += 1 }
             }
         }
-        let null = SectionFact { kind: SectionKind::Null, kept: false, out: None };
+        let null = SectionFact { kind: SectionKind::Null, kept: false, out: None, reloc: SectionIndex(0) };
         let by_index = |i: SectionIndex| facts.get(i.0 as usize).copied().unwrap_or(null);
         let got = split_of(ff, &old, &by_index, &ArchRelocs(f.arch.get()), &f.pool)
             .unwrap_or_else(|e| panic!("{}", what(&format!("{e:?}"))));
