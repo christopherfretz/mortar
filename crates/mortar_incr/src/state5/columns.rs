@@ -91,7 +91,7 @@ pub const COLUMNS: [(u32, &[Column]); 38] = [
         kind::SECTIONS,
         &[
             c("file", 4, To::Files),
-            c("anchor_kind..pad", 4, V),
+            c("anchor_kind, kind, bits, pad", 4, V),
             c("anchor", 8, S),
             c("name", 8, S),
             c("ordinal..offset", 40, V),

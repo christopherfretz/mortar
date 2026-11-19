@@ -54,7 +54,9 @@ pub use write::{PatchPlan, patch, plan_patch};
 /// takes the other).
 pub const MAGIC: [u8; 8] = *b"MORTARSR";
 /// The format version.
-pub const VERSION: u32 = 5;
+/// 6 since WP-257a (`SECTIONS`' kind, bits and a place-less row's output
+/// section: a version-5 state is refused, never read with zeros).
+pub const VERSION: u32 = 6;
 /// The header's size.
 pub const HEADER: usize = 80;
 /// A directory entry's size.
@@ -416,7 +418,6 @@ same_as_format4!(
     StatRow,
     ProbeRow,
     OutSecRow,
-    SectionRow,
     ChunkRow,
     u32,
     SegmentRow,
@@ -428,6 +429,24 @@ same_as_format4!(
     LayoutRow,
     [u8; 32]
 );
+
+/// `SECTIONS` (format 4's 76 bytes) with WP-257a's `kind` and `bits` in
+/// two of format 4's three pad bytes, and a place-less row's output
+/// section in `place_offset` ([`crate::format::section_facts`]): a code
+/// or bit a reader does not know is refused here, the `OUTSECS` range by
+/// the facts' reader (it needs the table's count).
+impl Rec for SectionRow {
+    const WIDTH: usize = <SectionRow as Row>::WIDTH;
+    fn put(&self, w: &mut W<'_>) {
+        Row::put(self, w);
+    }
+    fn get(r: &mut R<'_>) -> Self {
+        <SectionRow as Row>::get(r)
+    }
+    fn ok(&self) -> bool {
+        crate::format::section_codes_ok(self)
+    }
+}
 
 /// `SYMBOLS` (format 4's 36 bytes) with `option` in byte 1, one of format
 /// 4's three pad bytes (WP-214 seam 6, ruling 2: 0 or 1; another value,

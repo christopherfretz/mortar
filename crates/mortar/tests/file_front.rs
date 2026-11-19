@@ -285,8 +285,8 @@ fn file_front_equals_the_whole_front() {
             .map(FileId)
             .filter(|&id| matches!(f.inputs.files[id].reader, Reader::Object(_)))
             .collect();
-        let want =
-            file_rows(&link, &keys, &f.layout, &mut strings, &files, false).expect("file_rows");
+        let want = file_rows(&link, &f.liveness, &keys, &f.layout, &mut strings, &files, false)
+            .expect("file_rows");
         // A store of the update's own: nothing read by the full front.
         let fresh = support::store();
         let mut cache = FrontCache::new(&fresh, pool(), &line.dir);

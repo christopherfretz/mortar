@@ -265,6 +265,11 @@ struct Linked {
 /// The incremental-mode full link of `files`; `None` when a tool is
 /// missing.
 fn link(arch: Arch, label: &str, files: &Files) -> Option<Linked> {
+    link_with(arch, label, files, &[])
+}
+
+/// [`link`] with `extra` options (WP-257a: `--gc-sections`).
+fn link_with(arch: Arch, label: &str, files: &Files, extra: &[&str]) -> Option<Linked> {
     let dir = Scratch::new(&format!("wp255c-{label}-{arch:?}"));
     let mut objs = Vec::new();
     for (name, lang, text) in files {
@@ -272,6 +277,7 @@ fn link(arch: Arch, label: &str, files: &Files) -> Option<Linked> {
     }
     let mut args: Vec<OsString> = objs.iter().map(OsString::from).collect();
     args.extend(["-static", "-e", "_start", "-o", "out"].iter().map(OsString::from));
+    args.extend(extra.iter().map(OsString::from));
     let mut inc = args.clone();
     inc.push("--incremental".into());
     let inv = mortar::invoke_in("mortar", &inc, dir.path());
@@ -835,6 +841,335 @@ fn stored_rows_scale() {
                 );
             }
             Err(e) => panic!("[wp255c3-scale] {label}: DISAGREEMENT: {e}"),
+        }
+    }
+}
+
+// ---- WP-257a: the state stores what a section IS --------------------------------
+
+/// What one link's sections compare to (WP-257a): counts by class.
+#[derive(Debug, Default)]
+struct SecSeen {
+    sections: usize,
+    split: usize,
+    merge_kept_collected: usize,
+    comdat_losers: usize,
+    placeless_with_place: usize,
+    large: usize,
+}
+
+/// For EVERY section of `linked`'s link, matched by identity (its file by
+/// path, its index in the file, its name), the front's answers against
+/// the state `state`'s: `Rows::section_kind`, `Rows::section_place`,
+/// the stored triple `(kind, kept, out)` against resolve's row and
+/// `Assignment::out` (an output section matched by name, and its
+/// `OUTSECS` row checked to be its `OutSecId`), and `phase::Link::section`
+/// against the triple. `Err` names the first disagreement.
+#[allow(clippy::too_many_lines)] // one comparison, field by field
+fn sections_agree(linked: &Linked, state: Vec<u8>) -> Result<SecSeen, String> {
+    use mortar_incr::format::kind as table;
+    use mortar_incr::update::rows::FileTable;
+    use mortar_merge::phase::{Link as _, Tables};
+    let label = &linked.label;
+    let view = mortar_incr::state5::read::open_bytes(state).map_err(|e| format!("open: {e:?}"))?;
+    let lo = mortar_incr::state5::read::LayoutOf { view: &view };
+    let stored_layout = StoredLayout::new(&lo);
+    let parsed = mortar_cli::parse(&linked.args);
+    assert!(!parsed.failed());
+    let store = Store::new(StorePolicy::from_env());
+    let diag = Collector::new(Policy::default());
+    let env =
+        Env { cwd: linked.dir.path(), pool: Pool::new(2), replay: None, slack: true, state5: true };
+    let f = front(parsed.plan, env, &store, &diag, &mut Timer::new(false))
+        .unwrap_or_else(|| panic!("front: {:?}", diag.finish()));
+    let got_table = f.resolution.def.iter().any(|(s, d)| {
+        matches!(d, Def::Internal(InternalDef::Provide { conditional: false }))
+            && f.inputs.symbols.get(s).is_some_and(|k| k.name == b"_GLOBAL_OFFSET_TABLE_")
+    });
+    let mut got_output = f.scanned.demands.output;
+    if got_table {
+        got_output |= GlobalFlags::GOT_BASE;
+    }
+    let variant = f.synth.got.variant();
+    // The state's files by path (identity; a path twice is refused).
+    let mut by_path: HashMap<Vec<u8>, u32> = HashMap::new();
+    for r in 0..u32::try_from(view.count(table::FILES)).unwrap() {
+        let row = view.file(FileId(r)).map_err(|e| format!("FILES: {e:?}"))?;
+        let path = view.string(row.path).map_err(|e| format!("STRINGS: {e:?}"))?;
+        if by_path.insert(path, r).is_some() {
+            return Err(format!("{label}: two FILES rows of one path"));
+        }
+    }
+    let outsecs = view.outsecs().map_err(|e| format!("OUTSECS: {e:?}"))?;
+    let outsec_name = |row: u32| -> Result<Vec<u8>, String> {
+        let o = outsecs.get(row as usize).ok_or_else(|| format!("OUTSECS {row}"))?;
+        view.string(o.name).map_err(|e| format!("STRINGS: {e:?}"))
+    };
+    mortar::image::with_link(&f, &store, &|_| {}, |l| {
+        let front_rows = FrontRows::new(*l);
+        let stored = StoredRows::new(&view, &stored_layout, l.arch, got_output, variant)
+            .map_err(|e| format!("{label}: open (StoredRows::new): {e:?}"))?;
+        let tables =
+            Tables { inputs: l.inputs, resolution: l.resolution, assignment: l.assignment };
+        let mut seen = SecSeen::default();
+        for (fid, file) in l.inputs.files.iter() {
+            let mortar_core::inputs::Reader::Object(object) = file.reader else { continue };
+            let Some(&sfile) = by_path.get(file.path) else {
+                return Err(format!(
+                    "{label}: {} has no FILES row",
+                    String::from_utf8_lossy(file.path)
+                ));
+            };
+            let range = l.resolution.section_base[fid];
+            let first =
+                view.file_index(FileId(sfile)).map_err(|e| format!("FILE_INDEX: {e:?}"))?.ranges
+                    [FileTable::Sections as usize];
+            if first.count != range.len() {
+                return Err(format!(
+                    "{label}: file {sfile}: {} stored sections, {} in the front",
+                    first.count,
+                    range.len()
+                ));
+            }
+            for i in 0..range.len() {
+                let id = mortar_core::SectionId(range.start.0 + i);
+                let sid = mortar_core::SectionId(first.first + i);
+                let at = format!("{label}: {} section {i}", String::from_utf8_lossy(file.path));
+                // identity: the stored row's name is the section's
+                let row = view.section(sid).map_err(|e| format!("{at}: SECTIONS: {e:?}"))?;
+                let name = view.string(row.name).map_err(|e| format!("STRINGS: {e:?}"))?;
+                let index = mortar_elf::SectionIndex(i);
+                let fname = object.section(index).ok().and_then(|s| s.name().ok());
+                if i != 0 && fname.is_some_and(|n| n != &name[..]) {
+                    return Err(format!(
+                        "{at}: stored row names {}",
+                        String::from_utf8_lossy(&name)
+                    ));
+                }
+                let resolved = l.resolution.sections[id];
+                let fout = l.assignment.out(id);
+                let (fk, fp) = (front_rows.section_kind(id), front_rows.section_place(id));
+                let (sk, sp) = (stored.section_kind(sid), stored.section_place(sid));
+                if let Some(e) = stored.failure() {
+                    return Err(format!("{at}: a stored read failed: {e:?}"));
+                }
+                if fk != sk || fp != sp {
+                    return Err(format!("{at}: kind/place: front {fk:?}/{fp}, stored {sk:?}/{sp}"));
+                }
+                let Some((kind, kept, out)) = stored.section_fact(sid) else {
+                    return Err(format!("{at}: no stored facts: {:?}", stored.failure()));
+                };
+                if kind != resolved.kind || kept != resolved.is_kept() {
+                    return Err(format!("{at}: stored {kind:?}/{kept}, resolve {resolved:?}"));
+                }
+                match (fout, out) {
+                    (None, None) => {}
+                    (Some(a), Some(b)) => {
+                        let fname = l.assignment.outsecs.get(a).map(|o| o.name.to_vec());
+                        if b != a || fname.as_deref() != Some(&outsec_name(b.0)?[..]) {
+                            return Err(format!(
+                                "{at}: output section: front {a:?} {fname:?}, stored {b:?}"
+                            ));
+                        }
+                    }
+                    (a, b) => {
+                        return Err(format!("{at}: output section: front {a:?}, stored {b:?}"));
+                    }
+                }
+                let split = tables.section(fid, index);
+                let want = (kept && out.is_some()).then_some((kind, out));
+                if split.map(|s| (s.kind, Some(s.out))) != want {
+                    return Err(format!("{at}: Link::section {split:?}, stored {want:?}"));
+                }
+                seen.sections += 1;
+                seen.split += usize::from(split.is_some());
+                let collected = kept && !l.liveness.is_live(id);
+                seen.merge_kept_collected += usize::from(kind == SectionKind::Merge && collected);
+                seen.comdat_losers += usize::from(
+                    resolved.state
+                        == mortar_core::resolution::SectionState::Dropped(
+                            mortar_core::resolution::DropReason::Comdat,
+                        ),
+                );
+                seen.placeless_with_place += usize::from(sp && Rows::place(&stored, sid).is_none());
+                seen.large +=
+                    usize::from(object.section(index).is_ok_and(|s| s.flags() & 0x1000_0000 != 0));
+            }
+        }
+        if let Some(e) = stored.failure() {
+            return Err(format!("{label}: a stored read failed: {e:?}"));
+        }
+        Ok(seen)
+    })
+    .unwrap()
+}
+
+/// x86-64's large-model sections (`SHF_X86_64_LARGE`): `.ldata`, `.lbss`.
+fn large_fixture() -> Files {
+    vec![(
+        "a",
+        Lang::Asm,
+        "\t.text\n\t.globl _start\n\t.type _start, @function\n_start:\n\
+             \tmovabsq $ld, %rax\n\tmovabsq $lb, %rbx\n\tret\n\
+             \t.section .ldata,\"awl\",@progbits\n\t.globl ld\nld:\t.quad 1\n\
+             \t.section .lbss,\"awl\",@nobits\n\t.globl lb\nlb:\t.zero 16\n\
+             \t.section .note.GNU-stack,\"\",@progbits\n"
+            .to_owned(),
+    )]
+}
+
+/// A merge section nothing references, in a section of its own: kept by
+/// resolve, collected by `--gc-sections` (the split sees it first).
+fn gc_fixture(arch: Arch) -> Files {
+    let ty = if arch == Arch::X86_64 { "@" } else { "%" };
+    let mut files = u6(arch);
+    files.push((
+        "dead",
+        Lang::Asm,
+        format!(
+            "\t.section .rodata.str1.1,\"aMS\",{ty}progbits,1\n\t.asciz \"never read\"\n\
+             \t.section .text.unused,\"ax\",{ty}progbits\nunused:\tret\n\
+             \t.section .note.GNU-stack,\"\",{ty}progbits\n"
+        ),
+    ));
+    files
+}
+
+fn sections_check(arch: Arch, label: &str, files: &Files, extra: &[&str]) -> Option<SecSeen> {
+    let linked = link_with(arch, label, files, extra)?;
+    let seen = sections_agree(&linked, linked.state.clone()).unwrap_or_else(|e| panic!("{e}"));
+    eprintln!("[wp257a] {}{extra:?}: {seen:?}", linked.label);
+    assert!(seen.sections > 0 && seen.split > 0, "{label} {arch:?}: {seen:?}");
+    Some(seen)
+}
+
+#[test]
+fn stored_section_facts_equal_the_front() {
+    let mut ran = 0;
+    for arch in ARCHES {
+        let mut cases: Vec<(&str, Files, &[&str])> = vec![
+            ("s-u6", u6(arch), &[]),
+            ("s-c", c_fixture(arch), &[]),
+            ("s-cxx", cxx_fixture(), &[]),
+            ("s-cxx-gc", cxx_fixture(), &["--gc-sections"]),
+            ("s-gc", gc_fixture(arch), &["--gc-sections"]),
+        ];
+        if arch == Arch::X86_64 {
+            cases.push(("s-large", large_fixture(), &[]));
+        }
+        if std::env::var_os("MASON_KILN").is_some() && std::env::var_os("MASON_HOD").is_some() {
+            cases.push(("s-kiln", kiln_fixture(), &[]));
+        }
+        for (label, files, extra) in &cases {
+            let Some(seen) = sections_check(arch, label, files, extra) else {
+                assert!(!tools_required(), "{label} {arch:?}: a tool is missing");
+                continue;
+            };
+            ran += 1;
+            match *label {
+                "s-cxx" => assert!(seen.comdat_losers > 0, "{label} {arch:?}: {seen:?}"),
+                "s-gc" => assert!(seen.merge_kept_collected > 0, "{label} {arch:?}: {seen:?}"),
+                "s-u6" => assert!(seen.placeless_with_place > 0, "{label} {arch:?}: {seen:?}"),
+                "s-large" => assert!(seen.large > 0, "{label} {arch:?}: {seen:?}"),
+                _ => {}
+            }
+        }
+    }
+    eprintln!("[wp257a] {ran} links compared");
+}
+
+/// One field of the first row that satisfies `pick` changed by `mutate`
+/// (a valid value), on both targets: the comparison FAILS.
+fn sees_stale_section(
+    x: &str,
+    pick: fn(&mortar_incr::format::SectionRow) -> bool,
+    mutate: fn(&mut mortar_incr::format::SectionRow, u16),
+) -> Vec<String> {
+    let mut seen = Vec::new();
+    for arch in ARCHES {
+        let Some(linked) =
+            link_with(arch, &format!("stale-sec-{x}"), &gc_fixture(arch), &["--gc-sections"])
+        else {
+            assert!(!tools_required(), "{x} {arch:?}: a tool is missing");
+            continue;
+        };
+        let mut m = mortar_incr::state5::read::decode(&linked.state).unwrap();
+        let control = mortar_incr::state5::write::encode(&m).unwrap();
+        sections_agree(&linked, control).unwrap_or_else(|e| panic!("control: {e}"));
+        let outsecs = u16::try_from(m.outsecs.len()).unwrap();
+        let row =
+            m.sections.iter().position(pick).unwrap_or_else(|| panic!("{x}: no row to mutate"));
+        mutate(&mut m.sections[row], outsecs);
+        let bytes = mortar_incr::state5::write::encode(&m)
+            .unwrap_or_else(|e| panic!("{x} {arch:?}: the writer refuses the mutation: {e:?}"));
+        let r = sections_agree(&linked, bytes);
+        eprintln!("[wp257a] stale {x} {arch:?}: {r:?}");
+        match r {
+            Ok(s) => panic!("{x} {arch:?}: a stale section fact NOTHING sees: {s:?}"),
+            Err(e) => seen.push(e),
+        }
+    }
+    seen
+}
+
+fn is_merge_placeless(r: &mortar_incr::format::SectionRow) -> bool {
+    r.kind == SectionKind::Merge as u8 && r.place_chunk == mortar_incr::format::NONE && r.out != 0
+}
+
+#[test]
+fn stored_section_facts_see_a_stale_kind() {
+    let seen =
+        sees_stale_section("kind", is_merge_placeless, |r, _| r.kind = SectionKind::Regular as u8);
+    assert!(
+        seen.iter().all(|e| e.contains("kind/place") || e.contains("stored Regular")),
+        "{seen:?}"
+    );
+}
+
+#[test]
+fn stored_section_facts_see_a_stale_kept() {
+    let seen = sees_stale_section("kept", is_merge_placeless, |r, _| r.bits = 0);
+    assert!(!seen.is_empty() || !tools_required());
+}
+
+#[test]
+fn stored_section_facts_see_a_stale_collected() {
+    let seen = sees_stale_section(
+        "collected",
+        |r| is_merge_placeless(r) && r.bits == mortar_incr::format::section_bits::KEPT,
+        |r, _| r.bits |= mortar_incr::format::section_bits::COLLECTED,
+    );
+    assert!(seen.iter().all(|e| e.contains("kind/place")), "{seen:?}");
+}
+
+#[test]
+fn stored_section_facts_see_a_stale_out() {
+    let seen = sees_stale_section("out", is_merge_placeless, |r, n| r.out = r.out % n + 1);
+    assert!(seen.iter().all(|e| e.contains("output section")), "{seen:?}");
+}
+
+#[test]
+fn stored_section_facts_refuse_an_unknown_code() {
+    for arch in ARCHES {
+        let Some(linked) = link_with(arch, "bad-sec-code", &u6(arch), &[]) else {
+            assert!(!tools_required(), "{arch:?}: a tool is missing");
+            continue;
+        };
+        for (what, mutate) in [
+            ("kind 14", (|r| r.kind = 14) as fn(&mut mortar_incr::format::SectionRow)),
+            ("bit 4", |r| r.bits |= 4),
+            ("collected, not kept", |r| r.bits = mortar_incr::format::section_bits::COLLECTED),
+            ("out past OUTSECS", |r| r.out = u16::MAX),
+        ] {
+            let mut m = mortar_incr::state5::read::decode(&linked.state).unwrap();
+            let row = m.sections.iter().position(is_merge_placeless).expect("a merge row");
+            mutate(&mut m.sections[row]);
+            let r = mortar_incr::state5::write::encode(&m)
+                .map_err(|e| format!("{e:?}"))
+                .and_then(|bytes| sections_agree(&linked, bytes));
+            eprintln!("[wp257a] {what} {arch:?}: {r:?}");
+            let e = r.expect_err(what);
+            assert!(e.contains("state-corrupt") || e.contains("Corrupt"), "{what} {arch:?}: {e}");
         }
     }
 }
