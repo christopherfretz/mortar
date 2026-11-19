@@ -14,10 +14,18 @@
 //! `clip byte ... written by no row` (always on; O(members under the
 //! clips)).
 //!
+//! WP-255c2c: a synthetic chunk of a planned kind ([`PLANNED`]: `.symtab`,
+//! `.strtab`, `.symtab_shndx`, `.eh_frame`, `.eh_frame_hdr`, the build-id
+//! note) is the whole plan's `Synth` row, routed to the fill's chunk list
+//! by [`ClipParts::synth`]; the output `.eh_frame`'s row brings the input
+//! `.eh_frame` sections whose kept records meet the clip
+//! ([`ClipParts::eh_sections`]); a patch island is its bytes
+//! ([`ClipParts::patches`]); an input `.eh_frame` placed in a body chunk is
+//! an ordinary member ([`row_for`], as in the whole plan).
+//!
 //! What it does not build yet is refused by name ([`ClipError::NotYet`]):
-//! a clip that meets a `Merged`, `Synthetic` or `Patches` chunk, or an
-//! input `.eh_frame` (255c2b builds those from stored rows); never a
-//! silent zero. A plain link never calls it.
+//! a clip that meets a synthetic chunk of another kind, or a `-r` chunk;
+//! never a silent zero. A plain link never calls it.
 //!
 //! [`check_written`] is §9.1's written-bitmap rule, which the clip filler
 //! runs under `debug_assertions`: every clip byte is written by an explicit
@@ -32,9 +40,13 @@ use mortar_core::par::Pool;
 use mortar_core::{ChunkId, Column, FileId, FragId, SectionId};
 use mortar_diag::{Diagnostic, Kind};
 use mortar_elf::SectionIndex;
+use mortar_synth::chunks::SynthKind;
 
-use crate::layout_plan::{ChunkView, SegView, hole_bytes, pads};
-use crate::plan::{Builder, MergeSource, MergedUnit, Pattern, Plan, Unit};
+use crate::layout_plan::{ChunkView, SegView, SynthRow, hole_bytes, pads};
+use crate::plan::{
+    Builder, EhSection, MergeSource, MergedUnit, Pattern, Plan, RecRows, RelaTable, RelocSection,
+    SynthUnit, Unit,
+};
 use crate::rows::{Rows, SectionFront, row_for};
 use crate::target::Target;
 
@@ -133,7 +145,44 @@ pub struct ClipParts<'p> {
     /// Where merge section `s`'s bytes are (the fragments a clip meets are
     /// copied from it); `None` is an error of [`for_clips`].
     pub merge_source: &'p dyn Fn(SectionId) -> Result<Option<MergeSource>, Diagnostic>,
+    /// WP-255c2c: every in-file synthetic chunk with file bytes, its kind
+    /// and its row (`SynthRow::index` is its index in the chunk list the
+    /// fill is given, `crate::fill::Image::chunks`). A synthetic chunk a
+    /// clip meets that this does not hold, or of a kind not in
+    /// [`PLANNED`], is [`NotYet::Synth`].
+    pub synth: &'p BTreeMap<ChunkId, (SynthKind, SynthRow)>,
+    /// WP-255c2c (S-52): every live input `.eh_frame` section with
+    /// relocations that has a kept record meeting `[a, b)` (offsets in the
+    /// output `.eh_frame`): the section, its file, its index there and its
+    /// relocation table, in any order. A section left out is a relocation
+    /// the fill does not apply (`eh::relocate` skips a section the plan
+    /// does not list): the list is the caller's producer's, never
+    /// assembled ad hoc.
+    #[allow(clippy::type_complexity)]
+    pub eh_sections:
+        &'p dyn Fn(
+            Range<u64>,
+        )
+            -> Result<Vec<(SectionId, FileId, SectionIndex, RelaTable)>, Diagnostic>,
+    /// WP-255c2c: the patch islands' bytes (`link::patches`: the thunks;
+    /// an erratum patch's words are the fill's fixups), whole, for each
+    /// island a clip meets.
+    pub patches: &'p BTreeMap<ChunkId, Box<[u8]>>,
+    /// The build id's descriptor in the file (`Plan::sealed`), when there
+    /// is one.
+    pub sealed: Option<&'p Range<u64>>,
 }
+
+/// The synthetic kinds the clip plan plans (WP-255c2c): those every taken
+/// update hop dirties. Another kind under a clip is [`NotYet::Synth`].
+pub const PLANNED: [SynthKind; 6] = [
+    SynthKind::Symtab,
+    SynthKind::Strtab,
+    SynthKind::SymtabShndx,
+    SynthKind::EhFrame,
+    SynthKind::EhFrameHdr,
+    SynthKind::NoteGnuBuildId,
+];
 
 impl std::fmt::Debug for ClipParts<'_> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -141,6 +190,8 @@ impl std::fmt::Debug for ClipParts<'_> {
             .field("chunk_views", &self.chunk_views.len())
             .field("holes", &self.holes.len())
             .field("structure", &self.structure.len())
+            .field("synth", &self.synth.len())
+            .field("patches", &self.patches.len())
             .finish_non_exhaustive()
     }
 }
@@ -148,11 +199,14 @@ impl std::fmt::Debug for ClipParts<'_> {
 /// What a clip meets that the clip plan does not build yet (255c2b).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum NotYet {
-    /// A synthetic chunk (§13), `.symtab` and `.eh_frame` included.
+    /// A synthetic chunk (§13) of a kind not in [`PLANNED`], or one
+    /// [`ClipParts::synth`] does not hold.
     Synth,
-    /// A patch island (thunks, erratum patches).
+    /// A patch island (thunks, erratum patches). Not refused since
+    /// WP-255c2c.
     Patches,
-    /// An input `.eh_frame` section placed in a body chunk.
+    /// An input `.eh_frame` section placed in a body chunk. Not refused
+    /// since WP-255c2c.
     EhFrame,
     /// A `-r` chunk (a group or a relocation section).
     Relocatable,
@@ -414,21 +468,96 @@ fn met(
     Ok(out)
 }
 
-/// The bytes of structural chunk `id` from `parts.structure`, at its size.
-fn structural(parts: &ClipParts<'_>, id: ChunkId, c: &Chunk) -> Result<Box<[u8]>, ClipError> {
-    let bytes = parts
-        .structure
-        .get(&id)
-        .ok_or_else(|| internal(&format!("the structural chunk {} has no bytes", id.0)))?;
+/// The bytes of fixed chunk `id` (a structural chunk, or a patch island)
+/// from `map`, at its size.
+fn fixed(
+    map: &BTreeMap<ChunkId, Box<[u8]>>,
+    what: &str,
+    id: ChunkId,
+    c: &Chunk,
+) -> Result<Box<[u8]>, ClipError> {
+    let bytes =
+        map.get(&id).ok_or_else(|| internal(&format!("the {what} {} has no bytes", id.0)))?;
     if bytes.len() as u64 != c.size {
         return Err(internal(&format!(
-            "the structural chunk {} has {} bytes for {}",
+            "the {what} {} has {} bytes for {}",
             id.0,
             bytes.len(),
             c.size
         )));
     }
     Ok(bytes.clone())
+}
+
+/// The row of synthetic chunk `id` named `name` (WP-255c2c), or `None`
+/// when the clip plan does not plan it: [`ClipParts::synth`] does not hold
+/// it, or its kind is not in [`PLANNED`].
+///
+/// # Errors
+///
+/// A planned kind whose name is not the chunk's (the caller's list is not
+/// this placement's).
+fn synth_row(
+    parts: &ClipParts<'_>,
+    id: ChunkId,
+    name: &[u8],
+) -> Result<Option<(SynthKind, SynthRow)>, ClipError> {
+    let Some(&(kind, row)) = parts.synth.get(&id) else { return Ok(None) };
+    if !PLANNED.contains(&kind) {
+        return Ok(None);
+    }
+    if kind.name(false) != name {
+        return Err(internal(&format!(
+            "synthetic chunk {} is {} and listed as {}",
+            id.0,
+            String::from_utf8_lossy(name),
+            String::from_utf8_lossy(kind.name(false))
+        )));
+    }
+    Ok(Some((kind, row)))
+}
+
+/// The `Synth` rows of the synthetic chunks the clips meet (WP-255c2c):
+/// the whole plan's row of each (its whole extent: a chunk is one unit),
+/// and for the output `.eh_frame` the input sections whose kept records
+/// meet the bytes the fill writes of it (the clips in it; the whole chunk
+/// when it is written whole, I-104), each once.
+fn synth_rows(
+    clips: &[Range<u64>],
+    synths: &[(ChunkId, &Chunk, &'static [u8], SynthRow)],
+    parts: &ClipParts<'_>,
+    b: &mut Builder,
+) -> Result<(), ClipError> {
+    let mut eh: BTreeMap<SectionId, (FileId, SectionIndex, RelaTable)> = BTreeMap::new();
+    for &(id, c, name, row) in synths {
+        let n = b.name(name);
+        let unit = SynthUnit { chunk: row.index, id, name: n, whole: row.whole, eh: row.eh };
+        b.synth(c.offset, c.size, unit);
+        if !row.eh {
+            continue;
+        }
+        let end = c.offset + c.size;
+        let pieces: Vec<Range<u64>> = if row.whole {
+            vec![0..c.size]
+        } else {
+            clips
+                .iter()
+                .filter(|r| r.start < end && c.offset < r.end)
+                .map(|r| r.start.max(c.offset) - c.offset..r.end.min(end) - c.offset)
+                .collect()
+        };
+        for p in pieces {
+            for (s, file, index, table) in (parts.eh_sections)(p)? {
+                eh.entry(s).or_insert((file, index, table));
+            }
+        }
+    }
+    for (section, (file, index, table)) in eh {
+        let rs = RelocSection { section, rows: RecRows::Rela(table), proof: Box::new([]) };
+        let relocs = b.relocs(rs);
+        b.eh_section(EhSection { section, file, index: index.0, relocs });
+    }
+    Ok(())
 }
 
 /// The plan of `clips` (sorted, disjoint, non-empty ranges of the file):
@@ -469,6 +598,7 @@ pub fn for_clips<R: Rows>(
     let mut b = Builder::new(parts.target, file_size);
     let mut bodies: Vec<(ChunkId, &Chunk)> = Vec::new();
     let mut merged: Vec<(ChunkId, &Chunk)> = Vec::new();
+    let mut synths: Vec<(ChunkId, &Chunk, &'static [u8], SynthRow)> = Vec::new();
     for (id, c) in chunks.iter() {
         if !c.in_file() || c.size == 0 || !meets(clips, c.offset, c.offset + c.size) {
             continue;
@@ -479,15 +609,24 @@ pub fn for_clips<R: Rows>(
                 continue;
             }
             ChunkKind::FileHeader | ChunkKind::ProgramHeaders | ChunkKind::SectionHeaders => {
-                b.bytes(c.offset, structural(parts, id, c)?);
+                b.bytes(c.offset, fixed(parts.structure, "structural chunk", id, c)?);
+                continue;
+            }
+            ChunkKind::Patches(_) => {
+                b.bytes(c.offset, fixed(parts.patches, "patch island", id, c)?);
                 continue;
             }
             ChunkKind::Merged(_) => {
                 merged.push((id, c));
                 continue;
             }
-            ChunkKind::Synthetic(_) => NotYet::Synth,
-            ChunkKind::Patches(_) => NotYet::Patches,
+            ChunkKind::Synthetic(s) => match synth_row(parts, id, s.name)? {
+                Some((_, row)) => {
+                    synths.push((id, c, s.name, row));
+                    continue;
+                }
+                None => NotYet::Synth,
+            },
             ChunkKind::Group(_) | ChunkKind::Relocs(_) => NotYet::Relocatable,
         };
         return Err(ClipError::NotYet(not_yet, id));
@@ -526,11 +665,9 @@ pub fn for_clips<R: Rows>(
                 p.section.0, f.size, p.size
             )));
         }
-        if f.name == b".eh_frame" {
-            return Err(ClipError::NotYet(NotYet::EhFrame, c));
-        }
         row_for(rows, p.section, (c, p.offset), &f, parts.proof, &mut b)?;
     }
+    synth_rows(clips, &synths, parts, &mut b)?;
     for (id, m) in units {
         let c = &chunks[id];
         let name = b.name(&m.name);
@@ -555,6 +692,9 @@ pub fn for_clips<R: Rows>(
         }
     }
     pads(parts.chunk_views.to_vec(), parts.seg_views, parts.target, parts.separate_code, &mut b);
+    if let Some(s) = parts.sealed {
+        b.sealed(s.clone());
+    }
     Ok(b.finish(crate::IMAGE_BLOCK, &Pool::sequential())?)
 }
 
