@@ -5,7 +5,7 @@ Done (committed): Task 1 (cause, fix, oracle on the written bytes, hook
 REFUSE mutations, FDE local symbol). Record: spec/landed/incr/WP-238.md
 "Step 2 Part 3b".
 
-Task 2: `/Volumes/AgentWork/mortar-helper/.build/target-wp-125/wp238p3b/bench.sh`
+Task 2: done (record P3b-5); script and log:
 (builds base 7ca766c0 by checking its crates out and back; nothing else
 may run in the worktree meanwhile), results in `bench.log` there.
 
