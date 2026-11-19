@@ -108,7 +108,8 @@ fn a_taken_update_says_no_full_link_without_the_report() {
             // No update to take (a build without testhooks: `small-output`):
             // refused by name, as the error.
             assert!(err.contains("cannot update: "), "{label}: {err}");
-            assert!(!cfg!(feature = "testhooks"), "{label}: the update was not taken: {err}");
+            let hooks = cfg!(feature = "testhooks");
+            assert!(!hooks, "{label}: the update was not taken: {err}");
         }
         // A fall-back (the options changed) still says its reason.
         let o = p.link(&["--incremental", "--gc-sections"]);

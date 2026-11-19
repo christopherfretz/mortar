@@ -369,7 +369,8 @@ fn reference_of(
             if f.plan.shaping.gc_sections {
                 (live, flips) = live_judged(view, f, &cf, &delta)?;
                 if !live.drawn_in.is_empty() {
-                    (cf, delta, live) = drawn_in(view, f, &detected.positional, &state, cf, &live)?;
+                    (cf, delta, live) =
+                        drawn_in(view, f, &detected.positional, &state, &cf, &live)?;
                 }
                 steps.mark("u6");
             }
@@ -720,7 +721,7 @@ fn drawn_in(
     f: &crate::front::Front<'_>,
     positional: &[FileId],
     capture: &mortar_incr::update::testing::MemoryState,
-    cf: mortar_incr::update::view::ChangedFiles,
+    cf: &mortar_incr::update::view::ChangedFiles,
     live: &mortar_incr::update::live::LiveDelta,
 ) -> Result<
     (
