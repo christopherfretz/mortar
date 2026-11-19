@@ -1,15 +1,10 @@
 # WP-255c2a WIP
 
-Done:
-- M1: `crates/mortar_image/src/clip_plan.rs` (`for_clips`, `ClipSection`,
-  `ClipParts`, `ClipError`/`NotYet`, `check_written`); `layout_plan.rs`
-  shared helpers `is_member`, `member_front`, `abbrev_offset`, `hole_bytes`
-  (from_layout / debug_holes call them; behaviour unchanged).
+Done (all committed): M1 `crates/mortar_image/src/clip_plan.rs` (`for_clips`,
+`check_written`), M2 the bitmap in `refill_ranges` and `refill_clip_plan`
+(link.rs), M3 `crates/mortar/tests/clip_plan.rs` (both tests green), record
+`spec/landed/incr/WP-255c2a.md`. Gates on 2b50c76b: fmt, clippy, linktest
+0 FAIL, census 716 pass, incr-update 440 PASS; quick gate and
+static-identical fail only on the 12 known rows.
 
-Next:
-- M2: the clip filler in `link.rs` (a fill of a clip plan with the bitmap
-  check under debug_assertions) + the link-side builder of the clip inputs.
-- M3: `crates/mortar/tests/clip_plan.rs`.
-
-Resume: scratch `/Volumes/AgentWork/mortar-helper/.build/target-wp-145/wp255c2a`,
-`check.sh` there.
+Next: the supervisor's ruling on ClipParts' data and the §9.1 finding.
