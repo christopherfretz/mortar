@@ -1462,6 +1462,298 @@ fn symtab_rows_check(
     Ok(())
 }
 
+/// `REGIONS` (IN-18e, IN-30, IN-72 item 2; WP-264): the full link's
+/// regions, from its placement as the state stores it (`SECTIONS`'
+/// places, `CHUNKS`, `HOLES`), so the delta layout reads exactly the
+/// rows it judges against.
+///
+/// The full link defines a region in `mortar_layout::chunk` `plan_parts`
+/// (`chunk.rs` ~348-410) with `close` (~325-345): in an allocated
+/// hole-tolerant output section (`slack::class`, IN-30), a run of members
+/// with one key, `(file, category)` (`region_key`, ~471: the `.text`
+/// category of an `SHF_EXECINSTR` member, else 0), from the first
+/// member's aligned offset to the end of the slack `close` adds as ONE
+/// `HoleKind::Fill` hole after the last member (`Slack::region`, clipped
+/// to the part's limit; no hole when clipped to 0). Here: per body chunk
+/// of such a section, its placed sections whose own output section
+/// (`SECTIONS.out`) is the chunk's (L-159's empty neighbours are not its
+/// members), by offset; a run ends where the key changes or a `Fill` hole
+/// starts; its capacity runs to that hole's end. Ordinals per (file,
+/// output section, category) in address order (a run cut by a part limit
+/// is two regions).
+///
+/// # Errors
+/// A row that names a missing chunk, output section or string.
+fn region_rows(
+    m: &crate::update::testing::MemoryState,
+) -> Result<Vec<(FileId, crate::update::rows::RegionRow)>, String> {
+    use crate::format::hole_kind;
+    use crate::update::rows::RegionRow;
+    use mortar_layout::slack::{Class, class};
+    let body = tag_byte(ChunkTag::Body);
+    let text = |s: Str| {
+        m.strings
+            .get(s.off as usize..(s.off as usize).saturating_add(s.len as usize))
+            .ok_or_else(|| "REGIONS: a string past STRINGS".to_owned())
+    };
+    let tolerant = |c: &ChunkRow| -> Result<bool, String> {
+        if c.tag != body || c.sh_flags & mortar_elf::consts::SHF_ALLOC == 0 {
+            return Ok(false);
+        }
+        let o = m.outsecs.get(c.out as usize).ok_or("REGIONS: a body chunk's OUTSECS row")?;
+        Ok(class(text(o.name)?, c.sh_flags) == Class::Tolerant)
+    };
+    let mut members: HashMap<u32, Vec<(u64, u64, usize)>> = HashMap::default();
+    for (i, s) in m.sections.iter().enumerate() {
+        if s.place_chunk == NONE {
+            continue;
+        }
+        let c = m.chunks.get(s.place_chunk as usize).ok_or("REGIONS: a section's chunk")?;
+        if !tolerant(c)? || u32::from(s.out) != c.out + 1 {
+            continue;
+        }
+        let end = s.place_offset.checked_add(s.size).ok_or("REGIONS: a section's end")?;
+        members.entry(s.place_chunk).or_default().push((s.place_offset, end, i));
+    }
+    let mut fills: HashMap<u32, Vec<(u64, u64)>> = HashMap::default();
+    for h in m.holes.iter().filter(|h| h.kind == hole_kind::FILL && !h.tomb) {
+        fills.entry(h.chunk).or_default().push((h.offset, h.offset.saturating_add(h.size)));
+    }
+    // (file, out, category, address, row) before the ordinals.
+    let mut found: Vec<(u32, u32, u8, u64, RegionRow)> = Vec::new();
+    let mut chunks: Vec<u32> = members.keys().copied().collect();
+    chunks.sort_unstable();
+    for ci in chunks {
+        let c = &m.chunks[ci as usize];
+        let mut list = members.remove(&ci).unwrap_or_default();
+        list.sort_unstable();
+        let holes = fills.get(&ci).map_or(&[][..], |v| &v[..]);
+        // The first `Fill` hole at or after `at`.
+        let next_hole = |at: u64| holes.get(holes.partition_point(|h| h.0 < at)).copied();
+        let slack_at = |end: u64| next_hole(end).filter(|h| h.0 == end).map(|h| h.1);
+        let mut run: Option<(u32, u8, u64, u64)> = None;
+        let close = |r: (u32, u8, u64, u64), found: &mut Vec<_>| {
+            let (file, category, start, end) = r;
+            let end = slack_at(end).unwrap_or(end);
+            found.push((
+                file,
+                c.out,
+                category,
+                c.addr.saturating_add(start),
+                RegionRow {
+                    out: c.out,
+                    category,
+                    ordinal: 0,
+                    chunk: ci,
+                    offset: start,
+                    capacity: end - start,
+                },
+            ));
+        };
+        for (off, end, i) in list {
+            let s = &m.sections[i];
+            let cat = if s.sh_flags & mortar_elf::consts::SHF_EXECINSTR != 0 {
+                mortar_layout::order::text_category(text(s.name)?)
+            } else {
+                0
+            };
+            // A run ends at a key change or at a `Fill` hole between its
+            // end and this member (a zero-size member at its end is its).
+            if let Some(r) = run
+                && (r.0 != s.file || r.1 != cat || next_hole(r.3).is_some_and(|h| h.0 < off))
+            {
+                close(r, &mut found);
+                run = None;
+            }
+            match &mut run {
+                Some(r) => r.3 = r.3.max(end),
+                None => run = Some((s.file, cat, off, end)),
+            }
+        }
+        if let Some(r) = run {
+            close(r, &mut found);
+        }
+    }
+    found.sort_unstable_by_key(|x| (x.0, x.1, x.2, x.3));
+    let mut out = Vec::with_capacity(found.len());
+    let mut prev: Option<(u32, u32, u8)> = None;
+    let mut ordinal = 0u32;
+    for (file, o, cat, _, mut row) in found {
+        ordinal = if prev == Some((file, o, cat)) { ordinal + 1 } else { 0 };
+        prev = Some((file, o, cat));
+        row.ordinal = ordinal;
+        out.push((FileId(file), row));
+    }
+    Ok(out)
+}
+
+/// The write-time check of `REGIONS` (WP-264): per body chunk of an
+/// allocated hole-tolerant output section, its regions lie inside the
+/// chunk and do not overlap; they tile its placed sections (each section
+/// in a region of its own file and category, each region starting at its
+/// first section); every `Fill` hole of the chunk is one region's slack,
+/// from its last section's end to its own; a region without slack ends at its
+/// last section and is the chunk's last; a file's ordinals per (output
+/// section, category) are 0, 1, ... in address order. A break is `Err`:
+/// no state is written.
+fn regions_check(m: &crate::update::testing::MemoryState) -> Result<(), String> {
+    use crate::format::hole_kind;
+    use mortar_layout::slack::{Class, class};
+    let err = |what: String| Err(format!("REGIONS: {what} (IN-30, IN-72 item 2)"));
+    let body = tag_byte(ChunkTag::Body);
+    let text =
+        |s: Str| m.strings.get(s.off as usize..(s.off as usize).saturating_add(s.len as usize));
+    let tolerant = |c: &ChunkRow| {
+        c.tag == body
+            && c.sh_flags & mortar_elf::consts::SHF_ALLOC != 0
+            && m.outsecs
+                .get(c.out as usize)
+                .and_then(|o| text(o.name))
+                .is_some_and(|n| class(n, c.sh_flags) == Class::Tolerant)
+    };
+    // Per chunk: (offset, end, file, category, sections, first, last end).
+    type Reg = (u64, u64, u32, u8, u32, u64, u64);
+    let mut by_chunk: HashMap<u32, Vec<Reg>> = HashMap::default();
+    let mut ordinals: HashMap<(u32, u32, u8), Vec<(u64, u32)>> = HashMap::default();
+    for &(file, r) in &m.regions {
+        let who = format!("file {}'s region {} of output section {}", file.0, r.ordinal, r.out);
+        let Some(c) = m.chunks.get(r.chunk as usize) else {
+            return err(format!("{who}: no chunk {}", r.chunk));
+        };
+        if !tolerant(c) || c.out != r.out {
+            return err(format!("{who}: chunk {} is not a hole-tolerant body of it", r.chunk));
+        }
+        let end = r.offset.checked_add(r.capacity);
+        if end.is_none_or(|e| e > c.size) {
+            return err(format!(
+                "{who}: [{:#x}, +{:#x}) is outside chunk {} ({:#x} bytes)",
+                r.offset, r.capacity, r.chunk, c.size
+            ));
+        }
+        by_chunk.entry(r.chunk).or_default().push((
+            r.offset,
+            r.offset + r.capacity,
+            file.0,
+            r.category,
+            0,
+            u64::MAX,
+            0,
+        ));
+        ordinals
+            .entry((file.0, r.out, r.category))
+            .or_default()
+            .push((c.addr.saturating_add(r.offset), r.ordinal));
+    }
+    for v in by_chunk.values_mut() {
+        v.sort_unstable();
+        for w in v.windows(2) {
+            if w[0].1 > w[1].0 {
+                return err(format!(
+                    "regions [{:#x}, {:#x}) (file {}) and [{:#x}, {:#x}) (file {}) overlap",
+                    w[0].0, w[0].1, w[0].2, w[1].0, w[1].1, w[1].2
+                ));
+            }
+        }
+    }
+    for (key, mut v) in ordinals {
+        v.sort_unstable();
+        if v.iter().enumerate().any(|(k, x)| x.1 as usize != k) {
+            return err(format!(
+                "file {}'s regions of output section {} category {} have ordinals {:?}",
+                key.0,
+                key.1,
+                key.2,
+                v.iter().map(|x| x.1).collect::<Vec<_>>()
+            ));
+        }
+    }
+    for s in &m.sections {
+        if s.place_chunk == NONE {
+            continue;
+        }
+        let Some(c) = m.chunks.get(s.place_chunk as usize) else {
+            return err(format!("a section of file {} in no chunk", s.file));
+        };
+        if !tolerant(c) || u32::from(s.out) != c.out + 1 {
+            continue;
+        }
+        let cat = if s.sh_flags & mortar_elf::consts::SHF_EXECINSTR != 0 {
+            text(s.name).map_or(0, mortar_layout::order::text_category)
+        } else {
+            0
+        };
+        let (off, end) = (s.place_offset, s.place_offset.saturating_add(s.size));
+        let name = || text(s.name).map(String::from_utf8_lossy).unwrap_or_default();
+        let Some(regs) = by_chunk.get_mut(&s.place_chunk) else {
+            return err(format!(
+                "section {} of file {} is in chunk {}, which has no region",
+                name(),
+                s.file,
+                s.place_chunk
+            ));
+        };
+        let at = regs.partition_point(|r| r.0 <= off);
+        // The region holding it: the last one starting at or before it, or
+        // (a section of size 0 at a boundary) the one before that.
+        let hit = (at.saturating_sub(2)..at).rev().find(|&k| {
+            let r = &regs[k];
+            r.2 == s.file && r.3 == cat && r.0 <= off && end <= r.1
+        });
+        let Some(k) = hit else {
+            return err(format!(
+                "section {} of file {} at [{off:#x}, {end:#x}) of chunk {} is in no region \
+                 of its file and category {cat}",
+                name(),
+                s.file,
+                s.place_chunk
+            ));
+        };
+        let r = &mut regs[k];
+        r.4 += 1;
+        r.5 = r.5.min(off);
+        r.6 = r.6.max(end);
+    }
+    let mut fills: HashMap<u32, Vec<(u64, u64)>> = HashMap::default();
+    for h in m.holes.iter().filter(|h| h.kind == hole_kind::FILL && !h.tomb) {
+        if m.chunks.get(h.chunk as usize).is_some_and(|c| tolerant(c)) {
+            fills.entry(h.chunk).or_default().push((h.offset, h.offset.saturating_add(h.size)));
+        }
+    }
+    for (ci, regs) in &by_chunk {
+        let holes = fills.remove(ci).unwrap_or_default();
+        let mut used = vec![false; holes.len()];
+        for (k, r) in regs.iter().enumerate() {
+            let who = format!("file {}'s region [{:#x}, {:#x}) of chunk {ci}", r.2, r.0, r.1);
+            if r.4 == 0 {
+                return err(format!("{who} holds no section"));
+            }
+            if r.5 != r.0 {
+                return err(format!("{who} starts before its first section ({:#x})", r.5));
+            }
+            match holes.iter().position(|h| h.0 == r.6 && h.1 == r.1) {
+                Some(h) => used[h] = true,
+                None if r.6 == r.1 && k + 1 == regs.len() => {}
+                None => {
+                    return err(format!(
+                        "{who}: its sections end at {:#x} and no Fill hole is its slack",
+                        r.6
+                    ));
+                }
+            }
+        }
+        if let Some(h) = used.iter().position(|u| !u) {
+            return err(format!(
+                "the Fill hole [{:#x}, {:#x}) of chunk {ci} is no region's slack",
+                holes[h].0, holes[h].1
+            ));
+        }
+    }
+    if let Some((ci, h)) = fills.iter().next() {
+        return err(format!("chunk {ci} has {} Fill holes and no region", h.len()));
+    }
+    Ok(())
+}
+
 /// One file's part of [`rows5`], with keys as `SymbolId`s.
 #[derive(Default)]
 struct File5<'s> {
@@ -2139,6 +2431,9 @@ pub fn state5_rows(
         m.symtab.insert(0, (FileId(0), area));
     }
     symtab_rows_check(&m, &rows.symtab_blocks, rows.symtab_area, rows.symtab_tables)?;
+    // REGIONS (WP-264): the full link's regions, from its stored placement.
+    m.regions = region_rows(&m)?;
+    regions_check(&m)?;
     if rows.slot_refs.len() != m.slots.len() {
         return Err("SLOTS: the rows are not this state's".into());
     }
@@ -3517,5 +3812,134 @@ mod wp263 {
         assert!(symtab_rows_check(&c.m, &[], None, None).expect_err("chunk").contains("chunk"));
         c.m.chunks.clear();
         assert_eq!(symtab_rows_check(&c.m, &[], None, None), Ok(()));
+    }
+}
+
+#[cfg(test)]
+mod wp264 {
+    //! `REGIONS`' producer ([`region_rows`]) and its write-time check
+    //! ([`regions_check`]) on a hand-made placement: two files' runs in
+    //! one `.text` body chunk, each followed by its slack.
+    use super::{region_rows, regions_check, tag_byte};
+    use crate::format::{ChunkRow, OutSecRow, SectionRow, Str, hole_kind};
+    use crate::update::rows::{HoleRow, RegionRow};
+    use crate::update::testing::MemoryState;
+    use mortar_core::FileId;
+    use mortar_core::identity::ChunkTag;
+    use mortar_elf::consts::{SHF_ALLOC, SHF_EXECINSTR};
+
+    fn sec(m: &mut MemoryState, file: u32, name: &str, offset: u64, size: u64) {
+        let off = m.strings.len() as u32;
+        m.strings.extend_from_slice(name.as_bytes());
+        m.sections.push(SectionRow {
+            file,
+            out: 1,
+            name: Str { off, len: name.len() as u32 },
+            sh_flags: SHF_ALLOC | SHF_EXECINSTR,
+            size,
+            align: 8,
+            place_chunk: 0,
+            place_offset: offset,
+            ..SectionRow::default()
+        });
+    }
+
+    /// File 1: `.text` [0, 0x10) and `.text.b` [0x10, 0x18), slack to
+    /// 0x58; file 2: `.text` [0x60, 0x80), slack to 0xc0; a `.text.hot`
+    /// of file 2 [0xc0, 0xc8), category 1, the chunk's last region with
+    /// no slack (cut at a part limit).
+    fn placed() -> MemoryState {
+        let mut m = MemoryState::default();
+        m.strings.extend_from_slice(b".text");
+        m.outsecs.push(OutSecRow { name: Str { off: 0, len: 5 }, ordinal: 0 });
+        m.chunks.push(ChunkRow {
+            tag: tag_byte(ChunkTag::Body),
+            sh_flags: SHF_ALLOC | SHF_EXECINSTR,
+            size: 0xc8,
+            capacity: 0x1000,
+            addr: 0x40_0000,
+            ..ChunkRow::default()
+        });
+        sec(&mut m, 1, ".text", 0, 0x10);
+        sec(&mut m, 1, ".text.b", 0x10, 0x8);
+        sec(&mut m, 2, ".text", 0x60, 0x20);
+        sec(&mut m, 2, ".text.hot", 0xc0, 0x8);
+        for (offset, size) in [(0x18, 0x40), (0x80, 0x40)] {
+            m.holes.push(HoleRow { chunk: 0, kind: hole_kind::FILL, offset, size, tomb: false });
+        }
+        m
+    }
+
+    fn region(category: u8, ordinal: u32, offset: u64, capacity: u64) -> RegionRow {
+        RegionRow { out: 0, category, ordinal, chunk: 0, offset, capacity }
+    }
+
+    #[test]
+    fn the_runs_are_the_regions_and_each_break_is_refused() {
+        let mut m = placed();
+        let text = mortar_layout::order::text_category(b".text");
+        let hot = mortar_layout::order::text_category(b".text.hot");
+        assert_ne!(hot, text, "a category of its own");
+        assert!(hot < text, "the order below");
+        let rows = region_rows(&m).expect("the rows");
+        assert_eq!(
+            rows,
+            vec![
+                (FileId(1), region(text, 0, 0, 0x58)),
+                (FileId(2), region(hot, 0, 0xc0, 0x8)),
+                (FileId(2), region(text, 0, 0x60, 0x60)),
+            ]
+        );
+        m.regions = rows.clone();
+        assert_eq!(regions_check(&m), Ok(()));
+        let broken = |f: &dyn Fn(&mut MemoryState), words: &str| {
+            let mut b = m.clone();
+            f(&mut b);
+            let e = regions_check(&b).expect_err(words);
+            assert!(e.contains(words), "{words}: {e}");
+        };
+        broken(&|b| b.regions[0].1.capacity = 0x61, "overlap");
+        broken(&|b| b.regions[1].1.capacity = 0x9, "outside chunk");
+        broken(&|b| b.regions[2].0 = FileId(3), "in no region of its file");
+        broken(&|b| b.regions[0].1.ordinal = 1, "ordinals");
+        broken(&|b| b.regions[0].1.offset = 0x8, "in no region of its file");
+        broken(&|b| b.regions[2].1.capacity = 0x50, "no Fill hole is its slack");
+        broken(
+            &|b| {
+                b.regions.remove(0);
+            },
+            "in no region",
+        );
+        broken(&|b| b.regions.push((FileId(3), region(text, 0, 0x58, 0x8))), "holds no section");
+        broken(
+            &|b| {
+                b.regions[0].1.offset = 0x0;
+                b.sections[0].place_offset = 0x4;
+                b.sections[0].size = 0xc;
+            },
+            "starts before its first section",
+        );
+        broken(
+            &|b| {
+                b.holes.push(HoleRow {
+                    chunk: 0,
+                    kind: hole_kind::FILL,
+                    offset: 0x58,
+                    size: 8,
+                    tomb: false,
+                });
+            },
+            "is no region's slack",
+        );
+        broken(&|b| b.regions[0].1.chunk = 1, "no chunk 1");
+        broken(&|b| b.chunks[0].tag = tag_byte(ChunkTag::Merged), "not a hole-tolerant body");
+        // A member of another output section (L-159's empty neighbour) is
+        // no member of the chunk's regions.
+        let mut n = m.clone();
+        sec(&mut n, 3, ".tm_clone_table", 0x58, 0);
+        n.sections.last_mut().expect("added").out = 2;
+        assert_eq!(region_rows(&n).expect("the rows"), rows);
+        n.regions = rows;
+        assert_eq!(regions_check(&n), Ok(()));
     }
 }
