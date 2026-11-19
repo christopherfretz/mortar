@@ -21,6 +21,11 @@ Scratch: `/Volumes/AgentWork/mortar-helper/.build/target-wp-140/m2b2d/`
   keeps its signature (no liveness: `(live)` under gc).
 - Tests: `WithRegions` == stored `REGIONS`; Beside end-follows test.
 
+- gc-3's `mortar_incr` fix + the two scenarios: branch
+  `wp/225-m2b2d-gc3` (one commit on this branch), green there.
+- Fall-back table and record section "M2b-2d" written (before = base tree
+  922a2aa6 run with the same command; b21 findings did not exist).
+
 ## Next
-- fall-back table before/after (b21 findings or b20), the record section
-  "M2b-2d", the full gate once.
+- The full gate once on the final tree (`m2b2d/gate.sh`, final line
+  `GATE ...`), then clean the scratch and hand back.
