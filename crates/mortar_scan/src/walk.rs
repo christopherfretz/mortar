@@ -73,7 +73,7 @@ impl<'a, 's> Walker<'a, 's> {
     /// (a static link has none).
     #[must_use]
     pub fn with_weak_dyn(mut self, weak_dyn: mortar_core::IdSet<mortar_core::SymbolId>) -> Self {
-        self.view.weak_dyn = weak_dyn;
+        self.view.whole.weak_dyn = weak_dyn;
         self
     }
 

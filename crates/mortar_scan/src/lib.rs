@@ -41,7 +41,7 @@ mod walk;
 pub mod weak;
 
 pub use driver::scan_file;
-pub use view::{Program, Whole};
+pub use view::{Prep, Program, Whole};
 pub use walk::{Visit, Walker};
 
 use std::sync::atomic::AtomicU16;
@@ -278,7 +278,7 @@ fn scan_in(
     let weak = weak::classes(&view, pool);
     steps.step("weak", weak.weak_dyn.count().into(), "key");
     let mut diagnostics = weak.refused;
-    view.weak_dyn = weak.weak_dyn.clone();
+    view.whole.weak_dyn = weak.weak_dyn.clone();
     view.weak_refused = weak.refused_keys;
     let (units, deferred) = driver::units(&view, &mut diagnostics);
     steps.step("units", units.len() as u64, "unit");
