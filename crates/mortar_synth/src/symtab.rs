@@ -1163,6 +1163,71 @@ impl SymtabPlan {
         })
     }
 
+    /// The state's `SYMTAB_KEYS` (IN-18e, IN-49a; WP-262) of an
+    /// incremental-mode output, per `SymbolId`: the key's entry in the
+    /// global area and that entry's `st_name`, or `(u32::MAX, 0)` for a
+    /// key with no global entry (a key the table does not write, one
+    /// written as a local: hidden, internal, `STB_LOCAL`). The walk the
+    /// writer takes (S-75's `SymbolId` order from each checkpoint), one
+    /// task per checkpoint block on `pool`. `None` in a plain link, which
+    /// does not call it.
+    ///
+    /// # Errors
+    ///
+    /// The walk's (a row without a place), and a block whose walk does
+    /// not end where the next checkpoint starts (the plan's own defect).
+    pub fn incr_global_keys(
+        &self,
+        cx: &SymCtx<'_>,
+        pool: &Pool,
+    ) -> Option<Result<Vec<(u32, u32)>, SynthError>> {
+        if !self.facts.room {
+            return None;
+        }
+        let n = cx.syms.globals();
+        let mut out = vec![(u32::MAX, 0u32); n as usize];
+        let Some(gseg) = self.segs.iter().position(|s| s.seg == Seg::Globals) else {
+            return Some(Ok(out));
+        };
+        let g = &self.segs[gseg];
+        let checks: Vec<Check> =
+            self.checks.iter().filter(|c| c.seg as usize == gseg).copied().collect();
+        let (g_end, s_end) = (g.entry + g.len, self.strtab);
+        let per_block = pool.unit_cost(25000).map(checks.len(), |k| {
+            let c = checks[k];
+            let end = checks.get(k + 1).map_or(n, |c| c.cursor).min(n);
+            let (mut entry, mut str_off) = (c.entry, c.str_off);
+            let mut v = Vec::new();
+            for id in (c.cursor..end).map(SymbolId) {
+                if let (Class3::Global, Some(row)) = cx.classify(id)? {
+                    let st_name = fixed_name(&row.name).unwrap_or(str_off as u32);
+                    str_off += region_len(&row.name);
+                    v.push((id.0, entry, st_name));
+                    entry += 1;
+                }
+            }
+            let next = checks.get(k + 1).map_or((g_end, s_end), |c| (c.entry, c.str_off));
+            if (entry, str_off) != next {
+                return Err(internal(format!(
+                    "the global area's block {k} ends at entry {entry} and byte {str_off}, \
+                     its next starts at {next:?} (IN-49a)"
+                )));
+            }
+            Ok(v)
+        });
+        for b in per_block {
+            match b {
+                Ok(v) => {
+                    for (id, entry, st_name) in v {
+                        out[id as usize] = (entry, st_name);
+                    }
+                }
+                Err(e) => return Some(Err(e)),
+            }
+        }
+        Some(Ok(out))
+    }
+
     /// The sizes of an incremental-mode output's tables (IN-49a; the
     /// state's `META.symtab`): `sh_info`, the local tail reserve, each
     /// table's `sh_size` and its file slack ([`file_slack`], the layout's

@@ -1419,7 +1419,25 @@ impl Session {
                         (file, b)
                     })
                     .collect();
+                // SYMTAB_KEYS (WP-262): the symbol table plan's walk of its
+                // global area, in incremental mode only (this branch).
+                let symtab_keys = match &f.synth.symtab {
+                    None => None,
+                    Some(plan) => {
+                        let area = plan.incr_global_area().ok_or(
+                            "SYMTAB_KEYS: an incremental-mode .symtab without IN-49a's global area",
+                        )?;
+                        let keys = f
+                            .with_sym_cx(|cx| plan.incr_global_keys(cx, &f.pool))
+                            .map_err(|e| format!("SYMTAB_KEYS: {e:?}"))?
+                            .ok_or("SYMTAB_KEYS: a .symtab plan without IN-49a's form")?
+                            .map_err(|e| format!("SYMTAB_KEYS: {e:?}"))?;
+                        Some((area, keys))
+                    }
+                };
+                lap(&self.times, &mut t, "symtab keys");
                 let five = mortar_incr::capture::Link5 {
+                    symtab: symtab_keys.as_ref().map(|(a, k)| (*a, k.as_slice())),
                     stack: &stack,
                     properties: &i5.properties,
                     option_keys: &i5.option_keys,
