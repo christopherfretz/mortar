@@ -36,7 +36,7 @@ defaults:
 jobs:
   # The gate in two jobs that run side by side on the lane's runner, each
   # with the whole set-up: `tests` runs `cargo xtask ci --step fmt --step
-  # clippy --step test`, `links` every other step of xtask/src/ci.rs
+  # clippy --step test --step debug-join`, `links` every other step of xtask/src/ci.rs
   # (xtask/tests/hosted_ci.rs checks that each step of ci.rs is run by
   # exactly one of them). One job ran out of time: run 44308473975 took
   # 37 minutes on the arm runner and 41.5 on the x86-64 one, and the
@@ -80,7 +80,7 @@ jobs:
           source scripts/env.sh
           set --
           if [ "$NO_FAIL_FAST" = true ]; then set -- --no-fail-fast; fi
-          cargo xtask ci --step fmt --step clippy --step test "$@"
+          cargo xtask ci --step fmt --step clippy --step test --step debug-join "$@"
         env:
           NO_FAIL_FAST: ${{ inputs.no-fail-fast }}
   links:

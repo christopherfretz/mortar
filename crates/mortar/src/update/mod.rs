@@ -389,15 +389,10 @@ fn reference_of(
             ));
             return Err(layout());
         };
-        // G-3 judges the identity case only (`debug_judged` against the
-        // front's bytes at the stored placement): a non-identity hop with
-        // debug sections falls back by G-3's name.
+        // G-4 (WP-230): G-1's plan, the debug part of what `materialize`
+        // translates, judged against front 1 (`debug_judged_moved`).
         if debug || p.debug.is_some() {
-            return Err(debug_fallback(
-                "M2b-3 Part 3: a non-identity hop of a changed file with debug sections \
-                 (G-3 judges the identity case only)",
-                debug_reason(),
-            ));
+            debug_judged_moved(view, &stored, f, files, p.debug.as_ref(), &refill, out)?;
         }
         let what = format!(
             "{}; {flips} sections flip liveness; capture tables differing {tables:?}",
@@ -2149,6 +2144,79 @@ fn debug_condition(view: &StateView<'_>, d: &Detected, cwd: &Path) -> Result<(),
         if object_has_debug(&object) {
             split::classify_object(&object).map_err(|e| named(f, e))?;
         }
+        debug_sections_condition(view, f, &object).map_err(|e| named(f, e))?;
+    }
+    Ok(())
+}
+
+/// G-4 (WP-230; G-3b rulings item 3), at U2: a debug output section that
+/// appears or goes. A changed file's new non-allocated `.debug_*` section
+/// (IN-55's GNU sets aside: left out of the output) whose name has no
+/// `OUTSECS` row is `new-output-section` (the previous output has no
+/// section header for it; path (A)'s refill would refuse it `(image)` on
+/// the header count). A debug output section the changed file's old
+/// version placed and its new version has not, when no other file's
+/// stored row is placed in it, goes from the output: `(debug)` by name (the
+/// update does not drop an output section). The second reads every file's
+/// stored rows, only when a changed file drops a debug section kind.
+fn debug_sections_condition(
+    view: &StateView<'_>,
+    file: FileId,
+    object: &mortar_elf::Object<'_>,
+) -> Result<(), IncrReason> {
+    use mortar_elf::consts::SHF_ALLOC;
+    let is_debug = |name: &[u8], flags: u64| flags & SHF_ALLOC == 0 && name.starts_with(b".debug_");
+    let mut new: std::collections::BTreeSet<Vec<u8>> = std::collections::BTreeSet::new();
+    for i in 1..object.section_count() {
+        let Ok(s) = object.section(mortar_elf::SectionIndex(i)) else { continue };
+        let Ok(name) = s.name() else { continue };
+        if is_debug(name, s.flags()) && !mortar_layout::incr_discard::left_out(name) {
+            new.insert(name.to_vec());
+        }
+    }
+    let layout_rows = mortar_incr::state5::LayoutOf { view };
+    let stored = mortar_core::incr::StoredLayout::new(&layout_rows);
+    let outsecs: std::collections::BTreeSet<Vec<u8>> =
+        stored.outsecs()?.into_iter().map(|(_, n)| n).collect();
+    if let Some(name) = new.iter().find(|n| !outsecs.contains(*n)) {
+        return Err(IncrReason::NewOutputSection(format!(
+            "{}: a debug output section the previous output does not have, brought by a \
+             changed file",
+            String::from_utf8_lossy(name)
+        )));
+    }
+    let rows = stored.sections_of(file)?;
+    let gone: std::collections::BTreeSet<&[u8]> = rows
+        .iter()
+        .filter(|r| is_debug(&r.name, r.sh_flags) && r.place.get().is_some())
+        .map(|r| r.name.as_slice())
+        .filter(|n| !new.contains(*n))
+        .collect();
+    if gone.is_empty() {
+        return Ok(());
+    }
+    let mut left: std::collections::BTreeSet<&[u8]> = std::collections::BTreeSet::new();
+    let mut others = Vec::new();
+    for other in 0..view.count(kind::FILES) {
+        let other = FileId(u32::try_from(other).map_err(|_| debug_reason())?);
+        if other != file {
+            others.push(stored.sections_of(other)?);
+        }
+    }
+    for r in others.iter().flatten() {
+        if r.place.get().is_some() && gone.contains(r.name.as_slice()) {
+            left.insert(r.name.as_slice());
+        }
+    }
+    if let Some(name) = gone.iter().find(|n| !left.contains(**n)) {
+        return Err(debug_fallback(
+            &format!(
+                "G-4: {}: a debug output section the new link no longer has (the update does \
+                 not drop an output section)",
+                String::from_utf8_lossy(name)
+            ),
+            debug_reason(),
+        ));
     }
     Ok(())
 }
@@ -2298,8 +2366,10 @@ fn debug_placed(
             d.placement.place[id] = old.place;
         }
     }
+    let runs = debug_runs_judged(f, cf, &plan)?;
     changed::record(&format!(
-        "G-3 debug: placed: {} contributions, {} strings found, {} appended, {} touched chunks",
+        "G-3 debug: placed: {} contributions, {} strings found, {} appended, {} touched chunks; \
+         {runs} runs laid as the front's",
         plan.contributions.len(),
         plan.strings.hits,
         plan.strings.misses,
@@ -2321,8 +2391,6 @@ fn debug_placed(
 /// A changed file with debug sections and no `DebugPlan` (G-1 did not
 /// run: a producer before `delta::layout` refused, or U5 gave no delta)
 /// is `update-not-implemented (debug)` by name.
-#[allow(clippy::too_many_lines, reason = "IN-50, IN-56, IN-54, R-5 a in order")]
-#[allow(clippy::many_single_char_names, reason = "the front, a range's ends, a piece")]
 fn debug_judged(
     view: &StateView<'_>,
     stored: &mortar_core::incr::StoredLayout<'_>,
@@ -2331,6 +2399,55 @@ fn debug_judged(
     plan: Option<&mortar_incr::update::debug::DebugPlan>,
     refill: &mortar_image::update::Refill,
     previous: &std::fs::File,
+) -> Result<(), IncrReason> {
+    debug_judge(view, stored, f, files, plan, refill, previous, true)
+}
+
+/// G-4 (WP-230), the NON-identity case (record "G-4"): G-1's plan is the
+/// debug part of the delta `materialize` translates (front 2 writes every
+/// changed contribution where `place` put it, `place`'s holes in IN-51b's
+/// forms, the debug strings at front 1's merge offsets). Judged against
+/// front 1 before front 2 runs, as [`debug_judged`] judges the identity
+/// case, with these differences: any of IN-50's three placements may be
+/// taken and holes made, and each contribution's members must lie as the
+/// front lays them relative to each other (`debug_runs_judged`, in
+/// `debug_placed`: a difference is a FINDING); nothing appended
+/// (IN-56: front 2 writes the full link's merge, not an appended tail:
+/// refused by name, recorded `G-4`), and front 1's merged debug string
+/// sections byte-equal to the previous output's (else a stored string
+/// moves under a unit front 2 would not rewrite: refused by name);
+/// `.debug_aranges` by construction (`debug_placed` keeps every changed
+/// file's input section at its stored place and size, so front 2's chunk
+/// is IN-54's rewrite in full-link order: front 1's chunk must have the
+/// stored size, else `(debug)` by name); R-5 a as in the identity case.
+#[allow(clippy::too_many_arguments, reason = "the identity case's inputs")]
+fn debug_judged_moved(
+    view: &StateView<'_>,
+    stored: &mortar_core::incr::StoredLayout<'_>,
+    f: &crate::front::Front<'_>,
+    files: &[FileId],
+    plan: Option<&mortar_incr::update::debug::DebugPlan>,
+    refill: &mortar_image::update::Refill,
+    previous: &std::fs::File,
+) -> Result<(), IncrReason> {
+    debug_judge(view, stored, f, files, plan, refill, previous, false)
+}
+
+/// The judgement of [`debug_judged`] (`identity`) and of
+/// [`debug_judged_moved`] (not `identity`).
+#[allow(clippy::too_many_lines, reason = "IN-50, IN-56, IN-54, R-5 a in order")]
+#[allow(clippy::many_single_char_names, reason = "the front, a range's ends, a piece")]
+#[allow(clippy::too_many_arguments, reason = "the identity case's inputs and the case")]
+#[allow(clippy::fn_params_excessive_bools, reason = "the one case flag")]
+fn debug_judge(
+    view: &StateView<'_>,
+    stored: &mortar_core::incr::StoredLayout<'_>,
+    f: &crate::front::Front<'_>,
+    files: &[FileId],
+    plan: Option<&mortar_incr::update::debug::DebugPlan>,
+    refill: &mortar_image::update::Refill,
+    previous: &std::fs::File,
+    identity: bool,
 ) -> Result<(), IncrReason> {
     use mortar_elf::SectionIndex;
     use mortar_elf::consts::SHF_ALLOC;
@@ -2355,8 +2472,9 @@ fn debug_judged(
     // by one byte, so that each judged item is seen to give its FINDING.
     let injected = debug_injected_plan(plan);
     let plan = injected.as_ref().unwrap_or(plan);
-    // IN-50 step 1.
-    for c in &plan.contributions {
+    // IN-50 step 1 (the identity case); the non-identity case: a run's
+    // members as the front lays them.
+    for c in plan.contributions.iter().filter(|_| identity) {
         if c.taken != Taken::InPlace {
             return Err(debug_finding(&format!(
                 "the identity case, but file {} chunk {} took {:?}: allotment {:#x}+{:#x} for \
@@ -2365,19 +2483,98 @@ fn debug_judged(
             )));
         }
     }
-    if let Some((chunk, holes)) = plan.chunks.first() {
+    if let Some((chunk, holes)) = plan.chunks.first().filter(|_| identity) {
         return Err(debug_finding(&format!(
             "the identity case, but chunk {} has new holes {holes:?}",
             chunk.0
         )));
     }
     // IN-56.
+    if let Some((class, (_, at, bytes))) = plan.strings.appended.iter().next()
+        && !identity
+    {
+        return Err(debug_fallback(
+            &format!(
+                "G-4: {} bytes of class {class} debug strings appended at {at:#x} (IN-56): front \
+                 2 writes the full link's merge, not an appended tail",
+                bytes.len()
+            ),
+            debug_reason(),
+        ));
+    }
     if let Some((class, (_, at, bytes))) = plan.strings.appended.iter().next() {
         return Err(debug_finding(&format!(
             "the identity case, but {} bytes of class {class} strings appended at {at:#x}",
             bytes.len()
         )));
     }
+    // The new output's bytes of `range`: the previous output's with the
+    // refill's ranges over them.
+    let new_bytes = |lo: u64, len: u64| -> Result<Vec<u8>, IncrReason> {
+        let mut b = vec![0u8; usize::try_from(len).map_err(|_| debug_reason())?];
+        std::os::unix::fs::FileExt::read_exact_at(previous, &mut b, lo)
+            .map_err(|e| IncrReason::OutputChanged(e.to_string()))?;
+        let mut at = 0u64;
+        for r in &refill.ranges {
+            let (s, e) = (r.offset.max(lo), (r.offset + r.len).min(lo + len));
+            if s < e {
+                let from = usize::try_from(at + (s - r.offset)).map_err(|_| debug_reason())?;
+                let to = usize::try_from(s - lo).map_err(|_| debug_reason())?;
+                let n = usize::try_from(e - s).map_err(|_| debug_reason())?;
+                b[to..to + n].copy_from_slice(&refill.bytes[from..from + n]);
+            }
+            at += r.len;
+        }
+        Ok(b)
+    };
+    let pl = &f.layout.placement;
+    let chunk_named = |want: &[u8]| {
+        pl.chunks.iter().find(|(_, c)| {
+            !c.is_alloc() && c.kind.out().is_some_and(|o| f.assignment.outsecs[o].name == want)
+        })
+    };
+    // IN-56 (G-4): front 2 writes front 1's merge of the debug strings
+    // (`materialize`'s `frag_off`), and IN-56 keeps every stored string
+    // where it is: front 1's merged sections must be the previous output's
+    // bytes.
+    let stored_chunk = |want: &[u8]| -> Result<Option<mortar_core::layout::Chunk>, IncrReason> {
+        let names: std::collections::BTreeMap<_, _> = stored.outsecs()?.into_iter().collect();
+        Ok(stored
+            .chunks()?
+            .into_iter()
+            .find(|(_, c)| c.kind.out().and_then(|o| names.get(&o)).is_some_and(|n| n == want))
+            .map(|(_, c)| c))
+    };
+    let mut merged = 0u64;
+    for name in [&b".debug_str"[..], b".debug_line_str"].iter().filter(|_| !identity) {
+        let (now, was) = (chunk_named(name).map(|(_, c)| *c), stored_chunk(name)?);
+        let same = match (now, was) {
+            (None, None) => true,
+            (Some(n), Some(w)) if n.size == w.size => {
+                let mut prev = vec![0u8; usize::try_from(w.size).map_err(|_| debug_reason())?];
+                std::os::unix::fs::FileExt::read_exact_at(previous, &mut prev, w.offset)
+                    .map_err(|e| IncrReason::OutputChanged(e.to_string()))?;
+                merged += w.size;
+                new_bytes(n.offset, n.size)? == prev
+            }
+            _ => false,
+        };
+        if !same {
+            return Err(debug_fallback(
+                &format!(
+                    "G-4: {}: front 1's merge is not the previous output's bytes (sizes {:?}, \
+                     {:?}): a stored string moves or goes (IN-56: dead strings stay)",
+                    String::from_utf8_lossy(name),
+                    now.map(|c| c.size),
+                    was.map(|c| c.size)
+                ),
+                debug_reason(),
+            ));
+        }
+    }
+    // Each changed file's string where G-1 puts it (after the bytes: in
+    // the non-identity case a merge that is not the previous output's is
+    // refused by name above, so a difference here is G-1's).
     let split = &f.merge.split;
     let mut strings = 0usize;
     for &file in files {
@@ -2404,34 +2601,24 @@ fn debug_judged(
             }
         }
     }
-    // The new output's bytes of `range`: the previous output's with the
-    // refill's ranges over them.
-    let new_bytes = |lo: u64, len: u64| -> Result<Vec<u8>, IncrReason> {
-        let mut b = vec![0u8; usize::try_from(len).map_err(|_| debug_reason())?];
-        std::os::unix::fs::FileExt::read_exact_at(previous, &mut b, lo)
-            .map_err(|e| IncrReason::OutputChanged(e.to_string()))?;
-        let mut at = 0u64;
-        for r in &refill.ranges {
-            let (s, e) = (r.offset.max(lo), (r.offset + r.len).min(lo + len));
-            if s < e {
-                let from = usize::try_from(at + (s - r.offset)).map_err(|_| debug_reason())?;
-                let to = usize::try_from(s - lo).map_err(|_| debug_reason())?;
-                let n = usize::try_from(e - s).map_err(|_| debug_reason())?;
-                b[to..to + n].copy_from_slice(&refill.bytes[from..from + n]);
-            }
-            at += r.len;
-        }
-        Ok(b)
-    };
     // IN-54.
-    let pl = &f.layout.placement;
-    let chunk_named = |want: &[u8]| {
-        pl.chunks.iter().find(|(_, c)| {
-            !c.is_alloc() && c.kind.out().is_some_and(|o| f.assignment.outsecs[o].name == want)
-        })
-    };
     let mut aranges = 0usize;
-    if !plan.aranges.is_empty() && chunk_named(b".debug_aranges").is_none() {
+    if !identity {
+        // By construction (`debug_placed`: each changed file's input
+        // section at its stored place and size); the chunk's size is the
+        // stored one.
+        let (now, was) = (
+            chunk_named(b".debug_aranges").map(|(_, c)| c.size),
+            stored_chunk(b".debug_aranges")?.map(|c| c.size),
+        );
+        if now != was {
+            return Err(debug_fallback(
+                &format!("G-4: .debug_aranges: front 1's {now:?} bytes, stored {was:?}"),
+                debug_reason(),
+            ));
+        }
+        aranges = usize::try_from(now.unwrap_or(0)).map_err(|_| debug_reason())?;
+    } else if !plan.aranges.is_empty() && chunk_named(b".debug_aranges").is_none() {
         // No `.debug_aranges` in the full link (DWARF 5 producers that
         // emit none, kiln's): G-1 still lists each changed file's
         // `.debug_info` range; its rewrite of nothing must be nothing
@@ -2537,6 +2724,22 @@ fn debug_judged(
             ));
         }
     }
+    if !identity {
+        let taken = |t: Taken| plan.contributions.iter().filter(|c| c.taken == t).count();
+        changed::record(&format!(
+            "G-4 debug: judged: {} contributions ({} in place, {} in a dead range, {} at the \
+             tail), {} touched chunks, {strings} strings at \
+             the front's offsets, merged strings {merged} bytes equal, .debug_aranges {aranges} \
+             bytes by construction, {} group copies",
+            plan.contributions.len(),
+            taken(Taken::InPlace),
+            taken(Taken::DeadRange),
+            taken(Taken::Tail),
+            plan.chunks.len(),
+            plan.comdat_in_place.len()
+        ));
+        return Ok(());
+    }
     changed::record(&format!(
         "G-3 debug: judged: {} contributions in place, {strings} strings at the front's offsets, \
          .debug_aranges {aranges} bytes equal, {} group copies",
@@ -2544,6 +2747,63 @@ fn debug_judged(
         plan.comdat_in_place.len()
     ));
     Ok(())
+}
+
+/// G-4: each contribution's members (IN-50 places a run of a file's
+/// sections of one output section) where the front lays them relative to
+/// its first member, in one chunk; a difference is a FINDING. In the
+/// identity case it holds with the offsets themselves (`debug_judged`);
+/// it is G-1's agreement with the front when code and contributions move.
+/// A file with group copies kept in place (R-5 a) is not judged here (the
+/// front's run has the copies among its members). The runs judged.
+fn debug_runs_judged(
+    f: &crate::front::Front<'_>,
+    cf: &mortar_incr::update::view::ChangedFiles,
+    plan: &mortar_incr::update::debug::DebugPlan,
+) -> Result<usize, IncrReason> {
+    use mortar_elf::SectionIndex;
+    if !plan.comdat_in_place.is_empty() {
+        return Ok(0);
+    }
+    let pl = &f.layout.placement;
+    let mut judged = 0usize;
+    for c in &plan.contributions {
+        let Ok(i) = cf.files.binary_search_by_key(&c.file, |x| x.file) else {
+            return Err(debug_finding(&format!("G-4: file {}: not a changed file", c.file.0)));
+        };
+        let first_section = cf.files[i].first_section.0;
+        let first = c.members.first().map_or(0, |m| m.1);
+        let mut base: Option<(mortar_core::ChunkId, u64)> = None;
+        for &(id, at) in &c.members {
+            let index = id.0 - first_section;
+            let full = f
+                .resolution
+                .section_id(c.file, SectionIndex(index))
+                .and_then(|s| pl.place.get(s))
+                .and_then(|p| p.get());
+            let Some((fc, fo)) = full else {
+                return Err(debug_finding(&format!(
+                    "G-4: file {} section {index}: G-1 places it at {at:#x} of chunk {}, the front \
+                     does not place it",
+                    c.file.0, c.chunk.0
+                )));
+            };
+            let (bc, bo) = *base.get_or_insert((fc, fo));
+            if fc != bc || fo.checked_sub(bo) != Some(at - first) {
+                return Err(debug_finding(&format!(
+                    "G-4: file {} section {index}: G-1 at {:#x} of its run, the front at {:#x?} \
+                     (chunk {} against {})",
+                    c.file.0,
+                    at - first,
+                    fo.checked_sub(bo),
+                    fc.0,
+                    bc.0
+                )));
+            }
+        }
+        judged += 1;
+    }
+    Ok(judged)
 }
 
 /// G-3b (WP-230; tests, `testhooks` only): whether `MORTAR_G3_INJECT`

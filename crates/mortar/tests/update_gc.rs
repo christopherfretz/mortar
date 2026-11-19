@@ -16,7 +16,8 @@
 //!   name first, since `live` draws in `a.cc.o`, whose layout inputs are
 //!   not produced (M2b-2d, gc-3); the full link that follows equals the
 //!   full link of the new inputs.
-//! - The same edit with `-g`: `update-not-implemented (debug)` (G-3).
+//! - The same edit with `-g`: `new-output-section` (G-4: its debug output
+//!   sections are new).
 //!
 //! No line of the findings file (`MORTAR_UPDATE_FINDINGS`) is a FINDING.
 //! `UPDATE_GC_KEEP=<dir>` copies each output and its machine map there
@@ -251,10 +252,9 @@ fn gc_update_whose_section_dies_falls_back_layout() {
 
 // spec: incr.md IN-70 (the debug condition at the end of U2, before U6):
 // the same edit with `-g` (debug sections that the old version has not):
-// it falls back by name under --gc-sections too. G-3 (WP-230): U2's debug
-// condition is IN-55/IN-55a only; debug sections that appear are not the
-// stored placement, and path (A)'s image of the front falls back
-// `(image)` (`reference_of`), by name.
+// it falls back by name under --gc-sections too. G-4 (WP-230): U2's debug
+// condition refuses a debug output section that appears, with no
+// `OUTSECS` row, `new-output-section`, before path (A)'s front.
 #[test]
 fn gc_update_with_debug_falls_back_by_name() {
     let mut ran = 0;
@@ -267,7 +267,7 @@ fn gc_update_with_debug_falls_back_by_name() {
         p.rebuild_b(B_LAST, &["-g"]);
         let (ok, err) = p.link("o", &["--incremental=update", "--incremental-report"]);
         assert!(!ok, "{label}: updated: {err}");
-        assert!(err.contains("cannot update: update-not-implemented (image)"), "{label}: {err}");
+        assert!(err.contains("cannot update: new-output-section: .debug_"), "{label}: {err}");
     }
     assert!(ran == 2 || !tools_required(), "{ran} of the 2 targets");
 }
