@@ -129,6 +129,38 @@ fn compare(
         keepers.sort();
         let facts = changed_facts(ff, &old, &full.plan, &keepers)
             .unwrap_or_else(|e| panic!("{}: {e:?}", line.label));
+        // F-3 (ruling item 4): each section's fact against the WHOLE
+        // front's `Link::section` (kept and assigned) and its raw
+        // assignment (L-42, L-43: a copy dropped with its group keeps its
+        // output section), the output sections by name.
+        let full_file = update::same_file(&full, &old, file);
+        let tables = mortar_merge::phase::Tables {
+            inputs: &full.inputs,
+            resolution: &full.resolution,
+            assignment: &full.assignment,
+        };
+        let outsecs = old.outsecs().expect("OUTSECS");
+        let old_name =
+            |o: mortar_core::id::OutSecId| old.string(outsecs[o.0 as usize].name).expect("name");
+        let full_name = |o: mortar_core::id::OutSecId| full.assignment.outsecs[o].name.to_vec();
+        let mut dropped_with_out = 0;
+        for (i, fact) in facts.iter().enumerate().skip(1) {
+            let index = SectionIndex(u32::try_from(i).expect("index"));
+            let at = format!("{}: m1.o section {i}", line.label);
+            let link = mortar_merge::phase::Link::section(&tables, full_file, index);
+            let mine = fact.out.filter(|_| fact.kept).map(old_name);
+            assert_eq!(link.map(|l| full_name(l.out)), mine, "{at}: Link::section");
+            let raw =
+                full.resolution.section_id(full_file, index).and_then(|id| full.assignment.out(id));
+            assert_eq!(raw.map(full_name), fact.out.map(old_name), "{at}: the assignment's out");
+            if !fact.kept && fact.out.is_some() {
+                dropped_with_out += 1;
+                eprintln!(
+                    "{at}: not kept, out {:?} (the full link's assignment: the same)",
+                    fact.out.map(|o| String::from_utf8_lossy(&old_name(o)).into_owned())
+                );
+            }
+        }
         let null = SectionFact { kind: SectionKind::Null, kept: false, out: None };
         let by_index = |i: SectionIndex| facts.get(i.0 as usize).copied().unwrap_or(null);
         let split = split_of(ff, &old, &by_index, &ArchRelocs(full.arch.get()), &full.pool)
@@ -138,7 +170,6 @@ fn compare(
         let what = |s: &str| format!("{}: m1.o: {s}", line.label);
         assert_eq!(got.file, file, "{}", what("the file"));
         assert_eq!(got.pieces, &split.pieces[..], "{}", what("pieces"));
-        let outsecs = old.outsecs().expect("OUTSECS");
         let have: Vec<Entry> = got
             .locals
             .iter()
@@ -246,6 +277,7 @@ fn compare(
             ("sections", base.len()),
             ("eh", usize::from(got.eh.is_some())),
             ("fillers after the block", fillers),
+            ("not kept, with an out (F-3)", dropped_with_out),
         ]
         .into_iter()
         .collect();
