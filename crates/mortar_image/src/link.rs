@@ -366,7 +366,7 @@ impl<'a, 's> RowTables<FrontRows<'a, 's>> {
     fn global_addr(&self, id: SymbolId) -> Option<u64> {
         match self.rows.global.get(id.0 as usize)? {
             Valued::At(v) => Some(*v),
-            Valued::Import | Valued::NoPlace(_) | Valued::Missing => None,
+            Valued::Import | Valued::NoPlace | Valued::Missing => None,
         }
     }
 
@@ -440,7 +440,7 @@ impl SymAddrs for LinkTables<'_, '_> {
         let addr = match self.kind_of(section)? {
             SectionKind::Merge => match self.value_in(section, value) {
                 Valued::At(a) => a,
-                Valued::Import | Valued::NoPlace(_) | Valued::Missing => return None,
+                Valued::Import | Valued::NoPlace | Valued::Missing => return None,
             },
             _ if self.link.layout.placement.chunks.get(c)?.addr.is_some() => {
                 self.addrs.addr_in(section, value)?
@@ -2700,24 +2700,13 @@ impl LinkTables<'_, '_> {
 #[cfg(test)]
 mod place_tests {
     use crate::rows::{Valued, fill_parts};
-    use mortar_core::place::NoPlace;
-    use mortar_core::resolution::DropReason;
 
     // spec: image.md I-124; model.md §4.5 invariant (NEGATIVE: no place is
-    // never a live value, so fill never writes S = 0 for it)
+    // never a live value, so fill never writes S = 0 for it, whichever
+    // P-1 rule took the place: the rule is not carried, WP-255c3)
     #[test]
     fn i124_no_place_is_not_live() {
-        for why in [
-            NoPlace::Consumed,
-            NoPlace::Collected,
-            NoPlace::Unassigned,
-            NoPlace::Unknown,
-            NoPlace::Dropped(DropReason::Excluded),
-            NoPlace::Dropped(DropReason::Consumed),
-            NoPlace::Dropped(DropReason::Stripped),
-        ] {
-            assert_eq!(fill_parts(Valued::NoPlace(why)), (None, false), "{why:?}");
-        }
+        assert_eq!(fill_parts(Valued::NoPlace), (None, false));
         assert_eq!(fill_parts(Valued::Missing), (None, false));
     }
 

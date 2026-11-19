@@ -23,15 +23,14 @@ use mortar_arch::{Arch, DemandFlags, PltVariant, SlotKind, SymFacts, SymValue, T
 use mortar_core::demands::GlobalFlags;
 use mortar_core::incr::{IncrReason, StoredLayout, Unimplemented};
 use mortar_core::layout::{AllocKey, Chunk, ChunkKind, Placement, Slots};
-use mortar_core::place::NoPlace;
-use mortar_core::resolution::{Def, InternalDef, SectionKind};
+use mortar_core::resolution::SectionKind;
 use mortar_core::{
     ChunkId, Column, FileId, FragId, SectionId, SymEntry, SymKey, SymKind, SymbolId,
 };
 use mortar_diag::{Collector, Diagnostic, Policy};
 use mortar_elf::SymbolIndex;
 use mortar_elf::consts::{SHF_ALLOC, SHF_MERGE, SHT_NOBITS, SHT_NOTE, STB_WEAK};
-use mortar_image::rows::{EntryDef, OutSection, Rows, Valued, out_sections};
+use mortar_image::rows::{EntryDef, OutSection, RowDef, Rows, Valued, out_sections};
 use mortar_incr::format::{NONE, SectionRow, def_kind};
 use mortar_incr::update::rows::MentionRow;
 use mortar_incr::update::view::StateView;
@@ -346,14 +345,12 @@ impl Rows for StoredRows<'_, '_> {
         })
     }
 
-    fn section_place(&self, s: SectionId) -> Result<(), NoPlace> {
+    fn section_place(&self, s: SectionId) -> bool {
         // The state stores a place for a kept, assigned, live section
-        // only; which P-1 reason a placeless one has is not stored. `value`
-        // reads only whether there is a place (`fill_parts`).
-        match self.section_row(s) {
-            Some(r) if r.place_chunk != NONE => Ok(()),
-            _ => Err(NoPlace::Collected),
-        }
+        // only; which P-1 rule took a placeless one's is not stored, and
+        // the trait does not ask it (WP-255c3). A row that fails to read
+        // answers "no place" with the failure recorded.
+        self.section_row(s).is_some_and(|r| r.place_chunk != NONE)
     }
 
     fn out_flags(&self, s: SectionId) -> Option<u64> {
@@ -433,29 +430,28 @@ impl Rows for StoredRows<'_, '_> {
         self.eh_frame
     }
 
-    fn def(&self, id: SymbolId) -> Option<Def> {
+    fn def(&self, id: SymbolId) -> Option<RowDef> {
         let r = self.ok(self.view.resolved(id))?;
         Some(match r.kind {
-            def_kind::UNDEFINED => Def::Undefined { weak: r.bind == STB_WEAK },
+            def_kind::UNDEFINED => RowDef::Undefined { weak: r.bind == STB_WEAK },
             def_kind::SECTION => {
                 let file = FileId(self.section_row(SectionId(r.section))?.file);
-                Def::Defined(self.definer_entry(file, id, r.kind, r.section)?)
+                RowDef::Defined(self.definer_entry(file, id, r.kind, r.section)?)
             }
             def_kind::ABSOLUTE => {
                 let file = self.absolute_file(id, r.bind)?;
-                Def::Defined(self.definer_entry(file, id, r.kind, NONE)?)
+                RowDef::Defined(self.definer_entry(file, id, r.kind, NONE)?)
             }
             def_kind::COMMON => {
                 let Some(c) = self.ok(self.view.common(id))? else {
                     self.fail(corrupt("COMMONS: a common key without a common"));
                     return None;
                 };
-                Def::Common(self.definer_entry(FileId(c.file), id, r.kind, NONE)?)
+                RowDef::Common(self.definer_entry(FileId(c.file), id, r.kind, NONE)?)
             }
-            // The payload (`Assign`, `Alias`, `Provide`) is not stored;
-            // every formula of `rows.rs` reads an internal key's value
-            // from `DEFINED` alone (`def_value`, `address`).
-            def_kind::INTERNAL => Def::Internal(InternalDef::Provide { conditional: false }),
+            // `RowDef::Internal` carries no payload (WP-255c3): its value
+            // is the `DEFINED` row.
+            def_kind::INTERNAL => RowDef::Internal,
             def_kind::SHARED => {
                 self.fail(front_only());
                 return None;

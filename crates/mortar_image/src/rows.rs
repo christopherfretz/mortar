@@ -19,7 +19,6 @@ use mortar_arch::{
 };
 use mortar_core::inputs::Reader;
 use mortar_core::layout::{Addresses, AllocKey, Chunk, ChunkKind, SlotIndex};
-use mortar_core::place::NoPlace;
 use mortar_core::resolution::{Def, SectionKind};
 use mortar_core::{
     ChunkId, Column, FileId, FragId, SectionId, SymEntry, SymKey, SymKind, SymbolId,
@@ -59,11 +58,43 @@ pub enum Valued {
     /// time) or a shared definition without a copy. The static `S` of
     /// such a key is 0 (`spec/arch.md` §4.3).
     Import,
-    /// Defined in a section without a place, by the named rule.
-    NoPlace(NoPlace),
+    /// Defined in a section without a place (P-1). The rule that took the
+    /// place is not carried: no formula reads it, and a stored state does
+    /// not hold it (WP-255c3; a reader that needs the reason asks the
+    /// full link's `mortar_core::place::section_place`).
+    NoPlace,
     /// A defined key the layout gave no place although its section has
     /// one: an internal fault, never a number.
     Missing,
+}
+
+/// A global's resolved definition as a row (`Rows::def`): `Def` without
+/// an internal key's `InternalDef`, which no formula reads (its value is
+/// a `defined` row) and a stored state does not hold (WP-255c3).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RowDef {
+    /// Nothing defines the key.
+    Undefined { weak: bool },
+    /// A regular definition.
+    Defined(SymEntry),
+    /// A common symbol; its allocation is a `sym_place` row.
+    Common(SymEntry),
+    /// A definition in a shared object (`Def::Shared`'s entry).
+    Shared(SymEntry),
+    /// Linker-defined: its value is a `defined` row.
+    Internal,
+}
+
+impl From<Def> for RowDef {
+    fn from(d: Def) -> Self {
+        match d {
+            Def::Undefined { weak } => Self::Undefined { weak },
+            Def::Defined(e) => Self::Defined(e),
+            Def::Common(e) => Self::Common(e),
+            Def::Shared(e) => Self::Shared(e),
+            Def::Internal(_) => Self::Internal,
+        }
+    }
 }
 
 /// What fill reads of a value (I-124): the address, if any, and whether
@@ -75,7 +106,7 @@ pub(crate) fn fill_parts(value: Valued) -> (Option<u64>, bool) {
     match value {
         Valued::At(v) => (Some(v), true),
         Valued::Import => (None, true),
-        Valued::NoPlace(_) | Valued::Missing => (None, false),
+        Valued::NoPlace | Valued::Missing => (None, false),
     }
 }
 
@@ -158,8 +189,9 @@ pub trait Rows: Sync {
     fn section_flags(&self, s: SectionId) -> u64;
     /// The resolution's kind of the section.
     fn section_kind(&self, s: SectionId) -> Option<SectionKind>;
-    /// P-1: whether the section has a place (`resolve.md` §10.1).
-    fn section_place(&self, s: SectionId) -> Result<(), NoPlace>;
+    /// P-1: whether the section has a place (`resolve.md` §10.1); which
+    /// rule took it is not a row (WP-255c3).
+    fn section_place(&self, s: SectionId) -> bool;
     /// The flags of the OUTPUT section `s` is assigned to.
     fn out_flags(&self, s: SectionId) -> Option<u64>;
     /// I-47a: the keeper's section `k` that a dropped COMDAT copy's
@@ -190,8 +222,10 @@ pub trait Rows: Sync {
     /// The output `.eh_frame`'s section index and address.
     fn eh_frame(&self) -> Option<(u32, u64)>;
     // ---- symbols ----
-    /// A global's resolved definition (`None`: no row).
-    fn def(&self, id: SymbolId) -> Option<Def>;
+    /// A global's resolved definition (`None`: no row), without an
+    /// internal key's `InternalDef` (WP-255c3: its value is a `defined`
+    /// row).
+    fn def(&self, id: SymbolId) -> Option<RowDef>;
     /// An entry's definition in its input symbol table.
     fn entry(&self, e: SymEntry) -> Option<EntryDef>;
     /// [`def_value`] of a global (a full link computes it once per
@@ -257,8 +291,8 @@ pub fn frag_value<R: Rows>(r: &R, frag: FragId) -> Option<u64> {
 /// The value of a named symbol at `v` in section `s` (I-124): no value
 /// at all when the section has no place (P-1).
 pub fn value_in<R: Rows>(r: &R, s: SectionId, v: u64) -> Valued {
-    if let Err(why) = r.section_place(s) {
-        return Valued::NoPlace(why);
+    if !r.section_place(s) {
+        return Valued::NoPlace;
     }
     addr_in_placed(r, s, v).map_or(Valued::Missing, Valued::At)
 }
@@ -314,15 +348,15 @@ pub fn def_value<R: Rows>(r: &R, id: SymbolId) -> Valued {
     let found = |v: Option<u64>| v.map_or(Valued::Missing, Valued::At);
     let Some(def) = r.def(id) else { return Valued::Import };
     match def {
-        Def::Undefined { weak: true } => Valued::At(0),
-        Def::Undefined { weak: false } => Valued::Import,
-        Def::Defined(e) => entry_value(r, e),
-        Def::Common(_) => found(alloc_addr(r, AllocKey::Common(id))),
-        Def::Shared(_) => match r.copy_of(id) {
+        RowDef::Undefined { weak: true } => Valued::At(0),
+        RowDef::Undefined { weak: false } => Valued::Import,
+        RowDef::Defined(e) => entry_value(r, e),
+        RowDef::Common(_) => found(alloc_addr(r, AllocKey::Common(id))),
+        RowDef::Shared(_) => match r.copy_of(id) {
             Some(at) => found(alloc_addr(r, AllocKey::Copy(at))),
             None => Valued::Import,
         },
-        Def::Internal(_) => found(r.defined(id)),
+        RowDef::Internal => found(r.defined(id)),
     }
 }
 
@@ -332,7 +366,7 @@ pub fn def_entry<R: Rows>(r: &R, key: SymKey) -> Option<SymEntry> {
     match key.kind() {
         SymKind::Local(e) => Some(e),
         SymKind::Global(id) => match r.def(id)? {
-            Def::Defined(e) => Some(e),
+            RowDef::Defined(e) => Some(e),
             _ => None,
         },
     }
@@ -347,7 +381,7 @@ pub fn address<R: Rows>(r: &R, key: SymKey) -> Option<u64> {
     let v = match key.kind() {
         SymKind::Local(e) => entry_value(r, e),
         SymKind::Global(id) => {
-            if matches!(r.def(id)?, Def::Undefined { .. }) {
+            if matches!(r.def(id)?, RowDef::Undefined { .. }) {
                 return None;
             }
             r.global(id)
@@ -355,7 +389,7 @@ pub fn address<R: Rows>(r: &R, key: SymKey) -> Option<u64> {
     };
     match v {
         Valued::At(a) => Some(a),
-        Valued::Import | Valued::NoPlace(_) | Valued::Missing => None,
+        Valued::Import | Valued::NoPlace | Valued::Missing => None,
     }
 }
 
@@ -365,7 +399,7 @@ pub fn kept_copy_value<R: Rows>(r: &R, d: SectionId, v: u64) -> Option<Valued> {
     let k = r.kept_copy(d)?;
     match value_in(r, k, v) {
         Valued::At(a) => Some(Valued::At(a)),
-        Valued::Import | Valued::NoPlace(_) | Valued::Missing => None,
+        Valued::Import | Valued::NoPlace | Valued::Missing => None,
     }
 }
 
@@ -810,9 +844,9 @@ impl Rows for FrontRows<'_, '_> {
         self.link.resolution.sections.get(s).map(|r| r.kind)
     }
 
-    fn section_place(&self, s: SectionId) -> Result<(), NoPlace> {
+    fn section_place(&self, s: SectionId) -> bool {
         let l = &self.link;
-        mortar_core::place::section_place(l.resolution, Some(l.assignment), l.liveness, s)
+        mortar_core::place::section_place(l.resolution, Some(l.assignment), l.liveness, s).is_ok()
     }
 
     fn out_flags(&self, s: SectionId) -> Option<u64> {
@@ -954,8 +988,8 @@ impl Rows for FrontRows<'_, '_> {
         self.eh_frame
     }
 
-    fn def(&self, id: SymbolId) -> Option<Def> {
-        self.link.assignment.def(self.link.resolution, id)
+    fn def(&self, id: SymbolId) -> Option<RowDef> {
+        self.link.assignment.def(self.link.resolution, id).map(RowDef::from)
     }
 
     fn entry(&self, e: SymEntry) -> Option<EntryDef> {
