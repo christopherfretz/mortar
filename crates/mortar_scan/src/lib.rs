@@ -40,6 +40,8 @@ mod view;
 mod walk;
 pub mod weak;
 
+pub use driver::scan_file;
+pub use view::{Program, Whole};
 pub use walk::{Visit, Walker};
 
 use std::sync::atomic::AtomicU16;
@@ -447,7 +449,7 @@ fn deferred_report(
     sections: &[SectionId],
     pool: &Pool,
 ) -> Vec<(Key, Diagnostic)> {
-    let r = view.resolution;
+    let r = view.whole.resolution;
     let mut diagnostics = Vec::new();
     let mut units = Vec::new();
     let mut bufs = view::Bufs::default();
@@ -475,7 +477,7 @@ fn deferred_report(
             Err(d) => diagnostics.push(d),
         }
     }
-    let symbols = view.inputs.symbols.len() as usize;
+    let symbols = view.whole.inputs.symbols.len() as usize;
     let global: Vec<AtomicU16> = (0..symbols).map(|_| AtomicU16::new(0)).collect();
     let results: Vec<driver::UnitOut> =
         pool.map(units.len(), |i| driver::run_unit(view, &units[i], driver::Shared(&global)));

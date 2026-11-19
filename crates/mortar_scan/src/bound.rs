@@ -34,7 +34,7 @@ use mortar_diag::{Diagnostic, Key, Place};
 use mortar_elf::consts::{SHF_EXECINSTR, SHT_REL, SHT_RELA, STT_SECTION};
 use mortar_elf::{Machine, Object, SectionIndex, SymbolIndex, SymbolSection};
 
-use crate::view::{Raw, ReadFail, View, contents, rec_table};
+use crate::view::{Raw, ReadFail, View, Whole, contents, rec_table};
 
 /// `R_AARCH64_NONE` and its withdrawn alias (no `SIZE` type on AArch64).
 const NONE_TYPES: [u32; 2] = [0, 256];
@@ -175,14 +175,15 @@ pub(crate) struct Bound {
 impl FileFacts {
     /// The facts of object `file`, or `None` when it has no preemptible
     /// data definition (or is not an object).
-    pub fn of(view: &View<'_, '_>, file: FileId) -> Option<Self> {
+    pub fn of<'s, W: Whole<'s>>(view: &View<'_, 's, W>, file: FileId) -> Option<Self> {
+        let p = view.whole.program()?;
         let scope = Scope::of(view.arch.facts().machine)?;
         let prep = view.prep(file)?;
         let obj = prep.obj?;
         let table = prep.table()?;
-        let map = view.inputs.sym_map_of(file);
+        let map = p.inputs.sym_map_of(file);
         let first = table.first_global().0;
-        let preemptible = &view.resolution.preemptible;
+        let preemptible = &p.resolution.preemptible;
         if preemptible.is_empty() {
             return None;
         }
@@ -280,8 +281,8 @@ pub(crate) fn judge(f: &FileFacts, section: u32, addr: u64, access: bool) -> Opt
 /// data definition, its type is one the architecture's [`Scope`] judges
 /// at that place (`exec`: the place has `SHF_EXECINSTR`), its place not
 /// `.eh_frame` or `.gcc_except_table*`. `addend` is the record's `A`.
-pub(crate) fn rule(
-    view: &View<'_, '_>,
+pub(crate) fn rule<'s, W: Whole<'s>>(
+    view: &View<'_, 's, W>,
     f: &FileFacts,
     key: mortar_core::SymKey,
     raw: &Raw,
@@ -314,13 +315,13 @@ pub(crate) fn rule(
 /// applies to another section: a literal word outside the code), or why
 /// the analysis could not run. The analysis's own boundary rule ("access"
 /// per item 6, self-GOT) is its verdict; nothing is judged again.
-fn analyse<'s>(
-    view: &View<'_, 's>,
+fn analyse<'s, W: Whole<'s>>(
+    view: &View<'_, 's, W>,
     file: FileId,
     obj: &Object<'s>,
     defs: &[PreDef],
 ) -> Result<Vec<(u32, Key, Diagnostic)>, Box<Diagnostic>> {
-    let fref = view.inputs.files[file].display();
+    let fref = view.whole.display(file);
     let preemptible: Vec<SymbolIndex> = defs.iter().map(|d| d.index).collect();
     let mut buf = Vec::new();
     let mut bytes = |i: SectionIndex| -> Result<Cow<'_, [u8]>, ReadFail> {
@@ -384,8 +385,8 @@ fn analyse<'s>(
 /// the function, the offset and the relocation that formed the address.
 /// When the analysis could not run, its diagnostic is the result for
 /// every code section.
-pub(crate) fn analysis(
-    _view: &View<'_, '_>,
+pub(crate) fn analysis<'s, W: Whole<'s>>(
+    _view: &View<'_, 's, W>,
     file: FileId,
     facts: &FileFacts,
     section: u32,
