@@ -629,7 +629,7 @@ pub(crate) fn target_of(f: &Front<'_>) -> (u16, u8) {
 /// the update.
 #[cfg(feature = "testhooks")]
 pub(crate) fn materialize_hop(view: &mortar_incr::update::view::StateView<'_>, f: &Front<'_>) {
-    let link = Link {
+    let front_link = Link {
         inputs: &f.inputs,
         resolution: &f.resolution,
         assignment: &f.assignment,
@@ -645,7 +645,7 @@ pub(crate) fn materialize_hop(view: &mortar_incr::update::view::StateView<'_>, f
             align: m.align,
         })
         .collect();
-    let line = match (Keys::new(&link), f.incr5.as_ref().map(|i| i.eh.as_ref())) {
+    let line = match (Keys::new(&front_link), f.incr5.as_ref().map(|i| i.eh.as_ref())) {
         (Ok(keys), Some(Ok(runs))) => {
             let eh: Vec<mortar_incr::capture::EhFile> = runs
                 .iter()
@@ -659,7 +659,12 @@ pub(crate) fn materialize_hop(view: &mortar_incr::update::view::StateView<'_>, f
                 })
                 .collect();
             let hop = mortar_incr::update::materialize::identity_hop(
-                view, &link, &keys, &f.layout, &classes, &eh,
+                view,
+                &front_link,
+                &keys,
+                &f.layout,
+                &classes,
+                &eh,
             );
             match hop {
                 Ok(()) => "M2b-3 materialize: identity hop equal".to_owned(),

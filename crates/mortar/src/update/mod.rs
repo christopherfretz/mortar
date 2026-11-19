@@ -393,12 +393,12 @@ fn reference_of(
             // producer's refusal is recorded and the identity check decides
             // alone; a FINDING (the delta disagrees with the front) falls
             // back by name.
-            let p = match placement(view, &stored, f, ctx.store, cwd, &cf, delta, &live, &state, out)
-            {
-                Ok(p) => Some(p),
-                Err(Why::Refused) => None,
-                Err(Why::Finding(e)) => return Err(e),
-            };
+            let p =
+                match placement(view, &stored, f, ctx.store, cwd, &cf, delta, &live, &state, out) {
+                    Ok(p) => Some(p),
+                    Err(Why::Refused) => None,
+                    Err(Why::Finding(e)) => return Err(e),
+                };
             steps.mark("u7");
             p
         }

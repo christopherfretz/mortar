@@ -375,7 +375,9 @@ pub(super) fn record(line: &str) {
     if let Some(path) = std::env::var_os("MORTAR_UPDATE_FINDINGS") {
         use std::io::Write as _;
         if let Ok(mut f) = std::fs::OpenOptions::new().create(true).append(true).open(path) {
-            let _ = writeln!(f, "{line}");
+            // One write per line: the lane's parallel links append to one
+            // file, and `writeln!` may split a line in two writes.
+            let _ = f.write_all(format!("{line}\n").as_bytes());
         }
     }
 }
