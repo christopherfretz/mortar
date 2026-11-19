@@ -2131,13 +2131,19 @@ pub fn clip_members(link: &Link<'_, '_>) -> Result<crate::clip_plan::Members, Di
 /// `link` (WP-255c2a; an update finds them in its state, 255e): the member
 /// index ([`clip_members`], changed by `members_edit`, a test's hook), the
 /// sections' fronts, the pad views, the holes of the chunks a range meets,
-/// the abbreviation table's offset and the structural chunks' bytes; the
-/// plan over `rows`.
+/// the abbreviation table's offset and the structural chunks' bytes;
+/// WP-255c2c: the synthetic chunks' rows (`synth`, the fill's chunk list's
+/// indices, from the whole plan's `Synth` units), the input `.eh_frame`
+/// sections of a range of the output `.eh_frame` (from the `.eh_frame`
+/// plan's records), the patch islands' bytes ([`patches`]) and the build
+/// id's descriptor; the plan over `rows`.
 fn clip_plan_of<R: Rows>(
     link: &Link<'_, '_>,
     rows: &R,
     ranges: &[std::ops::Range<u64>],
     members_edit: impl FnOnce(&mut crate::clip_plan::Members),
+    synth: &std::collections::BTreeMap<ChunkId, (SynthKind, SynthRow)>,
+    sealed: Option<std::ops::Range<u64>>,
 ) -> Result<crate::plan::Plan, crate::clip_plan::ClipError> {
     use crate::clip_plan::ClipParts;
     let model = clip_model(link);
@@ -2158,6 +2164,9 @@ fn clip_plan_of<R: Rows>(
         .map(|h| (*h, pl.chunks[h.chunk].name(link.assignment).unwrap_or(b"")))
         .collect();
     let structure = structure(link)?;
+    let tables = LinkTables::new(*link);
+    let patches = patches(link, &tables)?;
+    let eh_sections = |r: std::ops::Range<u64>| clip_eh_sections(link, &model, r);
     let parts = ClipParts {
         target: Target::from_facts(link.arch.facts()),
         chunk_views: &chunk_views,
@@ -2168,8 +2177,53 @@ fn clip_plan_of<R: Rows>(
         structure: &structure,
         proof: link.proof,
         merge_source: &|s| layout_plan::merge_source(&model, s),
+        synth,
+        eh_sections: &eh_sections,
+        patches: &patches,
+        sealed: sealed.as_ref(),
     };
     crate::clip_plan::for_clips(rows, ranges, &members, &front, &parts)
+}
+
+/// The full link's [`crate::clip_plan::ClipParts::eh_sections`]
+/// (WP-255c2c): the input `.eh_frame` sections of the kept records that
+/// meet `[a, b)` of the output `.eh_frame` (`eh::relocate`'s record
+/// search over the `.eh_frame` plan), each as `eh_sections` lists it
+/// ([`layout_plan::eh_part`]). O(log records + records met).
+#[allow(clippy::type_complexity)]
+fn clip_eh_sections(
+    link: &Link<'_, '_>,
+    model: &Model<'_, '_>,
+    r: std::ops::Range<u64>,
+) -> Result<Vec<(SectionId, FileId, SectionIndex, crate::plan::RelaTable)>, Diagnostic> {
+    let Some((plan, src)) = link.eh else {
+        return Err(internal("image: clip plan: the .eh_frame chunk and no .eh_frame plan"));
+    };
+    let frames = src.frames();
+    let n = plan.records().len();
+    let (mut lo, mut hi) = (0usize, n);
+    while lo < hi {
+        let mid = lo + (hi - lo) / 2;
+        if plan.out_offset(mid + 1) <= r.start {
+            lo = mid + 1;
+        } else {
+            hi = mid;
+        }
+    }
+    let mut out = Vec::new();
+    let mut seen = std::collections::BTreeSet::new();
+    for k in lo..n {
+        if plan.out_offset(k) >= r.end {
+            break;
+        }
+        let Some(sec) = frames.sections.get(plan.source(k).0) else { continue };
+        if seen.insert(sec.section)
+            && let Some(p) = layout_plan::eh_part(model, sec.section)?
+        {
+            out.push(p);
+        }
+    }
+    Ok(out)
 }
 
 /// [`crate::clip_plan::sections_in`] over `link`'s rows and
@@ -2255,9 +2309,28 @@ pub fn refill_clip_plan_with(
     edit: impl FnOnce(&mut crate::plan::Plan),
 ) -> Result<ClipFill, Result<crate::clip_plan::ClipError, Failed>> {
     let tables = LinkTables::new(*link);
-    let mut clip = clip_plan_of(link, tables.rows(), ranges, members_edit).map_err(Ok)?;
-    edit(&mut clip);
-    with_image(link, Path::new(""), |img, whole, _, _| {
+    // The fill's chunk list is `with_image`'s: the synthetic rows' indices
+    // are the whole plan's `Synth` units' (a test path's source; an update
+    // gives those of the chunk list it fills with).
+    let mut built: Option<Result<crate::plan::Plan, crate::clip_plan::ClipError>> = None;
+    let r = with_image(link, Path::new(""), |img, whole, sealed, _| {
+        let synth: std::collections::BTreeMap<ChunkId, (SynthKind, SynthRow)> = whole
+            .synth
+            .iter()
+            .filter_map(|u| {
+                let kind = link.synth.chunks.iter().find(|c| c.1 == u.id)?.0;
+                Some((u.id, (kind, SynthRow { index: u.chunk, whole: u.whole, eh: u.eh })))
+            })
+            .collect();
+        let mut clip = match clip_plan_of(link, tables.rows(), ranges, members_edit, &synth, sealed)
+        {
+            Ok(c) => c,
+            Err(e) => {
+                built = Some(Err(e));
+                return Ok(None);
+            }
+        };
+        edit(&mut clip);
         clip.deferred_order = deferred_orders(link, &clip)?;
         let cimg = Image { plan: &clip, ..*img };
         let jobs = clip_jobs(&clip, ranges);
@@ -2281,9 +2354,16 @@ pub fn refill_clip_plan_with(
         if !diagnostics.is_empty() {
             return Err(Failed { diagnostics });
         }
-        Ok(ClipFill { whole: whole.clone(), clip: clip.clone(), jobs: out })
-    })
-    .map_err(Err)
+        Ok(Some(ClipFill { whole: whole.clone(), clip: clip.clone(), jobs: out }))
+    });
+    match (r, built) {
+        (Ok(None), Some(Err(e))) => Err(Ok(e)),
+        (Ok(Some(f)), _) => Ok(f),
+        (Ok(None), _) => Err(Ok(crate::clip_plan::ClipError::Internal(Box::new(internal(
+            "image: clip plan: not built",
+        ))))),
+        (Err(f), _) => Err(Err(f)),
+    }
 }
 
 /// [`refill_ranges`] for a test outside the crate (WP-255c2a): the whole

@@ -87,6 +87,12 @@ fn sources(arch: Arch, pad: usize) -> [String; 3] {
 /// The fixture's objects in a scratch directory, or `None` without the
 /// arch's assembler.
 fn fixture(arch: Arch, label: &str, pad: usize) -> Option<Scratch> {
+    fixture_with(arch, label, pad, &[])
+}
+
+/// [`fixture`] with `flags` given to the assembler driver (`-g`: debug
+/// sections for the assembly).
+fn fixture_with(arch: Arch, label: &str, pad: usize, flags: &[&str]) -> Option<Scratch> {
     let Some(gcc) = arch.tool("gcc") else {
         assert!(!tools_required(), "{} is required", arch.gnu("gcc"));
         return None;
@@ -96,6 +102,7 @@ fn fixture(arch: Arch, label: &str, pad: usize) -> Option<Scratch> {
         let src = s.write(&format!("{name}.s"), &text);
         let obj = s.join(format!("{name}.o"));
         let mut c = Command::new(&gcc);
+        c.args(flags);
         c.args(["-c".as_ref(), src.as_os_str(), "-o".as_ref(), obj.as_os_str()]);
         let o = run_with(&mut c, b"", Duration::from_mins(1));
         assert!(o.success(), "gcc: {}", o.stderr_text());
@@ -166,7 +173,8 @@ fn chunk(l: &Link<'_, '_>, name: &[u8]) -> (mortar_core::ChunkId, Range<u64>, u6
 enum View<'p> {
     Input(InputUnit, &'p [u8], Option<&'p RelocSection>),
     Bytes(&'p [u8]),
-    Synth(u32),
+    /// The fill's chunk index, the chunk, its name, whole, `.eh_frame`.
+    Synth(u32, mortar_core::ChunkId, &'p [u8], bool, bool),
     /// The fragment order's chunk and the output section's name.
     Merged(u32, &'p [u8]),
     Gap(Pattern),
@@ -190,7 +198,10 @@ fn rows_over<'p>(plan: &'p Plan, piece: &Range<u64>) -> Vec<(Range<u64>, View<'p
                 )
             }
             Unit::Bytes(i) => View::Bytes(&plan.bytes[i as usize]),
-            Unit::Synth(i) => View::Synth(i),
+            Unit::Synth(i) => {
+                let u = &plan.synth[i as usize];
+                View::Synth(u.chunk, u.id, plan.name(u.name), u.whole, u.eh)
+            }
             Unit::Merged(i) => {
                 let m = &plan.merged[i as usize];
                 View::Merged(m.chunk, plan.name(m.name))
@@ -369,12 +380,13 @@ fn clip_plan_fills_every_byte() {
                 }
                 eprintln!("[clip-fill] {arch:?} {what}: the removed row is `{want}`");
             }
-            let (symtab, ..) = chunk(l, b".symtab");
-            let sym = &l.layout.placement.chunks[symtab];
-            let r = refill_clip_plan(l, &[sym.offset..sym.offset + 8], |_| {});
+            // WP-255c2c: `.symtab` is planned; `.shstrtab` is not.
+            let (shstrtab, ..) = chunk(l, b".shstrtab");
+            let sh = &l.layout.placement.chunks[shstrtab];
+            let r = refill_clip_plan(l, &[sh.offset..sh.offset + 8], |_| {});
             assert!(
-                matches!(r, Err(Ok(ClipError::NotYet(NotYet::Synth, c))) if c == symtab),
-                "{arch:?} .symtab: {r:?}"
+                matches!(r, Err(Ok(ClipError::NotYet(NotYet::Synth, c))) if c == shstrtab),
+                "{arch:?} .shstrtab: {r:?}"
             );
             merged_drop_refused(l, arch);
         });
@@ -554,17 +566,18 @@ fn sections_agree(l: &Link<'_, '_>, label: &str) {
     let n_merged = merged.len();
     clips.extend(merged);
     clips.sort_by_key(|r| r.start);
-    let fill = loop {
-        match refill_clip_plan(l, &clips, |_| {}) {
-            Ok(f) => break f,
-            Err(Ok(ClipError::NotYet(NotYet::EhFrame, c))) => {
-                eprintln!("[clip-sections] {label}: chunk {} is NotYet(EhFrame)", c.0);
-                let at = l.layout.placement.chunks[c].offset;
-                clips.retain(|r| r.start != at);
-            }
-            Err(e) => panic!("{label}: every body chunk: {e:?}"),
-        }
-    };
+    // WP-255c2c: an input `.eh_frame` in a body chunk is an ordinary
+    // member (no longer `NotYet(EhFrame)`).
+    let fill = refill_clip_plan(l, &clips, |_| {})
+        .unwrap_or_else(|e| panic!("{label}: every body chunk: {e:?}"));
+    let eh_inputs = fill
+        .clip
+        .inputs
+        .iter()
+        .filter(|u| fill.clip.name(u.name) == b".eh_frame")
+        .map(|u| u.section.0)
+        .collect::<Vec<_>>();
+    eprintln!("[clip-sections] {label}: input .eh_frame members filled: {eh_inputs:?}");
     let want = refill_ranges_for_test(l, &clips)
         .unwrap_or_else(|e| panic!("{label}: {:?}", e.diagnostics));
     assert_eq!(fill.jobs, want.jobs, "{label}: every body chunk's bytes");
@@ -594,7 +607,10 @@ fn clip_sections_equal_the_whole_plan() {
         }
     }
     for (arch, cxx) in CXX {
-        with_cxx_link(arch, cxx, |l| sections_agree(l, &format!("{arch:?} C++")));
+        with_cxx_link(arch, cxx, |l| {
+            sections_agree(l, &format!("{arch:?} C++"));
+            synth_agree(l, &format!("{arch:?} C++"), false);
+        });
     }
 }
 
@@ -774,6 +790,229 @@ fn residue_is_not_seen(arch: Arch) {
                 String::from_utf8_lossy(name),
                 d.size
             );
+        }
+    });
+}
+
+// ---- WP-255c2c: synthetic chunks, patch islands, debug holes -------------
+
+/// The synthetic chunks the clip plan plans (`clip_plan::PLANNED`), by
+/// output section name.
+const PLANNED: [&[u8]; 5] =
+    [b".symtab", b".strtab", b".eh_frame", b".eh_frame_hdr", b".note.gnu.build-id"];
+
+/// The clip plan of `clips` equals the whole plan over them: the same
+/// pieces, the same rows over each (indices resolved), the same bytes and
+/// the same build id descriptor. Returns the clip plan's fill.
+fn agree(l: &Link<'_, '_>, what: &str, clips: &[Range<u64>]) -> mortar_image::link::ClipFill {
+    let got = refill_clip_plan(l, clips, |_| {}).unwrap_or_else(|e| panic!("{what}: {e:?}"));
+    let whole =
+        refill_ranges_for_test(l, clips).unwrap_or_else(|e| panic!("{what}: {:?}", e.diagnostics));
+    let pieces: Vec<_> = whole.jobs.iter().map(|j| j.0.clone()).collect();
+    let mine: Vec<_> = got.jobs.iter().map(|j| j.0.clone()).collect();
+    assert_eq!(pieces, mine, "{what}: the pieces");
+    for p in &pieces {
+        assert_eq!(rows_over(&got.clip, p), rows_over(&got.whole, p), "{what}: {p:x?}");
+    }
+    assert!(got.jobs == whole.jobs, "{what}: the bytes differ");
+    assert_eq!(got.clip.sealed, got.whole.sealed, "{what}: the sealed range");
+    got
+}
+
+/// The clips of one in-file chunk at `r` (its `size` bytes): whole, one
+/// byte, inside, and its last bytes.
+fn chunk_clips(r: &Range<u64>) -> Vec<(&'static str, Range<u64>)> {
+    let mut v = vec![("whole", r.clone()), ("first byte", r.start..r.start + 1)];
+    if r.end - r.start > 8 {
+        v.push(("inside", r.start + 3..r.end - 5));
+        v.push(("tail", r.end - 4..r.end));
+    }
+    v
+}
+
+/// The `[clip-synth]` comparison over link `l`: each planned synthetic
+/// chunk under the clips of [`chunk_clips`], then all of them at once;
+/// with `all`, each must exist.
+fn synth_agree(l: &Link<'_, '_>, label: &str, all: bool) {
+    let mut every = Vec::new();
+    for name in PLANNED {
+        let n = String::from_utf8_lossy(name);
+        let Some((_, c)) = l
+            .layout
+            .placement
+            .chunks
+            .iter()
+            .find(|(_, c)| c.in_file() && c.size > 0 && c.name(l.assignment) == Some(name))
+        else {
+            assert!(!all, "{label}: no {n}");
+            continue;
+        };
+        let r = c.offset..c.offset + c.size;
+        for (what, clip) in chunk_clips(&r) {
+            let f = agree(l, &format!("{label} {n} {what}"), std::slice::from_ref(&clip));
+            eprintln!(
+                "[clip-synth] {label} {n} {what} {clip:x?}: equal ({} pieces, {} bytes, {} \
+                 .eh_frame sections of the whole plan's {})",
+                f.jobs.len(),
+                f.jobs.iter().map(|j| j.1.len()).sum::<usize>(),
+                f.clip.eh.len(),
+                f.whole.eh.len()
+            );
+        }
+        every.push(r);
+    }
+    every.sort_by_key(|r| r.start);
+    let f = agree(l, &format!("{label} every planned chunk"), &every);
+    eprintln!("[clip-synth] {label}: every planned chunk at once: equal ({} pieces)", f.jobs.len());
+}
+
+// spec: WP-255c2c (the clip plan's `Synth` arm: inside the clips its rows
+// are the whole plan's, and its fill is `refill_ranges`' fill), image.md
+// I-31/I-104 (a whole chunk is one unit), I-73 (the build id's descriptor
+// is zeros in the fill), synth.md S-52 (the input `.eh_frame` sections'
+// relocations over the output `.eh_frame`). U-6's fixtures (pad 0 and
+// 0x3000), AArch64 and x86-64: `.symtab`, `.strtab`, `.eh_frame`,
+// `.eh_frame_hdr` and the build-id note, each whole, at one byte, inside
+// and at its tail, then all at once.
+#[test]
+fn clip_plan_plans_the_synthetic_chunks() {
+    for arch in ARCHES {
+        for pad in [0, 0x3000] {
+            let Some(s) = fixture(arch, &format!("clip-synth-{pad:x}"), pad) else { continue };
+            with_link(&s, |l| synth_agree(l, &format!("{arch:?} U-6 pad {pad:#x}"), true));
+        }
+    }
+}
+
+// spec: WP-255c2c (`ClipParts::eh_sections`: a section left out is a
+// relocation the fill does not apply), synth.md S-52. The residue named
+// for the ruling: with one input `.eh_frame` section removed from the clip
+// plan's list (the test's hook), the clip of the output `.eh_frame` fills
+// other bytes than the whole plan's, and nothing in the fill refuses it.
+#[test]
+fn an_eh_section_left_out_is_not_seen_by_the_fill() {
+    for arch in ARCHES {
+        let Some(s) = fixture(arch, "clip-eh-drop", 0) else { continue };
+        with_link(&s, |l| {
+            let (_, r, _) = chunk(l, b".eh_frame");
+            let clips = std::slice::from_ref(&r);
+            let whole = refill_ranges_for_test(l, clips).expect("the whole plan's fill");
+            let mut gone = None;
+            let got = refill_clip_plan(l, clips, |p| {
+                let mut eh = p.eh.to_vec();
+                gone = Some(eh.remove(0).section);
+                p.eh = eh.into_boxed_slice();
+            })
+            .unwrap_or_else(|e| panic!("{arch:?}: {e:?}"));
+            let (a, b) = (&got.jobs[0].1, &whole.jobs[0].1);
+            let first = a.iter().zip(b.iter()).position(|(x, y)| x != y);
+            assert!(first.is_some(), "{arch:?}: the bytes are equal without the section");
+            let at = r.start + first.unwrap() as u64;
+            eprintln!(
+                "[clip-eh] {arch:?}: section {} left out: first difference at {at:#x} \
+                 (clip {:#04x}, whole {:#04x}), no diagnostic",
+                gone.unwrap().0,
+                a[first.unwrap()],
+                b[first.unwrap()]
+            );
+        });
+    }
+}
+
+// spec: WP-255c2c, ruling "After 255c2b" item 5 (a debug hole inside a
+// clip), incr.md IN-50/IN-51b (a debug allotment's neutral form, the
+// neutral abbreviation table). U-6's fixtures assembled with `-g`
+// (incremental mode: every debug contribution has an allotment), AArch64
+// and x86-64: every debug hole, under a clip inside it, a clip across its
+// start and a clip across its end, fills the whole plan's bytes with the
+// whole plan's rows.
+#[test]
+fn a_debug_hole_inside_a_clip() {
+    use mortar_core::layout::HoleKind;
+    for arch in ARCHES {
+        let Some(s) = fixture_with(arch, "clip-debug", 0, &["-g"]) else { continue };
+        with_link(&s, |l| {
+            let pl = &l.layout.placement;
+            let mut n = 0;
+            for h in &pl.holes {
+                if !matches!(h.kind, HoleKind::Debug | HoleKind::AbbrevTable | HoleKind::DeadDebug)
+                {
+                    continue;
+                }
+                let c = &pl.chunks[h.chunk];
+                if !c.in_file() || h.size < 4 {
+                    continue;
+                }
+                let at = c.offset + h.offset;
+                let end = at + h.size;
+                let chunk_end = c.offset + c.size.max(c.capacity);
+                let name = String::from_utf8_lossy(c.name(l.assignment).unwrap_or(b"?"));
+                let mut cases = vec![("inside", at + 1..end - 1), ("its end", end - 2..end)];
+                if h.offset >= 2 {
+                    cases.push(("its start", at - 2..at + 2));
+                }
+                if end + 2 <= chunk_end {
+                    cases.push(("past its end", end - 2..end + 2));
+                }
+                for (what, clip) in cases {
+                    agree(l, &format!("{arch:?} {name} {:?} hole {what}", h.kind), &[clip]);
+                }
+                n += 1;
+            }
+            assert!(n > 0, "{arch:?}: the -g fixture has a debug hole");
+            eprintln!("[clip-debug] {arch:?}: {n} debug holes, each under 3-4 clips: equal");
+        });
+    }
+}
+
+// spec: WP-255c2c (the clip plan's `Patches` arm: a patch island is its
+// bytes, `link::patches`), a64.md §9 (a thunk), layout L-110/L-115. A
+// call beyond `bl`'s reach (pipeline.rs's fixture: two 64 MiB code
+// sections between the call and its target) goes through a thunk; the
+// island under a clip, whole, inside and with the code before it, fills
+// the whole plan's bytes. AArch64 only (x86-64 has no thunks).
+#[test]
+fn a_patch_island_under_a_clip() {
+    let arch = Arch::Aarch64;
+    let Some(gcc) = arch.tool("gcc") else {
+        assert!(!tools_required(), "{} is required", arch.gnu("gcc"));
+        return;
+    };
+    let s = Scratch::new("clip-thunk");
+    let src = s.write(
+        "far.s",
+        "    .text\n    .globl _start\n_start:\n    bl far\n    mov x8, #93\n    svc #0\n\
+         \n    .section .text.gap1,\"ax\",@progbits\n    .skip 0x4000000\n\
+         \n    .section .text.gap2,\"ax\",@progbits\n    .skip 0x4000000\n\
+         \n    .section .text.far,\"ax\",@progbits\n    .globl far\n    .type far, %function\n\
+         far:\n    mov x0, #42\n    ret\n    .section .note.GNU-stack,\"\",@progbits\n",
+    );
+    let obj = s.join("far.o");
+    let mut c = Command::new(&gcc);
+    c.args(["-c".as_ref(), src.as_os_str(), "-o".as_ref(), obj.as_os_str()]);
+    let o = run_with(&mut c, b"", Duration::from_mins(2));
+    assert!(o.success(), "gcc: {}", o.stderr_text());
+    let args: Vec<OsString> =
+        ["far.o", "-static", "-o", "out"].iter().map(OsString::from).collect();
+    with_link_args(s.path(), &args, |l| {
+        let pl = &l.layout.placement;
+        let islands: Vec<Range<u64>> = pl
+            .chunks
+            .iter()
+            .filter(|(_, c)| matches!(c.kind, ChunkKind::Patches(_)) && c.in_file() && c.size > 0)
+            .map(|(_, c)| c.offset..c.offset + c.size)
+            .collect();
+        assert!(!islands.is_empty(), "the far call has a patch island");
+        for r in &islands {
+            let mut cases = chunk_clips(r);
+            cases.push(("with the code before it", r.start - 8..r.start + 4));
+            for (what, clip) in cases {
+                let f = agree(l, &format!("island {r:x?} {what}"), &[clip.clone()]);
+                eprintln!(
+                    "[clip-patch] island {r:x?} {what} {clip:x?}: equal ({} pieces)",
+                    f.jobs.len()
+                );
+            }
         }
     });
 }

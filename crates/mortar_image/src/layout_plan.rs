@@ -513,21 +513,32 @@ fn eh_sections(
         return Err(internal("the .eh_frame chunk and no .eh_frame source"));
     };
     for sec in &src.frames().sections {
-        let s = sec.section;
-        let rel = m.resolution.sections[s].reloc;
-        if rel.0 == 0 || !m.liveness.is_live(s) {
-            continue;
-        }
-        let (file, index) = m
-            .resolution
-            .sh_index(s)
-            .ok_or_else(|| internal(&format!("section {} has no file", s.0)))?;
+        let Some((s, file, index, t)) = eh_part(m, sec.section)? else { continue };
         paths.entry(file).or_insert_with(|| file_ref(m.inputs, file));
-        let rows = RecRows::Rela(table(m.inputs, file, rel)?);
+        let rows = RecRows::Rela(t);
         let relocs = b.relocs(RelocSection { section: s, rows, proof: Box::new([]) });
         b.eh_section(EhSection { section: s, file, index: index.0, relocs });
     }
     Ok(())
+}
+
+/// S-52: input `.eh_frame` section `s` as [`eh_sections`] lists it (its
+/// file, its index there, its relocation table), or `None` when it has no
+/// relocations or is not live (WP-255c2c: the clip plan's form, a pure
+/// move out of `eh_sections`).
+pub(crate) fn eh_part(
+    m: &Model<'_, '_>,
+    s: SectionId,
+) -> Result<Option<(SectionId, FileId, SectionIndex, RelaTable)>, Diagnostic> {
+    let rel = m.resolution.sections[s].reloc;
+    if rel.0 == 0 || !m.liveness.is_live(s) {
+        return Ok(None);
+    }
+    let (file, index) = m
+        .resolution
+        .sh_index(s)
+        .ok_or_else(|| internal(&format!("section {} has no file", s.0)))?;
+    Ok(Some((s, file, index, table(m.inputs, file, rel)?)))
 }
 
 /// One chunk as I-41's pad pass reads it: its file offset, the end of its
