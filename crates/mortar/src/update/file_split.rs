@@ -28,19 +28,20 @@
 //! `FRAG_USE` rows are the live ones). A plain link never calls this.
 
 use mortar_core::OutSecId;
-use mortar_core::id::{ComdatId, FileId, OptId, SectionId, SymbolId};
+use mortar_core::id::{ComdatId, FileId, IdRange, OptId, SectionId, SymbolId};
 use mortar_core::incr::{IncrReason, MergeClass, MergedPiece, Unimplemented};
 use mortar_core::inputs::{LinkTarget, RelocForm};
 use mortar_core::par::Pool;
 use mortar_core::plan::Plan;
 use mortar_core::resolution::SectionKind;
-use mortar_elf::consts::{GRP_COMDAT, SHF_COMPRESSED, SHT_GROUP, SHT_REL, SHT_RELA, STB_WEAK};
+use mortar_elf::consts::{GRP_COMDAT, SHT_GROUP, SHT_REL, SHT_RELA, STB_WEAK};
 use mortar_elf::{Class, Object, Section, SectionIndex, SymbolIndex};
 use mortar_incr::format::{NONE, def_kind};
 use mortar_incr::update::view::StateView;
 use mortar_input::facts::effective_signature;
 use mortar_layout::Header;
 use mortar_layout::assign::{Fate, fate};
+use mortar_layout::headers::header_of;
 use mortar_merge::What;
 use mortar_merge::cut::{self, Whole};
 use mortar_merge::eh::{self, EhFrames, EhIn, EhReloc, Target};
@@ -330,32 +331,18 @@ pub fn changed_facts(
         section_info(object, i)
     })
     .ok_or_else(resolve)?;
+    // `gather`'s row of each section, with the ids the front gives the
+    // file (`first_section + k` for a changed file).
+    let range = front.sections.first().map_or(IdRange::new(SectionId(0), SectionId(0)), |s| {
+        IdRange::new(s.id, SectionId(s.id.0.saturating_add(count)))
+    });
     let mut outsecs: Option<BTreeMap<Vec<u8>, OutSecId>> = None;
     let mut facts = Vec::with_capacity(rows.len());
     for (i, row) in rows.iter().enumerate() {
         let header = if i == 0 {
             Header::EMPTY
         } else {
-            let s = object.section(SectionIndex(i as u32)).map_err(|_| resolve())?;
-            // `gather`'s size: the decompressed one of a compressed input.
-            let mut size = s.size();
-            if s.flags() & SHF_COMPRESSED != 0
-                && let Ok(Some(c)) = s.compression()
-            {
-                size = c.header.ch_size;
-            }
-            let name = s.name().map_err(|_| resolve())?;
-            let h = s.header();
-            // `fate` reads the name, type, flags and size only.
-            Header {
-                name,
-                sh_type: h.sh_type,
-                flags: h.sh_flags,
-                size,
-                align: 0,
-                link: None,
-                entsize: 0,
-            }
+            header_of(object, front.file, SectionIndex(i as u32), range).map_err(|_| resolve())?
         };
         let out = match fate(&header, row, machine).map_err(|_| layout())? {
             Fate::Out(name) => {
