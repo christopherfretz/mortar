@@ -486,6 +486,7 @@ pub fn write(
             file: None,
             rows: 0,
             jobs: 1,
+            members: None,
         },
     };
     let failed = |ds: Vec<(Key, Diagnostic)>| {

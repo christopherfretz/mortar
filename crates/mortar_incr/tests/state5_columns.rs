@@ -839,3 +839,64 @@ fn every_column_mutated_no_reader_panics() {
         accepted_refs.join("\n")
     );
 }
+
+// ---- WP-255g: CHUNKS.members (VERSION 12) -----------------------------------------
+
+/// `TAGS`' byte of a `Body` chunk.
+const BODY: u8 = 3;
+
+fn members(m: &MemoryState) -> Vec<u32> {
+    m.chunks.iter().map(|c| c.members).collect()
+}
+
+// spec: incr.md IN-18e (`CHUNKS.members`, WP-255g): the count survives
+// normalize, encode and decode, the in-place patch that rewrites `CHUNKS`
+// and the compaction after it; a count on a chunk that is not `Body` is
+// refused, and a state of VERSION 11 is `state-version`
+#[test]
+fn chunk_members_survive_the_patch_and_the_compaction() {
+    let mut m = every_reference();
+    for (c, n) in m.chunks.iter_mut().zip([5u32, 0]) {
+        c.tag = BODY;
+        c.members = n;
+    }
+    let bytes = write::encode(&compact::normalize(&m).expect("n")).expect("encode");
+    let base = read::decode(&bytes).expect("decode");
+    assert_eq!(members(&base), [5, 0], "encode, decode");
+    let view = read::open_bytes(bytes.clone()).expect("open");
+    let stored = read::LayoutOf { view: &view };
+    assert_eq!(
+        mortar_core::incr::LayoutRows::chunk_members(&stored).expect("the count"),
+        [5, 0],
+        "LayoutRows::chunk_members"
+    );
+    // The update's CHUNKS: chunk 0 lost two members, chunk 1 gained one.
+    let mut p = patch_of(&base);
+    let mut rows = base.chunks.clone();
+    rows[0].members = 3;
+    rows[1].members = 1;
+    p.chunks = Some(rows);
+    let mut want = base.clone();
+    compact::apply(&mut want, &p, base.frags.len()).expect("apply");
+    assert_eq!(members(&want), [3, 1], "apply");
+    let plan = state5::plan_patch(&view, &p).expect("plan");
+    assert!(!plan.compacts(), "the patch fits in place: {}", plan.reason());
+    let out = base.stat.iter().rfind(|r| r.tag == stat_tag::OUTPUT).expect("output").clone();
+    let patched = write::patched_bytes(&bytes, &plan, &out).expect("in place");
+    let after = read::decode(&patched).expect("decode");
+    assert_eq!(members(&after), [3, 1], "the patch in place");
+    let compacted = view_of(&compact::normalize(&after).expect("normalize"));
+    assert_eq!(members(&compacted), [3, 1], "the compaction written");
+    // A count on a chunk that is not `Body` is refused by its reader.
+    let mut bad = base.clone();
+    bad.chunks[1].tag = 0;
+    bad.chunks[1].members = 1;
+    let b = write::encode(&compact::normalize(&bad).expect("n")).expect("the writer does not judge");
+    assert!(read::decode(&b).is_err(), "a FileHeader chunk with a member count decodes");
+    // VERSION 11 (no `CHUNKS.members`) is refused by name.
+    assert_eq!(state5::VERSION, 12);
+    let mut old = bytes.clone();
+    old[8..12].copy_from_slice(&11u32.to_le_bytes());
+    let e = read::decode(&old).expect_err("a version-11 state decodes");
+    assert!(format!("{e:?}").contains("format version 11"), "{e:?}");
+}

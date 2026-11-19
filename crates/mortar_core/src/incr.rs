@@ -871,6 +871,16 @@ pub trait LayoutRows: Sync {
     /// # Errors
     /// `state-corrupt`.
     fn chunks(&self) -> Result<Vec<(ChunkId, Chunk)>, IncrReason>;
+    /// `CHUNKS.members` (whole, WP-255g): per chunk, by id as
+    /// [`LayoutRows::chunks`], the number of sections the full link's
+    /// plan gives an `Input` row (0 for a chunk that is not an in-file
+    /// `Body` one).
+    ///
+    /// # Errors
+    /// `state-corrupt`; `update-not-implemented (layout)` until given.
+    fn chunk_members(&self) -> Result<Vec<u32>, IncrReason> {
+        Err(not_given())
+    }
     /// `ORDER` (whole): every chunk once, in file order.
     ///
     /// # Errors
@@ -1466,9 +1476,23 @@ pub struct LayoutDelta {
     /// Slots recounted: a stored row whose `refs` was above 0 and is now a
     /// different count above 0; no byte changes, the row only.
     pub slots_recounted: Vec<StoredSlot>,
+    /// `CHUNKS.members` after the update (WP-255g), per chunk of
+    /// `placement.chunks`: the stored count ([`LayoutRows::chunk_members`])
+    /// +1 per change placed as a member in the chunk, -1 per stored member
+    /// it no longer holds. `None`: not known (a chunk a debug placement
+    /// change touches); empty when the stored layout gives no count.
+    pub members: Vec<Option<u32>>,
 }
 
 impl LayoutDelta {
+    /// [`LayoutDelta::members`] of `chunk`, or `None` (c2b-3's count:
+    /// `mortar_image::clip_plan::check_member_counts` refuses without
+    /// one).
+    #[must_use]
+    pub fn members_of(&self, chunk: ChunkId) -> Option<usize> {
+        self.members.get(chunk.0 as usize).copied().flatten().map(|n| n as usize)
+    }
+
     /// Where `id` (the update's id space) is after the update (WP-216
     /// R-3): the one reader of `placement.place`. A section of a file of
     /// `files` (a new id always is one) is [`PlaceNow::Here`] or

@@ -314,6 +314,11 @@ pub struct Written {
     /// The plan's size: rows and jobs (for `--time-phases` and tests).
     pub rows: usize,
     pub jobs: usize,
+    /// With `LinkOptions::keep_leaves`: `CHUNKS.members` (WP-255g), per
+    /// chunk, from the plan's own model ([`layout_plan::member_counts`]).
+    /// `None` in a plain link, and where no plan was built (an update's
+    /// hand-made `Written`: its capture counts from its front).
+    pub members: Option<Vec<u32>>,
 }
 
 fn internal(what: impl Into<String>) -> Diagnostic {
@@ -1617,7 +1622,7 @@ fn write_link(
     on_phase: &mut dyn FnMut(u16, &str),
     checked: &mut bool,
 ) -> Result<Written, Failed> {
-    with_image(link, path, |img, plan, sealed, steps| {
+    with_image(link, path, |img, plan, sealed, steps, members| {
         let out = Output::create(path, opts).map_err(|kd| Failed { diagnostics: vec![kd] })?;
         steps.step("create", 0, "");
         let (filled, checks) = fill::write_checked(img, &out, out.shown(), link.pool);
@@ -1684,6 +1689,7 @@ fn write_link(
             file: written,
             rows: plan.rows.len(),
             jobs: plan.jobs.len(),
+            members,
         })
     })
 }
@@ -1703,6 +1709,7 @@ fn with_image<T>(
         &crate::plan::Plan,
         Option<std::ops::Range<u64>>,
         &mut mortar_core::wp032b_steps::Steps,
+        Option<Vec<u32>>,
     ) -> Result<T, Failed>,
 ) -> Result<T, Failed> {
     let mut steps = mortar_core::wp032b_steps::Steps::new("image");
@@ -1782,6 +1789,13 @@ fn with_image<T>(
             .map_err(failed)?;
     plan.deferred_order = deferred_orders(link, &plan)?;
     steps.step("plan", plan.rows.len() as u64, "row");
+    // WP-255g: `CHUNKS.members` from this plan's model, in incremental
+    // mode only (a plain link counts nothing).
+    let members = if link.options.keep_leaves {
+        Some(layout_plan::member_counts(&model).map_err(failed)?)
+    } else {
+        None
+    };
     let output_ref = FileRef::new(path.display().to_string());
     let code_addr = |c: CodeRef| -> Option<u64> {
         let off = u64::try_from(c.offset).ok()?;
@@ -1838,7 +1852,7 @@ fn with_image<T>(
         leaf_fn,
         fixups: &fixups,
     };
-    go(&img, &plan, sealed, &mut steps)
+    go(&img, &plan, sealed, &mut steps, members)
 }
 
 /// What [`refill`] filled: the jobs of the dirty windows, in memory.
@@ -1875,7 +1889,7 @@ pub struct Refilled {
 /// Every diagnostic of the fill; a fault in a section deferred to fill
 /// (I-14) is an internal error here.
 pub fn refill(link: &Link<'_, '_>, path: &Path, windows: &[u64]) -> Result<Refilled, Failed> {
-    with_image(link, path, |img, plan, sealed, steps| {
+    with_image(link, path, |img, plan, sealed, steps, _| {
         let w = plan.window;
         let dirty = |j: &std::ops::Range<u64>| {
             let first =
@@ -1952,7 +1966,7 @@ pub(crate) fn refill_ranges(
     link: &Link<'_, '_>,
     ranges: &[std::ops::Range<u64>],
 ) -> Result<Refilled, Failed> {
-    with_image(link, Path::new(""), |img, plan, sealed, steps| {
+    with_image(link, Path::new(""), |img, plan, sealed, steps, _| {
         let jobs = clip_jobs(plan, ranges);
         let leaf_fn = img.build_id.map_or(mortar_digest::TreeFn::L128, TreeStyle::tree_fn);
         let filled = link.pool.map(jobs.len(), |k| {
@@ -2313,7 +2327,7 @@ pub fn refill_clip_plan_with(
     // are the whole plan's `Synth` units' (a test path's source; an update
     // gives those of the chunk list it fills with).
     let mut built: Option<Result<crate::plan::Plan, crate::clip_plan::ClipError>> = None;
-    let r = with_image(link, Path::new(""), |img, whole, sealed, _| {
+    let r = with_image(link, Path::new(""), |img, whole, sealed, _, _| {
         let synth: std::collections::BTreeMap<ChunkId, (SynthKind, SynthRow)> = whole
             .synth
             .iter()

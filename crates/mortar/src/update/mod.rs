@@ -529,6 +529,8 @@ fn refill_capture(
         file: None,
         rows: 0,
         jobs: 0,
+        // WP-255g: no plan here; the capture counts from the front.
+        members: None,
     };
     let (mut state, rows5) = session.state(f, ctx.store, &written, cwd).map_err(|e| {
         changed::record(&format!("capture: {e:?}: (image)"));

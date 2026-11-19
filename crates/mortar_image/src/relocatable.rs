@@ -1670,6 +1670,7 @@ pub fn write(
         file: None,
         rows: img.frame.by_index.len(),
         jobs: 1,
+        members: None,
     })
 }
 

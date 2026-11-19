@@ -608,6 +608,15 @@ fn capture_in(
         s.sections.push(row);
     }
     clock.lap("capture sections");
+    if let Some(x) = extra
+        && x.members.len() != p.chunks.len() as usize
+    {
+        return Err(format!(
+            "CHUNKS.members: {} counts for {} chunks",
+            x.members.len(),
+            p.chunks.len()
+        ));
+    }
     for (id, c) in p.chunks.iter() {
         let (kind, name) = chunk_ord.key(id.0).ok_or("a chunk")?;
         let ordinal = chunk_ord.ordinal(id.0).ok_or("a chunk")?;
@@ -645,6 +654,7 @@ fn capture_in(
             addr: c.addr.unwrap_or(0),
             offset: c.offset,
             shndx: c.shndx.unwrap_or(0),
+            members: extra.map_or(0, |x| x.members[id.0 as usize]),
         });
     }
     s.order = p.order.iter().map(|c| c.0).collect();
@@ -902,6 +912,11 @@ pub struct Link5<'a> {
     /// zero). WP-238 seam 9: the field only; Part 2 writes the rows and
     /// the hash.
     pub edges: Option<&'a [mortar_core::incr::LiveEdge]>,
+    /// `CHUNKS.members` (VERSION 12, WP-255g): per `ChunkId` of the
+    /// layout, the number of sections the full link's plan gives an
+    /// `Input` row (`mortar_image::layout_plan::member_counts`); one entry
+    /// per chunk, or the capture fails.
+    pub members: &'a [u32],
     /// `SYMTAB_KEYS` (IN-18e, IN-49a; WP-262): the output's global area
     /// (`SymtabPlan::incr_global_area`) and per `SymbolId` its entry and
     /// `st_name` (`SymtabPlan::incr_global_keys`, `(NONE, 0)`: no global

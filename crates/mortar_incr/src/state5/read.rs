@@ -1041,6 +1041,9 @@ impl LayoutRows for LayoutOf<'_, '_> {
         }
         Ok(out)
     }
+    fn chunk_members(&self) -> Result<Vec<u32>, IncrReason> {
+        Ok(self.view.chunks()?.iter().map(|c| c.members).collect())
+    }
     fn order(&self) -> Result<Vec<ChunkId>, IncrReason> {
         Ok(self.view.order()?.into_iter().map(ChunkId).collect())
     }

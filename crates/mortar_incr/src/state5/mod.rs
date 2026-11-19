@@ -73,8 +73,10 @@ pub const MAGIC: [u8; 8] = *b"MORTARSR";
 /// `state-version`). 11 since WP-265 (`DIAGS` written by the full link's
 /// capture: a version-10 state of a link that warned holds no row, which
 /// IN-75a reads as a link without warnings; it is refused,
-/// `state-version`).
-pub const VERSION: u32 = 11;
+/// `state-version`). 12 since WP-255g (`CHUNKS.members` written by the
+/// full link's capture: a version-11 state holds no count, which c2b-3's
+/// check would read as an empty chunk; it is refused, `state-version`).
+pub const VERSION: u32 = 12;
 /// The header's size.
 pub const HEADER: usize = 80;
 /// A directory entry's size.
@@ -436,7 +438,6 @@ same_as_format4!(
     StatRow,
     ProbeRow,
     OutSecRow,
-    ChunkRow,
     u32,
     SegmentRow,
     SizeRow,
@@ -447,6 +448,27 @@ same_as_format4!(
     LayoutRow,
     [u8; 32]
 );
+
+/// `CHUNKS` (format 4's 72 bytes) with WP-255g's `members` after
+/// `shndx` (VERSION 12): a count on a chunk that is not `Body` is
+/// refused.
+impl Rec for ChunkRow {
+    const WIDTH: usize = <ChunkRow as Row>::WIDTH + 4;
+    fn put(&self, w: &mut W<'_>) {
+        Row::put(self, w);
+        w.u32(self.members);
+    }
+    fn get(r: &mut R<'_>) -> Self {
+        let mut c = <ChunkRow as Row>::get(r);
+        c.members = r.u32();
+        c
+    }
+    fn ok(&self) -> bool {
+        self.members == 0
+            || crate::capture::TAGS.get(self.tag as usize)
+                == Some(&mortar_core::identity::ChunkTag::Body)
+    }
+}
 
 /// `SECTIONS` (format 4's 76 bytes) with WP-257a's `kind` and `bits` in
 /// two of format 4's three pad bytes, and a place-less row's output

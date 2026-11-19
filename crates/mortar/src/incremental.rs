@@ -1574,7 +1574,32 @@ impl Session {
                     }
                 };
                 lap(&self.times, &mut t, "symtab keys");
+                // CHUNKS.members (WP-255g): the full link's plan's model
+                // counted them (`Written::members`); an update's capture
+                // (no plan: `update::refilled`) counts them from its front
+                // by the same rule.
+                let counted;
+                let members: &[u32] = match &written.members {
+                    Some(m) => m,
+                    None => {
+                        let model = mortar_image::layout_plan::Model {
+                            inputs: &f.inputs,
+                            resolution: &f.resolution,
+                            liveness: &f.liveness,
+                            split: &f.merge.split,
+                            layout: &f.layout,
+                            assignment: &f.assignment,
+                            order: Some(&f.order),
+                            eh: None,
+                        };
+                        counted = mortar_image::layout_plan::member_counts(&model)
+                            .map_err(|e| format!("CHUNKS.members: {e:?}"))?;
+                        &counted
+                    }
+                };
+                lap(&self.times, &mut t, "chunk members");
                 let five = mortar_incr::capture::Link5 {
+                    members,
                     symtab: symtab_keys
                         .as_ref()
                         .map(|(a, k, b, t)| (*a, k.as_slice(), b.as_slice(), *t)),

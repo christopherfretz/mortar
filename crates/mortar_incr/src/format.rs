@@ -530,6 +530,11 @@ pub struct ChunkRow {
     pub addr: u64,
     pub offset: u64,
     pub shndx: u32,
+    /// Format 5 only (VERSION 12, WP-255g): an in-file `Body` chunk's
+    /// number of sections given an `Input` row by the full link's plan
+    /// (`mortar_image::layout_plan::member_counts`); 0 for every other
+    /// chunk. Format 4's row does not hold it (read as 0).
+    pub members: u32,
 }
 
 /// `SEGMENTS`.
@@ -1132,6 +1137,7 @@ impl Row for ChunkRow {
             addr: r.u64(),
             offset: r.u64(),
             shndx: r.u32(),
+            members: 0,
         }
     }
 }
