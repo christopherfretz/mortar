@@ -42,7 +42,7 @@ use mortar_elf::consts::SHF_EXECINSTR;
 use mortar_elf::{Machine, SectionIndex};
 use mortar_incr::format::Str;
 use mortar_incr::update::rows::FileRow;
-use mortar_incr::update::view::ChangedFiles;
+use mortar_incr::update::view::{ChangedFiles, StateView};
 use mortar_merge::phase::ArchRelocs;
 use update::{first_free, lines, member, pool, same_file, state, whole};
 
@@ -244,24 +244,114 @@ fn a_same_size_edit_keeps_its_place_given_its_regions() {
         let what = |s: &str| format!("{} same-size edit: {s}", line.label);
         let args = line.args(&["wp255d_m2", "wp255d_m1"]);
         line.archive(&["m1.o", "m2.o"]);
-        let old = state(&line, &args, "old");
-        std::fs::copy(line.dir.join("ms.o"), line.dir.join("m1.o")).expect("the edit");
-        line.archive(&["m1.o", "m2.o"]);
-        let _new = state(&line, &args, "new");
+        let edit = || {
+            std::fs::copy(line.dir.join("ms.o"), line.dir.join("m1.o")).expect("the edit");
+            line.archive(&["m1.o", "m2.o"]);
+        };
+        identity_hop(&line, &args, &|v| member(v, "m1.o"), &edit, &what);
+        judged += 1;
+    }
+    if mortar_testutil::tools_required() {
+        assert_eq!(judged, 2, "both targets judged");
+    }
+}
+
+/// A program without libc whose only writable data is `a.o`'s `.data`
+/// word: every `.bss` input is empty, so the full link gives `.bss` no
+/// chunk and places `a.o`'s empty `.bss` at the end of `.data`'s chunk
+/// (layout.md L-159). `a.o` edited in one immediate (the same size).
+const ASM_A64: &str = "\t.text\n\t.globl _start\n_start:\n\tmov x0, #42\n\tmov x8, #93\n\
+    \tsvc #0\n\t.data\n\t.globl word\nword:\t.quad 1\n\
+    \t.section .note.GNU-stack,\"\",%progbits\n";
+const ASM_X64: &str = "\t.text\n\t.globl _start\n_start:\n\tmovl $42, %edi\n\tmovl $60, %eax\n\
+    \tsyscall\n\t.data\n\t.globl word\nword:\t.quad 1\n\
+    \t.section .note.GNU-stack,\"\",@progbits\n";
+
+/// M2b2b-2: the empty `.bss` of a changed file whose output section has
+/// no chunk (L-159) takes the full link's place, beside `.data`, instead
+/// of `new-output-section: .bss`.
+#[test]
+fn an_empty_bss_with_no_output_chunk_stays_beside_data() {
+    let mut judged = 0;
+    for (arch, label, text, from) in [
+        (mortar_testutil::target::Arch::Aarch64, "aarch64 asm", ASM_A64, "#42"),
+        (mortar_testutil::target::Arch::X86_64, "x86-64 asm", ASM_X64, "$42"),
+    ] {
+        let Some(gcc) = arch.tool("gcc") else {
+            assert!(!mortar_testutil::tools_required(), "{} is required", arch.gnu("gcc"));
+            continue;
+        };
+        let scratch = mortar_testutil::Scratch::new("wp225c-empty-bss");
+        let dir = scratch.path().to_path_buf();
+        let base = vec![dir.join("a.o").to_string_lossy().into_owned(), "-static".into()];
+        let line =
+            update::Line { _scratch: scratch, label: label.into(), dir, base, cc: gcc.clone() };
+        let assemble = |src: &str| {
+            let s = line.dir.join("a.s");
+            std::fs::write(&s, src).expect("a.s");
+            let obj = line.dir.join("a.o");
+            let o = mortar_testutil::run(
+                &gcc,
+                &["-c".into(), s.into_os_string(), "-o".into(), obj.into_os_string()],
+            );
+            assert!(o.success(), "{label}: gcc: {}", o.stderr_text());
+        };
+        assemble(text);
+        let what = |s: &str| format!("{label} empty .bss: {s}");
+        let edit = || assemble(&text.replace(from, &from.replace("42", "43")));
+        let pick = |v: &StateView<'_>| {
+            let files = u32::try_from(v.count(mortar_incr::format::kind::FILES)).expect("FILES");
+            (1..files)
+                .map(FileId)
+                .find(|&id| {
+                    let r = v.file(id).expect("FILES");
+                    r.member == 0 && v.string(r.path).expect("path").ends_with(b"a.o")
+                })
+                .expect("a.o")
+        };
+        let placed = identity_hop(&line, &line.base, &pick, &edit, &what);
+        let bss = placed.iter().find(|p| p.0 == ".bss").expect("a.o's .bss placed");
+        assert_eq!(bss.1.as_deref(), Some(&b".data"[..]), "{}", what(".bss beside .data"));
+        judged += 1;
+    }
+    if mortar_testutil::tools_required() {
+        assert_eq!(judged, 2, "both targets judged");
+    }
+}
+
+/// One identity-case hop: the state of `args`, `edit`, the front of the
+/// new inputs and `delta::layout` over the changed file `pick` names.
+/// Requires (bytes first) the front to place each section of the file
+/// where the stored row has it; without the file's `REGIONS` rows the
+/// delta refuses by name; with the first link's regions ([`WithRegions`])
+/// it places every section at the full link's offset, moves nothing and
+/// takes no growth step. Gives each placed section's name and the delta's
+/// output section name.
+fn identity_hop(
+    line: &update::Line,
+    args: &[String],
+    pick: &dyn Fn(&StateView<'_>) -> FileId,
+    edit: &dyn Fn(),
+    what: &dyn Fn(&str) -> String,
+) -> Vec<(String, Option<Vec<u8>>)> {
+    {
+        let old = state(line, args, "old");
+        edit();
+        let _new = state(line, args, "new");
         let capture = mortar_incr::state5::read::decode(
             &std::fs::read(line.dir.join("new.state5")).expect("the new state"),
         )
         .expect("the new state decodes");
         // One store per version of the inputs (B18-1).
         let store = support::store();
-        let f = whole(&line, &args, &store);
-        let file = member(&old, "m1.o");
+        let f = whole(line, args, &store);
+        let file = pick(&old);
         let nf = same_file(&f, &old, file);
         assert_eq!(nf, file, "{}", what("one FILES row in both links"));
         let (cf, delta) =
             mortar::update::changed::u5(&old, &[file], &[], &f, &capture, &mut |_| {})
                 .unwrap_or_else(|e| panic!("{}", what(&format!("U4-U5: {}", e.report()))))
-                .expect("m1.o changed");
+                .expect("the file changed");
         let rows = mortar_incr::state5::LayoutOf { view: &old };
         let stored = StoredLayout::new(&rows);
         let fresh = support::store();
@@ -305,14 +395,14 @@ fn a_same_size_edit_keeps_its_place_given_its_regions() {
             assert_eq!(fout.map(<[u8]>::to_vec), sout, "{}", what(&format!("{name}: output")));
             placed += 1;
         }
-        assert!(placed >= 1, "{}", what("m1.o has a placed section"));
+        assert!(placed >= 1, "{}", what("the file has a placed section"));
 
         // The first link wrote no REGIONS row (no full-link producer).
         let count = old.count(mortar_incr::format::kind::REGIONS);
         let mine = stored.regions_of(file).expect("REGIONS");
         eprintln!(
             "{}",
-            what(&format!("REGIONS rows: {count} in the state, {} of m1.o", mine.len()))
+            what(&format!("REGIONS rows: {count} in the state, {} of the file", mine.len()))
         );
 
         // The layout, with the whole front's demands of m1.o (TEST-ONLY;
@@ -342,6 +432,7 @@ fn a_same_size_edit_keeps_its_place_given_its_regions() {
         let stored2 = StoredLayout::new(&with);
         let d = mortar_layout::delta::layout(&stored2, &input, &target)
             .unwrap_or_else(|e| panic!("{}", what(&format!("with regions: {}", e.report()))));
+        let mut out = Vec::new();
         for c in &inputs.changes {
             let fid = f.resolution.section_id(nf, SectionIndex(c.index)).expect("front id");
             let full = f.layout.placement.place[fid].get();
@@ -357,12 +448,13 @@ fn a_same_size_edit_keeps_its_place_given_its_regions() {
                 "{}",
                 what(&format!("{name}: the update's offset is the full link's"))
             );
+            if let Some((uc, _)) = now {
+                let o = d.placement.chunks[uc].kind.out().map(out_name);
+                out.push((name, o));
+            }
         }
         assert!(d.moved.is_empty(), "{}", what(&format!("moved {:?}", d.moved)));
         assert!(d.growth_steps.is_empty(), "{}", what("a growth step"));
-        judged += 1;
-    }
-    if mortar_testutil::tools_required() {
-        assert_eq!(judged, 2, "both targets judged");
+        out
     }
 }
