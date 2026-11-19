@@ -7,11 +7,13 @@
 //!   link did not extract, extracted by the new link (`-u`): the OLD
 //!   state's `FILES` row (its bytes did not change), `Ids::Update`.
 //! - `update_front_of_edited_files`: `m1.o` edited (a function renamed, one
-//!   grown, a section added, a COMDAT group added: C++ `inline`), and the
-//!   member with versioned definitions (`foo@V1`, `foo@@V2`), through the
-//!   NEW link's state (`front_of` takes the file's path, `base`, `len` and
-//!   hash from its view's `FILES` row: for edited bytes only a state that
-//!   holds them names them; see the record, finding F-1).
+//!   grown, a section added, a COMDAT group added: C++ `inline`) and
+//!   re-archived (the other members move), opened through the OLD state
+//!   with `Ids::Update`'s NEW `FILES` row (ruling D2-1): its `base`, `len`
+//!   and `hash` are the full link's capture of the new archive (the one
+//!   producer of a `FILES` row), its `Str`s the old state's. The member
+//!   with versioned definitions (`foo@V1`, `foo@@V2`) included. The stored
+//!   row's hash for the edited bytes is `input-changed`.
 //! - `update_link_order_outside_groups_falls_back`: an `SHF_LINK_ORDER`
 //!   section outside the groups linked to a COMDAT member: whether it takes
 //!   the group is the keeper's (whole-link): `update-not-implemented
@@ -38,6 +40,7 @@ use mortar_core::par::Pool;
 use mortar_diag::{Collector, Policy};
 use mortar_incr::capture::{FileRows, Keys, Link, file_rows};
 use mortar_incr::format::Strings;
+use mortar_incr::update::rows::FileRow;
 use mortar_incr::update::view::StateView;
 use mortar_testutil::{Scratch, run, tool, tools_required};
 use support::{Driver, build, build_by, with_output};
@@ -241,13 +244,13 @@ struct Seen {
     versioned: u32,
 }
 
-/// `front_of(view, file, Ids::Update)` against the whole front `f`'s rows
-/// of the same file, by identity.
+/// `front_of(view, file, Ids::Update)` (the file's bytes named by `row`)
+/// against the whole front `f`'s rows of the same file, by identity.
 fn compare(
     line: &Line,
     f: &Front<'_>,
     view: &StateView<'_>,
-    file: FileId,
+    (file, row): (FileId, FileRow),
     first: u32,
     seen: &mut Seen,
 ) {
@@ -256,7 +259,7 @@ fn compare(
     let want = rows_of(f, &mut strings, new_file);
     let fresh = support::store();
     let mut cache = FrontCache::new(&fresh, pool(), &line.dir);
-    let ids = Ids::Update { first_section: SectionId(first) };
+    let ids = Ids::Update { first_section: SectionId(first), row };
     let what = |s: &str| format!("{}: file {}: {s}", line.label, file.0);
     let ff = front_of(&mut cache, view, file, ids)
         .unwrap_or_else(|e| panic!("{}", what(&format!("{e:?}"))));
@@ -323,7 +326,10 @@ fn renumbering(line: &Line, args: &[String], view: &StateView<'_>) {
                 first = first.or(Some((i, r.0, sym.name)));
             }
             Some(_) => {}
-            None => rowless += 1,
+            None => {
+                rowless += 1;
+                eprintln!("{}: no SYMBOLS row: {}", line.label, String::from_utf8_lossy(sym.name));
+            }
         }
     }
     if let Some((i, r, name)) = first {
@@ -353,7 +359,8 @@ fn update_front_of_an_extracted_member() {
         let store = support::store();
         let f = whole(&line, &new_args, &store);
         let mut seen = Seen::default();
-        compare(&line, &f, &old, m4, first_free(&old), &mut seen);
+        let row = old.file(m4).expect("FILES");
+        compare(&line, &f, &old, (m4, row.clone()), first_free(&old), &mut seen);
         eprintln!("{}: extracted m4.o: {seen:?}", line.label);
         assert!(seen.versioned >= 2 && seen.keys > 0, "{}: {seen:?}", line.label);
         // The keys a front has that the old state has no row for: the old
@@ -366,7 +373,7 @@ fn update_front_of_an_extracted_member() {
             &mut cache,
             &old,
             m4,
-            Ids::Update { first_section: SectionId(first_free(&old)) },
+            Ids::Update { first_section: SectionId(first_free(&old)), row },
         )
         .expect("m4");
         for name in [&b"_DYNAMIC"[..], b"_end", b"wp255d_nowhere"] {
@@ -396,17 +403,46 @@ fn update_front_of_an_extracted_member() {
 #[test]
 fn update_front_of_edited_files() {
     for line in lines() {
-        line.archive(&["m1e.o", "m2.o", "m4.o"]);
         let args = line.args(&["wp255d_m2", "wp255d_m1", "wp255d_m4"]);
-        let view = state(&line, &args, "new");
+        line.archive(&["m1.o", "m2.o", "m4.o"]);
+        let old = state(&line, &args, "old");
+        // The edit: `m1.o` replaced by the C++ version, the archive rebuilt.
+        std::fs::copy(line.dir.join("m1e.o"), line.dir.join("m1.o")).expect("the edit");
+        line.archive(&["m1.o", "m2.o", "m4.o"]);
+        let new = state(&line, &args, "new");
         let store = support::store();
         let f = whole(&line, &args, &store);
         let mut seen = Seen::default();
-        for name in ["m1e.o", "m2.o", "m4.o"] {
-            compare(&line, &f, &view, member(&view, name), first_free(&view), &mut seen);
+        let mut moved = 0;
+        for name in ["m1.o", "m2.o", "m4.o"] {
+            let file = member(&old, name);
+            let stored = old.file(file).expect("FILES");
+            let captured = new.file(member(&new, name)).expect("FILES");
+            let row = FileRow {
+                base: captured.base,
+                len: captured.len,
+                hash: captured.hash,
+                ..stored.clone()
+            };
+            moved += u32::from(row != stored);
+            if name == "m1.o" {
+                // The stored row names the OLD bytes: never used for a
+                // changed file.
+                assert_ne!(stored.hash, row.hash, "{}: the edit changed m1.o", line.label);
+                let fresh = support::store();
+                let mut cache = FrontCache::new(&fresh, pool(), &line.dir);
+                let ids = Ids::Update { first_section: SectionId(first_free(&old)), row: stored };
+                let r = front_of(&mut cache, &old, file, ids).map(|x| x.file);
+                assert!(
+                    matches!(r, Err(IncrReason::InputChanged(_))),
+                    "{}: the stored row: {r:?}",
+                    line.label
+                );
+            }
+            compare(&line, &f, &old, (file, row), first_free(&old), &mut seen);
         }
-        eprintln!("{}: edited: {seen:?}", line.label);
-        assert!(seen.comdat > 0 && seen.versioned >= 2, "{}: {seen:?}", line.label);
+        eprintln!("{}: edited: {seen:?}, rows moved {moved}", line.label);
+        assert!(seen.comdat > 0 && seen.versioned >= 2 && moved >= 2, "{}: {seen:?}", line.label);
     }
 }
 
@@ -421,7 +457,8 @@ fn update_link_order_outside_groups_falls_back() {
         assert!(front_of(&mut cache, &view, m3, Ids::Stored).is_ok(), "{}: stored", line.label);
         let fresh = support::store();
         let mut cache = FrontCache::new(&fresh, pool(), &line.dir);
-        let ids = Ids::Update { first_section: SectionId(first_free(&view)) };
+        let row = view.file(m3).expect("FILES");
+        let ids = Ids::Update { first_section: SectionId(first_free(&view)), row };
         let r = front_of(&mut cache, &view, m3, ids).map(|x| x.file);
         let want = IncrReason::UpdateNotImplemented(Some(Unimplemented::Resolve));
         assert_eq!(r, Err(want), "{}", line.label);

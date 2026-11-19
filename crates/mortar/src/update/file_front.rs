@@ -49,14 +49,21 @@ use mortar_incr::update::view::StateView;
 use mortar_input::facts::{Kind, analyse, effective_signature};
 use mortar_input::store::{ReadJob, Store, content_hash};
 
-/// Which id space the file's rows take.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+/// Which id space the file's rows take, and which `FILES` row names its
+/// bytes.
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Ids {
-    /// An unchanged file: every id is the state's.
+    /// An unchanged file: every id is the state's, and its bytes are the
+    /// ones its stored `FILES` row names.
     Stored,
     /// A changed file: its sections are `first_section + k` (the join's
-    /// allocation, `ChangedFile::first_section`).
-    Update { first_section: SectionId },
+    /// allocation, `ChangedFile::first_section`), and its bytes are the
+    /// ones `row` names (ruling D2-1: the changed file's NEW `FILES` row,
+    /// `ChangedFile::row`, the join's; never the stored row's hash). The
+    /// row's `path` is read from the state's `STRINGS`: a path the state
+    /// does not hold (an appeared file's new string) is
+    /// `update-not-implemented (resolve)`.
+    Update { first_section: SectionId, row: FileRow },
 }
 
 /// One section of a [`FileFront`] (section index `k` of its file).
@@ -99,7 +106,9 @@ pub struct FrontKey<'s> {
 #[derive(Debug, Clone)]
 pub struct FileFront<'s> {
     pub file: FileId,
-    /// Its stored `FILES` row (path, member, `base`, `len`, `hash`).
+    /// The `FILES` row its bytes were read and checked against (path,
+    /// member, `base`, `len`, `hash`): the stored one (`Ids::Stored`) or
+    /// the join's new one (`Ids::Update`).
     pub row: FileRow,
     pub object: Object<'s>,
     /// Its bytes (`base .. base + len` of the file it was read from).
@@ -173,9 +182,16 @@ fn changed(path: &[u8], what: &str) -> IncrReason {
 
 /// The front of `file` (opened once; later calls take the cache's).
 ///
+/// `Ids::Update` takes the file as LIVE (its COMDAT groups count, whatever
+/// the stored row's `LAZY`): the caller (the join) calls it only for a
+/// file the update's link keeps, a changed file or a member the update's
+/// extraction extracts (`mortar_incr::update::extract::Extraction`), never
+/// for a member that stays or becomes unextracted (ruling D2-4).
+///
 /// # Errors
-/// `input-changed` when the bytes read are not the ones `FILES.hash`
-/// names (or no longer an object), `state-corrupt` for rows that do not
+/// `input-changed` when the bytes read are not the ones the row's hash
+/// names (`FILES.hash`, or the new row's for `Ids::Update`; or no longer an
+/// object), `state-corrupt` for rows that do not
 /// fit the file; `update-not-implemented (resolve)` for a changed file
 /// (`Ids::Update`) with an `SHF_LINK_ORDER` section outside the groups
 /// linked to a COMDAT member (resolve.md §6.5: the keeper decides).
@@ -228,7 +244,16 @@ fn open<'s>(
     file: FileId,
     ids: Ids,
 ) -> Result<FileFront<'s>, IncrReason> {
-    let row = view.file(file)?;
+    let row = match &ids {
+        Ids::Stored => view.file(file)?,
+        Ids::Update { row, .. } => {
+            let strings = view.count(mortar_incr::format::kind::STRINGS);
+            if u64::from(row.path.off) + u64::from(row.path.len) > strings {
+                return Err(IncrReason::UpdateNotImplemented(Some(Unimplemented::Resolve)));
+            }
+            row.clone()
+        }
+    };
     let path = view.string(row.path)?;
     if row.flags & file_flags::GONE != 0 {
         return Err(corrupt(format!("file {} is gone", file.0)));
@@ -269,7 +294,7 @@ fn open<'s>(
                 (SectionId(range.first), Some(stored))
             }
         }
-        Ids::Update { first_section } => (first_section, None),
+        Ids::Update { first_section, .. } => (first_section, None),
     };
 
     // The non-local entries and their keys.
