@@ -211,10 +211,16 @@ fn run_with(
     let checked = Tuple::of(&out.metadata().map_err(|e| IncrReason::OutputChanged(e.to_string()))?);
     steps.mark("u1-u3");
     // The front is dropped before the first write.
-    let reference = image_link(ctx, cwd, None, |f| {
+    let first = image_link(ctx, cwd, None, |f| {
         steps.mark("front");
         reference_of(session, &view, &detected, f, ctx, cwd, out, &mut steps)
     })?;
+    // R-1 (path (A)'s scaffold): front 1 is dropped here; a non-identity
+    // hop runs front 2 with the materialized layout replayed.
+    let reference = match first {
+        First::Identity(r) => r,
+        First::Materialized(m) => front_two(session, &view, ctx, cwd, out, *m, &mut steps)?,
+    };
     write_identity(session, &view, ctx, cwd, out, checked, reference, ops, steps)
 }
 
@@ -287,8 +293,8 @@ fn reference_of(
     cwd: &Path,
     out: &std::fs::File,
     steps: &mut Steps,
-) -> Result<Reference, IncrReason> {
-    use mortar_core::incr::{LayoutDelta, RefillChunk, RefillSet, StoredLayout, SymtabPlan};
+) -> Result<First, IncrReason> {
+    use mortar_core::incr::{LayoutDelta, RefillChunk, RefillSet, StoredLayout};
     let layout = || IncrReason::UpdateNotImplemented(Some(Unimplemented::Layout));
     let image = || IncrReason::UpdateNotImplemented(Some(Unimplemented::Image));
     // U4: the front's file of each id is the state's row (and no file
@@ -304,8 +310,6 @@ fn reference_of(
             return Err(IncrReason::UpdateNotImplemented(Some(Unimplemented::Resolve)));
         }
     }
-    let meta = view.meta()?;
-    let leaves = view.leaves()?;
     let rows = mortar_incr::state5::LayoutOf { view };
     let stored = StoredLayout::new(&rows);
     let delta = LayoutDelta { files: files.clone(), ..LayoutDelta::default() };
@@ -318,55 +322,22 @@ fn reference_of(
         .map(|(chunk, _)| RefillChunk { chunk, reasons: 0 })
         .collect();
     let set = RefillSet { chunks, ..RefillSet::default() };
-    let symtab = SymtabPlan::default();
-    let want_map = ctx.plan.bookkeeping.mortar_map.is_some();
-    let (refill, size, map) = crate::image::with_link(f, ctx.store, &|_| {}, |l| {
-        let u = mortar_image::update::refill(l, &delta, &symtab, &set, &stored, out, &leaves)
-            .map_err(|e| match e {
-                mortar_image::update::RefillError::Fallback(r) => r,
-                mortar_image::update::RefillError::Failed(_) => image(),
-            })?;
-        let map = if want_map {
-            let m = mortar_image::map::update_map(l, &delta, &stored, &symtab)?;
-            Some(mortar_image::map::render(&m, &f.pool))
-        } else {
-            None
-        };
-        Ok::<_, IncrReason>((u, mortar_image::update::output_size(l), map))
-    })
-    .map_err(|_| image())??;
-    steps.mark("refill");
-    // The capture of `f` with the refill's binding parts.
-    let tree = match meta.leaf_fn {
-        0 => mortar_digest::TreeFn::L128,
-        1 => mortar_digest::TreeFn::Sha1,
-        _ => mortar_digest::TreeFn::Sha256,
-    };
-    let written = mortar_image::link::Written {
-        build_id: refill.build_id.clone(),
-        leaves: Some((tree, Vec::new())),
-        sealed: Some(meta.sealed_start..meta.sealed_end),
-        file_size: size,
-        file: None,
-        rows: 0,
-        jobs: 0,
-    };
-    let (mut state, rows5) = session.state(f, ctx.store, &written, cwd).map_err(|_| image())?;
-    state.leaves.clone_from(&refill.leaves);
-    let rows5 = rows5.ok_or_else(image)?;
-    let mut state = mortar_incr::capture::state5_rows(&state, rows5, false).map_err(|_| image())?;
-    // gc-lift (FINDING gc-1): under `--gc-sections` the full link's
-    // `META.live_hash` (WP-238 S4) is the driver's, after `state5_rows`
-    // (`incremental.rs`, the capture's live-set hash); the update's state
-    // takes it the same way, from the front's mark and positions, or it
-    // would be written with a zero hash (the next update's `no-live-hash`).
-    if let Some(Ok((_, at))) = f.incr5.as_ref().and_then(|i| i.live_rows.as_ref()) {
-        state.index_sections()?;
-        let h =
-            mortar_incr::update::live::live_hash(&state.view(), f.liveness.live.as_slice(), at)?;
-        state.meta.live_hash = mortar_incr::testhook::live_hash_mutated(h);
-    }
-    steps.mark("capture");
+    let (refill, size, state, map) =
+        refill_capture(session, view, &stored, f, ctx, cwd, out, &delta, &set, steps)?;
+    // The identity check (G-3's materialization in the identity case),
+    // first: the non-identity case materializes the delta (below).
+    let lock = session.lock().ok_or_else(image)?;
+    let corrupt = |e: std::io::Error| IncrReason::StateCorrupt(e.to_string());
+    let len = usize::try_from(lock.metadata().map_err(corrupt)?.len()).map_err(|_| image())?;
+    let mut bytes = vec![0u8; len];
+    std::os::unix::fs::FileExt::read_exact_at(lock, &mut bytes, 0).map_err(corrupt)?;
+    let old = mortar_incr::state5::canon::canon(&bytes)
+        .map_err(|e| IncrReason::StateCorrupt(e.to_string()))?;
+    let new = mortar_incr::state5::canon::canon_of(&state)
+        .map_err(|e| IncrReason::StateCorrupt(e.to_string()))?;
+    drop(bytes);
+    let diffs = mortar_incr::state5::canon::compare(&new, &old, &stored);
+    let same = identity(&diffs, files);
     // U4-U5 (M2b-1): the changed files' rows in the update's ids, then
     // `extract` and `resolve` on them; the update goes on only where they
     // say what the front (its capture) says.
@@ -381,7 +352,8 @@ fn reference_of(
     // delta is empty and nothing is walked (`live::live`'s own answer).
     let mut flips = 0usize;
     // U6-U7 (M2b-2b): the delta's placement of the changed files, judged
-    // against the front's (a disagreement is a FINDING, by name).
+    // against the front's (a disagreement is a FINDING, by name), and in
+    // the non-identity case materialized (M2b-3 Part 3).
     let placed = match u5 {
         Some((cf, delta)) => {
             let mut live = mortar_incr::update::live::LiveDelta::default();
@@ -389,59 +361,90 @@ fn reference_of(
                 (live, flips) = live_judged(view, f, &cf, &delta)?;
                 steps.mark("u6");
             }
-            // While the image cannot take the delta's placement (below), a
-            // producer's refusal is recorded and the identity check decides
-            // alone; a FINDING (the delta disagrees with the front) falls
-            // back by name.
-            let p =
-                match placement(view, &stored, f, ctx.store, cwd, &cf, delta, &live, &state, out) {
-                    Ok(p) => Some(p),
-                    Err(Why::Refused) => None,
-                    Err(Why::Finding(e)) => return Err(e),
-                };
+            // R-2 (a) (WP-264's `REGIONS` producer is in): a producer's
+            // refusal falls back by its name in every case; the delta is
+            // the one placement authority.
+            let p = match placement(
+                view, &stored, f, ctx.store, cwd, &cf, delta, &live, &state, out, !same,
+            ) {
+                Ok(p) => p,
+                Err(Why::Refused(e) | Why::Finding(e)) => return Err(e),
+            };
             steps.mark("u7");
-            p
+            Some((p, cf.files.iter().any(|c| c.debug)))
         }
         None => None,
     };
-    // The identity check (G-3's materialization in the identity case).
-    let lock = session.lock().ok_or_else(image)?;
-    let corrupt = |e: std::io::Error| IncrReason::StateCorrupt(e.to_string());
-    let len = usize::try_from(lock.metadata().map_err(corrupt)?.len()).map_err(|_| image())?;
-    let mut bytes = vec![0u8; len];
-    std::os::unix::fs::FileExt::read_exact_at(lock, &mut bytes, 0).map_err(corrupt)?;
-    let old = mortar_incr::state5::canon::canon(&bytes)
-        .map_err(|e| IncrReason::StateCorrupt(e.to_string()))?;
-    let new = mortar_incr::state5::canon::canon_of(&state)
-        .map_err(|e| IncrReason::StateCorrupt(e.to_string()))?;
-    let diffs = mortar_incr::state5::canon::compare(&new, &old, &stored);
-    if !identity(&diffs, files) {
-        // The image takes a placement only through the front's replay
-        // hook, as a whole `Layout` in the front's ids (`image_link`'s
-        // `replay`, `front.rs` `Env::replay`); no producer materializes a
-        // format-5 `StoredLayout` with a `LayoutDelta` into one (the
-        // record, M2b-2b): the delta's placement is judged, not written.
-        if let Some(p) = &placed {
-            changed::record(&format!(
-                "M2b-2b placement: judged, not the stored one ({}): (layout)",
-                p.summary
-            ));
-        }
-        // A section that dies or revives changes the placement (its
-        // `SECTIONS` row's `COLLECTED` bit, its place): taken from M2b-3 on.
-        if flips > 0 {
-            changed::record(&format!(
-                "gc-lift: {flips} sections flip liveness, not the stored placement: (layout)"
-            ));
-        }
+    if !same {
         // The tables that differ (kind: rows), for the findings file.
         let mut tables: std::collections::BTreeMap<u32, usize> = std::collections::BTreeMap::new();
         for d in diffs.iter().filter(|d| !identity(std::slice::from_ref(d), files)) {
             *tables.entry(d.kind).or_default() += 1;
         }
-        changed::record(&format!("identity: not the stored state: (layout) tables {tables:?}"));
-        return Err(layout());
+        let Some((p, debug)) = placed else {
+            changed::record(&format!(
+                "identity: not the stored state, and no delta (U5 found no file changed): \
+                 (layout) tables {tables:?}"
+            ));
+            return Err(layout());
+        };
+        // G-3 judges the identity case only (`debug_judged` against the
+        // front's bytes at the stored placement): a non-identity hop with
+        // debug sections falls back by G-3's name.
+        if debug || p.debug.is_some() {
+            return Err(debug_fallback(
+                "M2b-3 Part 3: a non-identity hop of a changed file with debug sections \
+                 (G-3 judges the identity case only)",
+                debug_reason(),
+            ));
+        }
+        let what = format!(
+            "{}; {flips} sections flip liveness; capture tables differing {tables:?}",
+            p.summary
+        );
+        return match p.materialized {
+            // FINDING (M2b-3 Part 3, the lane's s4_frag_ordinals and
+            // w6_string_dedup_into_changed, gcc, both targets): a fragment
+            // the delta kills is a `DeadFragment` hole, and the map's `dead
+            // .. strings` line for it leaves the alignment padding before it
+            // covered by no item (plumb P-I1: padding is explained only
+            // before an item with an alignment). Not judged: refused by name.
+            Some(Ok((_, df)))
+                if df
+                    .holes
+                    .iter()
+                    .any(|h| h.kind == mortar_core::layout::HoleKind::DeadFragment) =>
+            {
+                let h =
+                    df.holes.iter().find(|h| h.kind == mortar_core::layout::HoleKind::DeadFragment);
+                changed::record(&format!(
+                    "M2b-3 Part 3: materialized ({what}), but the delta kills a merged fragment \
+                     ({h:?}): the map's coverage of the padding before a dead fragment (P-I1) is \
+                     not judged: (layout)"
+                ));
+                Err(layout())
+            }
+            Some(Ok((lu, df))) => {
+                changed::record(&format!("M2b-3 Part 3: materialized ({what}): front 2"));
+                Ok(First::Materialized(Box::new(Materialized { l1: f.layout.clone(), lu, df })))
+            }
+            Some(Err((reason, name))) => {
+                let line =
+                    format!("M2b-3 Part 3: materialize ({what}): {name}: {}", reason.report());
+                if name.starts_with("FINDING") {
+                    Err(changed::finding_as(&line, reason))
+                } else {
+                    changed::record(&line);
+                    Err(reason)
+                }
+            }
+            None => {
+                changed::record(&format!("M2b-3 Part 3: not materialized ({what}): (layout)"));
+                Err(layout())
+            }
+        };
     }
+    let placed = placed.map(|p| p.0);
     // The identity case: the front's placement is the stored one, so the
     // delta's must be it too, offset for offset.
     if let Some(p) = &placed
@@ -468,7 +471,100 @@ fn reference_of(
     steps.mark("check");
     #[cfg(feature = "testhooks")]
     crate::incremental::materialize_hop(view, f);
-    Ok(Reference { refill, size, state, map })
+    Ok(First::Identity(Reference { refill, size, state, map }))
+}
+
+/// U9 and the capture on a front `f` (path (A)): `refill` with the delta
+/// `delta` (front ids) and the set `set` against the previous output, U9's
+/// machine map when the line asks for one, then the capture of `f` with the
+/// refill's binding parts (the state the update writes), with the live
+/// hash under `--gc-sections` (FINDING gc-1). Front 1 of every update
+/// (the files only, the chunks that are not bodies) and front 2 of a
+/// non-identity one (`d_F`, every chunk: R-3).
+#[allow(clippy::too_many_arguments, reason = "the update's inputs, each read once")]
+fn refill_capture(
+    session: &Session,
+    view: &StateView<'_>,
+    stored: &mortar_core::incr::StoredLayout<'_>,
+    f: &crate::front::Front<'_>,
+    ctx: &Ctx<'_>,
+    cwd: &Path,
+    out: &std::fs::File,
+    delta: &mortar_core::incr::LayoutDelta,
+    set: &mortar_core::incr::RefillSet,
+    steps: &mut Steps,
+) -> Result<
+    (mortar_image::update::Refill, u64, mortar_incr::update::testing::MemoryState, Option<Vec<u8>>),
+    IncrReason,
+> {
+    let image = || IncrReason::UpdateNotImplemented(Some(Unimplemented::Image));
+    let meta = view.meta()?;
+    let leaves = view.leaves()?;
+    let symtab = mortar_core::incr::SymtabPlan::default();
+    let want_map = ctx.plan.bookkeeping.mortar_map.is_some();
+    let (refill, size, map) = crate::image::with_link(f, ctx.store, &|_| {}, |l| {
+        let u = mortar_image::update::refill(l, delta, &symtab, set, stored, out, &leaves)
+            .map_err(|e| match e {
+                mortar_image::update::RefillError::Fallback(r) => r,
+                mortar_image::update::RefillError::Failed(f) => {
+                    changed::record(&format!("refill: the image failed: {f:?}: (image)"));
+                    image()
+                }
+            })?;
+        let map = if want_map {
+            let m = mortar_image::map::update_map(l, delta, stored, &symtab)?;
+            Some(mortar_image::map::render(&m, &f.pool))
+        } else {
+            None
+        };
+        Ok::<_, IncrReason>((u, mortar_image::update::output_size(l), map))
+    })
+    .map_err(|e| {
+        changed::record(&format!("refill: the image's link: {e:?}: (image)"));
+        image()
+    })??;
+    steps.mark("refill");
+    // The capture of `f` with the refill's binding parts.
+    let tree = match meta.leaf_fn {
+        0 => mortar_digest::TreeFn::L128,
+        1 => mortar_digest::TreeFn::Sha1,
+        _ => mortar_digest::TreeFn::Sha256,
+    };
+    let written = mortar_image::link::Written {
+        build_id: refill.build_id.clone(),
+        leaves: Some((tree, Vec::new())),
+        sealed: Some(meta.sealed_start..meta.sealed_end),
+        file_size: size,
+        file: None,
+        rows: 0,
+        jobs: 0,
+    };
+    let (mut state, rows5) = session.state(f, ctx.store, &written, cwd).map_err(|e| {
+        changed::record(&format!("capture: {e:?}: (image)"));
+        image()
+    })?;
+    state.leaves.clone_from(&refill.leaves);
+    let rows5 = rows5.ok_or_else(|| {
+        changed::record("capture: no format-5 rows: (image)");
+        image()
+    })?;
+    let mut state = mortar_incr::capture::state5_rows(&state, rows5, false).map_err(|e| {
+        changed::record(&format!("capture: state5_rows: {e:?}: (image)"));
+        image()
+    })?;
+    // gc-lift (FINDING gc-1): under `--gc-sections` the full link's
+    // `META.live_hash` (WP-238 S4) is the driver's, after `state5_rows`
+    // (`incremental.rs`, the capture's live-set hash); the update's state
+    // takes it the same way, from the front's mark and positions, or it
+    // would be written with a zero hash (the next update's `no-live-hash`).
+    if let Some(Ok((_, at))) = f.incr5.as_ref().and_then(|i| i.live_rows.as_ref()) {
+        state.index_sections()?;
+        let h =
+            mortar_incr::update::live::live_hash(&state.view(), f.liveness.live.as_slice(), at)?;
+        state.meta.live_hash = mortar_incr::testhook::live_hash_mutated(h);
+    }
+    steps.mark("capture");
+    Ok((refill, size, state, map))
 }
 
 /// U6 under `--gc-sections` (gc-lift; IN-71a): `live::live` on the join's
@@ -628,6 +724,10 @@ struct Placed {
     summary: String,
     /// G-3 (WP-230): G-1's plan, when a changed file has debug sections.
     debug: Option<mortar_incr::update::debug::DebugPlan>,
+    /// M2b-3 Part 3: the materialized layout and `d_F`, or the refusal
+    /// (the non-identity case only).
+    materialized:
+        Option<Result<(mortar_core::layout::Layout, mortar_core::incr::LayoutDelta), Refusal>>,
 }
 
 /// U6-U7 for the changed files of `cf` (M2b-2b; IN-72): `layout_inputs`,
@@ -662,6 +762,7 @@ fn placement(
     live: &mortar_incr::update::live::LiveDelta,
     capture: &mortar_incr::update::testing::MemoryState,
     previous: &std::fs::File,
+    materialize: bool,
 ) -> Result<Placed, Why> {
     use mortar_core::incr::{FileDemands, LayoutInput};
     use mortar_core::resolution::SectionKind;
@@ -678,7 +779,7 @@ fn placement(
             live.now_live.len(),
             live.now_dead.len()
         ));
-        return Err(Why::Refused);
+        return Err(Why::Refused(IncrReason::UpdateNotImplemented(Some(Unimplemented::Layout))));
     }
     let mut cache = file_front::FrontCache::new(store, f.pool, cwd);
     let relocs = ArchRelocs(f.arch.get());
@@ -706,7 +807,7 @@ fn placement(
     };
     let scan = |e: file_scan::Fail| {
         changed::record(&format!("M2b-2b fallback: {} {}", e.0.report(), e.1));
-        Why::Refused
+        Why::Refused(e.0)
     };
     let mut demands: Vec<FileDemands> = Vec::with_capacity(cf.files.len());
     let mut defined: Vec<(mortar_core::SymbolId, u32)> = Vec::new();
@@ -808,7 +909,7 @@ fn placement(
                 e.report()
             ));
         })
-        .map_err(|_| Why::Refused)?;
+        .map_err(Why::Refused)?;
     let debug = if input.debug {
         Some(debug_placed(view, stored, f, cf, previous, &mut d).map_err(Why::Finding)?)
     } else {
@@ -821,14 +922,185 @@ fn placement(
         ))
     })?;
     placed.debug = debug;
+    // M2b-3 Part 3 (the non-identity case only: O(link)): the stored
+    // layout with `d`, in the front's ids (R-1).
+    if materialize {
+        placed.materialized = Some(materialize_on(view, stored, f, &d, &inputs.changes));
+    }
     Ok(placed)
+}
+
+/// `materialize` against front 1's link and computed layout (the front's
+/// side as `incremental::materialize_hop` builds it).
+fn materialize_on(
+    view: &StateView<'_>,
+    stored: &mortar_core::incr::StoredLayout<'_>,
+    f: &crate::front::Front<'_>,
+    d: &mortar_core::incr::LayoutDelta,
+    changes: &[mortar_core::incr::SectionChange<'_>],
+) -> Result<(mortar_core::layout::Layout, mortar_core::incr::LayoutDelta), Refusal> {
+    let image = |what: String| (IncrReason::UpdateNotImplemented(Some(Unimplemented::Image)), what);
+    let link = mortar_incr::capture::Link {
+        inputs: &f.inputs,
+        resolution: &f.resolution,
+        assignment: &f.assignment,
+        split: &f.merge.split,
+    };
+    let keys = mortar_incr::capture::Keys::new(&link).map_err(|e| image(format!("keys: {e}")))?;
+    let classes: Vec<mortar_core::incr::MergeClass> = f
+        .merge
+        .meta
+        .iter()
+        .map(|m| mortar_core::incr::MergeClass {
+            strings: m.strings,
+            entsize: m.entsize,
+            align: m.align,
+        })
+        .collect();
+    let eh = eh_files(f).map_err(image)?;
+    mortar_incr::update::materialize::materialize(
+        view, stored, d, changes, &link, &keys, &f.layout, &classes, &eh,
+    )
+}
+
+/// The front's `.eh_frame` runs as the capture reads them (`Incr5::eh`).
+fn eh_files(f: &crate::front::Front<'_>) -> Result<Vec<mortar_incr::capture::EhFile>, String> {
+    let runs = match f.incr5.as_ref().map(|i| i.eh.as_ref()) {
+        Some(Ok(runs)) => runs,
+        Some(Err(why)) => return Err(format!("no .eh_frame runs: {why}")),
+        None => return Err("no format-5 front data".into()),
+    };
+    Ok(runs
+        .iter()
+        .map(|r| mortar_incr::capture::EhFile {
+            file: r.file,
+            offset: r.offset,
+            capacity: r.capacity,
+            records: r.records,
+            fdes: r.fdes,
+            movable: r.movable,
+        })
+        .collect())
+}
+
+type Refusal = mortar_incr::update::materialize::Refusal;
+
+/// What a non-identity hop's front 1 hands front 2 (R-1): front 1's
+/// computed layout `l1` (front 2's must be it), the materialized layout
+/// `lu` (front ids) and the delta in front ids `df` (D-4).
+struct Materialized {
+    l1: mortar_core::layout::Layout,
+    lu: mortar_core::layout::Layout,
+    df: mortar_core::incr::LayoutDelta,
+}
+
+/// Front 1's answer: the identity case's reference, or the non-identity
+/// case's materialized layout for front 2.
+enum First {
+    Identity(Reference),
+    Materialized(Box<Materialized>),
+}
+
+/// **Front 2 of a non-identity hop** (R-1, path (A)'s scaffold; the record
+/// "M2b-3 design" D-1 steps 4-5). The replay hook checks that the layout
+/// front 2 computes equals front 1's (`l1`; the front is a deterministic
+/// function of the same inputs, plan and store), else `(image)` with the
+/// first differing table, kept in a captured cell so the fall-back is
+/// named; then it hands the front the materialized `lu`, which the front
+/// builds every plan from and validates (`Layout::validate`, the plans'
+/// sizes, S-88's spans). A front-2 failure with no reason in the cell is
+/// `(image)` and a FINDING: the translation, or the delta, broke a rule
+/// the full link keeps.
+///
+/// Then, on front 2: the S-47 check of `.eh_frame` (each file's range in
+/// the image's plan against `d_F`'s), `refill` with `d_F` over EVERY
+/// chunk (R-3: ranges equal to the previous output are dropped, so no
+/// referrer of a moved definition is missed), U9's map, and the capture of
+/// front 2 (the state written: the capture of a full link with the
+/// update's placement, G-11's reference, by construction).
+fn front_two(
+    session: &Session,
+    view: &StateView<'_>,
+    ctx: &Ctx<'_>,
+    cwd: &Path,
+    out: &std::fs::File,
+    m: Materialized,
+    steps: &mut Steps,
+) -> Result<Reference, IncrReason> {
+    use mortar_core::incr::{RefillChunk, RefillSet, StoredLayout};
+    use mortar_incr::update::materialize::{eh_runs_judged, first_difference};
+    let image = || IncrReason::UpdateNotImplemented(Some(Unimplemented::Image));
+    let Materialized { l1, lu, df } = m;
+    let why: std::cell::RefCell<Option<Refusal>> = std::cell::RefCell::new(None);
+    let lu = std::cell::RefCell::new(Some(lu));
+    let hook = |_: &mortar_incr::capture::Link<'_, '_>,
+                computed: &mortar_core::layout::Layout|
+     -> Result<mortar_core::layout::Layout, String> {
+        if let Some(what) = first_difference(computed, &l1) {
+            let s = format!("M2b-3 Part 3: front 2's computed layout is not front 1's: {what}");
+            *why.borrow_mut() = Some((image(), s.clone()));
+            return Err(s);
+        }
+        lu.borrow_mut().take().ok_or_else(|| {
+            let s = "M2b-3 Part 3: the replay hook called twice".to_owned();
+            *why.borrow_mut() = Some((image(), s.clone()));
+            s
+        })
+    };
+    let rows = mortar_incr::state5::LayoutOf { view };
+    let stored = StoredLayout::new(&rows);
+    let r = image_link(ctx, cwd, Some(&hook), |f| {
+        steps.mark("front2");
+        let runs = eh_files(f).map_err(|e| {
+            changed::record(&format!("M2b-3 Part 3: front 2: {e}: (image)"));
+            image()
+        })?;
+        eh_runs_judged(view, &df, &runs).map_err(|(reason, name)| {
+            changed::record(&format!("M2b-3 Part 3: front 2: {name}: {}", reason.report()));
+            reason
+        })?;
+        let chunks: Vec<RefillChunk> = f
+            .layout
+            .placement
+            .chunks
+            .iter()
+            .map(|(chunk, _)| RefillChunk { chunk, reasons: 0 })
+            .collect();
+        let set = RefillSet { chunks, ..RefillSet::default() };
+        let (refill, size, state, map) =
+            refill_capture(session, view, &stored, f, ctx, cwd, out, &df, &set, steps)
+                .inspect_err(|e| {
+                    changed::record(&format!("M2b-3 Part 3: front 2's refill: {}", e.report()));
+                })?;
+        changed::record(&format!(
+            "M2b-3 Part 3: taken: front 2 ({} ranges, {} bytes)",
+            refill.counts.ranges, refill.counts.dirty
+        ));
+        Ok(Reference { refill, size, state, map })
+    });
+    match (r, why.into_inner()) {
+        (Ok(r), _) => Ok(r),
+        (Err(_), Some((reason, what))) => {
+            changed::record(&format!("{what}: {}", reason.report()));
+            Err(reason)
+        }
+        (Err(e), None) if e == IncrReason::UpdateNotImplemented(Some(Unimplemented::Diags)) => {
+            Err(changed::finding_as(
+                "M2b-3 Part 3: front 2 refused the materialized layout (its diagnostics: the \
+                 line above): (image)",
+                image(),
+            ))
+        }
+        (Err(e), None) => Err(e),
+    }
 }
 
 /// Why [`placement`] gave no placement: a producer refused (recorded by
 /// name), or a FINDING (recorded with both answers).
 enum Why {
-    /// Its reason is in the findings file only (the identity check decides).
-    Refused,
+    /// A producer's refusal, recorded by name; the update falls back by
+    /// its reason (R-2 (a)).
+    Refused(IncrReason),
     Finding(IncrReason),
 }
 
@@ -836,7 +1108,7 @@ enum Why {
 #[allow(clippy::needless_pass_by_value, reason = "a `map_err` argument")]
 fn refused(e: IncrReason) -> Why {
     changed::record(&format!("M2b-2b fallback: {}", e.report()));
-    Why::Refused
+    Why::Refused(e)
 }
 
 fn layout_in_lost() -> IncrReason {
@@ -1022,7 +1294,7 @@ fn judge(
         d.moved.len(),
         d.growth_steps.len()
     );
-    Ok(Placed { differ, summary, debug: None })
+    Ok(Placed { differ, summary, debug: None, materialized: None })
 }
 
 /// Whether the differences of the capture against the stored state are
@@ -1163,7 +1435,17 @@ pub fn image_link<T>(
     let env = crate::front::Env { cwd, pool: ctx.pool, replay, slack: true, state5: true };
     let mut timer = crate::timing::Timer::new(false);
     let front = crate::front::front(ctx.plan.clone(), env, ctx.store, &diag, &mut timer);
-    let quiet = diag.finish().diagnostics().is_empty();
+    let report = diag.finish();
+    let quiet = report.diagnostics().is_empty();
+    if replay.is_some() && (!quiet || front.is_none()) {
+        // M2b-3 Part 3: front 2's words, for the findings file (the caller
+        // names the fall-back).
+        let text = report.render(&mortar_diag::Style::plain("mortar"));
+        changed::record(&format!(
+            "M2b-3 Part 3: front 2 with the materialized layout: {}",
+            text.trim_end().replace('\n', " | ")
+        ));
+    }
     match front {
         Some(mut f) if quiet => {
             f.keep_leaves = true;
