@@ -323,16 +323,23 @@ fn reference_of(
         .map(|(chunk, _)| RefillChunk { chunk, reasons: 0 })
         .collect();
     let set = RefillSet { chunks, ..RefillSet::default() };
-    // M2b-2d item 8 (M2b-4): a refusal here is named in the findings. On
-    // kiln AArch64's `gc_eh_owner_dies` hop 1 it is `walk_eh`'s (`(eh)`,
-    // `mortar_image/src/update.rs`, the `P` arm): hod's CIEs encode the
-    // personality 0x9c (indirect pcrel sdata8) and the LSDA 0x1c (pcrel
-    // sdata8), and IN-34a's move takes 0x9b and 0x1b only.
+    // M2b-2d item 8 (M2b-4): a refusal here is named in the findings. An
+    // `(eh)` one carries no detail: when the previous output's `.eh_frame`
+    // is what `walk_eh` refuses, its name (a CIE's encoding by its byte,
+    // M2b-5 item 3) is added, read again only on that refusal and only
+    // when findings are recorded.
     let (refill, size, state, map) = refill_capture(
         session, view, &stored, f, ctx, cwd, out, &delta, &set, steps,
     )
     .inspect_err(|e| {
-        changed::record(&format!("M2b-4: front 1's refill or capture: {}", e.report()));
+        let why = if *e == IncrReason::UpdateNotImplemented(Some(Unimplemented::Eh))
+            && changed::recording()
+        {
+            eh_why(out).map(|w| format!(": walk_eh: {w}")).unwrap_or_default()
+        } else {
+            String::new()
+        };
+        changed::record(&format!("M2b-4: front 1's refill or capture: {}{why}", e.report()));
     })?;
     // The identity check (G-3's materialization in the identity case),
     // first: the non-identity case materializes the delta (below).
@@ -772,6 +779,19 @@ fn drawn_in(
     Ok((cf, delta, again))
 }
 
+/// Why `walk_eh` refuses the `.eh_frame` of the previous output `out`
+/// (`None`: it does not, or the output is not read): the findings' name
+/// of an `(eh)` refusal (M2b-5 item 3).
+fn eh_why(out: &std::fs::File) -> Option<String> {
+    let len = usize::try_from(out.metadata().ok()?.len()).ok()?;
+    let mut bytes = vec![0u8; len];
+    std::os::unix::fs::FileExt::read_exact_at(out, &mut bytes, 0).ok()?;
+    let o = mortar_elf::Object::parse(&bytes).ok()?;
+    let eh = o.sections().find(|s| s.name().ok() == Some(b".eh_frame".as_slice()))?;
+    let r = eh.file_range().ok()??;
+    mortar_image::update::walk_eh_why(bytes.get(r)?)
+}
+
 /// The delta's placement of the changed files, judged ([`placement`]).
 struct Placed {
     /// The changed sections the delta placed at another offset (or chunk)
@@ -870,33 +890,20 @@ fn placement(
     };
     let mut demands: Vec<FileDemands> = Vec::with_capacity(cf.files.len());
     let mut defined: Vec<(mortar_core::SymbolId, u32)> = Vec::new();
+    let null = file_split::SectionFact {
+        kind: SectionKind::Null,
+        kept: false,
+        out: None,
+        reloc: SectionIndex(0),
+    };
+    let mut per_file = Vec::with_capacity(cf.files.len());
     for c in &cf.files {
         let ff = cache.get(c.file).ok_or_else(layout_in_lost).map_err(refused)?;
         let facts =
             file_split::changed_facts(ff, view, &f.plan, &delta.keepers).map_err(refused)?;
-        let null = file_split::SectionFact {
-            kind: SectionKind::Null,
-            kept: false,
-            out: None,
-            reloc: SectionIndex(0),
-        };
         let by_index = |i: SectionIndex| facts.get(i.0 as usize).copied().unwrap_or(null);
         let split = file_split::split_of(ff, view, &by_index, &relocs, &f.pool, Some(&delta))
             .map_err(refused)?;
-        let d = file_scan::scan_of_why(
-            f.arch.get(),
-            opts,
-            ff,
-            Some(&facts),
-            &split,
-            view,
-            cf,
-            &options,
-            &delta,
-            live,
-        )
-        .map_err(scan)?;
-        demands.push(d);
         let keys = file_scan::defined_facts(
             opts,
             ff,
@@ -912,12 +919,32 @@ fn placement(
         for (id, r) in keys {
             defined.push((id, r.map_err(scan)?.pack()));
         }
+        per_file.push((ff, facts, split));
     }
-    demands.sort_by_key(|d| d.file);
     // R-4a: the facts of the keys the changed files define, into their
     // rows of the delta (the `facts: 0` of `defined_row` is never kept),
-    // and judged against the front's capture (key by name).
+    // and judged against the front's capture (key by name). Before the
+    // scans (M2b-5 item 1): a key a drawn-in file defines takes the facts
+    // of that file's walk in every other file's scan (`file_scan`'s F-1).
     facts_into(view, capture, &mut delta, &defined).map_err(Why::Finding)?;
+    for (ff, facts, split) in &per_file {
+        let d = file_scan::scan_of_why(
+            f.arch.get(),
+            opts,
+            ff,
+            Some(facts),
+            split,
+            view,
+            cf,
+            &options,
+            &delta,
+            live,
+        )
+        .map_err(scan)?;
+        demands.push(d);
+    }
+    drop(per_file);
+    demands.sort_by_key(|d| d.file);
     let debug = cf.files.iter().any(|c| c.debug);
     debug_pieces(&inputs.changes, &mut inputs.pieces, debug);
     let input = LayoutInput {
