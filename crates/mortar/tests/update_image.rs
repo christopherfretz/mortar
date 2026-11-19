@@ -875,10 +875,10 @@ fn update_map_states_the_symtab_plan() {
             );
             let blocks: Vec<&str> =
                 lines.iter().copied().filter(|l| l.starts_with("symblock ")).collect();
-            assert_eq!(blocks.len(), 3, "{arch:?}: {blocks:?}");
+            assert_eq!(blocks.len(), 2, "{arch:?}: {blocks:?}");
             assert!(blocks[0].ends_with(" 1 2 4 8 10"), "{arch:?}: a.o's stored block: {blocks:?}");
             assert!(blocks[1].ends_with(" 9 1 3 40 20"), "{arch:?}: c.o's planned: {blocks:?}");
-            assert_eq!(blocks[2], "symblock - 12 3 8 60 10", "{arch:?}: the global area");
+            assert!(!with.contains("symblock - 12 "), "{arch:?}: the global area is no block");
             assert!(lines.iter().any(|l| l.starts_with("region ")), "{arch:?}: no region");
             // The full link was incremental-mode: its own map has the
             // decision records; a default plan changes no line of it.
