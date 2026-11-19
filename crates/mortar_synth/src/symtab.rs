@@ -483,25 +483,13 @@ impl<'a> SymCtx<'a> {
         }
     }
 
-    /// S-76, S-78: local `i` of `file` as written, or `None`.
+    /// S-76, S-78: local `i` of `file` as written, or `None`: the keep
+    /// rule ([`keeps_local`]), then its place.
     fn local(&self, file: FileId, i: u32) -> Result<Option<Row<'a>>, SynthError> {
         let syms: &'a dyn SymSource = self.syms;
         let l = syms.local(file, i);
-        let typ = l.info & 0xf;
-        if self.discard == Some(Discard::All) || typ == STT_SECTION {
+        if !keeps_local(&l, |s| self.sections.kind(s), self.discard) {
             return Ok(None);
-        }
-        if l.name.starts_with(b".L") && typ != STT_FILE {
-            // S-78: `-X` drops every `.L` local; the default only those in
-            // a split merge section (GNU's `discard_sec_merge`, lld's
-            // default policy).
-            let in_merge = matches!(l.def, SymDef::Section { section, .. }
-                if self.sections.kind(section) == SecKind::Merge);
-            match self.discard {
-                Some(Discard::Locals) => return Ok(None),
-                None if in_merge => return Ok(None),
-                _ => {}
-            }
         }
         let at = match l.def {
             SymDef::Absolute(v) => Some(Where::Absolute(v)),
@@ -513,8 +501,7 @@ impl<'a> SymCtx<'a> {
                 };
                 self.place(section, value, who)?
             }
-            // A local is never common, linker-defined or undefined in a
-            // valid object; such an entry names nothing.
+            // `keeps_local` keeps no other definition.
             SymDef::Common | SymDef::Internal | SymDef::Undefined => None,
         };
         Ok(at.map(|at| Row { name: l.name.into(), info: l.info, other: l.other, size: l.size, at }))
@@ -547,6 +534,56 @@ impl<'a> SymCtx<'a> {
             Row { name: g.name.into(), info: binding << 4 | typ, other: g.other, size: g.size, at };
         Ok((if local { Class3::Demoted(g.file) } else { Class3::Global }, Some(row)))
     }
+}
+
+/// S-76, S-78: whether the keep rule keeps local `l` of a file, before its
+/// place: not with `-x` (`discard` `All`), not an `STT_SECTION`, not a `.L`
+/// local (`STT_FILE` aside) with `-X` (`Locals`) or, by default, in a split
+/// merge section (`kind` of its section `Merge`), and only a definition in
+/// a section or absolute (a local is never common, linker-defined or
+/// undefined in a valid object; such an entry names nothing). Its place
+/// (liveness, S-22's live piece, S-50's record) is the caller's: the full
+/// link's `SymCtx::local`, an update's `.symtab` plan (IN-49a).
+#[must_use]
+pub fn keeps_local(
+    l: &LocalIn<'_>,
+    kind: impl Fn(SectionId) -> SecKind,
+    discard: Option<Discard>,
+) -> bool {
+    let typ = l.info & 0xf;
+    if discard == Some(Discard::All) || typ == STT_SECTION {
+        return false;
+    }
+    if l.name.starts_with(b".L") && typ != STT_FILE {
+        // S-78: `-X` drops every `.L` local; the default only those in
+        // a split merge section (GNU's `discard_sec_merge`, lld's
+        // default policy).
+        let in_merge =
+            matches!(l.def, SymDef::Section { section, .. } if kind(section) == SecKind::Merge);
+        match discard {
+            Some(Discard::Locals) => return false,
+            None if in_merge => return false,
+            _ => {}
+        }
+    }
+    matches!(l.def, SymDef::Absolute(_) | SymDef::Section { .. })
+}
+
+/// S-74, S-76, S-78: the locals of ONE file the keep rule keeps
+/// ([`keeps_local`]), in S-74's order (the input order): each with its
+/// input index `i` (`st_index` `i + 1`). Before their place: a local of a
+/// dead section, of a dead merge piece or of a removed `.eh_frame` record
+/// is here (the full link's `SymCtx::local` drops it by its place).
+pub fn file_locals<'a>(
+    syms: &'a dyn SymSource,
+    kind: impl Fn(SectionId) -> SecKind + 'a,
+    discard: Option<Discard>,
+    file: FileId,
+) -> impl Iterator<Item = (u32, LocalIn<'a>)> + 'a {
+    (0..syms.locals(file)).filter_map(move |i| {
+        let l = syms.local(file, i);
+        keeps_local(&l, &kind, discard).then_some((i, l))
+    })
 }
 
 /// A walk over the entries from a checkpoint.
