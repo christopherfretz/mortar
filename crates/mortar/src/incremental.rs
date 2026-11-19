@@ -1132,6 +1132,9 @@ impl Session {
     /// `--incremental-report` sends it: appended to the report file
     /// (I-58b: in place, never created where the link may create no
     /// file), or onto `stderr`. A full link's and an update's (WP-225).
+    /// Without `--incremental-report`, a full link that fell back says
+    /// `incremental: full (<reason>)` on `stderr`, and an update (`line`
+    /// is `incremental: update ...`) says nothing.
     pub fn emit_report(&self, line: &str, stderr: &mut String) {
         match &self.report {
             Some(Report::Stderr) => stderr.push_str(line),
@@ -1161,7 +1164,13 @@ impl Session {
                     let _ = writeln!(stderr, "incremental: cannot write the report: {e}");
                 }
             }
-            None if !matches!(self.reason, None | Some(IncrReason::NoState(_))) => {
+            // Without the report, only a fall-back is said (diag.md: one
+            // line, `incremental: full (<reason>)`); an update's line is no
+            // fall-back, whatever the session's reason (`UPDATABLE` when
+            // the update ran; WP-225 M2b-4, P3-4).
+            None if !line.starts_with("incremental: update")
+                && !matches!(self.reason, None | Some(IncrReason::NoState(_))) =>
+            {
                 let _ = writeln!(stderr, "incremental: full ({})", words(self.reason.as_ref()));
             }
             None => {}
