@@ -116,9 +116,13 @@ class Hop:
     """
 
     def __init__(self, prev=None, ranges=None, state=None, state_before=None, state_prev=None, scratch=None,
-                 canon=None, causes=None):
+                 canon=None, causes=None, base_was_update=False):
         self.prev, self.ranges, self.state, self.state_before = prev, ranges, state, state_before
         self.state_prev, self.scratch, self.canon, self.causes = state_prev, scratch, canon or CANON_STUB, causes
+        # WP-225 ruling M2a2-1: the previous successful hop's link was an
+        # update (it writes format 5 only, no format-4 side state, so no dry
+        # run can predict this hop until M6): (c) is `n/a base-was-update`.
+        self.base_was_update = base_was_update
 
 
 class Verdict:
@@ -521,9 +525,13 @@ def _run_check(v, tools, x, f):
         v.add('run', 'pass')
 
 
-def _oracle(v, x, base, new):
+def _oracle(v, x, base, new, hop=None):
     if base is None or new is None or not x.report or not os.path.exists(x.report):
         v.add('oracle', 'n/a no previous full link')
+        return
+    if hop is not None and hop.base_was_update:
+        # ruling M2a2-1 (WP-225): the ONLY other way (c) is n/a by itself
+        v.add('oracle', 'n/a base-was-update')
         return
     try:
         R = oracle.Report(x.report)
@@ -649,7 +657,7 @@ def judge_step(tools, x, f, base, new, hop=None):
     _verify(v, tools, x)
     _equiv(v, tools, x, f)
     _run_check(v, tools, x, f)
-    _oracle(v, x, base, new)
+    _oracle(v, x, base, new, hop)
     if hop is not None:
         _state(v, x, hop)
         _duty(v, x, hop)

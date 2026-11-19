@@ -1,0 +1,9 @@
+# WP-225 M2a (ruling M2a-1, M2a2 task A): the first real update in the
+# lane. c.o's function body changes one immediate (7 -> 9 at -O0: the
+# same instruction, the same size); no symbol, section or relocation
+# changes, so every hop after the first is an update in place.
+proves: an update in place of a same-size body edit equals the full link (a), its dirty ranges cover every changed byte (b), and its state is judged (c)
+source: WP-225 M2a, the identity case (spec/landed/incr/WP-225.md "M2a2")
+edit: c.cc
+link: main.o c.o
+compilers: gcc kiln

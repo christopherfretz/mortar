@@ -39,6 +39,8 @@ use mortar_incr::update::view::StateView;
 use mortar_input::store::Store;
 
 use crate::incremental::Session;
+use mortar_incr::ops::WriteFailure;
+use mortar_incr::stamp::Tuple;
 
 /// U2 and U3's result (IN-22, IN-24, IN-28a), in the state's terms.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
@@ -66,6 +68,10 @@ pub struct Ctx<'c> {
     /// front's diagnostics twice).
     pub policy: Policy,
     pub pool: Pool,
+    pub out_path: &'c Path,
+    /// The line's words (`Parsed::args`): the map's `arg` records, as the
+    /// driver gives them to the full link's front (F-9).
+    pub args: &'c [std::ffi::OsString],
 }
 
 impl std::fmt::Debug for Ctx<'_> {
@@ -82,19 +88,98 @@ pub struct Updated {
     pub lines: String,
 }
 
+/// Why [`run`] did not finish an update (ruling M2a-4).
+#[derive(Debug)]
+pub enum UpdateError {
+    /// A reason found before the first write (IN-77e: before W1/C1, or a
+    /// `Fallback` of `write_with`): the caller links in full, or under
+    /// `--incremental=update` reports it as the error.
+    Fallback(IncrReason),
+    /// An I/O failure of a write step (IN-77e: W1..W6, C1..C5, and the
+    /// map after them): the LINK FAILS with the step and the error, and
+    /// no full link follows. From W1 on the state's flag is set (W1) and
+    /// stays set on every failure before W6's flag write, so the next
+    /// link refuses that state (IN-77f): no old state describes the
+    /// output it left.
+    Failed { step: &'static str, error: std::io::Error },
+}
+
+impl From<IncrReason> for UpdateError {
+    fn from(r: IncrReason) -> Self {
+        Self::Fallback(r)
+    }
+}
+
+impl UpdateError {
+    /// The failed link's diagnostic (`cannot-write-output`, naming the
+    /// step and the error; the file is the state for W1, W5, W6, C4 and
+    /// C5, the map for `map`, the output otherwise).
+    #[must_use]
+    pub fn failed_diagnostic(
+        step: &str,
+        error: &std::io::Error,
+        out: &Path,
+        state: &Path,
+        map: Option<&Path>,
+    ) -> mortar_diag::Diagnostic {
+        let path = match step {
+            "W1" | "W5" | "W6" | "C4" | "C5" => state,
+            "map" => map.unwrap_or(out),
+            _ => out,
+        };
+        mortar_diag::Diagnostic::error(mortar_diag::Kind::CannotWriteOutput {
+            path: path.display().to_string(),
+            reason: format!("the incremental update's {step} failed: {error}"),
+        })
+        .note("the update stopped there (spec/incr.md IN-77e); the next link is a full link")
+    }
+}
+
 /// Steps U2 on (IN-70) for a session that U1 accepted
-/// (`Start::Update`): the update, or the reason it falls back (before
-/// its first write; the caller links in full, or under
-/// `--incremental=update` reports it as the error).
+/// (`Start::Update`): the update, the reason it falls back (before its
+/// first write), or the write step that failed.
 ///
 /// # Errors
-/// The fall-back's reason.
+/// [`UpdateError`].
 pub fn run(
     session: &Session,
     parsed: &Parsed,
     cwd: &Path,
     ctx: &Ctx<'_>,
-) -> Result<Updated, IncrReason> {
+) -> Result<Updated, UpdateError> {
+    let ops = TEST_OPS.with(|t| t.borrow_mut().take());
+    match ops {
+        Some(mut ops) => run_with(session, parsed, cwd, ctx, &mut *ops),
+        None => run_with(session, parsed, cwd, ctx, &mut mortar_incr::ops::StdOps),
+    }
+}
+
+std::thread_local! {
+    /// The tests' [`WriteOps`](mortar_incr::ops::WriteOps) for the next
+    /// [`run`] on this thread ([`with_ops`]); `None` in every link.
+    static TEST_OPS: std::cell::RefCell<Option<Box<dyn mortar_incr::ops::WriteOps>>> =
+        const { std::cell::RefCell::new(None) };
+}
+
+/// Tests (ruling M2a-4: a failed W-step through `WriteOps`): `go` with
+/// `ops` as the write operations of the first update [`run`] makes on
+/// this thread (an in-process link, `crate::invoke_in`).
+#[doc(hidden)]
+pub fn with_ops<T>(ops: Box<dyn mortar_incr::ops::WriteOps>, go: impl FnOnce() -> T) -> T {
+    TEST_OPS.with(|t| *t.borrow_mut() = Some(ops));
+    let r = go();
+    TEST_OPS.with(|t| *t.borrow_mut() = None);
+    r
+}
+
+fn run_with(
+    session: &Session,
+    parsed: &Parsed,
+    cwd: &Path,
+    ctx: &Ctx<'_>,
+    ops: &mut dyn mortar_incr::ops::WriteOps,
+) -> Result<Updated, UpdateError> {
+    let mut steps = Steps::start();
     let lock = session.lock().ok_or_else(|| IncrReason::NoState(String::new()))?;
     let view = mortar_incr::state5::open(lock, session.plan_hash())?;
     let detected = detect(&view, cwd)?;
@@ -102,29 +187,301 @@ pub fn run(
     // Option-only reasons the callees give from the plan alone, on every
     // update: `--gc-sections` (U6's `live::live`, WP-215 seam 3).
     if parsed.plan.shaping.gc_sections {
-        return Err(IncrReason::UpdateNotImplemented(Some(Unimplemented::Live)));
+        return Err(IncrReason::UpdateNotImplemented(Some(Unimplemented::Live)).into());
     }
     // G-7: no update producer of the text map (`-Map`, `-M`,
     // `--print-map`), and none yet of the machine map's `arg` records or
     // of the dependency file: `(image)`, before anything is read.
+    // The machine map (`--mortar-map`) is U9's `map::update_map` (record
+    // 0.2; its `arg` records are the front's, as the full link's).
     let b = &ctx.plan.bookkeeping;
-    if b.map.is_some() || b.print_map || b.mortar_map.is_some() || b.dependency_file.is_some() {
-        return Err(IncrReason::UpdateNotImplemented(Some(Unimplemented::Image)));
+    if b.map.is_some() || b.print_map || b.dependency_file.is_some() {
+        return Err(IncrReason::UpdateNotImplemented(Some(Unimplemented::Image)).into());
     }
     // M2a: one changed object, not an archive member (U4's member-level
     // judgement and U5's extraction loop are M2b's).
     if detected.changed_files.len() != 1 || detected.changed_paths.len() != 1 {
-        return Err(IncrReason::UpdateNotImplemented(Some(Unimplemented::Resolve)));
+        return Err(IncrReason::UpdateNotImplemented(Some(Unimplemented::Resolve)).into());
     }
     if view.file(detected.changed_files[0])?.member != 0 {
+        return Err(IncrReason::UpdateNotImplemented(Some(Unimplemented::Resolve)).into());
+    }
+    let file = detected.changed_files[0];
+    let out = session.out.as_ref().ok_or_else(|| IncrReason::NoState(String::new()))?;
+    // U1's tuple of the output (IN-77a), taken before the front reads.
+    let checked = Tuple::of(&out.metadata().map_err(|e| IncrReason::OutputChanged(e.to_string()))?);
+    steps.mark("u1-u3");
+    // The front is dropped before the first write.
+    let reference = image_link(ctx, cwd, None, |f| {
+        steps.mark("front");
+        reference_of(session, &view, file, f, ctx, cwd, out, &mut steps)
+    })?;
+    write_identity(session, &view, ctx, cwd, out, checked, reference, ops, steps)
+}
+
+/// The update's wall time per step, for the report line (the cost table
+/// of the record; `Instant` reads only, in the update path alone).
+struct Steps {
+    at: std::time::Instant,
+    done: Vec<(&'static str, std::time::Duration)>,
+}
+
+impl Steps {
+    fn start() -> Self {
+        Self { at: std::time::Instant::now(), done: Vec::new() }
+    }
+    /// The time since the previous mark, as step `name`.
+    fn mark(&mut self, name: &'static str) {
+        let now = std::time::Instant::now();
+        self.done.push((name, now - self.at));
+        self.at = now;
+    }
+    fn line(&self) -> String {
+        use std::fmt::Write as _;
+        self.done.iter().fold(String::new(), |mut s, (n, d)| {
+            let _ = write!(s, " {n}={:.3}", d.as_secs_f64());
+            s
+        })
+    }
+}
+
+/// What the identity case writes (M2a, ruling M2a-1): the refill's
+/// ranges and leaves, and the state the update writes, which is the
+/// REFERENCE of judgement (d) (below).
+struct Reference {
+    refill: mortar_image::update::Refill,
+    size: u64,
+    state: mortar_incr::update::testing::MemoryState,
+    /// U9's machine map (`map::update_map`), rendered, when the line asks
+    /// for one; written after the output and the state (I-79: the maps of
+    /// a successful link only).
+    map: Option<Vec<u8>>,
+}
+
+/// **The reference of judgement (d)** (ruling M2a-1, G-11): the capture
+/// of a full link with the update's placement, here the capture of path
+/// (A)'s front `f`, whose fresh placement is checked equal to the stored
+/// one first (the identity case of G-3: every decision row of the
+/// capture equals the stored state's under IN-78's canonical form, the
+/// output's binding, `STAT`, `LEAVES` and the changed file's `FILES` row
+/// aside; else `update-not-implemented (layout)`), with the refill's
+/// leaves and build id. M2a WRITES it whole (an M2a update is O(link)
+/// twice over: the front and the whole state); M2b writes the patch and
+/// keeps this as the in-crate (d)'s comparison.
+///
+/// The refill (U9): the changed file's sections, and every chunk that is
+/// not an input-section body rewritten whole (headers, merged and
+/// synthetic chunks: `.symtab`, `.eh_frame`, the note), so every byte of
+/// `P_U` that can differ is refilled; a range equal to the previous
+/// output's is dropped (IN-75).
+#[allow(
+    clippy::too_many_arguments,
+    reason = "path (A)'s front, U1's view and binding, the step timer"
+)]
+fn reference_of(
+    session: &Session,
+    view: &StateView<'_>,
+    file: FileId,
+    f: &crate::front::Front<'_>,
+    ctx: &Ctx<'_>,
+    cwd: &Path,
+    out: &std::fs::File,
+    steps: &mut Steps,
+) -> Result<Reference, IncrReason> {
+    use mortar_core::incr::{LayoutDelta, RefillChunk, RefillSet, StoredLayout, SymtabPlan};
+    let layout = || IncrReason::UpdateNotImplemented(Some(Unimplemented::Layout));
+    let image = || IncrReason::UpdateNotImplemented(Some(Unimplemented::Image));
+    // U4: the front's file of that id is the state's row.
+    let row = view.file(file)?;
+    let path = view.string(row.path)?;
+    if f.inputs.files.get(file).is_none_or(|x| x.path != path.as_slice()) {
         return Err(IncrReason::UpdateNotImplemented(Some(Unimplemented::Resolve)));
     }
-    image_link(ctx, cwd, None, |_front| {
-        // U4 (the changed files' rows from path (A)'s front,
-        // `capture::file_rows`) and U5 (extract, resolve): the next
-        // lines of M2a (WIP.md).
-        Err(IncrReason::UpdateNotImplemented(Some(Unimplemented::Resolve)))
+    let meta = view.meta()?;
+    let leaves = view.leaves()?;
+    let rows = mortar_incr::state5::LayoutOf { view };
+    let stored = StoredLayout::new(&rows);
+    let delta = LayoutDelta { files: vec![file], ..LayoutDelta::default() };
+    let chunks: Vec<RefillChunk> = f
+        .layout
+        .placement
+        .chunks
+        .iter()
+        .filter(|(_, c)| !matches!(c.kind, mortar_core::layout::ChunkKind::Body(_)))
+        .map(|(chunk, _)| RefillChunk { chunk, reasons: 0 })
+        .collect();
+    let set = RefillSet { chunks, ..RefillSet::default() };
+    let symtab = SymtabPlan::default();
+    let want_map = ctx.plan.bookkeeping.mortar_map.is_some();
+    let (refill, size, map) = crate::image::with_link(f, ctx.store, &|_| {}, |l| {
+        let u = mortar_image::update::refill(l, &delta, &symtab, &set, &stored, out, &leaves)
+            .map_err(|e| match e {
+                mortar_image::update::RefillError::Fallback(r) => r,
+                mortar_image::update::RefillError::Failed(_) => image(),
+            })?;
+        let map = if want_map {
+            let m = mortar_image::map::update_map(l, &delta, &stored, &symtab)?;
+            Some(mortar_image::map::render(&m, &f.pool))
+        } else {
+            None
+        };
+        Ok::<_, IncrReason>((u, mortar_image::update::output_size(l), map))
     })
+    .map_err(|_| image())??;
+    steps.mark("refill");
+    // The capture of `f` with the refill's binding parts.
+    let tree = match meta.leaf_fn {
+        0 => mortar_digest::TreeFn::L128,
+        1 => mortar_digest::TreeFn::Sha1,
+        _ => mortar_digest::TreeFn::Sha256,
+    };
+    let written = mortar_image::link::Written {
+        build_id: refill.build_id.clone(),
+        leaves: Some((tree, Vec::new())),
+        sealed: Some(meta.sealed_start..meta.sealed_end),
+        file_size: size,
+        file: None,
+        rows: 0,
+        jobs: 0,
+    };
+    let (mut state, rows5) = session.state(f, ctx.store, &written, cwd).map_err(|_| image())?;
+    state.leaves.clone_from(&refill.leaves);
+    let rows5 = rows5.ok_or_else(image)?;
+    let state = mortar_incr::capture::state5_rows(&state, rows5, false).map_err(|_| image())?;
+    steps.mark("capture");
+    // The identity check (G-3's materialization in the identity case).
+    let lock = session.lock().ok_or_else(image)?;
+    let corrupt = |e: std::io::Error| IncrReason::StateCorrupt(e.to_string());
+    let len = usize::try_from(lock.metadata().map_err(corrupt)?.len()).map_err(|_| image())?;
+    let mut bytes = vec![0u8; len];
+    std::os::unix::fs::FileExt::read_exact_at(lock, &mut bytes, 0).map_err(corrupt)?;
+    let old = mortar_incr::state5::canon::canon(&bytes)
+        .map_err(|e| IncrReason::StateCorrupt(e.to_string()))?;
+    let new = mortar_incr::state5::canon::canon_of(&state)
+        .map_err(|e| IncrReason::StateCorrupt(e.to_string()))?;
+    let diffs = mortar_incr::state5::canon::compare(&new, &old, &stored);
+    if !identity(&diffs, file) {
+        return Err(layout());
+    }
+    steps.mark("check");
+    Ok(Reference { refill, size, state, map })
+}
+
+/// Whether the differences of the capture against the stored state are
+/// those of the identity case (ruling M2a-2): only
+/// - `META`'s fields of the output's binding: the build id, the boot id,
+///   `output_synced` (W5's) and `compactions` (a history field), which the
+///   canonical form clears (`state5::canon::canon_of`), so a `META`
+///   difference that remains is any OTHER field: refused;
+/// - the output's `STAT` stamp tuple (cleared by the canonical form) and
+///   the changed input's `STAT` row (its stamps and hash);
+/// - `LEAVES` (the leaves and their root: the bytes changed);
+/// - the ONE `FILES` row of the changed file (`row <id>`: the canonical
+///   `FILES` table is in id order; its stamps and hash).
+fn identity(diffs: &[mortar_incr::state5::canon::CanonDiff], file: FileId) -> bool {
+    let row = format!("row {}", file.0);
+    diffs.iter().all(|d| match d.kind {
+        kind::STAT | kind::LEAVES => true,
+        kind::FILES => d.row == row,
+        _ => false,
+    })
+}
+
+#[allow(
+    clippy::too_many_arguments,
+    reason = "U10's inputs: the session, U1's binding, U9's result"
+)]
+/// U10 for the identity case: `write_with` the refill's ranges in place
+/// (IN-76, IN-77), W5 the reference state with W4's binding of the
+/// output, whole (`write_state_whole`, ruling M2a-1).
+fn write_identity(
+    session: &Session,
+    view: &StateView<'_>,
+    ctx: &Ctx<'_>,
+    cwd: &Path,
+    out: &std::fs::File,
+    checked: Tuple,
+    r: Reference,
+    ops: &mut dyn mortar_incr::ops::WriteOps,
+    mut steps: Steps,
+) -> Result<Updated, UpdateError> {
+    let lock = session.lock().ok_or_else(|| IncrReason::NoState(String::new()))?;
+    let pair = write::Pair {
+        out,
+        out_path: ctx.out_path,
+        state: lock,
+        state_path: session.state_path(),
+        checked,
+        size: r.size,
+    };
+    // `--incremental=update` ignores `small-output` (U1): its write takes
+    // the in-place path at every size; otherwise IN-45's bound (G-13's
+    // knob in a testhooks build).
+    let bound = if session.update_mode() {
+        0
+    } else {
+        mortar_incr::testhook::small_output_bound().unwrap_or(mortar_incr::SMALL_OUTPUT)
+    };
+    let policy = mortar_incr::WritePolicy { in_place_from: bound, ..mortar_incr::WRITE_PATH };
+    let state = r.state;
+    let path = session.state_path();
+    let mut w5 = |output: &StatRow, ops: &mut dyn mortar_incr::ops::WriteOps| {
+        let mut m = state.clone();
+        m.stat.push(output.clone());
+        let bytes = mortar_incr::capture::state5_encode(&m)
+            .map_err(|e| WriteFailure::Failed { step: "W5", error: std::io::Error::other(e) })?;
+        match write::write_state_whole(path, &bytes, ops) {
+            Ok(true) => Ok(()),
+            Ok(false) => {
+                Err(WriteFailure::Failed { step: "W5", error: std::io::Error::other("state-busy") })
+            }
+            Err(error) => Err(WriteFailure::Failed { step: "W5", error }),
+        }
+    };
+    // Ruling M2a2-1: an update writes no format-4 side state (format 5
+    // only; the side state and the dry run go at M6) and removes a stale
+    // one, before the first write: it describes an output that is about
+    // to stop existing.
+    let side = crate::incremental::format4_path(session.state_path());
+    match std::fs::remove_file(&side) {
+        Ok(()) => {}
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+        Err(error) => return Err(UpdateError::Failed { step: "format4", error }),
+    }
+    let w = write::write_with(
+        &pair,
+        view,
+        &r.refill.ranges,
+        &r.refill.bytes,
+        true,
+        ops,
+        policy,
+        &mut w5,
+    )
+    .map_err(|e| match e {
+        WriteFailure::Fallback(reason) => UpdateError::Fallback(reason),
+        WriteFailure::Failed { step, error } => UpdateError::Failed { step, error },
+    })?;
+    if let (Some(m), Some(bytes)) = (ctx.plan.bookkeeping.mortar_map.as_deref(), &r.map) {
+        let path = cwd.join(m);
+        mortar_image::output::write_whole(&path, bytes, 0o666).map_err(|(_, d)| {
+            UpdateError::Failed { step: "map", error: std::io::Error::other(format!("{d:?}")) }
+        })?;
+    }
+    steps.mark("write");
+    let c = &r.refill.counts;
+    let line = format!(
+        "incremental: update ({:?}{}) changed=1 ranges={} bytes={} (M2a: O(link) twice over, the front and the whole state) steps:{}\n",
+        w.path,
+        w.copy_because.map(|b| format!(": {b}")).unwrap_or_default(),
+        c.ranges,
+        c.dirty,
+        steps.line()
+    );
+    // `--incremental-report`: the file, or standard error (the driver's).
+    let mut lines = String::new();
+    session.emit_report(&line, &mut lines);
+    Ok(Updated { lines })
 }
 
 /// Path (A) (record 0.1, ruling G-1): the WHOLE front over the new
@@ -150,6 +507,7 @@ pub fn image_link<T>(
     match front {
         Some(mut f) if quiet => {
             f.keep_leaves = true;
+            f.args = ctx.args.iter().map(|a| a.as_encoded_bytes().to_vec()).collect();
             go(&f)
         }
         _ => Err(IncrReason::UpdateNotImplemented(Some(Unimplemented::Diags))),
@@ -189,7 +547,7 @@ pub fn detect(view: &StateView<'_>, cwd: &Path) -> Result<Detected, IncrReason> 
             d.changed_paths.push(i);
             continue;
         };
-        let t = mortar_incr::stamp::Tuple::of(&m);
+        let t = Tuple::of(&m);
         if stat_rule(r, (t.dev, t.ino, t.size, t.mtime_ns, t.ctime_ns), &devices) == Stat::Clean {
             continue;
         }

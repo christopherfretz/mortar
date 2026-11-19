@@ -2582,3 +2582,357 @@ fn file_rows_are_the_whole_capture_s() {
     }
     assert!(ran == 2 || !tools_required(), "{ran} of the 2 programs built");
 }
+
+// spec: incr.md IN-70, IN-75, IN-76 (WP-225 M2a, ruling M2a-1): the first
+// real update. One object's same-size function body edit (an immediate),
+// static, no `-g`, no gc: the link is an update (the report says so), its
+// output equals the full link of the new inputs byte for byte, and a
+// second edit updates again; the program runs with the new value.
+#[test]
+fn first_update_same_size_body() {
+    let mut ran = 0;
+    for (prog, text, from) in
+        [(Prog::asm(), ASM, "mov x0, #42"), (Prog::asm_x86_64(), ASM_X86_64, "movl $42, %edi")]
+    {
+        let Some(prog) = prog else { continue };
+        ran += 1;
+        let arch = prog.arch;
+        // `--incremental=update` (it ignores `small-output`, and its
+        // write is in place at every size); the first link makes the state.
+        let env = [];
+        let inc = ["--incremental=update", "--incremental-report"];
+        let o = prog.mortar_env("o", &["--incremental"], &env);
+        assert!(o.success(), "{arch:?}: {}", o.stderr_text());
+        for imm in ["43", "44"] {
+            let src = prog.scratch.write("a.s", text.replace(from, &from.replace("42", imm)));
+            let gcc = arch.tool("gcc").unwrap();
+            let obj = prog.path("a.o");
+            let g = run_in(
+                prog.scratch.path(),
+                &gcc,
+                &["-c".into(), src.into(), "-o".into(), obj.into()],
+                &[],
+            );
+            assert!(g.success(), "gcc: {}", g.stderr_text());
+            let o = prog.mortar_env("o", &inc, &env);
+            let err = o.stderr_text();
+            assert!(o.success(), "{arch:?} {imm}: {err}");
+            assert!(err.contains("incremental: update (InPlace)"), "{arch:?} {imm}: {err}");
+            // The full link of the new inputs (incremental mode: the same
+            // layout rules), to another output.
+            let o = prog.mortar_env("full", &["--incremental=full"], &env);
+            assert!(o.success(), "{arch:?} {imm}: {}", o.stderr_text());
+            let (got, want) = (prog.bytes("o"), prog.bytes("full"));
+            assert_eq!(got.len(), want.len(), "{arch:?} {imm}: sizes");
+            if let Some(i) = got.iter().zip(&want).position(|(a, b)| a != b) {
+                panic!("{arch:?} {imm}: the update differs from the full link at {i:#x}");
+            }
+            // In-crate judgement (d) (`state_equals_capture_of_its_placement`,
+            // ruling G-11): trivially true at M2a, the state IS the
+            // capture of path (A)'s front; (d) starts judging at M2b. Its
+            // form here: the update's state equals the full link's under
+            // IN-78's canonical form, the output's binding aside.
+            state_equals_capture_of_its_placement(&prog, arch, imm);
+            if arch == AARCH64 {
+                let (code, _) = prog.run("o");
+                assert_eq!(code, Some(imm.parse().unwrap()), "{arch:?}: the program's exit");
+            }
+        }
+    }
+    assert!(ran == 2 || !tools_required(), "{ran} of the 2 programs built");
+}
+
+/// The two same-size programs of [`first_update_same_size_body`], with
+/// the source edit that makes a same-size change of `a.o`'s body.
+fn same_size_programs() -> Vec<(Prog, &'static str, &'static str)> {
+    [(Prog::asm(), ASM, "mov x0, #42"), (Prog::asm_x86_64(), ASM_X86_64, "movl $42, %edi")]
+        .into_iter()
+        .filter_map(|(p, t, f)| p.map(|p| (p, t, f)))
+        .collect()
+}
+
+/// `a.o` recompiled with the immediate `imm` in place of 42.
+fn same_size_edit(prog: &Prog, text: &str, from: &str, imm: &str) {
+    recompile(prog, &text.replace(from, &from.replace("42", imm)));
+}
+
+/// `a.o` recompiled from `source`.
+fn recompile(prog: &Prog, source: &str) {
+    let src = prog.scratch.write("a.s", source);
+    let gcc = prog.arch.tool("gcc").unwrap();
+    let obj = prog.path("a.o");
+    let g =
+        run_in(prog.scratch.path(), &gcc, &["-c".into(), src.into(), "-o".into(), obj.into()], &[]);
+    assert!(g.success(), "gcc: {}", g.stderr_text());
+}
+
+/// [`mortar_incr::ops::StdOps`], with every `rename` onto a path whose
+/// name ends with `suffix` failing (`write_state_whole`'s last step: W5).
+struct FailRenameOnto(&'static str);
+
+impl mortar_incr::ops::WriteOps for FailRenameOnto {
+    fn pwrite(&mut self, f: &std::fs::File, at: u64, b: &[u8]) -> std::io::Result<()> {
+        mortar_incr::ops::StdOps.pwrite(f, at, b)
+    }
+    fn set_len(&mut self, f: &std::fs::File, len: u64) -> std::io::Result<()> {
+        mortar_incr::ops::StdOps.set_len(f, len)
+    }
+    fn fdatasync(&mut self, f: &std::fs::File) -> std::io::Result<()> {
+        mortar_incr::ops::StdOps.fdatasync(f)
+    }
+    fn fsync(&mut self, f: &std::fs::File) -> std::io::Result<()> {
+        mortar_incr::ops::StdOps.fsync(f)
+    }
+    fn rename(&mut self, from: &Path, to: &Path) -> std::io::Result<()> {
+        if to.as_os_str().as_encoded_bytes().ends_with(self.0.as_bytes()) {
+            return Err(std::io::Error::other("injected failure (the test's WriteOps)"));
+        }
+        mortar_incr::ops::StdOps.rename(from, to)
+    }
+    fn hard_link(&mut self, from: &Path, to: &Path) -> std::io::Result<()> {
+        mortar_incr::ops::StdOps.hard_link(from, to)
+    }
+    fn unlink(&mut self, path: &Path) -> std::io::Result<()> {
+        mortar_incr::ops::StdOps.unlink(path)
+    }
+    fn fsync_dir(&mut self, dir: &Path) -> std::io::Result<()> {
+        mortar_incr::ops::StdOps.fsync_dir(dir)
+    }
+    fn flock(
+        &mut self,
+        f: &std::fs::File,
+        mode: mortar_incr::ops::LockMode,
+    ) -> std::io::Result<bool> {
+        mortar_incr::ops::StdOps.flock(f, mode)
+    }
+    fn create_new(&mut self, path: &Path) -> std::io::Result<std::fs::File> {
+        mortar_incr::ops::StdOps.create_new(path)
+    }
+    fn copy_range(
+        &mut self,
+        from: &std::fs::File,
+        to: &std::fs::File,
+        len: u64,
+    ) -> std::io::Result<()> {
+        mortar_incr::ops::StdOps.copy_range(from, to, len)
+    }
+}
+
+/// Ruling M2a-2's cases of the identity check (the capture of the
+/// front against the stored state): an edit of `a.o` of the same size,
+/// `(a64 from, to)` and `(x64 from, to)` in the sources; `update` whether
+/// it must be an update in place (else a full link by `(layout)`). Either
+/// way the output equals the full link of the new inputs.
+fn identity_case(case: &str, a64: (&str, &str), x64: (&str, &str), update: bool) {
+    let programs = same_size_programs();
+    assert!(programs.len() == 2 || !tools_required(), "{} of the 2 programs built", programs.len());
+    for (prog, text, _) in programs {
+        let arch = prog.arch;
+        let (from, to) = if arch == AARCH64 { a64 } else { x64 };
+        assert!(text.contains(from), "{case}: {from:?} is not in the source");
+        let o = prog.mortar_env("o", &["--incremental"], &[]);
+        assert!(o.success(), "{arch:?}: {}", o.stderr_text());
+        let before = prog.bytes("o").len();
+        recompile(&prog, &text.replace(from, to));
+        // `--incremental=update` (it ignores `small-output`; a fall-back
+        // is its error).
+        let o = prog.mortar_env("o", &["--incremental=update", "--incremental-report"], &[]);
+        let err = o.stderr_text();
+        if !update {
+            assert!(!o.success(), "{arch:?} {case}: updated: {err}");
+            assert!(
+                err.contains("cannot update: update-not-implemented (layout)"),
+                "{arch:?} {case}: {err}"
+            );
+            continue;
+        }
+        assert!(o.success(), "{arch:?} {case}: {err}");
+        assert!(err.contains("incremental: update (InPlace)"), "{arch:?} {case}: {err}");
+        let o = prog.mortar_env("full", &["--incremental=full"], &[]);
+        assert!(o.success(), "{arch:?} {case}: {}", o.stderr_text());
+        let (got, want) = (prog.bytes("o"), prog.bytes("full"));
+        assert_eq!(got.len(), before, "{arch:?} {case}: the edit is not of the same size");
+        if let Some(i) = got.iter().zip(&want).position(|(a, b)| a != b) {
+            panic!("{arch:?} {case}: the output differs from the full link at {i:#x}");
+        }
+        assert_eq!(got.len(), want.len(), "{arch:?} {case}: sizes");
+        state_equals_capture_of_its_placement(&prog, arch, case);
+    }
+}
+
+/// M2a-2: a GLOBAL symbol whose size changes (`_start`'s `.size`, the
+/// bytes the same): its `RESOLVED` row differs: `(layout)`.
+#[test]
+fn identity_check_refuses_a_symbol_size_change() {
+    identity_case(
+        "global symbol size",
+        ("\tsvc #0\n", "\tsvc #0\n\t.size _start, 8\n"),
+        ("\tsyscall\n", "\tsyscall\n\t.size _start, 8\n"),
+        false,
+    );
+}
+
+/// M2a-2: a LOCAL symbol whose size changes (`sfn`'s `.size`): no state
+/// row holds a local's size (it is in `.symtab`'s bytes only, which the
+/// refill rewrites), so the update runs; it equals the full link.
+#[test]
+fn identity_check_updates_a_local_symbol_size_change() {
+    let r = ("\tret\n", "\tret\n\t.size sfn, 4\n");
+    identity_case("local symbol size", r, r, true);
+}
+
+/// M2a-2 (i): a relocation to another key at the same size (an immediate
+/// becomes an address): a new reference of the changed file: `(layout)`.
+#[test]
+fn identity_check_refuses_a_new_relocation() {
+    identity_case(
+        "new relocation",
+        ("mov x0, #42", "adr x0, word2"),
+        ("movl $42, %edi", "movl $word, %edi"),
+        false,
+    );
+}
+
+/// Ruling M2a2-3: a merged string of the same size changes (`world` ->
+/// `wurld`). The fragment's identity IS state rows (`FRAGS`, kind 11,
+/// keyed by the content hash, and the file's `FRAG_USE`, kind 56): the
+/// capture differs there, so the identity check refuses it by name,
+/// `update-not-implemented (layout)` (`--incremental=update`'s error,
+/// before the first write), and the link that falls back (plain
+/// `--incremental`) is a full link whose output equals `--incremental=full`'s.
+/// When the delta layout runs (U-4 item 6, M2b/M3) this test flips to an
+/// update.
+#[test]
+fn identity_check_falls_back_by_name_on_a_merged_string_change() {
+    let programs = same_size_programs();
+    assert!(programs.len() == 2 || !tools_required(), "{} of the 2 programs built", programs.len());
+    for (prog, text, _) in programs {
+        let arch = prog.arch;
+        let (from, to) = ("\"world\"", "\"wurld\"");
+        assert!(text.contains(from), "{from:?} is not in the source");
+        let o = prog.mortar_env("o", &["--incremental"], &[]);
+        assert!(o.success(), "{arch:?}: {}", o.stderr_text());
+        let before = prog.bytes("o");
+        recompile(&prog, &text.replace(from, to));
+        // `--incremental=update` (it ignores `small-output`): the fall-back
+        // is its error, by name, before the first write.
+        let o = prog.mortar_env("o", &["--incremental=update", "--incremental-report"], &[]);
+        let err = o.stderr_text();
+        assert!(!o.success(), "{arch:?}: updated: {err}");
+        assert!(
+            err.contains("cannot update: update-not-implemented (layout)"),
+            "{arch:?}: not the named fall-back: {err}"
+        );
+        assert!(prog.bytes("o") == before, "{arch:?}: the refused update wrote the output");
+        // The link that falls back (plain `--incremental`) is a full link.
+        let o = prog.mortar_env("o", &["--incremental", "--incremental-report"], &[]);
+        let err = o.stderr_text();
+        assert!(o.success(), "{arch:?}: {err}");
+        assert!(err.contains("incremental: full ("), "{arch:?}: {err}");
+        let o = prog.mortar_env("full", &["--incremental=full"], &[]);
+        assert!(o.success(), "{arch:?}: {}", o.stderr_text());
+        let (got, want) = (prog.bytes("o"), prog.bytes("full"));
+        if let Some(i) = got.iter().zip(&want).position(|(a, b)| a != b) {
+            panic!("{arch:?}: the output differs from the full link at {i:#x}");
+        }
+        assert_eq!(got.len(), want.len(), "{arch:?}: sizes");
+    }
+}
+
+/// Ruling M2a-4 (IN-77e): a write step of an update that fails FAILS the
+/// link, naming the step and the error (no reason word, no full link
+/// after it); W1's flag stays set, so the next link refuses the state and
+/// links in full.
+#[test]
+fn update_failed_w5_fails_the_link() {
+    let programs = same_size_programs();
+    assert!(programs.len() == 2 || !tools_required(), "{} of the 2 programs built", programs.len());
+    for (prog, text, from) in programs {
+        let arch = prog.arch;
+        let o = prog.mortar_env("o", &["--incremental"], &[]);
+        assert!(o.success(), "{arch:?}: {}", o.stderr_text());
+        same_size_edit(&prog, text, from, "43");
+        let args = prog.args("o", &["--incremental=update"]);
+        let inv = mortar::update::with_ops(Box::new(FailRenameOnto(".mortar-state")), || {
+            mortar::invoke_in("mortar", &args, &prog.built.dir)
+        });
+        let text = match inv.outcome {
+            mortar::Outcome::Failed(r) => r.render(&mortar_diag::Style::plain("mortar")),
+            other => panic!("{arch:?}: the link did not fail: {other:?}"),
+        };
+        assert!(text.contains("cannot write output file"), "{arch:?}: {text}");
+        assert!(text.contains("W5 failed: injected failure"), "{arch:?}: {text}");
+        assert!(!text.contains("output-changed"), "{arch:?}: {text}");
+        let state = std::fs::read(prog.state_of("o")).unwrap();
+        assert!(
+            mortar_incr::state5::read::refuse_updating(&state).is_err(),
+            "{arch:?}: W1's flag is not set after the failed W5"
+        );
+        // The next link: a full link, from the flagged state.
+        let o = prog.mortar_env("o", &["--incremental", "--incremental-report"], &[]);
+        let err = o.stderr_text();
+        assert!(o.success(), "{arch:?}: {err}");
+        assert!(err.contains("incremental: full ("), "{arch:?}: {err}");
+    }
+}
+
+/// IN-45/IN-76's copy path (the ruling on U1, M2a2): an output another
+/// process holds open is updated by copy, and equals the full link.
+/// (An output WITHOUT WRITE PERMISSION cannot be set up for an update: the
+/// `chmod` changes its ctime, so U1 finds `output-changed`; and euid 0
+/// opens it for writing anyway.) The output is in ONE temporary directory
+/// under `/tmp`, removed at the end.
+#[test]
+fn update_by_copy_equals_the_full_link() {
+    let programs = same_size_programs();
+    assert!(programs.len() == 2 || !tools_required(), "{} of the 2 programs built", programs.len());
+    for (prog, text, from) in programs {
+        let arch = prog.arch;
+        let nanos =
+            std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos();
+        let tmp = PathBuf::from(format!("/tmp/mortar-wp225-{}-{nanos}", std::process::id()));
+        std::fs::create_dir(&tmp).unwrap();
+        eprintln!("{arch:?}: the copy path's directory: {}", tmp.display());
+        let out = tmp.join("o");
+        let link = |o: &Path, extra: &[&str]| {
+            let mut a = with_output(&prog.built.args, o);
+            a.extend(extra.iter().map(OsString::from));
+            run_in(&prog.built.dir, Path::new(MORTAR), &a, &[])
+        };
+        let o = link(&out, &["--incremental"]);
+        assert!(o.success(), "{arch:?}: {}", o.stderr_text());
+        let mut holder = Command::new("sleep")
+            .arg("60")
+            .stdin(std::fs::File::open(&out).unwrap())
+            .spawn()
+            .unwrap();
+        let why = "another process maps the output or holds it open";
+        same_size_edit(&prog, text, from, "43");
+        let o = link(&out, &["--incremental=update", "--incremental-report"]);
+        let _ = holder.kill();
+        let _ = holder.wait();
+        let err = o.stderr_text();
+        assert!(o.success(), "{arch:?}: {err}");
+        assert!(err.contains(&format!("incremental: update (Copy: {why})")), "{arch:?}: {err}");
+        let full = tmp.join("full");
+        let o = link(&full, &["--incremental=full"]);
+        assert!(o.success(), "{arch:?}: {}", o.stderr_text());
+        let (got, want) = (std::fs::read(&out).unwrap(), std::fs::read(&full).unwrap());
+        assert!(got == want, "{arch:?}: the update by copy differs from the full link");
+        std::fs::remove_dir_all(&tmp).unwrap();
+    }
+}
+
+fn state_equals_capture_of_its_placement(prog: &Prog, arch: Arch, hop: &str) {
+    use mortar_incr::format::kind;
+    use mortar_incr::state5::canon::{canon, compare};
+    let a = canon(&std::fs::read(prog.state_of("o")).unwrap()).unwrap();
+    let b = canon(&std::fs::read(prog.state_of("full")).unwrap()).unwrap();
+    let rows = mortar_core::incr::MemoryLayout::default();
+    let p_u = mortar_core::incr::StoredLayout::new(&rows);
+    let diffs: Vec<_> = compare(&a, &b, &p_u)
+        .into_iter()
+        .filter(|d| !matches!(d.kind, kind::META | kind::STAT))
+        .collect();
+    assert!(diffs.is_empty(), "{arch:?} {hop}: (d): {diffs:?}");
+}

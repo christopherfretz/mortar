@@ -358,7 +358,14 @@ fn invoke_with4(
         // `--incremental=update` the error.
         incremental::Start::Update(s) => {
             let mut s = *s;
-            let ctx = update::Ctx { plan, store: &store, policy: diagnostics.policy(), pool };
+            let ctx = update::Ctx {
+                plan,
+                store: &store,
+                policy: diagnostics.policy(),
+                pool,
+                out_path: &out_path,
+                args: &parsed.args,
+            };
             let reason = match update::run(&s, &parsed, cwd, &ctx) {
                 // M2a: U5 on are not wired, so no update finishes yet; the
                 // finished one's lines go into the `Invocation` here.
@@ -372,7 +379,21 @@ fn invoke_with4(
                         incremental: done.lines,
                     };
                 }
-                Err(reason) => reason,
+                Err(update::UpdateError::Fallback(reason)) => reason,
+                // IN-77e (ruling M2a-4): a write step failed: the link
+                // fails with it, and no full link follows.
+                Err(update::UpdateError::Failed { step, error }) => {
+                    let d = update::UpdateError::failed_diagnostic(
+                        step,
+                        &error,
+                        &out_path,
+                        s.state_path(),
+                        mortar_map_path.as_deref(),
+                    );
+                    diagnostics.emit(Key::new(15, 0, 3), d);
+                    emit_refusals(&diagnostics);
+                    return failed(diagnostics, timer.finish());
+                }
             };
             if s.update_mode() {
                 let d = Diagnostic::error(mortar_diag::Kind::IncrementalUpdateFailed {

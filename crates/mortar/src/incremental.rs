@@ -648,7 +648,15 @@ fn check(state: Option<&std::fs::File>, plan_hash: [u8; 16], out_path: &Path) ->
     let target = Some((meta.machine, meta.class));
     let size = Some(meta.file_size);
     let fail = |reason| Checked { reason, target, size, out: None };
-    let out = match std::fs::File::open(out_path) {
+    // IN-77a: one descriptor, read-write when it can be (the in-place
+    // path writes through it; IN-45's copy path when it cannot be: a
+    // running program's `ETXTBSY`, no write permission).
+    let opened = std::fs::OpenOptions::new()
+        .read(true)
+        .write(true)
+        .open(out_path)
+        .or_else(|_| std::fs::File::open(out_path));
+    let out = match opened {
         Ok(f) => f,
         Err(e) => return fail(IncrReason::OutputChanged(format!("cannot open the output: {e}"))),
     };
@@ -968,6 +976,46 @@ impl Session {
         Times::clone(&self.times)
     }
 
+    /// The `incremental:` line (and its `delta` lines) where
+    /// `--incremental-report` sends it: appended to the report file
+    /// (I-58b: in place, never created where the link may create no
+    /// file), or onto `stderr`. A full link's and an update's (WP-225).
+    pub fn emit_report(&self, line: &str, stderr: &mut String) {
+        match &self.report {
+            Some(Report::Stderr) => stderr.push_str(line),
+            Some(Report::File(path)) => {
+                // I-58b: appended in place, never created where the link
+                // may create no file.
+                let refused =
+                    match mortar_image::output::disposition(path, mortar_image::output::Use::Whole)
+                    {
+                        mortar_image::output::Disposition::Refused { reason, .. }
+                        | mortar_image::output::Disposition::Forbidden { reason, .. } => {
+                            Some(reason)
+                        }
+                        _ => None,
+                    };
+                let appended = refused.map_or_else(
+                    || {
+                        std::fs::OpenOptions::new()
+                            .create(true)
+                            .append(true)
+                            .open(path)
+                            .and_then(|mut file| file.write_all(line.as_bytes()))
+                    },
+                    |r| Err(std::io::Error::other(r)),
+                );
+                if let Err(e) = appended {
+                    let _ = writeln!(stderr, "incremental: cannot write the report: {e}");
+                }
+            }
+            None if !matches!(self.reason, None | Some(IncrReason::NoState(_))) => {
+                let _ = writeln!(stderr, "incremental: full ({})", words(self.reason.as_ref()));
+            }
+            None => {}
+        }
+    }
+
     /// After a successful full link: the state written and bound to the
     /// output, and the lines for standard error (the fall-back's, or the
     /// report's when it goes there).
@@ -1063,39 +1111,7 @@ impl Session {
         if let Some(d) = &dry {
             line.push_str(&d.lines);
         }
-        match &self.report {
-            Some(Report::Stderr) => stderr.push_str(&line),
-            Some(Report::File(path)) => {
-                // I-58b: appended in place, never created where the link
-                // may create no file.
-                let refused =
-                    match mortar_image::output::disposition(path, mortar_image::output::Use::Whole)
-                    {
-                        mortar_image::output::Disposition::Refused { reason, .. }
-                        | mortar_image::output::Disposition::Forbidden { reason, .. } => {
-                            Some(reason)
-                        }
-                        _ => None,
-                    };
-                let appended = refused.map_or_else(
-                    || {
-                        std::fs::OpenOptions::new()
-                            .create(true)
-                            .append(true)
-                            .open(path)
-                            .and_then(|mut file| file.write_all(line.as_bytes()))
-                    },
-                    |r| Err(std::io::Error::other(r)),
-                );
-                if let Err(e) = appended {
-                    let _ = writeln!(stderr, "incremental: cannot write the report: {e}");
-                }
-            }
-            None if !matches!(self.reason, None | Some(IncrReason::NoState(_))) => {
-                let _ = writeln!(stderr, "incremental: full ({})", words(self.reason.as_ref()));
-            }
-            None => {}
-        }
+        self.emit_report(&line, &mut stderr);
         stderr
     }
 
@@ -1260,7 +1276,7 @@ impl Session {
     /// The state of the link `f`, all but its output row; with the
     /// format-5 switch, format 5's own rows beside it (WP-244).
     #[allow(clippy::too_many_lines)] // the state's parts, each timed (WP-094)
-    fn state(
+    pub(crate) fn state(
         &self,
         f: &Front<'_>,
         store: &Store,
