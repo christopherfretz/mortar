@@ -192,7 +192,8 @@ impl<'s> Link<'s> for Tables<'_, 's> {
 }
 
 /// A section of a file to split, with its data.
-enum Unit<'a> {
+#[derive(Debug)]
+pub enum Unit<'a> {
     /// A `MergeIn` without its bytes, and the bytes.
     Merge(MergeIn<'static>, Cow<'a, [u8]>),
     Whole(SectionId, Whole),
@@ -316,7 +317,11 @@ pub fn run(pool: &Pool, t: &dyn Link<'_>, relocs: &dyn Relocs) -> Result<Phase, 
 }
 
 /// The units of one file, in section order.
-fn units<'s>(
+///
+/// # Errors
+///
+/// The file's first malformed or refused section.
+pub fn units<'s>(
     t: &dyn Link<'s>,
     file: FileId,
     relocs: &dyn Relocs,
