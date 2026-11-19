@@ -10,6 +10,22 @@
 //!   `reserve-exhausted` (AArch64: the tail of `.text` is the patch
 //!   island) or moves the file's sections to overflow regions.
 //!
+//! - F-1: file 0's `SYMTAB` range holds the global area, then the
+//!   internal file's block; an update's map states the stored blocks,
+//!   the internal one included, and no other.
+//!
+//! - `META.boot_id` (IN-77c): the full link writes the boot it ran on;
+//!   the update's boot check on the same boot trusts the output without
+//!   re-hashing it (a byte changed behind its back is not seen), on
+//!   another boot it re-hashes and refuses `output-changed`.
+//!
+//! - `DIAGS` (IN-75a): what an update loses today. The full link
+//!   prints a reference-site warning; its state holds no `DIAGS` row
+//!   (no producer: the capture cannot see the collector's warnings before
+//!   `finish`). The test states what the updates after it print.
+//!
+//! (State version 10: `symtab_rows.rs`, `version_9_state_is_refused`.)
+//!
 //! On AArch64 and x86-64.
 #![allow(clippy::too_many_lines, reason = "one comparison after the other")]
 
@@ -171,5 +187,235 @@ fn regions_keep_an_unchanged_file_in_place() {
             );
             std::fs::copy(&keep, line.dir.join(name)).expect("restore the file");
         }
+    }
+}
+
+/// F-1 (WP-263): file 0's `SYMTAB` range holds the global area, then the
+/// internal file's block; `symtab_block(FileId(0))` is the block. The
+/// map of an update that places nothing (`update_map` with an empty delta
+/// and plan, over the stored rows) states every stored block and no other,
+/// the internal one as `symblock -` (a full link's map states none:
+/// `decisions_of`, IN-49a), and the blocks tile `[1, tail_first)`.
+#[test]
+fn the_internal_block_is_stored_and_mapped() {
+    use mortar_core::incr::{LayoutDelta, LayoutRows, SymtabPlan};
+    use mortar_image::map::{render, update_map};
+    for line in lines(&[]) {
+        let args = line.args(&["wp255d_m2", "wp255d_m1"]);
+        line.archive(&["m1.o", "m2.o"]);
+        let old = state(&line, &args, "old");
+        let rows = mortar_incr::state5::LayoutOf { view: &old };
+        let area = old.symtab_of(mortar_core::FileId(0)).expect("SYMTAB").expect("the area");
+        let internal = rows.symtab_block(mortar_core::FileId(0)).expect("SYMTAB");
+        let internal = internal.unwrap_or_else(|| panic!("{}: no internal block", line.label));
+        let (tables_area, tables) = rows.symtab_tables().expect("the tables");
+        assert_eq!(tables_area, area, "{}: symtab_tables' area is file 0's first row", line.label);
+        assert_eq!(area.first, tables.sh_info, "{}: the area starts at sh_info", line.label);
+        assert_eq!(internal.first, 1, "{}: the internal block is the first", line.label);
+        assert!(internal.count > 0, "{}: it has entries", line.label);
+        // Every stored block, file 0's area excepted, as the map states it.
+        let memory = mortar_incr::state5::read::decode(
+            &std::fs::read(line.dir.join("old.state5")).expect("the state"),
+        )
+        .expect("the state decodes");
+        assert_eq!(memory.symtab.first(), Some(&(mortar_core::FileId(0), area)), "{}", line.label);
+        assert_eq!(
+            memory.symtab.get(1),
+            Some(&(mortar_core::FileId(0), internal)),
+            "{}",
+            line.label
+        );
+        let mut want: Vec<String> = memory.symtab[1..]
+            .iter()
+            .map(|(_, b)| {
+                format!(
+                    "{} {} {} {:x} {:x}",
+                    b.first, b.count, b.capacity, b.strtab_offset, b.strtab_capacity
+                )
+            })
+            .collect();
+        want.sort();
+        let store = support::store();
+        let f = whole(&line, &args, &store);
+        let stored = StoredLayout::new(&rows);
+        let pool = pool();
+        let map = mortar::image::with_link(&f, &store, &|_| {}, |l| {
+            let m = update_map(l, &LayoutDelta::default(), &stored, &SymtabPlan::default())
+                .expect("update_map");
+            render(&m, &pool)
+        })
+        .expect("the link");
+        let update: Vec<String> = String::from_utf8(map)
+            .expect("a map is text")
+            .lines()
+            .filter(|l| l.starts_with("symblock "))
+            .map(str::to_owned)
+            .collect();
+        let dash: Vec<&String> = update.iter().filter(|l| l.starts_with("symblock - ")).collect();
+        eprintln!("{}: {} blocks; internal {internal:?}: {dash:?}", line.label, update.len());
+        assert_eq!(dash.len(), 1, "{}: one internal block: {dash:?}", line.label);
+        assert!(
+            dash[0].starts_with(&format!("symblock - 1 {} {} ", internal.count, internal.capacity)),
+            "{}: the stored internal block: {dash:?}",
+            line.label
+        );
+        let mut got: Vec<String> =
+            update.iter().map(|l| l.splitn(3, ' ').nth(2).unwrap_or("").to_owned()).collect();
+        got.sort();
+        assert_eq!(got, want, "{}: the update's blocks are the stored ones", line.label);
+        // Tiled in `.symtab` order: each block ends where the next begins,
+        // the last at `sh_info`.
+        // `symblock <file> <first> <count> <capacity> <strtab> <held>`.
+        let mut tiles: Vec<(u64, u64)> = update
+            .iter()
+            .map(|l| {
+                let v: Vec<u64> =
+                    l.split(' ').skip(2).take(3).map(|x| x.parse().expect("dec")).collect();
+                (v[0], v[2])
+            })
+            .collect();
+        tiles.sort_unstable();
+        let mut at = 1u64;
+        for (first, capacity) in tiles {
+            assert_eq!(first, at, "{}: the blocks tile the locals", line.label);
+            at = first + capacity;
+        }
+        // Then the tail reserve `[tail_first, sh_info)` (fillers).
+        assert_eq!(at, u64::from(tables.tail_first), "{}: the last ends at the tail", line.label);
+    }
+}
+
+/// `META.boot_id` (IN-77c, WP-264): the full link's state holds this
+/// boot's id. With one output byte changed behind the state's back, the
+/// boot check of an update on the same boot does not re-hash (`Ok`: the
+/// change goes unseen, as IN-77c allows for a boot that did not crash),
+/// while on any other boot, or an unreadable one, it re-hashes and
+/// refuses `output-changed`.
+#[test]
+fn the_same_boot_does_not_rehash() {
+    use mortar::update::write::{boot_check, boot_id};
+    use mortar_core::incr::IncrReason;
+    for line in lines(&[]) {
+        let args = line.args(&["wp255d_m2", "wp255d_m1"]);
+        line.archive(&["m1.o", "m2.o"]);
+        let old = state(&line, &args, "old");
+        let meta = old.meta().expect("META");
+        let boot = boot_id();
+        assert_eq!(meta.boot_id, boot.unwrap_or_default(), "{}: META.boot_id", line.label);
+        assert!(!meta.output_synced, "{}: a full link's output is not synced", line.label);
+        let path = line.dir.join("old");
+        let good = std::fs::read(&path).expect("the output");
+        let out = std::fs::File::open(&path).expect("open the output");
+        assert_eq!(boot_check(&old, &out, boot).map_err(|e| e.report()), Ok(()), "{}", line.label);
+        assert_eq!(
+            boot_check(&old, &out, Some([0xa5; 16])).map_err(|e| e.report()),
+            Ok(()),
+            "{}: an untouched output passes the re-hash",
+            line.label
+        );
+        // One byte changed (the ELF magic: never the sealed build id).
+        let mut bad = good.clone();
+        bad[1] ^= 0x20;
+        std::fs::write(&path, &bad).expect("change the output");
+        let out = std::fs::File::open(&path).expect("open the output");
+        let same = boot_check(&old, &out, boot);
+        let other = boot_check(&old, &out, Some([0xa5; 16]));
+        let unread = boot_check(&old, &out, None);
+        eprintln!("{}: boot {boot:?}: same {same:?}; other {other:?}", line.label);
+        if boot.is_some() {
+            assert!(same.is_ok(), "{}: the same boot does not re-hash: {same:?}", line.label);
+        } else {
+            assert!(matches!(same, Err(IncrReason::OutputChanged(_))), "{}", line.label);
+        }
+        for r in [other, unread] {
+            assert!(
+                matches!(&r, Err(IncrReason::OutputChanged(w)) if w.contains("window 0 differs")),
+                "{}: another boot re-hashes: {r:?}",
+                line.label
+            );
+        }
+        std::fs::write(&path, &good).expect("restore the output");
+    }
+}
+
+/// glibc's `link_warning` form (as `incr_diags.rs`): `.gnu.warning.<sym>`,
+/// not allocated.
+const WARNED: &str = "int wp264_warned(int x) { return x + 1; }\n\
+    static const char w_wp264_warned[] __attribute__((used, \
+    section(\".gnu.warning.wp264_warned\\n\\t#\"))) = \"wp264: wp264_warned is used\";\n";
+const CALLER: &str =
+    "int wp264_warned(int);\nint wp264_w2(int x) { return wp264_warned(x) + 2; }\n";
+
+/// DIAGS (IN-75a, WP-263 F-2): what an update loses today. The full link
+/// prints the reference-site warning, and its state holds no `DIAGS` row.
+/// An update with nothing changed, and one with an unrelated file
+/// (`m1.o`) changed, are then run: both refuse, the second
+/// `update-not-implemented (diags)` (its front saw the warning). So no
+/// warning is lost today; the update is: a link with any warning never
+/// updates. Once the join replays `DIAGS` (U-9), an empty `DIAGS` would
+/// drop the warning of an unchanged file. When a producer lands, the
+/// first assertion flips.
+#[test]
+fn diags_hold_no_warning_today() {
+    let m1v = format!("{}{TAG}", update::M1);
+    for line in lines(&[("w1", "c", WARNED), ("w2", "c", CALLER), ("m1v", "c", &m1v)]) {
+        let label = &line.label;
+        let args = line.args(&["wp255d_m2", "wp255d_m1", "wp264_w2"]);
+        line.archive(&["m1.o", "m2.o", "w1.o", "w2.o"]);
+        let mut a = support::with_output(&args, &line.dir.join("out"));
+        a.extend(["--incremental-state", "out.mortar-state"].iter().map(std::ffi::OsString::from));
+        let warned = |o: &mortar::Outcome| match o {
+            mortar::Outcome::Linked { report, .. } => {
+                report.warnings().filter(|(_, d)| d.id() == "gnu-warning").count()
+            }
+            _ => usize::MAX,
+        };
+        let mut full = a.clone();
+        full.push("--incremental=full".into());
+        let inv = mortar::invoke_state5(
+            "mortar",
+            &full,
+            &line.dir,
+            mortar::incremental::State5 {
+                path: line.dir.join("out.state5"),
+                collide: false,
+                rows: None,
+            },
+        );
+        assert_eq!(warned(&inv.outcome), 1, "{label}: the full link warns: {:?}", inv.outcome);
+        let m = mortar_incr::state5::read::decode(
+            &std::fs::read(line.dir.join("out.state5")).expect("the state"),
+        )
+        .expect("the state decodes");
+        assert!(m.diags.is_empty(), "{label}: DIAGS has a producer now: {:?}", m.diags);
+        let mut upd = a.clone();
+        upd.push("--incremental=update".into());
+        let same = mortar::invoke_in("mortar", &upd, &line.dir);
+        let same_w = warned(&same.outcome);
+        let shown = |i: &mortar::Invocation| match &i.outcome {
+            mortar::Outcome::Linked { .. } => i.incremental.trim().to_owned(),
+            o => format!("{o:?} {}", i.incremental.trim()),
+        };
+        eprintln!("[wp264] {label}: nothing changed: {same_w} warning(s); {}", shown(&same));
+        std::fs::copy(line.dir.join("m1v.o"), line.dir.join("m1.o")).expect("the variant");
+        line.archive(&["m1.o", "m2.o", "w1.o", "w2.o"]);
+        let one = mortar::invoke_in("mortar", &upd, &line.dir);
+        let one_w = warned(&one.outcome);
+        eprintln!("[wp264] {label}: m1.o changed: {one_w} warning(s); {}", shown(&one));
+        // What a full link of the same inputs prints.
+        let again = mortar::invoke_in("mortar", &full, &line.dir);
+        assert_eq!(warned(&again.outcome), 1, "{label}: a full link warns");
+        // Today neither update links: `--incremental=update` refuses. The
+        // one whose front ran (`m1.o` changed) refuses `(diags)`: path (A)'s
+        // `image_link` falls back on any front diagnostic, so no warning is
+        // lost today; it is the update that is lost. (Nothing changed:
+        // refused before the front, by the reason printed.)
+        assert!(shown(&same).contains("update-not-implemented"), "{label}: {}", shown(&same));
+        assert!(
+            shown(&one).contains("update-not-implemented (diags)"),
+            "{label}: the changed file's update: {}",
+            shown(&one)
+        );
+        assert_eq!((same_w, one_w), (usize::MAX, usize::MAX), "{label}: neither update links");
     }
 }

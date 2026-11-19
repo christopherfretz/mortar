@@ -1608,7 +1608,7 @@ fn every_flipped_byte_with_edges_is_state_corrupt() {
     let edges = &dir[state5::table_index(kind::EDGES).expect("t")];
     let meta = &dir[state5::table_index(kind::META).expect("t")];
     assert_eq!(edges.width, 13);
-    assert_eq!(meta.width, 228);
+    assert_eq!(meta.width, 196);
     let mut flipped = 0;
     let mut check = |at: usize| {
         let mut b = bytes.clone();

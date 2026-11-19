@@ -1272,6 +1272,10 @@ impl Session {
         }
         let collide = s5.is_some_and(|s| s.collide) || mortar_incr::testhook::state5_collide();
         let made = mortar_incr::capture::state5_rows(state, rows, collide).and_then(|mut m| {
+            // IN-77c (WP-264): the boot this link wrote the output on; an
+            // update on the same boot trusts `P` without re-hashing it.
+            // Unreadable: zero, which no boot id matches (re-hash).
+            m.meta.boot_id = crate::update::write::boot_id().unwrap_or_default();
             // WP-238 S4: the capture's live-set hash, from the full mark's
             // sets (P0-3), over the rows as the encoder numbers them (Part
             // 3b: `normalize` leaves the `SECTIONS` ranges to the encoder;

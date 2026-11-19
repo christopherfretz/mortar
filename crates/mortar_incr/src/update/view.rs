@@ -187,11 +187,18 @@ pub trait StateRows: Sync {
     /// `state-corrupt`.
     fn frag_uses_of(&self, file: FileId) -> Rows<Vec<FragUseRow>>;
     /// A file's `SYMTAB` row (kind 43; range of 0 or 1 row); file 0's is
-    /// the global area.
+    /// the global area (its range's first row).
     ///
     /// # Errors
     /// `state-corrupt`.
     fn symtab_of(&self, file: FileId) -> Rows<Option<SymtabRow>>;
+    /// The internal file's local block (S-74's first block, IN-18e as
+    /// WP-263 F-1 proposed it; WP-264): file 0's range's second row;
+    /// `None` when the block has no entry (the range holds the area only).
+    ///
+    /// # Errors
+    /// `state-corrupt`.
+    fn symtab_internal(&self) -> Rows<Option<SymtabRow>>;
     /// A file's `REGIONS` rows (kind 51; range), in `(out, category,
     /// ordinal)` order.
     ///

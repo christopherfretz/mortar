@@ -987,13 +987,9 @@ pub fn update_map(
             all.push((file, b));
         }
     }
-    // `-` is the internal file's local block (I-78a, S-74's first block),
-    // never the global area (file 0's `SYMTAB` row, IN-18e), which lies
-    // past `sh_info` (P-I2). The internal block has no stored row
-    // (WP-263 F-1): the map states it only when the plan places it.
-    all.retain(|(f, b)| {
-        *f != mortar_core::FileId::INTERNAL || symtab.blocks.iter().any(|(g, c)| g == f && c == b)
-    });
+    // `-` is the internal file's local block (I-78a, S-74's first block):
+    // `symtab_block(FileId::INTERNAL)` is file 0's second `SYMTAB` row,
+    // never the global area (its first, past `sh_info`, P-I2; WP-264).
     if let Some(d) = &mut m.decisions {
         let mut blocks: Vec<MapSymblock> = all
             .iter()

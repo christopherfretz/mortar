@@ -1324,8 +1324,9 @@ fn symtab_keys_check(
 /// regions are each used at most to their capacity and tile from the
 /// first block's region to the area's names, which end `.strtab`;
 /// `META.symtab`'s sizes are the `.symtab` and `.strtab` chunks' sizes,
-/// and `SYMTAB`'s rows are the blocks of the input files and, in file
-/// 0's range, the area. Without one (`-s`): no block, no row, `META`
+/// and `SYMTAB`'s rows are, in file 0's range, the area then the
+/// internal file's block (when it has an entry; WP-264), then the blocks
+/// of the input files. Without one (`-s`): no block, no row, `META`
 /// zero, no such chunk. A break is the producer's defect: no state is
 /// written.
 #[allow(clippy::too_many_lines)] // one test per property, each with its words
@@ -1455,9 +1456,14 @@ fn symtab_rows_check(
             Some(_) => {}
         }
     }
-    let rows = blocks.iter().filter(|(f, _)| f.0 != 0).count() + 1;
-    if m.symtab.len() != rows || m.symtab.first() != Some(&(FileId(0), area)) {
-        return err("the rows are not the input files' blocks and file 0's global area".into());
+    // File 0's range: the area, then the internal block (none without
+    // an entry); then every input file's block, in FILES order.
+    let mut want = vec![(FileId(0), area)];
+    want.extend(blocks.iter().copied());
+    if m.symtab != want {
+        return err("the rows are not file 0's global area and internal block, then the input \
+                    files' blocks"
+            .into());
     }
     Ok(())
 }
@@ -2421,14 +2427,14 @@ pub fn state5_rows(
     }
     m.symtab_keys = rows.symtab_keys;
     symtab_keys_check(&m, rows.symtab_area)?;
-    // SYMTAB and META.symtab (WP-263): each file's block, file 0's range
-    // the global area (IN-18e); the internal file's own block is checked
-    // with the others and has no row (the record's finding).
+    // SYMTAB and META.symtab (WP-263): each file's block; file 0's range
+    // the global area, then the internal file's block when it has one
+    // (IN-18e as WP-263 F-1 proposed it; WP-264).
     m.meta.gnu_warning_orphans = rows.gnu_warning_orphans;
     if let (Some(area), Some(tables)) = (rows.symtab_area, rows.symtab_tables) {
         m.meta.symtab = tables;
-        m.symtab = rows.symtab_blocks.iter().copied().filter(|(f, _)| f.0 != 0).collect();
-        m.symtab.insert(0, (FileId(0), area));
+        m.symtab = vec![(FileId(0), area)];
+        m.symtab.extend(rows.symtab_blocks.iter().copied());
     }
     symtab_rows_check(&m, &rows.symtab_blocks, rows.symtab_area, rows.symtab_tables)?;
     // REGIONS (WP-264): the full link's regions, from its stored placement.
@@ -3760,7 +3766,7 @@ mod wp263 {
             strtab_slack: 4096,
         };
         m.meta.symtab = tables;
-        m.symtab = vec![(FileId(0), area), blocks[1], blocks[2]];
+        m.symtab = vec![(FileId(0), area), blocks[0], blocks[1], blocks[2]];
         Case { m, blocks, area, tables }
     }
 
@@ -3774,7 +3780,7 @@ mod wp263 {
     #[test]
     fn good_rows_pass_and_each_break_is_refused() {
         assert_eq!(check(&good()), Ok(()));
-        let cases: [(&str, Break); 17] = [
+        let cases: [(&str, Break); 19] = [
             ("not in FILES order", |c| (c.blocks[1].0, c.blocks[2].0) = (FileId(2), FileId(1))),
             ("no FILES row", |c| c.blocks[2].0 = FileId(3)),
             ("is LAZY", |c| c.m.files[2].flags |= file_flags::LAZY),
@@ -3791,9 +3797,14 @@ mod wp263 {
             ("do not end .strtab", |c| c.tables.strtab_size = 146),
             ("entries of 24 bytes", |c| c.tables.symtab_size = 83 * 24 + 1),
             (".symtab's chunk is 1990 bytes", |c| c.m.chunks[0].size = 1990),
-            ("not the input files' blocks", |c| {
+            ("not file 0's global area and internal block", |c| {
                 c.m.symtab.pop();
             }),
+            // WP-264: the internal block is file 0's second row.
+            ("not file 0's global area and internal block", |c| {
+                c.m.symtab.remove(1);
+            }),
+            ("not file 0's global area and internal block", |c| c.m.symtab.swap(0, 1)),
         ];
         for (what, break_it) in cases {
             let mut c = good();
