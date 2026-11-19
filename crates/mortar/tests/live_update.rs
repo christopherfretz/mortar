@@ -640,6 +640,10 @@ fn the_written_live_hash_is_the_full_marks() {
 /// delta). Prints one `WP238-LIVE` line per run.
 #[test]
 #[ignore = "a timing tool: WP238_STATES"]
+#[allow(
+    clippy::many_single_char_names,
+    reason = "o, p, w, h, d: the options, a path, the walk, its hash, the delta"
+)]
 fn bench_live_on_states() {
     let Some(paths) = std::env::var_os("WP238_STATES") else { return };
     let runs: usize = std::env::var("WP238_RUNS").ok().and_then(|v| v.parse().ok()).unwrap_or(5);
