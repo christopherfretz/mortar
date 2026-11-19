@@ -216,6 +216,8 @@ fn run_with(
         steps.mark("front");
         reference_of(session, &view, &detected, f, ctx, cwd, out, &mut steps)
     })?;
+    // WP-255e3 (the clock): front 1's drop.
+    steps.mark("front1-drop");
     // R-1 (path (A)'s scaffold): front 1 is dropped here; a non-identity
     // hop runs front 2 with the materialized layout replayed.
     let reference = match first {
@@ -242,12 +244,83 @@ impl Steps {
         self.done.push((name, now - self.at));
         self.at = now;
     }
+    /// WP-255e3 (the clock): `d` of the last lap, moved out of it into a
+    /// lap of its own, `name` (a part timed inside a step, e.g. the
+    /// write's syncs).
+    fn split(&mut self, name: &'static str, d: std::time::Duration) {
+        if let Some(last) = self.done.last_mut() {
+            last.1 = last.1.saturating_sub(d);
+        }
+        self.done.push((name, d));
+    }
     fn line(&self) -> String {
         use std::fmt::Write as _;
         self.done.iter().fold(String::new(), |mut s, (n, d)| {
             let _ = write!(s, " {n}={:.3}", d.as_secs_f64());
             s
         })
+    }
+}
+
+/// WP-255e3 (the clock): the update's write operations, with the time
+/// spent in `fdatasync`, `fsync` and `fsync_dir` summed (the report's
+/// `sync` lap); every call goes to `inner` unchanged.
+struct TimedOps<'a> {
+    inner: &'a mut dyn mortar_incr::ops::WriteOps,
+    sync: std::time::Duration,
+}
+
+impl TimedOps<'_> {
+    fn timed<T>(&mut self, go: impl FnOnce(&mut dyn mortar_incr::ops::WriteOps) -> T) -> T {
+        let at = std::time::Instant::now();
+        let r = go(&mut *self.inner);
+        self.sync += at.elapsed();
+        r
+    }
+}
+
+impl mortar_incr::ops::WriteOps for TimedOps<'_> {
+    fn pwrite(&mut self, file: &std::fs::File, offset: u64, bytes: &[u8]) -> std::io::Result<()> {
+        self.inner.pwrite(file, offset, bytes)
+    }
+    fn set_len(&mut self, file: &std::fs::File, len: u64) -> std::io::Result<()> {
+        self.inner.set_len(file, len)
+    }
+    fn fdatasync(&mut self, file: &std::fs::File) -> std::io::Result<()> {
+        self.timed(|o| o.fdatasync(file))
+    }
+    fn fsync(&mut self, file: &std::fs::File) -> std::io::Result<()> {
+        self.timed(|o| o.fsync(file))
+    }
+    fn rename(&mut self, from: &Path, to: &Path) -> std::io::Result<()> {
+        self.inner.rename(from, to)
+    }
+    fn hard_link(&mut self, from: &Path, to: &Path) -> std::io::Result<()> {
+        self.inner.hard_link(from, to)
+    }
+    fn unlink(&mut self, path: &Path) -> std::io::Result<()> {
+        self.inner.unlink(path)
+    }
+    fn fsync_dir(&mut self, dir: &Path) -> std::io::Result<()> {
+        self.timed(|o| o.fsync_dir(dir))
+    }
+    fn flock(
+        &mut self,
+        file: &std::fs::File,
+        mode: mortar_incr::ops::LockMode,
+    ) -> std::io::Result<bool> {
+        self.inner.flock(file, mode)
+    }
+    fn create_new(&mut self, path: &Path) -> std::io::Result<std::fs::File> {
+        self.inner.create_new(path)
+    }
+    fn copy_range(
+        &mut self,
+        from: &std::fs::File,
+        to: &std::fs::File,
+        len: u64,
+    ) -> std::io::Result<()> {
+        self.inner.copy_range(from, to, len)
     }
 }
 
@@ -339,6 +412,9 @@ fn reference_of(
     drop(bytes);
     let diffs = mortar_incr::state5::canon::compare(&new, &old, &stored);
     let same = identity(&diffs, files);
+    // WP-255e3 (the clock): the identity check (the state read whole, both
+    // canonical forms, their comparison).
+    steps.mark("identity");
     // U4-U5 (M2b-1): the changed files' rows in the update's ids, then
     // `extract` and `resolve` on them; the update goes on only where they
     // say what the front (its capture) says.
@@ -1111,6 +1187,8 @@ fn front_two(
         }
         Ok(Reference { refill, size, state, map })
     });
+    // WP-255e3 (the clock): front 2's drop.
+    steps.mark("front2-drop");
     match (r, why.into_inner()) {
         (Ok(r), _) => Ok(r),
         (Err(_), Some((reason, what))) => {
@@ -1947,11 +2025,15 @@ fn write_identity(
     let policy = mortar_incr::WritePolicy { in_place_from: bound, ..mortar_incr::WRITE_PATH };
     let state = r.state;
     let path = session.state_path();
+    // WP-255e3 (the clock): W5's encoding, timed apart from its write.
+    let encode = std::cell::Cell::new(std::time::Duration::ZERO);
     let mut w5 = |output: &StatRow, ops: &mut dyn mortar_incr::ops::WriteOps| {
+        let at = std::time::Instant::now();
         let mut m = state.clone();
         m.stat.push(output.clone());
         let bytes = mortar_incr::capture::state5_encode(&m)
             .map_err(|e| WriteFailure::Failed { step: "W5", error: std::io::Error::other(e) })?;
+        encode.set(encode.get() + at.elapsed());
         match write::write_state_whole(path, &bytes, ops) {
             Ok(true) => Ok(()),
             Ok(false) => {
@@ -1970,13 +2052,14 @@ fn write_identity(
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
         Err(error) => return Err(UpdateError::Failed { step: "format4", error }),
     }
+    let mut timed = TimedOps { inner: ops, sync: std::time::Duration::ZERO };
     let w = write::write_with(
         &pair,
         view,
         &r.refill.ranges,
         &r.refill.bytes,
         true,
-        ops,
+        &mut timed,
         policy,
         &mut w5,
     )
@@ -1991,6 +2074,8 @@ fn write_identity(
         })?;
     }
     steps.mark("write");
+    steps.split("w5-encode", encode.get());
+    steps.split("sync", timed.sync);
     let c = &r.refill.counts;
     let line = format!(
         "incremental: update ({:?}{}) changed=1 ranges={} bytes={} (M2a: O(link) twice over, the front and the whole state) steps:{}\n",
