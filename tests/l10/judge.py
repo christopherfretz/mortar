@@ -116,13 +116,17 @@ class Hop:
     """
 
     def __init__(self, prev=None, ranges=None, state=None, state_before=None, state_prev=None, scratch=None,
-                 canon=None, causes=None, base_was_update=False):
+                 canon=None, causes=None, base_was_update=False, g_status=None):
         self.prev, self.ranges, self.state, self.state_before = prev, ranges, state, state_before
         self.state_prev, self.scratch, self.canon, self.causes = state_prev, scratch, canon or CANON_STUB, causes
         # WP-225 ruling M2a2-1: the previous successful hop's link was an
         # update (it writes format 5 only, no format-4 side state, so no dry
         # run can predict this hop until M6): (c) is `n/a base-was-update`.
         self.base_was_update = base_was_update
+        # WP-225 M2a3-3 (the (c) flag): the exit status of the hop's G link
+        # (`--incremental=full` of the new inputs, the oracle's `new`), or
+        # None when not run. A failed G link does not end the run; (c) names it.
+        self.g_status = g_status
 
 
 class Verdict:
@@ -526,6 +530,10 @@ def _run_check(v, tools, x, f):
 
 
 def _oracle(v, x, base, new, hop=None):
+    if hop is not None and hop.g_status not in (None, 0):
+        # M2a3-3: the hop's own G link failed: (c) has no `new`, said by name
+        v.add('oracle', 'n/a the G link failed (status %s)' % hop.g_status)
+        return
     if base is None or new is None or not x.report or not os.path.exists(x.report):
         v.add('oracle', 'n/a no previous full link')
         return

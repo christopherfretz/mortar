@@ -297,7 +297,7 @@ class Run:
             f = judge.Link(Hf, 'prog', 'prog.map', fs, [], stderr=ferr)
             new = judge.Link(H, 'prog', 'prog.map', gs, []) if gs == 0 and fs == 0 else None
             hop = judge.Hop(prev=prev_out, ranges=os.path.join(H, 'dirty.txt'), state=state,
-                            state_before=state_before, scratch=H, base_was_update=prev_update)
+                            state_before=state_before, scratch=H, base_was_update=prev_update, g_status=gs)
             v = judge.judge_step(tools, x, f, prev, new, hop)
             if ('oracle', 'n/a base-was-update') in v.checks:
                 res['base_was_update'] = res.get('base_was_update', 0) + 1

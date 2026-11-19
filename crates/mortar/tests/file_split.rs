@@ -317,7 +317,7 @@ fn compare(
     let ff = front_of(cache, view, file, Ids::Stored).unwrap_or_else(|e| panic!("{e:?}"));
     let facts = facts_of(f, file);
     let arch = f.arch.get();
-    let got = split_of(ff, view, &facts, &ArchRelocs(arch), &f.pool)
+    let got = split_of(ff, view, &facts, &ArchRelocs(arch), &f.pool, None)
         .unwrap_or_else(|e| panic!("{}", what(&format!("{e:?}"))));
     seen.files += 1;
     let x = Spaces { f, view };

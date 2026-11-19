@@ -276,6 +276,17 @@ def units(log=print):
         case('oracle-base-was-update', oracle_c(True), 'n/a base-was-update')
         case('oracle-base-full-no-delta-end-fails', oracle_c(False), 'FAIL the report has no `delta end`')
 
+        # (c) when the hop's G link fails (ruling M2a3-3): the run goes on
+        # and the oracle names the failed link, never `no previous full link`.
+        def oracle_g_failed(status):
+            v = _verdict('update')
+            xr = judge.Link(d, 'x', 'x.map', 0, [], rp)
+            base = judge.Link(d, 'prog', 'prog.map', 0, [])
+            judge._oracle(v, xr, base, None, judge.Hop(g_status=status))
+            return v.checks[0][1]
+        case('oracle-g-link-failed', oracle_g_failed(1), 'n/a the G link failed (status 1)')
+        case('oracle-g-link-ok-no-new', oracle_g_failed(0), 'n/a no previous full link')
+
     def expect(reason, det):
         v = _verdict(reason)
         judge.expect_full(v, ('update-not-implemented', 'live'), det)

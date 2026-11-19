@@ -150,8 +150,9 @@ pub struct Resolved {
     /// references were edges of the last stage's closure although
     /// `--as-needed` (the members of N of the stage before it).
     pub sources: Vec<bool>,
-    /// The closure's iterations of the last stage (§6.2, WP-200): 1 unless
-    /// a demoted mention fed back.
+    /// The closure's iterations (§6.2, WP-200), the MAXIMUM over the
+    /// stages (WP-261 ruling, question 2: an iterated `--as-needed` stage
+    /// is not lost): 1 unless a demoted mention fed back.
     pub iterations: u32,
     /// `first`/`cfirst` (§4.1) before the closure: the iterations' own
     /// (without the demoted definitions) are recomputed from them,
@@ -298,8 +299,11 @@ pub fn resolve_steps<V: View>(
     // a link without such a reference runs one stage.
     let mut stage = crate::shared::Stage::default();
     let mut stages = 1;
+    let mut iterations = 0;
     loop {
         let (mut resolved, next) = resolve_stage(view, opts, pool, steps, &kinds, &targets, &stage);
+        iterations = resolved.iterations.max(iterations);
+        resolved.iterations = iterations;
         let Some(next) = next else {
             resolved.stages = stages;
             resolved.sources = stage.sources;
