@@ -526,3 +526,139 @@ fn with_symtab_keys(
     let encoded = mortar_incr::state5::write::encode(&m).expect("encodes");
     mortar_incr::state5::read::open_bytes(encoded).expect("the oracle state opens")
 }
+
+/// R-1: `m1.o` (C) defines `wp255d2b_da` then `wp255d2b_db` (default
+/// visibility: two globals; the state's `SymbolId`s in that order).
+const M1_TWO: &str = "__asm__(\".data\\n.globl wp255d2b_da\\n.type wp255d2b_da,%object\\n\"\n\
+    \".size wp255d2b_da,4\\nwp255d2b_da: .long 1\\n.globl wp255d2b_db\\n.type wp255d2b_db,%object\\n\"\n\
+    \".size wp255d2b_db,8\\nwp255d2b_db: .quad 2\\n.text\\n\");\n\
+    extern int wp255d2b_da; extern long wp255d2b_db;\n\
+    int wp255d_m1(int x) { return x + wp255d2b_da + (int)wp255d2b_db; }\n";
+
+/// R-1: the edit defines them in the OTHER order, `wp255d2b_db` hidden and
+/// `wp255d2b_da` internal: both demoted into m1.o's block, and a fresh
+/// link numbers `wp255d2b_db` first (model.md §2.3: first mention).
+const M1_TWO_SWAPPED: &str = "__asm__(\".data\\n.globl wp255d2b_db\\n.hidden wp255d2b_db\\n\"\n\
+    \".type wp255d2b_db,%object\\n.size wp255d2b_db,8\\nwp255d2b_db: .quad 2\\n\"\n\
+    \".globl wp255d2b_da\\n.internal wp255d2b_da\\n.type wp255d2b_da,%object\\n\"\n\
+    \".size wp255d2b_da,4\\nwp255d2b_da: .long 1\\n.text\\n\");\n\
+    extern long wp255d2b_db; extern int wp255d2b_da;\n\
+    int wp255d_m1(int x) { return x + (int)wp255d2b_db + wp255d2b_da; }\n";
+
+/// The names of `obj`'s non-local entries, in table order.
+fn globals_of(path: &std::path::Path) -> Vec<Vec<u8>> {
+    let bytes = std::fs::read(path).expect("the object");
+    let header = FileHeader::parse(&bytes).expect("an ELF header");
+    let table = SectionTable::parse(&bytes, &header).expect("section headers");
+    let syms = table.find_symbol_table(SHT_SYMTAB).expect("symbols").expect("a .symtab");
+    syms.iter()
+        .filter(|(i, _)| i.0 >= syms.first_global().0)
+        .map(|(_, s)| syms.name(&s).expect("name").to_vec())
+        .collect()
+}
+
+/// Ruling item 3 (R-1): a demoted run of TWO keys in one file against the
+/// full link's block. The state's ids keep the OLD link's order (`da`,
+/// `db`); the new link's is `db`, `da`; the run must be the full link's.
+/// Also R-4 for an internal key: the full link's merged visibility is
+/// `STV_HIDDEN` (`SymProps::visibility`), and so is the delta's.
+#[test]
+fn demoted_run_of_two_keys_in_one_file() {
+    use mortar::update::file_symbols::{demoted_run, global_changes};
+    use mortar_core::resolution::RefFlags;
+    use mortar_synth::symtab_incr::GlobalKind;
+    for line in lines(&[("m1r", "c", M1_TWO), ("m1q", "c", M1_TWO_SWAPPED)]) {
+        let (da, db) = (&b"wp255d2b_da"[..], &b"wp255d2b_db"[..]);
+        let pos = |p: &str, n: &[u8]| {
+            globals_of(&line.dir.join(p)).iter().position(|g| g == n).expect("defined")
+        };
+        assert!(pos("m1r.o", da) < pos("m1r.o", db), "{}: the old order", line.label);
+        assert!(pos("m1q.o", db) < pos("m1q.o", da), "{}: the new order", line.label);
+        let args = line.args(&["wp255d_m2", "wp255d_m1"]);
+        std::fs::copy(line.dir.join("m1r.o"), line.dir.join("m1.o")).expect("old m1");
+        line.archive(&["m1.o", "m2.o"]);
+        let old = state(&line, &args, "old");
+        std::fs::copy(line.dir.join("m1q.o"), line.dir.join("m1.o")).expect("the edit");
+        line.archive(&["m1.o", "m2.o"]);
+        let new = state(&line, &args, "new");
+        let capture = mortar_incr::state5::read::decode(
+            &std::fs::read(line.dir.join("new.state5")).expect("the new state"),
+        )
+        .expect("decodes");
+        let store = support::store();
+        let full = whole(&line, &args, &store);
+        let file = member(&old, "m1.o");
+        let in_front = update::same_file(&full, &old, file);
+        let (changed, delta) =
+            mortar::update::changed::u5(&old, &[in_front], &[], &full, &capture, &mut |_| {})
+                .unwrap_or_else(|e| panic!("{}: U4-U5: {}", line.label, e.report()))
+                .expect("m1.o changed");
+        let first = changed.files[0].first_section;
+        let captured = capture.files[member(&new, "m1.o").0 as usize].clone();
+        let stored = old.file(file).expect("FILES");
+        let row = FileRow { base: captured.base, len: captured.len, hash: captured.hash, ..stored };
+        let fresh = support::store();
+        let mut cache = FrontCache::new(&fresh, pool(), &line.dir);
+        let ff = front_of(&mut cache, &old, file, Ids::Update { first_section: first, row })
+            .unwrap_or_else(|e| panic!("{}: {e:?}", line.label));
+        let id_of = |n: &[u8]| {
+            (0..u32::try_from(old.count(mortar_incr::format::kind::SYMBOLS)).expect("n"))
+                .map(SymbolId)
+                .find(|&id| old.string(old.symbol(id).expect("SYMBOLS").name).expect("s") == n)
+                .expect("a stored key")
+        };
+        let (ida, idb) = (id_of(da), id_of(db));
+        assert!(ida < idb, "{}: the state's ids keep the old order", line.label);
+        let full_id =
+            |n: &[u8]| full.inputs.symbols.iter().find(|(_, k)| k.name == n).expect("k").0;
+        assert!(full_id(db) < full_id(da), "{}: the fresh link's ids: db first", line.label);
+        // R-4 for both, internal included: equal to the full link's.
+        for (id, n) in [(ida, da), (idb, db)] {
+            let &(_, vis, referenced) =
+                delta.merged.iter().find(|m| m.0 == id).expect("an affected key");
+            let p = full.resolution.props.get(full_id(n)).copied().unwrap_or_default();
+            assert_eq!(
+                (vis, referenced),
+                (p.visibility, p.refs.contains(RefFlags::FROM_OBJECT)),
+                "{}: {n:?}: merged",
+                line.label
+            );
+            assert_eq!(
+                vis, 2,
+                "{}: {n:?}: STV_HIDDEN (internal folded, as the full link)",
+                line.label
+            );
+        }
+        let oracle = with_symtab_keys(&line, &old, "old");
+        let got = global_changes(&oracle, &delta, &[ff])
+            .unwrap_or_else(|e| panic!("{}: global_changes: {}", line.label, e.report()));
+        for id in [ida, idb] {
+            let g = got.iter().find(|g| g.key == id).expect("a change");
+            assert_eq!(g.kind, GlobalKind::Demoted, "{}: demoted", line.label);
+        }
+        let run = demoted_run(&oracle, &delta, ff, &got)
+            .unwrap_or_else(|e| panic!("{}: demoted_run: {}", line.label, e.report()));
+        // The full link's block of m1q: the entries of those two names, in
+        // output order, with their fields.
+        let bytes = std::fs::read(line.dir.join("new")).expect("the output");
+        let header = FileHeader::parse(&bytes).expect("an ELF header");
+        let table = SectionTable::parse(&bytes, &header).expect("section headers");
+        let syms = table.find_symbol_table(SHT_SYMTAB).expect("symbols").expect("a .symtab");
+        let mut inside = false;
+        let want: Vec<_> = syms
+            .locals()
+            .filter(|(_, s)| {
+                if s.st_info & 0xf == STT_FILE {
+                    inside = syms.name(s).expect("n").ends_with(b"m1q.src");
+                }
+                let n = syms.name(s).expect("n");
+                inside && (n == da || n == db)
+            })
+            .map(|(_, s)| (syms.name(&s).expect("n").to_vec(), s.st_info, s.st_other, s.st_size))
+            .collect();
+        let have: Vec<_> = run.iter().map(|l| (l.name.to_vec(), l.info, l.other, l.size)).collect();
+        eprintln!("{}: the demoted run {have:?}, the full link's block {want:?}", line.label);
+        assert_eq!(want.len(), 2, "{}: both in the full link's block", line.label);
+        assert_eq!(have, want, "{}: the demoted run, in the full link's order", line.label);
+    }
+}
