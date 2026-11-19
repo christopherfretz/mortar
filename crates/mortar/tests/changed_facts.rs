@@ -209,7 +209,8 @@ fn changed_facts_and_split_of_an_edited_file() {
                 if fact.kept { kept_comdat += 1 } else { dropped += 1 }
             }
         }
-        let null = SectionFact { kind: SectionKind::Null, kept: false, out: None, reloc: SectionIndex(0) };
+        let null =
+            SectionFact { kind: SectionKind::Null, kept: false, out: None, reloc: SectionIndex(0) };
         let by_index = |i: SectionIndex| facts.get(i.0 as usize).copied().unwrap_or(null);
         let got = split_of(ff, &old, &by_index, &ArchRelocs(f.arch.get()), &f.pool)
             .unwrap_or_else(|e| panic!("{}", what(&format!("{e:?}"))));

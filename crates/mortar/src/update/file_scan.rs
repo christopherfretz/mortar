@@ -67,6 +67,9 @@ fn corrupt(what: impl std::fmt::Display) -> Fail {
     (IncrReason::StateCorrupt(s.clone()), s)
 }
 
+/// A key and its facts, or why the view has none ([`defined_facts`]).
+pub type KeyFacts = (SymbolId, Result<SymFacts, Fail>);
+
 /// [`scan_of_why`] with the detail dropped.
 ///
 /// # Errors
@@ -118,7 +121,6 @@ pub fn scan_of(
 ///
 /// `state-corrupt` for rows that do not read back or disagree with the
 /// file.
-#[allow(clippy::too_many_lines, reason = "the refusals, then the view, in the doc's order")]
 #[allow(clippy::too_many_arguments, reason = "the update's inputs, each read once")]
 pub fn scan_of_why(
     arch: &dyn Arch,
@@ -132,6 +134,70 @@ pub fn scan_of_why(
     resolved: &ResolveDelta,
     live: &LiveDelta,
 ) -> Result<FileDemands, Fail> {
+    let narrow = prepare(opts, front, facts, split, view, changed, options, resolved, live)?;
+    let eh = NarrowEh::new(&narrow, split);
+    let sections: Vec<SectionId> = front.sections.iter().map(|s| s.id).collect();
+    let (demands, diags, problems) =
+        mortar_scan::scan_file(arch, &narrow, opts, Some(&eh), front.file, sections.into_iter());
+    if let Some(why) = narrow.why().or_else(|| eh.why()) {
+        return Err(why);
+    }
+    if let Some((_, d)) = diags.first() {
+        return Err(fail(
+            "diagnostic",
+            format!("{} diagnostics, the first {}", diags.len(), d.id()),
+        ));
+    }
+    if problems > 0 {
+        return Err(fail("diagnostic", format!("{problems} events or overlap records")));
+    }
+    Ok(demands)
+}
+
+/// The per-key facts of each key the changed file DEFINES (its new
+/// `RESOLVED` row a definition in one of its sections; ruling item 4):
+/// the values the narrow view's `key_facts` gives the walk, and the ones
+/// the join writes, packed, into those keys' `RESOLVED.facts` (R-4a: one
+/// producer, used twice). Sorted by key; `Err` for a key whose facts the
+/// view cannot give (a new key's `.gnu.warning`, a key warned before).
+///
+/// # Errors
+/// [`scan_of_why`]'s refusals before the walk.
+#[allow(clippy::too_many_arguments, reason = "the update's inputs, each read once")]
+pub fn defined_facts(
+    opts: ScanOptions<'_>,
+    front: &FileFront<'_>,
+    facts: Option<&[SectionFact]>,
+    split: &FileSplit,
+    view: &StateView<'_>,
+    changed: &ChangedFiles,
+    options: &OptionKeys,
+    resolved: &ResolveDelta,
+    live: &LiveDelta,
+) -> Result<Vec<KeyFacts>, Fail> {
+    let n = prepare(opts, front, facts, split, view, changed, options, resolved, live)?;
+    let mut out = Vec::with_capacity(n.defs.len());
+    for &(id, _) in &n.defs {
+        let i = n.keys.binary_search_by_key(&id, |k| k.0).map_err(|_| corrupt("a defined key"))?;
+        out.push((id, n.keys[i].1.clone().map(|a| a.facts)));
+    }
+    Ok(out)
+}
+
+/// The refusals before the walk, then the narrow view with every answer.
+#[allow(clippy::too_many_lines, reason = "the refusals, then the view, in the doc's order")]
+#[allow(clippy::too_many_arguments, reason = "the update's inputs, each read once")]
+fn prepare<'f, 's>(
+    opts: ScanOptions<'_>,
+    front: &'f FileFront<'s>,
+    facts: Option<&[SectionFact]>,
+    split: &FileSplit,
+    view: &StateView<'_>,
+    changed: &ChangedFiles,
+    options: &OptionKeys,
+    resolved: &ResolveDelta,
+    live: &LiveDelta,
+) -> Result<Narrow<'f, 's>, Fail> {
     if !options.wrap.is_empty() {
         return Err(fail("wrap", "the link has --wrap"));
     }
@@ -284,23 +350,7 @@ pub fn scan_of_why(
     }
     answers.sort_unstable_by_key(|a| a.0);
     narrow.keys = answers;
-    let eh = NarrowEh::new(&narrow, split);
-    let sections: Vec<SectionId> = front.sections.iter().map(|s| s.id).collect();
-    let (demands, diags, problems) =
-        mortar_scan::scan_file(arch, &narrow, opts, Some(&eh), front.file, sections.into_iter());
-    if let Some(why) = narrow.why().or_else(|| eh.why()) {
-        return Err(why);
-    }
-    if let Some((_, d)) = diags.first() {
-        return Err(fail(
-            "diagnostic",
-            format!("{} diagnostics, the first {}", diags.len(), d.id()),
-        ));
-    }
-    if problems > 0 {
-        return Err(fail("diagnostic", format!("{problems} events or overlap records")));
-    }
-    Ok(demands)
+    Ok(narrow)
 }
 
 /// D4-1: in a dynamic executable or PIE, a key undefined in its stored or

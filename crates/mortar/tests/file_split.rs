@@ -196,7 +196,9 @@ fn facts_of<'f>(
                 reloc: row.reloc,
             }
         }
-        None => SectionFact { kind: SectionKind::Null, kept: false, out: None, reloc: SectionIndex(0) },
+        None => {
+            SectionFact { kind: SectionKind::Null, kept: false, out: None, reloc: SectionIndex(0) }
+        }
     }
 }
 

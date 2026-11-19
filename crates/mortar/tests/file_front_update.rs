@@ -335,7 +335,12 @@ fn update_split_problem_falls_back_as_split() {
                     reloc: SectionIndex(0),
                 }
             } else {
-                SectionFact { kind: SectionKind::Null, kept: false, out: None, reloc: SectionIndex(0) }
+                SectionFact {
+                    kind: SectionKind::Null,
+                    kept: false,
+                    out: None,
+                    reloc: SectionIndex(0),
+                }
             }
         };
         let r = split_of(ff, &old, &facts, &ArchRelocs(f.arch.get()), &f.pool).map(|x| x.file);
