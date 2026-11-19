@@ -426,7 +426,13 @@ fn reference_of(
             }
             Some(Ok((lu, df))) => {
                 changed::record(&format!("M2b-3 Part 3: materialized ({what}): front 2"));
-                Ok(First::Materialized(Box::new(Materialized { l1: f.layout.clone(), lu, df })))
+                let shadow = p.shadow;
+                Ok(First::Materialized(Box::new(Materialized {
+                    l1: f.layout.clone(),
+                    lu,
+                    df,
+                    shadow,
+                })))
             }
             Some(Err((reason, name))) => {
                 let line =
@@ -725,6 +731,8 @@ struct Placed {
     /// (the non-identity case only).
     materialized:
         Option<Result<(mortar_core::layout::Layout, mortar_core::incr::LayoutDelta), Refusal>>,
+    /// WP-255e (the shadow): C''s refill set, made with `materialized`.
+    shadow: Option<Result<ShadowSet, IncrReason>>,
 }
 
 /// U6-U7 for the changed files of `cf` (M2b-2b; IN-72): `layout_inputs`,
@@ -923,6 +931,7 @@ fn placement(
     // layout with `d`, in the front's ids (R-1).
     if materialize {
         placed.materialized = Some(materialize_on(view, stored, f, &d, &inputs.changes));
+        placed.shadow = Some(shadow_set(view, stored, cf, &delta, &d));
     }
     Ok(placed)
 }
@@ -989,6 +998,8 @@ struct Materialized {
     l1: mortar_core::layout::Layout,
     lu: mortar_core::layout::Layout,
     df: mortar_core::incr::LayoutDelta,
+    /// WP-255e: C''s refill set (state ids as `(file, index)`).
+    shadow: Option<Result<ShadowSet, IncrReason>>,
 }
 
 /// [`refill_capture`]'s answer: the refill, the output's size, the
@@ -1033,7 +1044,7 @@ fn front_two(
     use mortar_core::incr::{RefillChunk, RefillSet, StoredLayout};
     use mortar_incr::update::materialize::{eh_runs_judged, first_difference};
     let image = || IncrReason::UpdateNotImplemented(Some(Unimplemented::Image));
-    let Materialized { l1, lu, df } = m;
+    let Materialized { l1, lu, df, shadow } = m;
     let why: std::cell::RefCell<Option<Refusal>> = std::cell::RefCell::new(None);
     let lu = std::cell::RefCell::new(Some(lu));
     let hook = |_: &mortar_incr::capture::Link<'_, '_>,
@@ -1079,6 +1090,9 @@ fn front_two(
             "M2b-3 Part 3: taken: front 2 ({} ranges, {} bytes)",
             refill.counts.ranges, refill.counts.dirty
         ));
+        // WP-255e: C' in shadow, against front 2's bytes (never written).
+        changed::record(&shadow_255e(view, &stored, f, ctx, out, &df, shadow.as_ref(), &refill));
+        steps.mark("shadow");
         Ok(Reference { refill, size, state, map })
     });
     match (r, why.into_inner()) {
@@ -1095,6 +1109,400 @@ fn front_two(
             ))
         }
         (Err(e), None) => Err(e),
+    }
+}
+
+/// WP-255e: C''s refill set (`spec/landed/incr/WP-255e.md` "The dirty
+/// set"): R-3's `refill_set` units (IN-27: the referrers of every key whose
+/// resolution changes or whose definition moves, moved, killed and revived
+/// sections, re-elections, slots), each as `(file, section index)` (D3-1:
+/// a stored row by `StoredLayout::section`, a changed file's new row by its
+/// `first_section`), so front 2 maps it by identity, never by number.
+struct ShadowSet {
+    units: Vec<(FileId, u32)>,
+    moved_definitions: u64,
+    referrer_files: u64,
+}
+
+/// [`ShadowSet`] of the state-id delta `d` (the update's own producers:
+/// `defined::recompute` and `refill::refill_set`).
+fn shadow_set(
+    view: &StateView<'_>,
+    stored: &mortar_core::incr::StoredLayout<'_>,
+    cf: &mortar_incr::update::view::ChangedFiles,
+    delta: &mortar_incr::update::resolve::ResolveDelta,
+    d: &mortar_core::incr::LayoutDelta,
+) -> Result<ShadowSet, IncrReason> {
+    let defined = mortar_incr::update::defined::recompute(view, d);
+    let set = mortar_incr::update::refill::refill_set(view, cf, delta, stored, d, &defined)?;
+    let sections = view.count(kind::SECTIONS);
+    let mut units = Vec::with_capacity(set.units.len());
+    for u in &set.units {
+        let id = u.section.0;
+        if u64::from(id) < sections {
+            let s = stored.section(u.section)?.ok_or_else(|| {
+                IncrReason::StateCorrupt(format!("255e shadow: unit {id}: no SECTIONS row"))
+            })?;
+            units.push((s.file, s.index));
+        } else {
+            let c = cf
+                .files
+                .iter()
+                .find(|c| {
+                    let n = u32::try_from(c.sections.len()).unwrap_or(u32::MAX);
+                    c.first_section.0 <= id && id - c.first_section.0 < n
+                })
+                .ok_or_else(|| {
+                    IncrReason::StateCorrupt(format!("255e shadow: unit {id}: no changed file"))
+                })?;
+            units.push((c.file, id - c.first_section.0));
+        }
+    }
+    Ok(ShadowSet {
+        units,
+        moved_definitions: set.moved_definitions,
+        referrer_files: set.referrer_files,
+    })
+}
+
+/// The byte of `r`'s output at `x` (`None`: not in a range of `r`, the
+/// previous output's byte).
+fn refill_byte(r: &mortar_image::update::Refill, starts: &[u64], x: u64) -> Option<u8> {
+    let k = starts.partition_point(|&s| s <= x).checked_sub(1)?;
+    let range = r.ranges.get(k)?;
+    (x < range.offset + range.len).then(|| {
+        let base: u64 = r.ranges[..k].iter().map(|g| g.len).sum();
+        r.bytes[(base + x - range.offset) as usize]
+    })
+}
+
+/// Where a file offset is, by the front's chunk: its name and offset.
+fn chunk_name(f: &crate::front::Front<'_>, x: u64) -> String {
+    for (_, c) in f.layout.placement.chunks.iter() {
+        if c.in_file() && c.offset <= x && x < c.offset + c.size.max(c.capacity) {
+            let name = c.name(&f.assignment).map(|n| String::from_utf8_lossy(n).into_owned());
+            return format!("{}+{:#x}", name.unwrap_or_else(|| format!("{:?}", c.kind)), x - c.offset);
+        }
+    }
+    "no chunk".to_owned()
+}
+
+/// The first offset where the outputs of `a` and `b` (each the previous
+/// output with its ranges over it) differ, with `a`'s and `b`'s bytes.
+fn first_output_difference(
+    prev: &std::fs::File,
+    a: &mortar_image::update::Refill,
+    b: &mortar_image::update::Refill,
+) -> Result<Option<(u64, u8, u8)>, String> {
+    use std::os::unix::fs::FileExt as _;
+    let sa: Vec<u64> = a.ranges.iter().map(|r| r.offset).collect();
+    let sb: Vec<u64> = b.ranges.iter().map(|r| r.offset).collect();
+    let len = prev.metadata().map_err(|e| e.to_string())?.len();
+    let mut first: Option<(u64, u8, u8)> = None;
+    for r in a.ranges.iter().chain(&b.ranges) {
+        if first.is_some_and(|f| f.0 < r.offset) {
+            continue;
+        }
+        let mut old = vec![0u8; r.len as usize];
+        let end = (r.offset + r.len).min(len);
+        if end > r.offset {
+            prev.read_exact_at(&mut old[..(end - r.offset) as usize], r.offset)
+                .map_err(|e| e.to_string())?;
+        }
+        for (i, &p) in old.iter().enumerate() {
+            let x = r.offset + i as u64;
+            let (va, vb) =
+                (refill_byte(a, &sa, x).unwrap_or(p), refill_byte(b, &sb, x).unwrap_or(p));
+            if va != vb {
+                if first.is_none_or(|f| x < f.0) {
+                    first = Some((x, va, vb));
+                }
+                break;
+            }
+        }
+    }
+    Ok(first)
+}
+
+/// A FINDING's neighbourhood: the members of the chunk at file offset `x`
+/// within 0x80 of it (section, chunk offset, size, alignment, the input
+/// section's name) and the chunk's holes there.
+fn shadow_near(l: &mortar_image::link::Link<'_, '_>, f: &crate::front::Front<'_>, x: u64) -> String {
+    use std::fmt::Write as _;
+    let pl = &f.layout.placement;
+    let Some((id, c)) = pl
+        .chunks
+        .iter()
+        .find(|(_, c)| c.in_file() && c.offset <= x && x < c.offset + c.size.max(c.capacity))
+    else {
+        return "no chunk".into();
+    };
+    let at = x - c.offset;
+    let mut s = format!(
+        "chunk {} {:?} size {:#x} capacity {:#x} at {at:#x};",
+        id.0, c.kind, c.size, c.capacity
+    );
+    let lo = at.saturating_sub(0x80);
+    let q = [(id, lo..(at + 0x80).min(c.size.max(c.capacity)).max(lo + 1))];
+    if let Ok(v) = mortar_image::link::clip_sections_for_test(l, &q) {
+        for r in v {
+            match r {
+                Ok(list) => {
+                    for p in list {
+                        let name = f
+                            .resolution
+                            .sh_index(p.section)
+                            .and_then(|(file, i)| match &f.inputs.files.get(file)?.reader {
+                                mortar_core::inputs::Reader::Object(o) => {
+                                    o.section(i).ok().and_then(|h| h.name().ok())
+                                }
+                                _ => None,
+                            })
+                            .map(|n| String::from_utf8_lossy(n).into_owned())
+                            .unwrap_or_default();
+                        let _ = write!(
+                            s,
+                            " member {} {name} [{:#x},{:#x}) align {};",
+                            p.section.0,
+                            p.offset,
+                            p.offset + p.size,
+                            p.align
+                        );
+                    }
+                }
+                Err(e) => {
+                    let _ = write!(s, " sections_in: {e:?};");
+                }
+            }
+        }
+    }
+    for h in pl.holes.iter().filter(|h| h.chunk == id && h.offset < at + 0x80 && at < h.offset + h.size + 0x80) {
+        let _ = write!(s, " hole {:?} [{:#x},{:#x});", h.kind, h.offset, h.offset + h.size);
+    }
+    s
+}
+
+/// WP-255e's comparison (`spec/landed/incr/WP-255e.md` "The comparison"),
+/// on front 2 `f` after its refill `front2`, before the first write: S1,
+/// `refill` with `d_F` and C''s set (the units of `set`, the non-body
+/// chunks) against front 2's every-chunk refill, as whole outputs; S2, the
+/// clip plan (`for_clips` over front 2's rows) over S1's dirty ranges
+/// outside synthetic chunks, against S1's bytes. The line for the findings
+/// file; nothing is written and the update is not changed.
+#[allow(clippy::too_many_lines, reason = "S1 then S2, each with its record")]
+#[allow(clippy::too_many_arguments, reason = "front 2, its refill and C''s inputs")]
+fn shadow_255e(
+    view: &StateView<'_>,
+    stored: &mortar_core::incr::StoredLayout<'_>,
+    f: &crate::front::Front<'_>,
+    ctx: &Ctx<'_>,
+    out: &std::fs::File,
+    df: &mortar_core::incr::LayoutDelta,
+    set: Option<&Result<ShadowSet, IncrReason>>,
+    front2: &mortar_image::update::Refill,
+) -> String {
+    use mortar_core::incr::{RefillChunk, RefillSet, RefillUnit, SymtabPlan};
+    use mortar_core::layout::ChunkKind;
+    let set = match set {
+        None => return "255e shadow: refused: no C' set (not materialized)".to_owned(),
+        Some(Err(e)) => return format!("255e shadow: refused: refill_set: {}", e.report()),
+        Some(Ok(s)) => s,
+    };
+    let mut units = Vec::with_capacity(set.units.len());
+    for &(file, index) in &set.units {
+        let Some(s) = f.resolution.section_id(file, mortar_elf::SectionIndex(index)) else {
+            return format!(
+                "255e shadow: refused: id-map: unit (file {}, index {index}) is no section of \
+                 front 2",
+                file.0
+            );
+        };
+        units.push(RefillUnit { section: s, reasons: 0 });
+    }
+    units.sort_by_key(|u| u.section);
+    units.dedup_by_key(|u| u.section);
+    let pl = &f.layout.placement;
+    let chunks: Vec<RefillChunk> = pl
+        .chunks
+        .iter()
+        .filter(|(_, c)| !matches!(c.kind, ChunkKind::Body(_)))
+        .map(|(chunk, _)| RefillChunk { chunk, reasons: 0 })
+        .collect();
+    let n_units = units.len();
+    let cset = RefillSet { units, chunks, ..RefillSet::default() };
+    let leaves = match view.leaves() {
+        Ok(l) => l,
+        Err(e) => return format!("255e shadow: refused: leaves: {}", e.report()),
+    };
+    // Synthetic chunks (`NotYet(Synth)`): S2 leaves them out, by name.
+    let synth: Vec<(u64, u64, String)> = pl
+        .chunks
+        .iter()
+        .filter(|(_, c)| c.in_file() && matches!(c.kind, ChunkKind::Synthetic(_)))
+        .map(|(_, c)| {
+            let name = c.name(&f.assignment).map(|n| String::from_utf8_lossy(n).into_owned());
+            (c.offset, c.offset + c.size.max(c.capacity), name.unwrap_or_default())
+        })
+        .collect();
+    let r = crate::image::with_link(f, ctx.store, &|_| {}, |l| {
+        let t = std::time::Instant::now();
+        let c = mortar_image::update::refill(l, df, &SymtabPlan::default(), &cset, stored, out, &leaves);
+        let took = t.elapsed();
+        let c = match c {
+            Ok(c) => c,
+            Err(mortar_image::update::RefillError::Fallback(r)) => {
+                return format!("255e shadow: refused: C' refill: {}", r.report());
+            }
+            Err(mortar_image::update::RefillError::Failed(e)) => {
+                return format!("finding: 255e shadow: C' refill failed: {e:?}");
+            }
+        };
+        // Whole outputs (the previous output with each list over it): two
+        // lists that cut the same changed bytes differently are equal.
+        let first = first_output_difference(out, front2, &c);
+        let s1 = if matches!(first, Ok(None))
+            && c.leaves == front2.leaves
+            && c.build_id == front2.build_id
+        {
+            format!(
+                "255e shadow: equal ({} ranges, {} bytes; front 2 {} ranges, {} bytes; \
+                 {n_units} units of {} referrer files, {} moved definitions; C' filled {} \
+                 bytes, front 2 {}; C' refill {:.1} ms)",
+                c.counts.ranges,
+                c.counts.dirty,
+                front2.counts.ranges,
+                front2.counts.dirty,
+                set.referrer_files,
+                set.moved_definitions,
+                c.counts.filled,
+                front2.counts.filled,
+                took.as_secs_f64() * 1e3
+            )
+        } else {
+            match first {
+                Ok(Some((x, a, b))) => format!(
+                    "finding: 255e shadow: first difference at {x:#x} ({}, front 2 {a:#04x}, C' \
+                     {b:#04x}; front 2 {} ranges {} bytes, C' {} ranges {} bytes)",
+                    chunk_name(f, x),
+                    front2.counts.ranges,
+                    front2.counts.dirty,
+                    c.counts.ranges,
+                    c.counts.dirty
+                ),
+                Ok(None) => format!(
+                    "finding: 255e shadow: equal bytes, other leaves or build id (leaves \
+                     equal {}, build id equal {})",
+                    c.leaves == front2.leaves,
+                    c.build_id == front2.build_id
+                ),
+                Err(e) => format!("255e shadow: refused: the previous output: {e}"),
+            }
+        };
+        // S2: S1's dirty ranges, cut to the in-file chunks that are not
+        // synthetic.
+        let mut clips: Vec<std::ops::Range<u64>> = Vec::new();
+        let mut skipped: std::collections::BTreeSet<String> = std::collections::BTreeSet::new();
+        for r in &c.ranges {
+            let (lo, hi) = (r.offset, r.offset + r.len);
+            for (_, k) in pl.chunks.iter() {
+                let (a, b) = (k.offset, k.offset + k.size.max(k.capacity));
+                if !k.in_file() || a >= b || hi <= a || b <= lo {
+                    continue;
+                }
+                if let Some(s) = synth.iter().find(|s| s.0 == a) {
+                    skipped.insert(s.2.clone());
+                    continue;
+                }
+                clips.push(lo.max(a)..hi.min(b));
+            }
+        }
+        clips.sort_by_key(|r| r.start);
+        let mut merged: Vec<std::ops::Range<u64>> = Vec::new();
+        for r in clips {
+            match merged.last_mut() {
+                Some(m) if m.end >= r.start => m.end = m.end.max(r.end),
+                _ => merged.push(r),
+            }
+        }
+        let starts: Vec<u64> = c.ranges.iter().map(|r| r.offset).collect();
+        let s2 = if merged.is_empty() {
+            "clip plan: no range outside synthetic chunks".to_owned()
+        } else {
+            match mortar_image::link::refill_clip_plan(l, &merged, |_| {}) {
+                Ok(fill) => {
+                    let mut diff = None;
+                    'jobs: for (j, bytes) in &fill.jobs {
+                        for (i, &v) in bytes.iter().enumerate() {
+                            let x = j.start + i as u64;
+                            let want = refill_byte(&c, &starts, x);
+                            // A byte outside C''s ranges is the previous
+                            // output's (a refilled range equal to it is
+                            // dropped): read it.
+                            let want = match want {
+                                Some(w) => w,
+                                None => {
+                                    let mut b = [0u8; 1];
+                                    if std::os::unix::fs::FileExt::read_exact_at(out, &mut b, x)
+                                        .is_err()
+                                    {
+                                        0
+                                    } else {
+                                        b[0]
+                                    }
+                                }
+                            };
+                            if v != want {
+                                diff = Some((x, want, v));
+                                break 'jobs;
+                            }
+                        }
+                    }
+                    match diff {
+                        None => format!(
+                            "clip plan: equal ({} ranges, {} bytes)",
+                            merged.len(),
+                            merged.iter().map(|r| r.end - r.start).sum::<u64>()
+                        ),
+                        Some((x, a, b)) => format!(
+                            "finding: 255e shadow: clip plan: first difference at {x:#x} ({}, C' \
+                             refill {a:#04x}, clip plan {b:#04x})",
+                            chunk_name(f, x)
+                        ),
+                    }
+                }
+                Err(Ok(mortar_image::clip_plan::ClipError::NotYet(k, id))) => {
+                    let c = &pl.chunks[id];
+                    format!("clip plan: refused NotYet({k:?}) {}", chunk_name(f, c.offset))
+                }
+                Err(Ok(mortar_image::clip_plan::ClipError::Internal(d))) => {
+                    let at: Vec<String> = merged
+                        .iter()
+                        .map(|r| format!("{:#x}..{:#x} {}", r.start, r.end, chunk_name(f, r.start)))
+                        .collect();
+                    let text = format!("{d:?}");
+                    let near = text
+                        .split("0x")
+                        .nth(1)
+                        .and_then(|h| {
+                            let h: String = h.chars().take_while(char::is_ascii_hexdigit).collect();
+                            u64::from_str_radix(&h, 16).ok()
+                        })
+                        .map(|x| shadow_near(l, f, x))
+                        .unwrap_or_default();
+                    format!(
+                        "finding: 255e shadow: clip plan: internal: {text}; clips {at:?}; near: \
+                         {near}"
+                    )
+                }
+                Err(Err(e)) => format!("finding: 255e shadow: clip plan: fill failed: {e:?}"),
+            }
+        };
+        let skipped: Vec<String> = skipped.into_iter().collect();
+        format!("{s1} | {s2}; NotYet(Synth) left out: {}", skipped.join(" "))
+    });
+    match r {
+        Ok(line) => line,
+        Err(e) => format!("255e shadow: refused: the image's link: {e:?}"),
     }
 }
 
@@ -1297,7 +1705,7 @@ fn judge(
         d.moved.len(),
         d.growth_steps.len()
     );
-    Ok(Placed { differ, summary, debug: None, materialized: None })
+    Ok(Placed { differ, summary, debug: None, materialized: None, shadow: None })
 }
 
 /// Whether the differences of the capture against the stored state are

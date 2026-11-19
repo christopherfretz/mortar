@@ -32,6 +32,11 @@ const SMALL: &str =
 const GROWN: &str = "int c_value(int x) {\n  int y = x * 7 + 1;\n  if (y > 100)\n    y -= 3;\n\
     for (int i = 0; i < x; ++i)\n    y += i & 1;\n  return y - x / 2;\n}\n\
     int c_other(int x) { return x - 2; }\n";
+/// WP-255e: a new relocation (`c_value` now calls `u_value` in another
+/// file) in a grown body.
+const NEWREL: &str = "int u_value(int);\nint c_value(int x) {\n  int y = x * 7 + 1;\n  if (y > 100)\n    y -= 3;\n\
+    for (int i = 0; i < x; ++i)\n    y += i & 1;\n  return y - x / 2 + u_value(x);\n}\n\
+    int c_other(int x) { return x - 2; }\n";
 const U: &str = "int u_value(int x) { return x + 40; }\n";
 
 struct Prog {
@@ -124,7 +129,7 @@ fn a_grown_function_is_taken_through_front_two_or_refused_by_name() {
         let Some(p) = Prog::of(label, arch) else { continue };
         let findings = p.dir.join("findings.txt");
         p.link("u", &["--incremental=full"], &findings);
-        for (hop, text) in [(1, GROWN), (2, SMALL), (3, GROWN)] {
+        for (hop, text) in [(1, GROWN), (2, SMALL), (3, GROWN), (4, NEWREL)] {
             p.compile_c(text);
             std::fs::write(&findings, b"").expect("findings");
             let rep = p.dir.join("rep.txt");
@@ -142,6 +147,16 @@ fn a_grown_function_is_taken_through_front_two_or_refused_by_name() {
             );
             if front2 {
                 assert!(!fell_back, "{label}: hop {hop}: taken and fell back: {err}\n{lines}");
+                // WP-255e: C' in shadow, equal to front 2 over the whole output.
+                let shadow = lines.lines().find(|l| l.contains("255e shadow:")).unwrap_or("");
+                eprintln!("{label}: hop {hop}: {shadow}");
+                // S1 (C''s refill set) must equal front 2 over the whole
+                // output; S2 (the clip plan) is recorded after the `|`.
+                let s1 = shadow.split(" | ").next().unwrap_or("");
+                assert!(
+                    s1.starts_with("255e shadow: equal"),
+                    "{label}: hop {hop}: C' is not front 2: {shadow}"
+                );
                 taken.push(format!("{label} hop {hop}"));
             } else if fell_back {
                 // Named in the findings, or in the report's reason
