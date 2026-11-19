@@ -235,7 +235,7 @@ struct Judged {
 }
 
 /// The oracle: `m`'s `SYMTAB` rows and `META.symtab` against `out`.
-#[allow(clippy::too_many_lines)] // one walk, each property in its place
+#[allow(clippy::too_many_lines, clippy::many_single_char_names)] // one walk, each property in its place
 fn judge(label: &str, m: &MemoryState, dir: &Path) -> Judged {
     let o = Out::read(&dir.join("out"));
     let t = m.meta.symtab;
@@ -316,16 +316,15 @@ fn judge(label: &str, m: &MemoryState, dir: &Path) -> Judged {
                 own.get_mut(&(name.clone(), global)).filter(|n| **n > 0).map(|n| *n -= 1)
             };
             let found = take(false).or_else(|| if demoted { take(true) } else { None });
-            if found.is_none() {
-                panic!(
-                    "{who}: entry {i} {shown} (bind {} vis {} shndx {}) is no local of the file; \
-                     block {b:?}, sh_info {}",
-                    s.binding(),
-                    s.visibility(),
-                    s.st_shndx,
-                    o.sh_info
-                );
-            }
+            assert!(
+                found.is_some(),
+                "{who}: entry {i} {shown} (bind {} vis {} shndx {}) is no local of the file; \
+                 block {b:?}, sh_info {}",
+                s.binding(),
+                s.visibility(),
+                s.st_shndx,
+                o.sh_info
+            );
             if !fixed(name) {
                 let off = u64::from(s.st_name);
                 assert!(
