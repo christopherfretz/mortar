@@ -155,6 +155,19 @@ impl Collector {
         self.errors.load(Atomic::Relaxed) != 0
     }
 
+    /// The warnings emitted so far, with their keys, in report order
+    /// (diag.md §6.2), without ending collection: an incremental link's
+    /// capture stores them in its state before the link's report is
+    /// finished (`spec/incr.md` IN-75a, WP-265). Under `--fatal-warnings`
+    /// none (each was made an error), under `-w` none (each was dropped).
+    #[must_use]
+    pub fn warnings(&self) -> Vec<(Key, Diagnostic)> {
+        let inner = self.lock();
+        let mut held: Vec<&Entry> = inner.warnings.iter().collect();
+        held.sort_by(|a, b| order(a, b));
+        held.into_iter().map(|e| (e.key, e.diagnostic.clone())).collect()
+    }
+
     /// Ends collection: the diagnostics in report order, cut at the error
     /// limit.
     #[must_use]
@@ -309,6 +322,38 @@ mod tests {
         let report = collector.finish();
         let shown: Vec<_> = report.diagnostics().iter().map(|d| d.kind().symbol()).collect();
         assert_eq!(shown, [Some("u0000"), Some("u0001"), Some("u0002")]);
+    }
+
+    // spec: incr.md IN-75a, diag.md §6.2 (WP-265: the warnings read
+    // before `finish`, in report order, equal the report's; errors and
+    // the policy's dropped warnings are not among them)
+    #[test]
+    fn warnings_before_finish_are_the_reports() {
+        let warn = |n: &str| Diagnostic::warning(Kind::UndefinedSymbol { name: n.to_owned() });
+        let collector = Collector::new(Policy::default());
+        collector.emit(Key::new(70, 2, 5), warn("b"));
+        collector.emit(Key::new(70, 1, 9), warn("c"));
+        collector.emit(Key::new(70, 2, 5), warn("a"));
+        collector.emit(Key::new(10, 0, 0), Diagnostic::error(Kind::NoInputFiles));
+        let early = collector.warnings();
+        let names: Vec<_> = early.iter().map(|(_, d)| d.kind().symbol()).collect();
+        assert_eq!(names, [Some("c"), Some("a"), Some("b")]);
+        // Reading does not end collection: a later warning is still taken.
+        collector.emit(Key::new(70, 3, 0), warn("d"));
+        assert_eq!(collector.warnings().len(), 4);
+        let report = collector.finish();
+        let late: Vec<(Key, Diagnostic)> =
+            report.warnings().map(|(k, d)| (k, d.clone())).collect();
+        assert_eq!(late[..3], early[..]);
+        assert_eq!(late.len(), 4);
+        for policy in [
+            Policy { fatal_warnings: true, ..Policy::default() },
+            Policy { no_warnings: true, ..Policy::default() },
+        ] {
+            let c = Collector::new(policy);
+            c.emit(Key::new(70, 0, 0), warn("x"));
+            assert!(c.warnings().is_empty(), "{policy:?}");
+        }
     }
 
     // spec: diag.md §6.4 (`0`: nothing is dropped)
