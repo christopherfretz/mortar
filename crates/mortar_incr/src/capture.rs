@@ -1602,7 +1602,10 @@ fn region_rows(
 /// last section and is the chunk's last; a file's ordinals per (output
 /// section, category) are 0, 1, ... in address order. A break is `Err`:
 /// no state is written.
+#[allow(clippy::too_many_lines)] // one check per property, each with its words
 fn regions_check(m: &crate::update::testing::MemoryState) -> Result<(), String> {
+    // Per chunk: (offset, end, file, category, sections, first, last end).
+    type Reg = (u64, u64, u32, u8, u32, u64, u64);
     use crate::format::hole_kind;
     use mortar_layout::slack::{Class, class};
     let err = |what: String| Err(format!("REGIONS: {what} (IN-30, IN-72 item 2)"));
@@ -1617,8 +1620,6 @@ fn regions_check(m: &crate::update::testing::MemoryState) -> Result<(), String> 
                 .and_then(|o| text(o.name))
                 .is_some_and(|n| class(n, c.sh_flags) == Class::Tolerant)
     };
-    // Per chunk: (offset, end, file, category, sections, first, last end).
-    type Reg = (u64, u64, u32, u8, u32, u64, u64);
     let mut by_chunk: HashMap<u32, Vec<Reg>> = HashMap::default();
     let mut ordinals: HashMap<(u32, u32, u8), Vec<(u64, u32)>> = HashMap::default();
     for &(file, r) in &m.regions {
@@ -1721,7 +1722,7 @@ fn regions_check(m: &crate::update::testing::MemoryState) -> Result<(), String> 
     }
     let mut fills: HashMap<u32, Vec<(u64, u64)>> = HashMap::default();
     for h in m.holes.iter().filter(|h| h.kind == hole_kind::FILL && !h.tomb) {
-        if m.chunks.get(h.chunk as usize).is_some_and(|c| tolerant(c)) {
+        if m.chunks.get(h.chunk as usize).is_some_and(&tolerant) {
             fills.entry(h.chunk).or_default().push((h.offset, h.offset.saturating_add(h.size)));
         }
     }

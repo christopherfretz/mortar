@@ -31,6 +31,7 @@
 
 mod support;
 #[path = "support/update.rs"]
+#[allow(dead_code, reason = "a shared helper file; this test uses part of it")]
 mod update;
 
 use mortar::update::file_front::FrontCache;
