@@ -423,6 +423,8 @@ fn reference_of(
         ));
     }
     steps.mark("check");
+    #[cfg(feature = "testhooks")]
+    crate::incremental::materialize_hop(view, f);
     Ok(Reference { refill, size, state, map })
 }
 

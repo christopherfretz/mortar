@@ -618,6 +618,65 @@ pub(crate) fn target_of(f: &Front<'_>) -> (u16, u8) {
     (f.target.machine.e_machine(), if f.target.class == mortar_elf::Class::Elf64 { 2 } else { 1 })
 }
 
+/// WP-225 M2b-3 (D-8 1), a testhooks build only: the identity oracle of
+/// `mortar_incr::update::materialize` on an identity hop of the update
+/// (`update::reference_of`, after the identity check): the stored layout of
+/// `view` with an empty delta, materialized against the front `f`, must
+/// equal `f`'s own layout. One line per hop appended to the file
+/// `MORTAR_UPDATE_FINDINGS` names (the lane's count): `M2b-3 materialize:
+/// identity hop equal`, or `finding: M2b-3 materialize: identity hop: ..`
+/// with the refusal or the first differing table and row. Never changes
+/// the update.
+#[cfg(feature = "testhooks")]
+pub(crate) fn materialize_hop(view: &mortar_incr::update::view::StateView<'_>, f: &Front<'_>) {
+    let link = Link {
+        inputs: &f.inputs,
+        resolution: &f.resolution,
+        assignment: &f.assignment,
+        split: &f.merge.split,
+    };
+    let classes: Vec<mortar_core::incr::MergeClass> = f
+        .merge
+        .meta
+        .iter()
+        .map(|m| mortar_core::incr::MergeClass {
+            strings: m.strings,
+            entsize: m.entsize,
+            align: m.align,
+        })
+        .collect();
+    let line = match (Keys::new(&link), f.incr5.as_ref().map(|i| i.eh.as_ref())) {
+        (Ok(keys), Some(Ok(runs))) => {
+            let eh: Vec<mortar_incr::capture::EhFile> = runs
+                .iter()
+                .map(|r| mortar_incr::capture::EhFile {
+                    file: r.file,
+                    offset: r.offset,
+                    capacity: r.capacity,
+                    records: r.records,
+                    fdes: r.fdes,
+                    movable: r.movable,
+                })
+                .collect();
+            let hop = mortar_incr::update::materialize::identity_hop(
+                view, &link, &keys, &f.layout, &classes, &eh,
+            );
+            match hop {
+                Ok(()) => "M2b-3 materialize: identity hop equal".to_owned(),
+                Err(e) => format!("finding: M2b-3 materialize: identity hop: {e}"),
+            }
+        }
+        (Err(e), _) => format!("finding: M2b-3 materialize: identity hop: keys: {e}"),
+        (_, Some(Err(why))) => format!("finding: M2b-3 materialize: identity hop: no .eh_frame runs: {why}"),
+        (_, None) => "finding: M2b-3 materialize: identity hop: no format-5 front data".to_owned(),
+    };
+    if let Some(path) = std::env::var_os("MORTAR_UPDATE_FINDINGS")
+        && let Ok(mut file) = std::fs::OpenOptions::new().create(true).append(true).open(path)
+    {
+        let _ = writeln!(file, "{line}");
+    }
+}
+
 /// The files incremental mode writes, with the option naming each.
 fn own_files<'a>(
     state_path: &'a Path,
