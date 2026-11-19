@@ -299,7 +299,15 @@ fn normalize(text: &str) -> String {
         })
         .map(|l| {
             l.split_whitespace()
-                .map(|w| if w.contains("0x0000ff") || w.contains("0x7ff") { "<stack>" } else { w })
+                // The stack: AArch64 `0x0000ff..`, x86-64 `0x7ff..` (gdb) and
+                // `0x00007ff..` (lldb's 16 digits; ASLR stays on, see `lldb`).
+                .map(|w| {
+                    if w.contains("0x0000ff") || w.contains("0x7ff") || w.contains("0x00007ff") {
+                        "<stack>"
+                    } else {
+                        w
+                    }
+                })
                 // lldb names the module: `o` or `full`, the two outputs.
                 .map(|w| w.split_once('`').map_or(w, |(_, sym)| sym))
                 .collect::<Vec<_>>()
