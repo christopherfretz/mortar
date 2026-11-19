@@ -29,7 +29,7 @@ mod update;
 
 use mortar::update::file_front::{FrontCache, Ids, front_of, front_of_changed};
 use mortar::update::layout_in::layout_inputs;
-use mortar_core::id::{ChunkId, FileId, OutSecId, SectionId};
+use mortar_core::id::{ChunkId, FileId, OutSecId, SectionId, SymKey, SymKind, SymbolId};
 use mortar_core::incr::{
     FileDemands, IncrReason, LayoutInput, LayoutRows, PlaceNow, StoredEhRange, StoredFrag,
     StoredFragUse, StoredKeyRef, StoredLayout, StoredRegion, StoredSection, StoredSlot,
@@ -319,14 +319,7 @@ fn an_empty_bss_with_no_output_chunk_stays_beside_data() {
     }
 }
 
-/// One identity-case hop: the state of `args`, `edit`, the front of the
-/// new inputs and `delta::layout` over the changed file `pick` names.
-/// Requires (bytes first) the front to place each section of the file
-/// where the stored row has it; without the file's `REGIONS` rows the
-/// delta refuses by name; with the first link's regions ([`WithRegions`])
-/// it places every section at the full link's offset, moves nothing and
-/// takes no growth step. Gives each placed section's name and the delta's
-/// output section name.
+/// One identity-case hop ([`hop`] with `identity`).
 fn identity_hop(
     line: &update::Line,
     args: &[String],
@@ -334,6 +327,31 @@ fn identity_hop(
     edit: &dyn Fn(),
     what: &dyn Fn(&str) -> String,
 ) -> Vec<(String, Option<Vec<u8>>)> {
+    hop(line, args, pick, edit, what, true).0
+}
+
+/// One hop: the state of `args`, `edit`, the front of the new inputs and
+/// `delta::layout` over the changed file `pick` names, with the whole
+/// front's demands of the file (TEST-ONLY, keys moved into the update's
+/// ids by name, as `tests/layout_in.rs`). Without the file's `REGIONS`
+/// rows the delta refuses by name. With the first link's regions
+/// ([`WithRegions`]) it is judged by M2b2a-2's properties (ruling
+/// M2b2a-3) against the full link: placed exactly when the full link
+/// places it, in an output section of the same name, aligned, overlapping
+/// no other placed section of its chunk, every piece's fragment stored or
+/// new. With `identity` (the front places each section of the file where
+/// the stored row has it: required first, from the bytes), also every
+/// section at the full link's offset, nothing moved and no growth step.
+/// Gives each placed section's name and the delta's output section name,
+/// and the counts `(pieces, eh records)`.
+fn hop(
+    line: &update::Line,
+    args: &[String],
+    pick: &dyn Fn(&StateView<'_>) -> FileId,
+    edit: &dyn Fn(),
+    what: &dyn Fn(&str) -> String,
+    identity: bool,
+) -> (Vec<(String, Option<Vec<u8>>)>, usize, usize) {
     {
         let old = state(line, args, "old");
         edit();
@@ -386,6 +404,10 @@ fn identity_hop(
                 ))
             );
             let Some((fc, fo)) = full else { continue };
+            placed += 1;
+            if !identity {
+                continue;
+            }
             let p = prev.unwrap_or_else(|| panic!("{}", what(&format!("{name}: no stored row"))));
             let (sc, so) = p.place.get().expect("a stored place");
             assert_eq!((p.size, so), (c.size, fo), "{}", what(&format!("{name}: in place")));
@@ -393,7 +415,6 @@ fn identity_hop(
                 f.layout.placement.chunks[fc].kind.out().map(|o| f.assignment.outsecs[o].name);
             let sout = stored_chunks.get(&sc).and_then(|ch| ch.kind.out()).map(out_name);
             assert_eq!(fout.map(<[u8]>::to_vec), sout, "{}", what(&format!("{name}: output")));
-            placed += 1;
         }
         assert!(placed >= 1, "{}", what("the file has a placed section"));
 
@@ -405,9 +426,34 @@ fn identity_hop(
             what(&format!("REGIONS rows: {count} in the state, {} of the file", mine.len()))
         );
 
-        // The layout, with the whole front's demands of m1.o (TEST-ONLY;
-        // this C file has none that are keys of another file).
-        let demands: Vec<FileDemands> = Vec::new();
+        // The whole front's demands of the file (TEST-ONLY).
+        let symbols = old.count(mortar_incr::format::kind::SYMBOLS);
+        let mut demands: Vec<FileDemands> = Vec::new();
+        if let Some(i5) = &f.incr5 {
+            for d in i5.demands.iter().filter(|d| d.file == nf) {
+                let mut v = Vec::new();
+                for x in &d.demands {
+                    let key = match x.key.kind() {
+                        SymKind::Global(g) => {
+                            let k = &f.inputs.symbols[g];
+                            let ver = k.version.unwrap_or_default();
+                            let id = old.find_key(k.name, ver).expect("SYMBOLS").or_else(|| {
+                                let at = delta
+                                    .new_keys
+                                    .iter()
+                                    .position(|n| n.name == k.name && n.version == ver)?;
+                                Some(SymbolId(u32::try_from(symbols).ok()? + at as u32))
+                            });
+                            SymKey::global(id.expect("the key in the update"))
+                        }
+                        SymKind::Local(_) => x.key,
+                    };
+                    v.push(mortar_core::incr::SlotDemand { key, flags: x.flags });
+                }
+                v.sort();
+                demands.push(FileDemands { file, demands: v });
+            }
+        }
         let input = LayoutInput {
             changes: &inputs.changes,
             eh: &inputs.eh,
@@ -422,17 +468,21 @@ fn identity_hop(
         if mine.is_empty() {
             // Refused by name, never the overflow phase.
             let want = IncrReason::UpdateNotImplemented(Some(Unimplemented::Layout));
-            assert_eq!(plain.as_ref().err(), Some(&want), "{}", what("no regions: refused"));
+            eprintln!("{}", what(&format!("no regions: {:?}", plain.as_ref().err())));
+            assert!(plain.is_err(), "{}", what("no regions: refused"));
+            if identity {
+                assert_eq!(plain.as_ref().err(), Some(&want), "{}", what("no regions: refused"));
+            }
         }
 
-        // Given the first link's regions: every placed section kept at the
-        // full link's offset, nothing moved, no growth step.
+        // Given the first link's regions: judged.
         let with = WithRegions { inner: &rows, file, regions: WithRegions::derive(&rows, file) };
         eprintln!("{}", what(&format!("derived regions {:?}", with.regions)));
         let stored2 = StoredLayout::new(&with);
         let d = mortar_layout::delta::layout(&stored2, &input, &target)
             .unwrap_or_else(|e| panic!("{}", what(&format!("with regions: {}", e.report()))));
         let mut out = Vec::new();
+        let mut mine: Vec<(u32, u64, u64)> = Vec::new();
         for c in &inputs.changes {
             let fid = f.resolution.section_id(nf, SectionIndex(c.index)).expect("front id");
             let full = f.layout.placement.place[fid].get();
@@ -443,18 +493,117 @@ fn identity_hop(
             };
             let name = String::from_utf8_lossy(c.key.name).into_owned();
             assert_eq!(
-                now.map(|x| x.1),
-                full.map(|x| x.1),
+                now.is_some(),
+                full.is_some(),
                 "{}",
-                what(&format!("{name}: the update's offset is the full link's"))
+                what(&format!("{name}: placed (update {now:?}, full {full:?})"))
             );
-            if let Some((uc, _)) = now {
-                let o = d.placement.chunks[uc].kind.out().map(out_name);
-                out.push((name, o));
+            if identity {
+                assert_eq!(
+                    now.map(|x| x.1),
+                    full.map(|x| x.1),
+                    "{}",
+                    what(&format!("{name}: the update's offset is the full link's"))
+                );
+            }
+            let (Some((uc, uo)), Some((fc, fo))) = (now, full) else { continue };
+            let uout = d.placement.chunks[uc].kind.out().map(out_name);
+            let fout =
+                f.layout.placement.chunks[fc].kind.out().map(|o| f.assignment.outsecs[o].name);
+            assert_eq!(uout.as_deref(), fout, "{}", what(&format!("{name}: output section")));
+            let addr = d.placement.chunks[uc].addr.unwrap_or(0) + uo;
+            assert!(addr.is_multiple_of(c.align.max(1)), "{}", what(&format!("{name}: aligned")));
+            eprintln!("{}", what(&format!("{name}: update {uo:#x}, full {fo:#x}")));
+            mine.push((uc.0, uo, uo + c.size));
+            out.push((name, uout));
+        }
+        // No overlap with any other placed section of the same chunk.
+        let files = u32::try_from(old.count(mortar_incr::format::kind::FILES)).expect("FILES");
+        let mut others: Vec<(u32, u64, u64)> = Vec::new();
+        for g in (1..files).map(FileId).filter(|&g| g != file) {
+            for s in stored2.sections_of(g).expect("SECTIONS") {
+                if let PlaceNow::Stored(p) = d.place_of(&stored2, s.id).expect("place_of")
+                    && let Some((ch, off)) = p.get()
+                {
+                    others.push((ch.0, off, off + s.size));
+                }
             }
         }
-        assert!(d.moved.is_empty(), "{}", what(&format!("moved {:?}", d.moved)));
-        assert!(d.growth_steps.is_empty(), "{}", what("a growth step"));
-        out
+        for (k, a) in mine.iter().enumerate() {
+            for b in others.iter().chain(&mine[k + 1..]) {
+                let overlap = a.0 == b.0 && a.1 < b.2 && b.1 < a.2 && a.1 < a.2 && b.1 < b.2;
+                assert!(!overlap, "{}", what(&format!("{a:?} overlaps {b:?}")));
+            }
+        }
+        // Every piece's fragment is stored or new.
+        let mut pieces = 0;
+        for p in inputs.pieces.iter().flat_map(|p| &p.pieces) {
+            let key = (p.out, p.class.word(), p.hash);
+            let found = stored2.frags_of(key.0, key.1, key.2).expect("FRAGS").is_some()
+                || d.frags.iter().any(|g| (g.out, g.class, g.hash) == key);
+            assert!(found, "{}", what(&format!("piece {p:?}: no fragment")));
+            pieces += 1;
+        }
+        if identity {
+            assert!(d.moved.is_empty(), "{}", what(&format!("moved {:?}", d.moved)));
+            assert!(d.growth_steps.is_empty(), "{}", what("a growth step"));
+        }
+        let records = inputs.eh.iter().map(|e| e.records.len()).sum();
+        eprintln!(
+            "{}",
+            what(&format!(
+                "{} changes, {} placed, {pieces} pieces, {records} eh records, {} moved, {} growth steps",
+                inputs.changes.len(),
+                mine.len(),
+                d.moved.len(),
+                d.growth_steps.len()
+            ))
+        );
+        (out, pieces, records)
+    }
+}
+
+/// `m1.o` before: C++, a `try` (`.eh_frame` with a personality).
+const EH_A: &str = "extern \"C\" { int wp255d_m1_data = 1; int wp255d_throw(int); }\n\
+    extern \"C\" int wp255d_m1(int x) { try { return wp255d_throw(x) + wp255d_m1_data; } \
+    catch (...) { return -1; } }\n\
+    extern \"C\" int wp255d_throw(int x) { if (x < 0) throw x; return x; }\n";
+/// `m1.o` after, with as few new FDEs as the cases need (M2b-2a item 8):
+/// the function grown (within its region's slack), strings added (a merge section, read inside
+/// `wp255d_m1`: no new function), a COMDAT group added (`wp255d_inl`,
+/// kept by the earlier `m8.o`, so this copy and its FDE are dropped).
+const EH_C: &str = "extern \"C\" { int wp255d_m1_data = 1; int wp255d_throw(int); }\n\
+    inline __attribute__((noinline)) int wp255d_inl(int x) { return x * 3 + wp255d_m1_data; }\n\
+    extern \"C\" int wp255d_m1(int x) { static const char *const t[] = \
+    { \"wp225c-alpha\", \"wp225c-beta\" }; try { return wp255d_throw(x) + \
+    wp255d_inl(x) + *t[x & 1]; } \
+    catch (...) { return -1; } }\n\
+    extern \"C\" int wp255d_throw(int x) { if (x < 0) throw x; return x; }\n";
+const M8: &str = "extern \"C\" { extern int wp255d_m1_data; }\n\
+    inline __attribute__((noinline)) int wp255d_inl(int x) { return x * 3 + wp255d_m1_data; }\n\
+    extern \"C\" int wp255d_m8(int x) { return wp255d_inl(x) + 8; }\n";
+
+/// M2b-2a item 8: a C++ edit with strings, a dropped COMDAT copy and its
+/// `.eh_frame` records, judged by M2b2a-2's properties with the first
+/// link's regions; `.eh_frame`'s reserve holds (no new FDE).
+#[test]
+fn a_cpp_edit_with_strings_and_a_comdat_is_judged() {
+    let mut judged = 0;
+    for line in lines(&[("eha", "c++", EH_A), ("ehc", "c++", EH_C), ("m8", "c++", M8)]) {
+        let what = |s: &str| format!("{} c++ eh: {s}", line.label);
+        let args = line.args(&["wp255d_m8", "wp255d_m2", "wp255d_m1"]);
+        std::fs::copy(line.dir.join("eha.o"), line.dir.join("m1.o")).expect("before");
+        line.archive(&["m8.o", "m1.o", "m2.o"]);
+        let edit = || {
+            std::fs::copy(line.dir.join("ehc.o"), line.dir.join("m1.o")).expect("the edit");
+            line.archive(&["m8.o", "m1.o", "m2.o"]);
+        };
+        let (_, pieces, records) = hop(&line, &args, &|v| member(v, "m1.o"), &edit, &what, false);
+        assert!(pieces > 0, "{}", what("the strings' pieces judged"));
+        assert!(records > 0, "{}", what("the .eh_frame records judged"));
+        judged += 1;
+    }
+    if mortar_testutil::tools_required() {
+        assert_eq!(judged, 2, "both targets judged");
     }
 }
