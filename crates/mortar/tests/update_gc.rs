@@ -255,8 +255,8 @@ fn gc_update_whose_section_dies_falls_back_layout() {
             "{label}: a (symtab) refusal:\n{text}"
         );
         assert!(
-            text.lines().any(|l| l.starts_with("M2b-3 Part 3: materialized (")
-                && l.ends_with(": front 2")),
+            text.lines()
+                .any(|l| l.starts_with("M2b-3 Part 3: materialized (") && l.ends_with(": front 2")),
             "{label}: not materialized for front 2:\n{text}"
         );
         assert!(

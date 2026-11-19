@@ -911,6 +911,10 @@ impl Shift {
 /// (WP-225 M2b-5 item 3): each PC-relative field IN-34a moves is `sdata4`
 /// or `sdata8` (4 or 8 bytes), as its CIE states.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[allow(
+    clippy::struct_excessive_bools,
+    reason = "one flag per field a CIE states (z, and each width)"
+)]
 pub struct EhRecord {
     pub offset: u64,
     pub len: u64,
@@ -981,6 +985,10 @@ pub fn walk_eh_why(bytes: &[u8]) -> Option<String> {
     walk(bytes, &mut Counts::default()).err()
 }
 
+#[allow(
+    clippy::too_many_lines,
+    reason = "one pass over the records, each refusal named where it is found"
+)]
 fn walk(bytes: &[u8], counts: &mut Counts) -> Result<Vec<EhRecord>, String> {
     let mut out: Vec<EhRecord> = Vec::new();
     let mut at = 0usize;

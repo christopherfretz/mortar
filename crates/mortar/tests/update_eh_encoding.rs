@@ -90,6 +90,7 @@ fn width(enc: u8) -> usize {
 }
 
 /// Every PC-relative field of the records: `(offset, width)`, and the CIEs.
+#[allow(clippy::many_single_char_names, reason = "a reader of the records' bytes and offsets")]
 fn fields(b: &[u8]) -> (Vec<(usize, usize)>, Vec<Cie>) {
     let mut cies: Vec<Cie> = Vec::new();
     let mut out = Vec::new();

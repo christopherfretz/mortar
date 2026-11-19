@@ -648,7 +648,10 @@ fn materialize_mutations_differ_by_the_delta_or_refuse_by_name() {
                 let l = s.run(view, &empty, &[], &c).unwrap_or_else(|e| {
                     panic!("{label}: symtab_locals: {e:?}");
                 });
-                assert_eq!(l.slots.symtab_locals, c.slots.symtab_locals, "{label}: the front's spans");
+                assert_eq!(
+                    l.slots.symtab_locals, c.slots.symtab_locals,
+                    "{label}: the front's spans"
+                );
                 reached.push("symtab_locals taken");
             }
             let name = |c: ChunkId| match computed.placement.chunks[c].kind {

@@ -512,33 +512,36 @@ fn drawn_in_answer(
     let real = |why: String| {
         Err(fail(
             "facts",
-            format!("key {}: its row changed (F-1): {why}: the delta {d:?}, the stored {s:?}", id.0),
+            format!(
+                "key {}: its row changed (F-1): {why}: the delta {d:?}, the stored {s:?}",
+                id.0
+            ),
         ))
     };
     if d.kind != def_kind::SECTION {
         return real("not a section definition".into());
     }
-    let Some(c) = changed.files.iter().find(|c| {
+    let Some(cf) = changed.files.iter().find(|c| {
         d.section.checked_sub(c.first_section.0).is_some_and(|k| (k as usize) < c.sections.len())
     }) else {
         return real("its section is no changed file's".into());
     };
-    if c.change != Change::DrawnIn {
-        return real(format!("defined in file {} ({:?})", c.file.0, c.change));
+    if cf.change != Change::DrawnIn {
+        return real(format!("defined in file {} ({:?})", cf.file.0, cf.change));
     }
-    let k = d.section - c.first_section.0;
-    let r = view.file_index(c.file).map_err(rows)?.ranges[FileTable::Sections as usize];
-    if k >= r.count {
+    let index = d.section - cf.first_section.0;
+    let range = view.file_index(cf.file).map_err(rows)?.ranges[FileTable::Sections as usize];
+    if index >= range.count {
         return Err(corrupt(format!(
-            "key {}: drawn-in file {} has {} stored sections, the row's index {k}",
-            id.0, c.file.0, r.count
+            "key {}: drawn-in file {} has {} stored sections, the row's index {index}",
+            id.0, cf.file.0, range.count
         )));
     }
-    if (ResolvedRow { section: r.first + k, facts: s.facts, ..d }) != s {
+    if (ResolvedRow { section: range.first + index, facts: s.facts, ..d }) != s {
         return real(format!(
-            "drawn-in file {} section {k} (stored id {})",
-            c.file.0,
-            r.first + k
+            "drawn-in file {} section {index} (stored id {})",
+            cf.file.0,
+            range.first + index
         ));
     }
     let facts = SymFacts::unpack(d.facts).ok_or_else(|| corrupt("a RESOLVED.facts word"))?;
