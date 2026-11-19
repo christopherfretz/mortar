@@ -280,6 +280,7 @@ struct Reference {
     clippy::too_many_arguments,
     reason = "path (A)'s front, U1's view and binding, the step timer"
 )]
+#[allow(clippy::too_many_lines, reason = "U4 to the identity check, in IN-70's order")]
 fn reference_of(
     session: &Session,
     view: &StateView<'_>,
@@ -361,9 +362,28 @@ fn reference_of(
     // U4-U5 (M2b-1): the changed files' rows in the update's ids, then
     // `extract` and `resolve` on them; the update goes on only where they
     // say what the front (its capture) says.
-    changed::u5(view, &detected.changed_files, &detected.positional, f, &state, &mut |n| {
-        steps.mark(n);
-    })?;
+    let u5 =
+        changed::u5(view, &detected.changed_files, &detected.positional, f, &state, &mut |n| {
+            steps.mark(n);
+        })?;
+    // U6-U7 (M2b-2b): the delta's placement of the changed files, judged
+    // against the front's (a disagreement is a FINDING, by name).
+    let placed = match u5 {
+        Some((cf, delta)) => {
+            // While the image cannot take the delta's placement (below), a
+            // producer's refusal is recorded and the identity check decides
+            // alone; a FINDING (the delta disagrees with the front) falls
+            // back by name.
+            let p = match placement(view, &stored, f, ctx.store, cwd, &cf, delta, &state) {
+                Ok(p) => Some(p),
+                Err(Why::Refused) => None,
+                Err(Why::Finding(e)) => return Err(e),
+            };
+            steps.mark("u7");
+            p
+        }
+        None => None,
+    };
     // The identity check (G-3's materialization in the identity case).
     let lock = session.lock().ok_or_else(image)?;
     let corrupt = |e: std::io::Error| IncrReason::StateCorrupt(e.to_string());
@@ -376,10 +396,425 @@ fn reference_of(
         .map_err(|e| IncrReason::StateCorrupt(e.to_string()))?;
     let diffs = mortar_incr::state5::canon::compare(&new, &old, &stored);
     if !identity(&diffs, files) {
+        // The image takes a placement only through the front's replay
+        // hook, as a whole `Layout` in the front's ids (`image_link`'s
+        // `replay`, `front.rs` `Env::replay`); no producer materializes a
+        // format-5 `StoredLayout` with a `LayoutDelta` into one (the
+        // record, M2b-2b): the delta's placement is judged, not written.
+        if let Some(p) = &placed {
+            changed::record(&format!(
+                "M2b-2b placement: judged, not the stored one ({}): (layout)",
+                p.summary
+            ));
+        }
         return Err(layout());
+    }
+    // The identity case: the front's placement is the stored one, so the
+    // delta's must be it too, offset for offset.
+    if let Some(p) = &placed
+        && !p.differ.is_empty()
+    {
+        return Err(changed::finding_as(
+            &format!(
+                "M2b-2b placement: the identity case, but delta::layout places {:?} ({})",
+                p.differ, p.summary
+            ),
+            layout(),
+        ));
     }
     steps.mark("check");
     Ok(Reference { refill, size, state, map })
+}
+
+/// The delta's placement of the changed files, judged ([`placement`]).
+struct Placed {
+    /// The changed sections the delta placed at another offset (or chunk)
+    /// than the front's, as `name: update .., full ..` (empty: the full
+    /// link's offsets, the identity case's requirement).
+    differ: Vec<String>,
+    /// The counts, for the findings file.
+    summary: String,
+}
+
+/// U6-U7 for the changed files of `cf` (M2b-2b; IN-72): `layout_inputs`,
+/// `scan_of`'s demands per file (its fall-back propagates by name), R-4a's
+/// facts (`defined_facts`, packed into `delta.resolved`'s rows of the keys
+/// the files define, and judged equal to the front's capture), then
+/// `delta::layout` over them, judged against the front's placement
+/// ([`judge`]). A disagreement is a FINDING: recorded with both answers
+/// and the update falls back by name.
+///
+/// `liveness`: `live::live` (no `--gc-sections` here: `run_with` refused it
+/// first, so no comparison of a section's `dead` reads a stored bit, F-8:
+/// the scan's own recomputation is the only one).
+#[allow(clippy::too_many_arguments, reason = "the update's inputs, each read once")]
+#[allow(clippy::too_many_lines, reason = "U6-U7's producers in order, then the judgement")]
+fn placement(
+    view: &StateView<'_>,
+    stored: &mortar_core::incr::StoredLayout<'_>,
+    f: &crate::front::Front<'_>,
+    store: &Store,
+    cwd: &Path,
+    cf: &mortar_incr::update::view::ChangedFiles,
+    mut delta: mortar_incr::update::resolve::ResolveDelta,
+    capture: &mortar_incr::update::testing::MemoryState,
+) -> Result<Placed, Why> {
+    use mortar_core::incr::{FileDemands, LayoutInput};
+    use mortar_core::resolution::SectionKind;
+    use mortar_elf::SectionIndex;
+    use mortar_merge::phase::ArchRelocs;
+    use mortar_scan::ScanOptions;
+    let options = mortar_resolve::tables::option_keys(&f.plan, &f.inputs.link.directives);
+    let live = mortar_incr::update::live::live(view, cf, &delta, &options).map_err(refused)?;
+    let mut cache = file_front::FrontCache::new(store, f.pool, cwd);
+    let relocs = ArchRelocs(f.arch.get());
+    let inputs =
+        layout_in::layout_inputs(&mut cache, view, stored, &f.plan, cf, &delta, &relocs, &f.pool)
+            .map_err(refused)?;
+    let dynamic = crate::dynamic::arch_status(&f.plan, f.target.machine)
+        .map_err(|_| refused(IncrReason::UpdateNotImplemented(Some(Unimplemented::Scan))))?
+        == mortar_arch::Status::M2;
+    let writable = crate::dynlink::OutWritable(&f.assignment);
+    let opts = ScanOptions {
+        output: crate::front::output_kind(f.plan.kind),
+        dynamic,
+        sections: if dynamic { Some(&writable) } else { None },
+        proof: f.arch.proof(),
+    };
+    let scan = |e: file_scan::Fail| {
+        changed::record(&format!("M2b-2b fallback: {} {}", e.0.report(), e.1));
+        Why::Refused
+    };
+    let mut demands: Vec<FileDemands> = Vec::with_capacity(cf.files.len());
+    let mut defined: Vec<(mortar_core::SymbolId, u32)> = Vec::new();
+    for c in &cf.files {
+        let ff = cache.get(c.file).ok_or_else(layout_in_lost).map_err(refused)?;
+        let facts =
+            file_split::changed_facts(ff, view, &f.plan, &delta.keepers).map_err(refused)?;
+        let null = file_split::SectionFact {
+            kind: SectionKind::Null,
+            kept: false,
+            out: None,
+            reloc: SectionIndex(0),
+        };
+        let by_index = |i: SectionIndex| facts.get(i.0 as usize).copied().unwrap_or(null);
+        let split = file_split::split_of(ff, view, &by_index, &relocs, &f.pool, Some(&delta))
+            .map_err(refused)?;
+        // FINDING M2b2b-1 (the record): `file_scan.rs:280-281` reads the
+        // front's `row.path`/`member_name` (the update's string space,
+        // M2b2a-1) from the state's `STRINGS` alone. Until it reads them
+        // through `ChangedFiles::string`, the scan is given the front with
+        // the stored row's two strings (`changed_files` checked them equal
+        // by bytes); a file without a stored row is refused by name.
+        let ff = &scan_front(view, cf, ff).map_err(refused)?;
+        let d = file_scan::scan_of_why(
+            f.arch.get(),
+            opts,
+            ff,
+            Some(&facts),
+            &split,
+            view,
+            cf,
+            &options,
+            &delta,
+            &live,
+        )
+        .map_err(scan)?;
+        demands.push(d);
+        let keys = file_scan::defined_facts(
+            opts,
+            ff,
+            Some(&facts),
+            &split,
+            view,
+            cf,
+            &options,
+            &delta,
+            &live,
+        )
+        .map_err(scan)?;
+        for (id, r) in keys {
+            defined.push((id, r.map_err(scan)?.pack()));
+        }
+    }
+    demands.sort_by_key(|d| d.file);
+    // R-4a: the facts of the keys the changed files define, into their
+    // rows of the delta (the `facts: 0` of `defined_row` is never kept),
+    // and judged against the front's capture (key by name).
+    facts_into(view, capture, &mut delta, &defined).map_err(Why::Finding)?;
+    let input = LayoutInput {
+        changes: &inputs.changes,
+        eh: &inputs.eh,
+        pieces: &inputs.pieces,
+        demands: &demands,
+        debug: false,
+    };
+    let d = mortar_layout::delta::layout(stored, &input, &f.target)
+        .inspect_err(|e| {
+            // With the front's answer for each change it does not place (the
+            // other side of a refusal about a section the full link drops).
+            let mut unplaced = String::new();
+            for c in &inputs.changes {
+                let fid = f.resolution.section_id(c.file, SectionIndex(c.index));
+                let full = fid.and_then(|s| f.layout.placement.place.get(s)).and_then(|p| p.get());
+                if let Some((fc, fo)) = full {
+                    use std::fmt::Write as _;
+                    let out = f.layout.placement.chunks[fc].kind.out();
+                    let name = out.map(|o| String::from_utf8_lossy(f.assignment.outsecs[o].name));
+                    let _ = write!(
+                        unplaced,
+                        " (placed {} size {} at {name:?}+{fo:#x})",
+                        String::from_utf8_lossy(c.key.name),
+                        c.size
+                    );
+                }
+                if full.is_none() && c.index != 0 {
+                    use std::fmt::Write as _;
+                    let _ = write!(
+                        unplaced,
+                        " [{} size {} kept {} old {:?}]",
+                        String::from_utf8_lossy(c.key.name),
+                        c.size,
+                        c.kept,
+                        c.old
+                    );
+                }
+            }
+            changed::record(&format!(
+                "M2b-2b fallback: delta::layout: {}; not placed by the front:{unplaced}",
+                e.report()
+            ));
+        })
+        .map_err(|_| Why::Refused)?;
+    judge(view, stored, f, &inputs, &d).map_err(|what| {
+        Why::Finding(changed::finding_as(
+            &format!("M2b-2b placement: {what}"),
+            IncrReason::UpdateNotImplemented(Some(Unimplemented::Layout)),
+        ))
+    })
+}
+
+/// Why [`placement`] gave no placement: a producer refused (recorded by
+/// name), or a FINDING (recorded with both answers).
+enum Why {
+    /// Its reason is in the findings file only (the identity check decides).
+    Refused,
+    Finding(IncrReason),
+}
+
+/// A producer's refusal, recorded.
+#[allow(clippy::needless_pass_by_value, reason = "a `map_err` argument")]
+fn refused(e: IncrReason) -> Why {
+    changed::record(&format!("M2b-2b fallback: {}", e.report()));
+    Why::Refused
+}
+
+/// The front `ff` with its row's `path` and `member_name` the stored row's
+/// (finding M2b2b-1), checked equal by bytes to the update's strings.
+fn scan_front<'s>(
+    view: &StateView<'_>,
+    cf: &mortar_incr::update::view::ChangedFiles,
+    ff: &file_front::FileFront<'s>,
+) -> Result<file_front::FileFront<'s>, IncrReason> {
+    let layout = || IncrReason::UpdateNotImplemented(Some(Unimplemented::Layout));
+    if u64::from(ff.file.0) >= view.count(kind::FILES) {
+        return Err(layout());
+    }
+    let st = view.file(ff.file)?;
+    if view.string(st.path)? != cf.string(view, ff.row.path)?
+        || view.string(st.member_name)? != cf.string(view, ff.row.member_name)?
+    {
+        return Err(layout());
+    }
+    let mut x = ff.clone();
+    (x.row.path, x.row.member_name) = (st.path, st.member_name);
+    Ok(x)
+}
+
+fn layout_in_lost() -> IncrReason {
+    IncrReason::StateCorrupt("the join: a changed file's front is not in the cache".into())
+}
+
+/// R-4a: each `(key, packed facts)` of `defined` written into the key's
+/// row of `delta.resolved`; the front's capture's `RESOLVED.facts` of the
+/// global of that name must be the same value (a FINDING otherwise), and
+/// a key the files define must have a row in the delta.
+fn facts_into(
+    view: &StateView<'_>,
+    capture: &mortar_incr::update::testing::MemoryState,
+    delta: &mut mortar_incr::update::resolve::ResolveDelta,
+    defined: &[(mortar_core::SymbolId, u32)],
+) -> Result<(), IncrReason> {
+    use mortar_incr::format::sym_kind;
+    let corrupt = |what: String| IncrReason::StateCorrupt(format!("the join, R-4a: {what}"));
+    let text = |s: mortar_incr::format::Str| -> Result<Vec<u8>, IncrReason> {
+        let (a, b) = (s.off as usize, s.off as usize + s.len as usize);
+        capture.strings.get(a..b).map(<[u8]>::to_vec).ok_or_else(|| corrupt("a string".into()))
+    };
+    let mut by_name: std::collections::HashMap<(Vec<u8>, Vec<u8>), usize> =
+        std::collections::HashMap::new();
+    for (k, s) in capture.symbols.iter().enumerate() {
+        if s.kind != sym_kind::LOCAL {
+            by_name.entry((text(s.name)?, text(s.version)?)).or_insert(k);
+        }
+    }
+    let symbols = view.count(kind::SYMBOLS);
+    for &(id, packed) in defined {
+        let name = if u64::from(id.0) < symbols {
+            let s = view.symbol(id)?;
+            (view.string(s.name)?, view.string(s.version)?)
+        } else {
+            let n = delta
+                .new_keys
+                .get((u64::from(id.0) - symbols) as usize)
+                .ok_or_else(|| corrupt(format!("key {} is no row of the update", id.0)))?;
+            (n.name.clone(), n.version.clone())
+        };
+        let show = String::from_utf8_lossy(&name.0).into_owned();
+        let front = by_name.get(&name).and_then(|&k| capture.resolved.get(k)).map(|r| r.facts);
+        if front != Some(packed) {
+            return Err(changed::finding_as(
+                &format!("R-4a: key {show}: defined_facts {packed:#x}, the front's {front:x?}"),
+                IncrReason::UpdateNotImplemented(Some(Unimplemented::Scan)),
+            ));
+        }
+        let row = delta.resolved.iter_mut().find(|(k, _)| *k == id).ok_or_else(|| {
+            changed::finding_as(
+                &format!("R-4a: key {show} the files define has no row in the delta"),
+                IncrReason::UpdateNotImplemented(Some(Unimplemented::Scan)),
+            )
+        })?;
+        row.1.facts = packed;
+    }
+    Ok(())
+}
+
+/// M2b2a-2's properties (ruling M2b2a-3), per section of each changed file
+/// (the update's and the front's matched by `(file, index)`: the front's
+/// file of a changed id is the state's, `reference_of`'s U4 check):
+/// placed by the delta exactly when the front places it; in an output
+/// section of the same NAME; at an address its alignment admits;
+/// overlapping no other placed section of its chunk (the stored places of
+/// the other files' sections, the update's); every merged piece's
+/// fragment in the stored `FRAGS` or the delta's new ones. `Err` is the
+/// disagreement, both answers in the text.
+#[allow(clippy::too_many_lines, reason = "M2b2a-2's properties, one after the other")]
+fn judge(
+    view: &StateView<'_>,
+    stored: &mortar_core::incr::StoredLayout<'_>,
+    f: &crate::front::Front<'_>,
+    inputs: &layout_in::LayoutInputs<'_>,
+    d: &mortar_core::incr::LayoutDelta,
+) -> Result<Placed, String> {
+    use mortar_core::incr::PlaceNow;
+    use mortar_elf::SectionIndex;
+    let e = |x: IncrReason| x.report();
+    let outsecs = view.outsecs().map_err(e)?;
+    let mut differ = Vec::new();
+    let mut mine: Vec<(u32, u64, u64)> = Vec::new();
+    let mut files: Vec<FileId> = Vec::new();
+    for c in &inputs.changes {
+        files.push(c.file);
+        let name = String::from_utf8_lossy(c.key.name).into_owned();
+        let fid = f
+            .resolution
+            .section_id(c.file, SectionIndex(c.index))
+            .ok_or_else(|| format!("section {} {name}: no section of the front", c.index))?;
+        let full = f.layout.placement.place.get(fid).and_then(|p| p.get());
+        let now = match d.place_of(stored, c.id).map_err(e)? {
+            PlaceNow::Here(p) => p.get(),
+            PlaceNow::NotPlaced => None,
+            PlaceNow::Stored(_) => {
+                return Err(format!("{name}: a changed file's section is Stored"));
+            }
+        };
+        let (Some((uc, uo)), Some((fc, fo))) = (now, full) else {
+            if now.is_some() != full.is_some() {
+                return Err(format!(
+                    "section {} {name}: placed by the update {now:?}, by the full link {full:?}",
+                    c.index
+                ));
+            }
+            continue;
+        };
+        let uchunk =
+            d.placement.chunks.get(uc).ok_or_else(|| format!("{name}: no chunk {uc:?}"))?;
+        let fchunk = &f.layout.placement.chunks[fc];
+        let uout = match uchunk.kind.out() {
+            Some(o) => {
+                let row = outsecs.get(o.0 as usize).ok_or_else(|| format!("{name}: OUTSECS"))?;
+                Some(view.string(row.name).map_err(e)?)
+            }
+            None => None,
+        };
+        let fout = fchunk.kind.out().map(|o| f.assignment.outsecs[o].name.to_vec());
+        if uout != fout {
+            return Err(format!(
+                "section {} {name}: output section {:?} in the update, {:?} in the full link",
+                c.index,
+                uout.map(|n| String::from_utf8_lossy(&n).into_owned()),
+                fout.map(|n| String::from_utf8_lossy(&n).into_owned())
+            ));
+        }
+        let addr = uchunk.addr.unwrap_or(0) + uo;
+        if !addr.is_multiple_of(c.align.max(1)) {
+            return Err(format!("{name}: at {addr:#x}, not aligned to {}", c.align));
+        }
+        mine.push((uc.0, uo, uo + c.size));
+        if uo != fo || uchunk.addr != fchunk.addr {
+            differ.push(format!("{name}: update {uo:#x}, full {fo:#x}"));
+        }
+    }
+    files.sort_unstable();
+    files.dedup();
+    // No overlap within a chunk: the other files' stored places in the
+    // chunks the update placed into.
+    let chunks: std::collections::BTreeSet<u32> = mine.iter().map(|m| m.0).collect();
+    let count = u32::try_from(view.count(kind::FILES)).map_err(|_| "FILES".to_string())?;
+    let mut others: Vec<(u32, u64, u64)> = Vec::new();
+    for g in (1..count).map(FileId).filter(|g| files.binary_search(g).is_err()) {
+        for s in stored.sections_of(g).map_err(e)? {
+            if let PlaceNow::Stored(p) = d.place_of(stored, s.id).map_err(e)?
+                && let Some((ch, off)) = p.get()
+                && chunks.contains(&ch.0)
+            {
+                others.push((ch.0, off, off + s.size));
+            }
+        }
+    }
+    others.sort_unstable();
+    for (k, a) in mine.iter().enumerate() {
+        let empty = |x: &(u32, u64, u64)| x.1 >= x.2;
+        let hit = others
+            .iter()
+            .chain(&mine[k + 1..])
+            .find(|b| a.0 == b.0 && a.1 < b.2 && b.1 < a.2 && !empty(a) && !empty(b));
+        if let Some(b) = hit {
+            return Err(format!(
+                "chunk {} [{:#x}, {:#x}) overlaps [{:#x}, {:#x})",
+                a.0, a.1, a.2, b.1, b.2
+            ));
+        }
+    }
+    let mut pieces = 0usize;
+    for p in inputs.pieces.iter().flat_map(|p| &p.pieces) {
+        let key = (p.out, p.class.word(), p.hash);
+        let found = stored.frags_of(key.0, key.1, key.2).map_err(e)?.is_some()
+            || d.frags.iter().any(|g| (g.out, g.class, g.hash) == key);
+        if !found {
+            return Err(format!("piece {p:?}: no fragment, stored or new"));
+        }
+        pieces += 1;
+    }
+    let summary = format!(
+        "{} changes, {} placed, {} not at the full link's offset, {pieces} pieces, {} moved, {} growth steps",
+        inputs.changes.len(),
+        mine.len(),
+        differ.len(),
+        d.moved.len(),
+        d.growth_steps.len()
+    );
+    Ok(Placed { differ, summary })
 }
 
 /// Whether the differences of the capture against the stored state are

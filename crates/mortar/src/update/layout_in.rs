@@ -5,7 +5,7 @@
 //! Per field, its producer (the record `spec/landed/incr/WP-225.md`,
 //! "M2b-2a", design note):
 //! - a section's id, file, index, identity, header columns: the file's
-//!   front (`front_of` with `Ids::Update`, the ids `ChangedFile::first_section`
+//!   front (`front_of_changed` with `Ids::Update`, the ids `ChangedFile::first_section`
 //!   allocates, the bytes `ChangedFile::row` names);
 //! - `old`: the stored `SECTIONS` row of the file whose identity equals,
 //!   by bytes, the capture's row of the section (`ChangedFile::sections`);
@@ -37,7 +37,7 @@ use mortar_merge::eh::Kind;
 use mortar_merge::phase::Relocs;
 use mortar_synth::eh::EhPlan;
 
-use super::file_front::{FrontCache, Ids, front_of};
+use super::file_front::{FrontCache, Ids, front_of_changed};
 use super::file_split::{SectionFact, changed_facts, eh_source, split_of};
 
 /// The changed files' part of a `LayoutInput` (every list sorted by its
@@ -71,7 +71,7 @@ fn anchor_parts(a: Anchor<'_>) -> (u8, &[u8]) {
 }
 
 /// The layout's inputs of every file of `cf` (U-4's `changes`, `eh`,
-/// `pieces`), each file through `front_of` (`cache`, `Ids::Update` with
+/// `pieces`), each file through `front_of_changed` (`cache`, `Ids::Update` with
 /// the file's `ChangedFile` ids and row), `changed_facts` (keepers from
 /// `delta`), `split_of` and `eh_source` (both with `delta`, F-9). `stored`
 /// is the state's layout (`old`'s rows), `plan` the update's line,
@@ -110,19 +110,10 @@ pub fn layout_inputs<'s>(
         if !matches!(c.change, Change::Changed) {
             return Err(layout());
         }
-        // D2-1's row is `c.row`; its `path` and `member_name` are strings
-        // of the UPDATE's buffer (past `STRINGS`), which `front_of` reads
-        // from the state's. `changed_files` checked both equal, by bytes,
-        // to the stored row's (`changed.rs`), so the stored strings name
-        // them (the record's finding M2b2a-1).
-        let st = view.file(c.file)?;
-        let row = mortar_incr::update::rows::FileRow {
-            path: st.path,
-            member_name: st.member_name,
-            ..c.row.clone()
-        };
-        let ids = Ids::Update { first_section: c.first_section, row };
-        let ff = front_of(cache, view, c.file, ids)?;
+        // D2-1's row is `c.row`, its strings in the update's space, read
+        // through `ChangedFiles::string` (ruling M2b2a-1).
+        let ids = Ids::Update { first_section: c.first_section, row: c.row.clone() };
+        let ff = front_of_changed(cache, view, cf, c.file, ids)?;
         let facts = changed_facts(ff, view, plan, &delta.keepers)?;
         if facts.len() != ff.sections.len() || c.sections.len() != ff.sections.len() {
             return Err(layout());

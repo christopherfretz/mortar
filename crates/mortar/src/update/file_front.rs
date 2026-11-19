@@ -45,7 +45,7 @@ use mortar_image::rows::SectionFront;
 use mortar_incr::capture;
 use mortar_incr::format::NONE;
 use mortar_incr::update::rows::{FileRow, FileTable, file_flags};
-use mortar_incr::update::view::StateView;
+use mortar_incr::update::view::{ChangedFiles, StateView};
 use mortar_input::facts::{Kind, analyse, effective_signature};
 use mortar_input::store::{ReadJob, Store, content_hash};
 
@@ -60,9 +60,12 @@ pub enum Ids {
     /// allocation, `ChangedFile::first_section`), and its bytes are the
     /// ones `row` names (ruling D2-1: the changed file's NEW `FILES` row,
     /// `ChangedFile::row`, the join's; never the stored row's hash). The
-    /// row's `path` is read from the state's `STRINGS`: a path the state
-    /// does not hold (an appeared file's new string) is
-    /// `update-not-implemented (resolve)`.
+    /// row's `path` is a string of the UPDATE's space (ruling M2b2a-1):
+    /// [`front_of_changed`] reads it through `ChangedFiles::string`, the
+    /// one reader of that space; [`front_of`] (no update strings) reads it
+    /// from the state's `STRINGS`, and a path past them (an appeared
+    /// file's, or any `ChangedFile::row`'s) is `update-not-implemented
+    /// (resolve)`.
     Update { first_section: SectionId, row: FileRow },
 }
 
@@ -201,8 +204,36 @@ pub fn front_of<'c, 's>(
     file: FileId,
     ids: Ids,
 ) -> Result<&'c FileFront<'s>, IncrReason> {
+    opened(cache, view, None, file, ids)
+}
+
+/// [`front_of`] for the join (ruling M2b2a-1): an `Ids::Update` row's
+/// `path` is read through `changed`'s `ChangedFiles::string` (the update's
+/// string space: the state's `STRINGS`, then the update's buffer), so the
+/// row `ChangedFile::row` gives, of a changed or an APPEARED file, opens
+/// as it is. `Ids::Stored` is [`front_of`]'s.
+///
+/// # Errors
+/// [`front_of`]'s; `state-corrupt` for a string outside the update's space.
+pub fn front_of_changed<'c, 's>(
+    cache: &'c mut FrontCache<'s>,
+    view: &StateView<'_>,
+    changed: &ChangedFiles,
+    file: FileId,
+    ids: Ids,
+) -> Result<&'c FileFront<'s>, IncrReason> {
+    opened(cache, view, Some(changed), file, ids)
+}
+
+fn opened<'c, 's>(
+    cache: &'c mut FrontCache<'s>,
+    view: &StateView<'_>,
+    changed: Option<&ChangedFiles>,
+    file: FileId,
+    ids: Ids,
+) -> Result<&'c FileFront<'s>, IncrReason> {
     if !cache.fronts.contains_key(&file) {
-        let front = open(cache, view, file, ids)?;
+        let front = open(cache, view, changed, file, ids)?;
         cache.opened.push(file);
         cache.fronts.insert(file, front);
     }
@@ -241,22 +272,32 @@ fn read<'s>(cache: &FrontCache<'s>, path: &[u8], row: &FileRow) -> Result<&'s [u
 fn open<'s>(
     cache: &FrontCache<'s>,
     view: &StateView<'_>,
+    update_strings: Option<&ChangedFiles>,
     file: FileId,
     ids: Ids,
 ) -> Result<FileFront<'s>, IncrReason> {
     // The row its bytes are checked against, and the update's first id
-    // (`None`: an unchanged file, `Ids::Stored`).
-    let (row, update) = match ids {
-        Ids::Stored => (view.file(file)?, None),
+    // (`None`: an unchanged file, `Ids::Stored`), and its path: an
+    // update's row in the update's string space (M2b2a-1).
+    let (row, update, path) = match ids {
+        Ids::Stored => {
+            let row = view.file(file)?;
+            let path = view.string(row.path)?;
+            (row, None, path)
+        }
         Ids::Update { first_section, row } => {
-            let strings = view.count(mortar_incr::format::kind::STRINGS);
-            if u64::from(row.path.off) + u64::from(row.path.len) > strings {
-                return Err(IncrReason::UpdateNotImplemented(Some(Unimplemented::Resolve)));
-            }
-            (row, Some(first_section))
+            let path = if let Some(c) = update_strings {
+                c.string(view, row.path)?
+            } else {
+                let strings = view.count(mortar_incr::format::kind::STRINGS);
+                if u64::from(row.path.off) + u64::from(row.path.len) > strings {
+                    return Err(IncrReason::UpdateNotImplemented(Some(Unimplemented::Resolve)));
+                }
+                view.string(row.path)?
+            };
+            (row, Some(first_section), path)
         }
     };
-    let path = view.string(row.path)?;
     if row.flags & file_flags::GONE != 0 {
         return Err(corrupt(format!("file {} is gone", file.0)));
     }

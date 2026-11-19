@@ -326,6 +326,13 @@ fn finding(what: &str) -> IncrReason {
     resolve()
 }
 
+/// A FINDING of a later join step (M2b-2b: the placement, R-4a): `what`
+/// recorded as [`finding`] does, and the update falls back by `reason`.
+pub(super) fn finding_as(what: &str, reason: IncrReason) -> IncrReason {
+    record(&format!("finding: {what}"));
+    reason
+}
+
 /// U4-U5 of an M2b-1 update (record §0.2): U4's member-level judgement
 /// (a file of a changed path is changed when the capture's `FILES` hash
 /// is not the stored one), [`changed_files`], `extract`, `resolve` (with
@@ -363,7 +370,7 @@ pub fn u5(
 }
 
 /// Appends `line` to the `MORTAR_UPDATE_FINDINGS` file when it is set.
-fn record(line: &str) {
+pub(super) fn record(line: &str) {
     if let Some(path) = std::env::var_os("MORTAR_UPDATE_FINDINGS") {
         use std::io::Write as _;
         if let Ok(mut f) = std::fs::OpenOptions::new().create(true).append(true).open(path) {
