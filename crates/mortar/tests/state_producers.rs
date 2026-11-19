@@ -427,3 +427,172 @@ fn diags_hold_no_warning_today() {
         assert_eq!((same_w, one_w), (usize::MAX, usize::MAX), "{label}: neither update links");
     }
 }
+
+// ---- WP-255g: CHUNKS.members (VERSION 12) -----------------------------------
+
+/// `m1.o` with `wp255d_m1` grown, no section added (an added function's
+/// FDE would outgrow `.eh_frame`'s reserve: `reserve-exhausted`).
+const M1_GROWN: &str = "int wp255d_m1_data = 1;\nint wp255d_m1(int x) { int s = 0; \
+    for (int i = 0; i < x; i++) s += i * x + wp255d_m1_data; return s ^ (x << 3); }\n";
+
+/// `delta::layout` of the update that replaces `name` (in `old`'s state)
+/// by the file now on disk, whose full link's state is `capture`: the
+/// test path of `regions_keep_an_unchanged_file_in_place` (the whole
+/// front's demands moved into the state's ids by name, TEST-ONLY).
+fn delta_of(
+    line: &update::Line,
+    args: &[String],
+    old: &mortar_incr::update::view::StateView<'_>,
+    capture: &mortar_incr::update::testing::MemoryState,
+    name: &str,
+) -> Result<mortar_core::incr::LayoutDelta, String> {
+    let machine =
+        if line.label.starts_with("aarch64") { Machine::AArch64 } else { Machine::X86_64 };
+    let target = mortar_layout::target::Target::of(machine);
+    let store = support::store();
+    let f = whole(line, args, &store);
+    let file = member(old, name);
+    let (cf, delta) = mortar::update::changed::u5(old, &[file], &[], &f, capture, &mut |_| {})
+        .map_err(|e| format!("U4-U5: {}", e.report()))?
+        .ok_or("the file is not given as changed")?;
+    let rows = mortar_incr::state5::LayoutOf { view: old };
+    let stored = StoredLayout::new(&rows);
+    let fresh = support::store();
+    let mut cache = FrontCache::new(&fresh, pool(), &line.dir);
+    let relocs = ArchRelocs(f.arch.get());
+    let inputs = layout_inputs(&mut cache, old, &stored, &f.plan, &cf, &delta, &relocs, &f.pool)
+        .map_err(|e| format!("layout_inputs: {}", e.report()))?;
+    let mut demands: Vec<FileDemands> = Vec::new();
+    if let Some(i5) = &f.incr5 {
+        for c in &cf.files {
+            let nf = same_file(&f, old, c.file);
+            for d in i5.demands.iter().filter(|d| d.file == nf) {
+                let mut v = Vec::new();
+                for s in &d.demands {
+                    let key = match s.key.kind() {
+                        SymKind::Global(g) => {
+                            let k = &f.inputs.symbols[g];
+                            let Ok(Some(id)) =
+                                old.find_key(k.name, k.version.unwrap_or_default())
+                            else {
+                                return Err("a key new to the update (TEST-ONLY path)".into());
+                            };
+                            SymKey::global(id)
+                        }
+                        SymKind::Local(_) => s.key,
+                    };
+                    v.push(mortar_core::incr::SlotDemand { key, flags: s.flags });
+                }
+                v.sort();
+                demands.push(FileDemands { file: c.file, demands: v });
+            }
+        }
+    }
+    demands.sort_by_key(|d| d.file);
+    let input = LayoutInput {
+        changes: &inputs.changes,
+        eh: &inputs.eh,
+        pieces: &inputs.pieces,
+        demands: &demands,
+        debug: false,
+    };
+    mortar_layout::delta::layout(&stored, &input, &target).map_err(|e| e.report())
+}
+
+/// The delta's carried `CHUNKS.members` (by the old state's `CHUNKS`
+/// row) against the full link's capture of the new inputs, chunk by
+/// chunk (by tag, name and ordinal): the differing chunks, and how many
+/// counts were compared.
+fn members_against(
+    old: &mortar_incr::update::view::StateView<'_>,
+    d: &mortar_core::incr::LayoutDelta,
+    capture: &mortar_incr::update::testing::MemoryState,
+) -> (Vec<String>, usize) {
+    let key = |c: &mortar_incr::format::ChunkRow, name: Vec<u8>| (c.tag, name, c.ordinal);
+    let new: std::collections::BTreeMap<_, u32> = capture
+        .chunks
+        .iter()
+        .map(|c| {
+            let at = c.name.off as usize..(c.name.off + c.name.len) as usize;
+            (key(c, capture.strings[at].to_vec()), c.members)
+        })
+        .collect();
+    let rows = old.chunks().expect("CHUNKS");
+    assert_eq!(d.members.len(), rows.len(), "one carried count per stored chunk");
+    let (mut bad, mut n) = (Vec::new(), 0);
+    for (row, c) in rows.iter().enumerate() {
+        let k = key(c, old.string(c.name).expect("name").to_vec());
+        let carried = d.members[row];
+        let want = new.get(&k).copied();
+        if carried.is_some() || want.is_some_and(|w| w > 0) {
+            n += 1;
+            if carried != want {
+                bad.push(format!(
+                    "chunk {row} {}: carried {carried:?}, the full link's capture {want:?} \
+                     (stored {})",
+                    String::from_utf8_lossy(&k.1),
+                    c.members
+                ));
+            }
+        }
+    }
+    (bad, n)
+}
+
+// spec: incr.md IN-18e (`CHUNKS.members`, WP-255g): the full link writes
+// per in-file `Body` chunk the sections its plan gives an `Input` row;
+// `delta::layout` carries it (+1 per change placed as a member, -1 per
+// stored member gone) and the carried count equals the full link's
+// capture of the new inputs after a grow, a shrink with sections killed
+// (and one renamed), and an unchanged file given as changed
+#[test]
+fn the_carried_member_count_is_the_full_links() {
+    let tagged = format!("{}{TAG}", update::M1);
+    let extra = [("m1v", "c", tagged.as_str()), ("m1g", "c", M1_GROWN)];
+    let mut ran = 0;
+    for line in lines(&extra) {
+        let args = line.args(&["wp255d_m2", "wp255d_m1"]);
+        let keep = line.dir.join("orig.keep");
+        std::fs::copy(line.dir.join("m1.o"), &keep).expect("keep m1.o");
+        for (what, from, to) in [
+            ("grow", "orig.keep", "m1g.o"),
+            ("shrink, killed", "m1e.o", "orig.keep"),
+            ("unchanged as changed", "orig.keep", "m1v.o"),
+        ] {
+            let label = format!("{} {what}", line.label);
+            std::fs::copy(line.dir.join(from), line.dir.join("m1.o")).expect("the old m1.o");
+            line.archive(&["m1.o", "m2.o"]);
+            let old = state(&line, &args, "old");
+            let stored: Vec<u32> = old.chunks().expect("CHUNKS").iter().map(|c| c.members).collect();
+            assert!(stored.iter().sum::<u32>() > 0, "{label}: the full link wrote counts");
+            std::fs::copy(line.dir.join(to), line.dir.join("m1.o")).expect("the new m1.o");
+            line.archive(&["m1.o", "m2.o"]);
+            let _new = state(&line, &args, "new");
+            let capture = mortar_incr::state5::read::decode(
+                &std::fs::read(line.dir.join("new.state5")).expect("the new state"),
+            )
+            .expect("the new state decodes");
+            match delta_of(&line, &args, &old, &capture, "m1.o") {
+                Ok(d) => {
+                    let (bad, n) = members_against(&old, &d, &capture);
+                    let moved =
+                        d.members.iter().zip(&stored).filter(|(c, s)| **c != Some(**s)).count();
+                    eprintln!(
+                        "[wp255g2] {label}: {n} counts compared, {} differ; {moved} carried \
+                         counts not the stored one; killed {}, revived {}",
+                        bad.len(),
+                        d.killed.len(),
+                        d.revived.len()
+                    );
+                    assert!(bad.is_empty(), "{label}:\n{}", bad.join("\n"));
+                    assert!(moved > 0 || !what.contains("killed"), "{label}: no count moved");
+                    assert!(n > 0, "{label}: no count compared");
+                    ran += 1;
+                }
+                Err(e) => panic!("{label}: not compared: {e}"),
+            }
+        }
+        std::fs::copy(&keep, line.dir.join("m1.o")).expect("restore m1.o");
+    }
+    assert!(ran == 6 || !mortar_testutil::tools_required(), "{ran} of 6 comparisons ran");
+}
