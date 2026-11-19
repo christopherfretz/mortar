@@ -1358,10 +1358,7 @@ gdb, lldb, perf, nm, addr2line, objdump and valgrind (§12).
   the one before it ends (file 0's at entry 1) and holds exactly its
   kept locals and demoted symbols; the table exists so that an update
   can find an unchanged file's entries in the previous output (IN-49a),
-  which needs the previous link's spans and cannot derive them. Q8's
-  per-file ranges with null-entry holes would admit other spans (a block
-  with room to grow); with them the plan would place each file's block
-  at its span instead of checking it.
+  which needs the previous link's spans and cannot derive them.
   **In an incremental-mode output** (`spec/incr.md` IN-49a; WP-212
   applied WP-207's §R.4, which closes Q8) each file's span
   (`Slots.symtab_locals`) is `(first, capacity)`: its block of `count`

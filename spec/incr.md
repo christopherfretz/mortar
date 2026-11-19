@@ -1753,6 +1753,14 @@ with each phase fed from the state for unchanged files:
   bytes a row. `INDEX` is grouped by referring file and packed to 9 bytes
   a row.
 
+  **`SECTIONS`' facts** (WP-257a): `SECTIONS` (format 5, version 6) also
+  holds, in format 4's three pad bytes, resolve's `SectionKind` and two
+  bits (kept; kept and collected by `--gc-sections`) in byte 5, and in
+  bytes 6 and 7 the section's output section (`Assignment::out`, for
+  every section, kept or not) as its `OUTSECS` row plus one, 0 for none.
+  An update reads these, never a rule over names and flags, and never a
+  chunk's output section for a section's.
+
   **`SYMBOLS`' row order** (WP-211, review-wp207 M-2; one order, used
   by the capture of every full link and by the compaction alike):
   first the globals (kinds 0 and 1) by (`FILES.rank` of the first
@@ -2313,9 +2321,13 @@ with each phase fed from the state for unchanged files:
   equivalent to the full link; a hand-written object with two
   same-named locals at one value, each referenced through the GOT,
   edited.
-- **IN-29 [v1] Liveness** (*not built: WP-238*; until then an update
-  under `--gc-sections` is `update-not-implemented (live)`, WP-215 seam
-  3) under `--gc-sections` is recomputed in full
+- **IN-29 [v1] Liveness** (*capture built (WP-238 Part 2): an
+  incremental-mode full link under `--gc-sections` writes `EDGES` and
+  `META.live_hash`, and the written hash is the full mark's (Part 3b);
+  the update's walk is built (Part 3, `live`); the join still refuses
+  `--gc-sections`: until it lifts that refusal an update under
+  `--gc-sections` is `update-not-implemented (live)`, WP-215 seam 3*)
+  under `--gc-sections` is recomputed in full
   from the roots, without reading unchanged files, by walking a **stored
   graph that is, by construction, the edge set the full link's liveness
   pass walks** (image.md I-6 roots, I-7 edges; the re-review's N2). This
@@ -2329,8 +2341,8 @@ with each phase fed from the state for unchanged files:
 
   | I-7 edge (image.md text) | stored as | resolved at walk time | protoc `-g`, rows / bytes at 8 B a row |
   |---|---|---|---|
-  | `reloc`: a record of a live, non-debug, non-`.eh_frame` section names a global key → the section of its `def` (through `sym_map` and `redirect`; `Common`, `Internal`, `Shlib`: nothing), `R_*_NONE` included | (source section, key) | the key's definition from the update's resolution (IN-26), so a moved definer is followed | 52,400 / 419 KB |
-  | `startstop`: a conditional `__start_NAME`/`__stop_NAME` (`Internal`) → every section named `NAME` | (source section, key) like `reloc` | the sections named `NAME` from the sections table (IN-19), the changed files' included | 0 (counted with `reloc`) |
+  | `reloc`: a record of a live, non-debug, non-`.eh_frame` section names a global key → the section of its `def` (through `sym_map` and `redirect`; `Common`, `Internal`, `Shlib`: nothing), `R_*_NONE` included | (source section, key) | the ONE key reader (S2), whatever the row's kind: a `SECTION` key marks its section at `piece_offset(value)` when split, a conditional `__start_N`/`__stop_N` marks every section named `N`; the key's definition from the update's resolution (IN-26), so a moved definer is followed | 52,400 / 419 KB |
+  | `startstop`: a conditional `__start_NAME`/`__stop_NAME` (`Internal`) → every section named `NAME` | (source section, key) like `reloc` | the ONE key reader, as `reloc`: the sections named `NAME` from the sections table (IN-19), the changed files' included | 0 (counted with `reloc`) |
   | `local`: a local or section symbol → its section; into a split section, the piece by offset (`frag_live`: value, plus addend for a section symbol); under `SHT_REL`, every piece | (source section, target section, offset or "all pieces") | — (both ends in one file) | 2,192 / 17.5 KB |
   | `linkorder`: a section whose `sh_link` is `s` and has `SHF_LINK_ORDER`, alloc or not, is live with `s` (I-109) | a column of the sections table (the dependent's `sh_link` target) | — | 0 on protoc (a column) |
   | `fde`: a code section → its FDEs → the LSDA's and personality's sections through the relocations of the FDE and of its CIE; the FDE's edges are `s`'s | (code section, target section or key) rows, from the file's own `.eh_frame`, which an update does not re-read | keys as `reloc` | 4,210 / 33.7 KB |
@@ -2344,7 +2356,15 @@ with each phase fed from the state for unchanged files:
   walked with a missing kind. No kind needs a fallback: every row's
   ends are either in one file (re-enumerated when that file changes) or
   a key resolved at walk time. Its difference from the stored `live`
-  column is IN-27's liveness row. *Test:* the stored rows of every file
+  column is IN-27's liveness row. The update's walk (`live`, and
+  `live_why` with the detail; WP-238 Part 3) gives a `LiveDelta`: the
+  exact difference of the two walks in ONE id space, a replaced file's
+  live sections in `now_dead` under their old ids, a fresh file's in
+  `now_live` under their new ids. It falls back by name with
+  `def-unread` (an affected key re-resolved to a stored section that is
+  not its stored definition: a file whose rows were not re-read) and
+  `no-live-hash` (a zero `META.live_hash` under `--gc-sections`).
+  *Test:* the stored rows of every file
   equal the enumerator's output on replay (IN-61); one L10 mutation per
   edge kind: drop that kind from the stored graph and a gc scenario must
   fail (IN-63b; `livemodel.py` is the prototype: from the inputs alone
@@ -3826,7 +3846,8 @@ a pass over a whole table of the state; **O(output)**.
   file and the key; a `.gnu.warning.SYM` warning's are the file holding
   the warning section, every referring file and the key, since a changed
   referrer decides whether it appears and its "referenced by" text:
-  `tests/incr-design/review-wp207/gnu-warning.sh`). A key subject is a
+  `tests/incr-design/review-wp207/gnu-warning.sh`; the referring files
+  are key-implied and not stored as subjects, below). A key subject is a
   `SYMBOLS` row or an ODR key (`ODR_CLASSES`' key, for the
   one-definition rule's record codes, WP-236; W1 and W2's subject is the
   `SYMBOLS` row, WP-220); `DIAGS`' row says which (WP-212, F-12).
@@ -4345,6 +4366,10 @@ a pass over a whole table of the state; **O(output)**.
     binding of the output the update wrote (the test re-hashes `P`); and
     `META`'s history fields (boot id, `output-synced`, the compaction
     count), which no full link computes.
+  - The live-set hash an update writes is the update's own walk's; that
+    the walk is right is shown by IN-78's state equality with the
+    capture of a full link of the same inputs, `META.live_hash` included
+    (WP-238, F13).
 
   **The list, derived** (a consequence the test checks, not a second
   rule): the rows where `canon(S)` and `canon(C(U))` differ are written
@@ -4477,8 +4502,8 @@ file changes or when one of its file's sections moves (IN-25).
   exactly at the unit's end, with no null entries after it.
 
   **The neutral abbreviation table.** Every incremental-mode output with
-  a `.debug_abbrev` section holds, at the end of `.debug_abbrev` (the
-  `ABBREV_TABLE` hole, **38 bytes**), one table of four abbreviations,
+  a `.debug_abbrev` section holds, in the section's **last 38 bytes**
+  (the `ABBREV_TABLE` hole), one table of four abbreviations,
   each without children, and its end:
 
   ```
@@ -4615,7 +4640,10 @@ file changes or when one of its file's sections moves (IN-25).
   - An unreferenced `.debug_addr` remainder between referenced tables
     gives readelf's "Corrupt .debug_addr" warning. gdb, lldb and verify
     stay clean. Hence: a dead `.debug_addr` table is never split or
-    reused, and it stays named by its neutral unit (IN-51).
+    reused, and a dead HEADERLESS table stays named by its neutral unit
+    (IN-51); a dead `.debug_addr` range with a DWARF 5 header is a
+    neutral table by itself and need not be named by a unit (WP-228
+    B3-7).
   - readelf warns of "unused bytes at the end" of `.debug_loclists` for
     trailing unreferenced pieces. A dead `.debug_loclists` or
     `.debug_frame` range in the middle of a section was not tested (no
@@ -4695,8 +4723,12 @@ file changes or when one of its file's sections moves (IN-25).
 - **IN-55 [v1] Name indexes fall back.** `.debug_pubnames`,
   `.debug_pubtypes`, `.debug_gnu_pubnames`, `.debug_gnu_pubtypes` and
   `.debug_names` are enumerated by name, so a dead contribution's entries
-  would find the dead unit. A changed or removed file with any of these
-  falls back (`debug-name-index`) in v1. g++ `-gpubnames` emits
+  would find the dead unit. A changed or removed file with
+  `.debug_pubnames`, `.debug_pubtypes` or `.debug_names` falls back
+  (`debug-name-index`) in v1. `.debug_gnu_pubnames` and
+  `.debug_gnu_pubtypes` are left out of an incremental-mode output
+  (option (A), below), so a file that carries them has nothing to fall
+  back for: no fall-back (WP-228 B4, ruling 2). g++ `-gpubnames` emits
   `.debug_pubnames`/`.debug_pubtypes`, clang `-gpubnames` emits
   `.debug_names`, and `-ggnu-pubnames` and **every `-gsplit-dwarf`
   object** emit `.debug_gnu_pubnames`/`.debug_gnu_pubtypes`, except
@@ -4709,7 +4741,9 @@ file changes or when one of its file's sections moves (IN-25).
   transcripts show it equivalent; rewriting it whole like IN-54 is ruled
   out by size (12–16.5 MB per update on protoc, §6 "Split DWARF"). Neither hod nor the
   bench's GCC and Clang defaults emit them (§8.3). *Test:* R10's objects
-  in L10: each edit of one must report `debug-name-index`.
+  in L10: each edit of one with `.debug_pubnames`, `.debug_pubtypes` or
+  `.debug_names` must report `debug-name-index`; the GNU sets are left
+  out and report none.
   *Decided (operator, 2026-11-17, through WP-207): option (A) for v1.*
   An incremental-mode output leaves `.debug_gnu_pubnames` and
   `.debug_gnu_pubtypes` out (G-2), so in that mode there is no prebuilt

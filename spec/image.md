@@ -217,7 +217,10 @@ The design is fixed now so that the M1 tables need no change.
     personality routine's sections: the FDE's edges are `s`'s edges. A
     collected function's LSDA is collected (GNU ld and mold; lld keeps
     it), and a personality reached only through the CIE of collected
-    FDEs is collected (GNU ld; lld and mold keep it) (Q4, Q15);
+    FDEs is collected (GNU ld; lld and mold keep it) (Q4, Q15). An FDE
+    whose initial location is named by a non-local symbol is linked; in
+    incremental mode under `--gc-sections` the state carries `REFUSE`
+    `fde-global` and every update falls back by name (WP-238 S5);
   - every other member of `s`'s section group: a group is live as a unit.
     GNU ld and lld keep a group whole when any member is live; mold
     collects members one by one (Q3; the earlier "each by its own edges"
@@ -927,7 +930,9 @@ writes a value chosen by the referring section's name, as
     lldb losing lines with the references' 0 in a low layout; a low
     layout stays as layout L-68 has it. `llvm-dwarfdump --verify` reports `DIE has overlapping
     ranges` for a CU's several `[0, len)` entries (lld and mold: the
-    same); the debuggers are the oracle.
+    same); the debuggers are the oracle. The `--verify` overlap report
+    appears only when the dropped copies' lengths differ, so its absence
+    on a target is not evidence (WP-258).
   - `.debug_ranges`/`.debug_loc` (DWARF ≤ 4 pairs): `(0, 0)` ends the
     list and a first word of all ones selects a base address; `(1, 1)` is
     empty. lld and mold write 1.
