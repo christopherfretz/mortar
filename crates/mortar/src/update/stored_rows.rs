@@ -142,6 +142,24 @@ impl<'a, 's> StoredRows<'a, 's> {
         redirects.sort_by_key(|r| (r.section, r.offset));
         placement.redirects = redirects.into();
         placement.tls = stored.tls_and_entry()?.0;
+        Self::from_placement(view, stored, placement, arch, got_output, variant)
+    }
+
+    /// [`StoredRows::new`] over `placement`'s whole-class tables instead of
+    /// the stored ones (WP-255e2: an update's `LayoutDelta::placement`,
+    /// for `UpdateRows`); the slots are the stored `SLOTS`, checked against
+    /// `placement`'s `.got`, `.got.plt` and `.plt` sizes.
+    ///
+    /// # Errors
+    /// As [`StoredRows::new`].
+    pub(crate) fn from_placement(
+        view: &'a StateView<'s>,
+        stored: &StoredLayout<'_>,
+        placement: Placement,
+        arch: &dyn Arch,
+        got_output: GlobalFlags,
+        variant: PltVariant,
+    ) -> Result<Self, IncrReason> {
         let ch = &placement.chunks;
         if synth(ch, b".dynamic").is_some() {
             return Err(front_only());
@@ -215,6 +233,11 @@ impl<'a, 's> StoredRows<'a, 's> {
         self.failed.lock().unwrap_or_else(PoisonError::into_inner).clone()
     }
 
+    /// Clears the recorded failure (WP-255e2: `UpdateRows::value_of`).
+    pub(crate) fn clear_failure(&self) {
+        *self.failed.lock().unwrap_or_else(PoisonError::into_inner) = None;
+    }
+
     /// `rows::value` of `key` with its stored facts, or the reason a read
     /// of it could not answer (the reasons of earlier reads are cleared).
     ///
@@ -226,7 +249,7 @@ impl<'a, 's> StoredRows<'a, 's> {
         self.failure().map_or(Ok(v), Err)
     }
 
-    fn fail(&self, why: IncrReason) {
+    pub(crate) fn fail(&self, why: IncrReason) {
         let mut f = self.failed.lock().unwrap_or_else(PoisonError::into_inner);
         if f.is_none() {
             *f = Some(why);
@@ -238,7 +261,7 @@ impl<'a, 's> StoredRows<'a, 's> {
         r.map_err(|e| self.fail(e)).ok()
     }
 
-    fn section_row(&self, s: SectionId) -> Option<SectionRow> {
+    pub(crate) fn section_row(&self, s: SectionId) -> Option<SectionRow> {
         self.ok(self.view.section(s))
     }
 
@@ -280,7 +303,7 @@ impl<'a, 's> StoredRows<'a, 's> {
 
     /// The entry of `file` that defines `id` with definition kind `kind`
     /// in `section` (`NONE` for none): the one `MENTIONS` row that says so.
-    fn definer_entry(
+    pub(crate) fn definer_entry(
         &self,
         file: FileId,
         id: SymbolId,

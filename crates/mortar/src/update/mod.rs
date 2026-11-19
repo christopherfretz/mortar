@@ -27,6 +27,7 @@ pub mod file_symbols;
 pub mod layout_in;
 pub mod probe;
 pub mod stored_rows;
+mod update_rows;
 pub mod write;
 
 use std::path::{Path, PathBuf};
@@ -1137,6 +1138,8 @@ struct ShadowSet {
     units: Vec<(FileId, u32)>,
     moved_definitions: u64,
     referrer_files: u64,
+    /// WP-255e2: what `UpdateRows` reads of the update (S3).
+    data: update_rows::UpdateData,
 }
 
 /// [`ShadowSet`] of the state-id delta `d` (the update's own producers:
@@ -1173,10 +1176,20 @@ fn shadow_set(
             units.push((c.file, id - c.first_section.0));
         }
     }
+    let mut resolved = delta.resolved.clone();
+    resolved.sort_by_key(|r| r.0);
+    let data = update_rows::UpdateData {
+        d: d.clone(),
+        resolved,
+        key_ids: delta.key_ids.clone(),
+        files: cf.files.iter().map(|c| (c.file, c.first_section, c.sections.clone())).collect(),
+        new_keys: delta.new_keys.iter().map(|k| k.name.clone()).collect(),
+    };
     Ok(ShadowSet {
         units,
         moved_definitions: set.moved_definitions,
         referrer_files: set.referrer_files,
+        data,
     })
 }
 
@@ -1306,6 +1319,95 @@ fn shadow_near(
         .filter(|h| h.chunk == id && h.offset < at + 0x80 && at < h.offset + h.size + 0x80)
     {
         let _ = write!(s, " hole {:?} [{:#x},{:#x});", h.kind, h.offset, h.offset + h.size);
+    }
+    // WP-255e2 S2-1: every member of the index near `x`, zero-sized ones
+    // included (`sections_in` skips them), with its file and alignment.
+    if let Ok(m) = mortar_image::link::clip_members(l)
+        && let Some(list) = m.by_chunk.get(&id)
+    {
+        for mm in list {
+            let Some((_, off)) = pl.place.get(mm.section).and_then(|p| p.get()) else { continue };
+            if off + 0x80 < at || off > at + 0x80 {
+                continue;
+            }
+            let (file, size) = f
+                .resolution
+                .sh_index(mm.section)
+                .and_then(|(file, i)| match &f.inputs.files.get(file)?.reader {
+                    mortar_core::inputs::Reader::Object(o) => {
+                        o.section(i).ok().map(|h| (file.0, h.size()))
+                    }
+                    _ => None,
+                })
+                .unwrap_or((u32::MAX, u64::MAX));
+            let _ = write!(
+                s,
+                " index {} file {file} at {off:#x} size {size:#x} align {};",
+                mm.section.0, mm.align
+            );
+        }
+    }
+    s
+}
+
+/// WP-255e2 S2-1's evidence at file offset `x` of chunk `id`: the stored
+/// holes (the state before this update), the `REGIONS` rows of the chunk,
+/// the previous output's bytes and front 2's bytes over `[x-0x48, x+0x10)`.
+#[allow(clippy::many_single_char_names, reason = "a diagnostic's offsets, short-lived")]
+fn s21_evidence(
+    stored: &mortar_core::incr::StoredLayout<'_>,
+    view: &StateView<'_>,
+    f: &crate::front::Front<'_>,
+    out: &std::fs::File,
+    front2: &mortar_image::update::Refill,
+    x: u64,
+) -> String {
+    use std::fmt::Write as _;
+    let pl = &f.layout.placement;
+    let Some((id, c)) = pl
+        .chunks
+        .iter()
+        .find(|(_, c)| c.in_file() && c.offset <= x && x < c.offset + c.size.max(c.capacity))
+    else {
+        return "no chunk".into();
+    };
+    let at = x - c.offset;
+    let mut s = String::new();
+    if let Ok(hs) = stored.holes_in(id) {
+        for h in hs.iter().filter(|h| h.offset < at + 0x80 && at < h.offset + h.size + 0x80) {
+            let _ =
+                write!(s, " stored hole {:?} [{:#x},{:#x});", h.kind, h.offset, h.offset + h.size);
+        }
+    }
+    let files = view.count(kind::FILES);
+    for file in 0..u32::try_from(files).unwrap_or(0) {
+        if let Ok(rs) = stored.regions_of(FileId(file)) {
+            for r in rs.iter().filter(|r| r.chunk == id) {
+                if r.offset < at + 0x100 && at < r.offset + r.capacity + 0x100 {
+                    let _ = write!(
+                        s,
+                        " region file {file} ordinal {} [{:#x},{:#x});",
+                        r.ordinal,
+                        r.offset,
+                        r.offset + r.capacity
+                    );
+                }
+            }
+        }
+    }
+    let lo = x.saturating_sub(0x48);
+    let mut old = vec![0u8; 0x58];
+    if std::os::unix::fs::FileExt::read_exact_at(out, &mut old, lo).is_ok() {
+        let starts: Vec<u64> = front2.ranges.iter().map(|r| r.offset).collect();
+        let _ = write!(s, " bytes at {lo:#x}: previous");
+        for b in &old {
+            let _ = write!(s, " {b:02x}");
+        }
+        let _ = write!(s, "; front 2");
+        for (i, b) in old.iter().enumerate() {
+            let v = refill_byte(front2, &starts, lo + i as u64).unwrap_or(*b);
+            let _ = write!(s, " {v:02x}");
+        }
     }
     s
 }
@@ -1518,7 +1620,13 @@ fn shadow_255e(
                             let h: String = h.chars().take_while(char::is_ascii_hexdigit).collect();
                             u64::from_str_radix(&h, 16).ok()
                         })
-                        .map(|x| shadow_near(l, f, x))
+                        .map(|x| {
+                            format!(
+                                "{}{}",
+                                shadow_near(l, f, x),
+                                s21_evidence(stored, view, f, out, front2, x)
+                            )
+                        })
                         .unwrap_or_default();
                     format!(
                         "finding: 255e shadow: clip plan: internal: {text}; clips {at:?}; near: \
@@ -1529,12 +1637,52 @@ fn shadow_255e(
             }
         };
         let skipped: Vec<String> = skipped.into_iter().collect();
-        format!("{s1} | {s2}; NotYet(Synth) left out: {}", skipped.join(" "))
+        let s3 = shadow_s3(view, stored, f, l, set);
+        format!("{s1} | {s2}; NotYet(Synth) left out: {} | {s3}", skipped.join(" "))
     });
     match r {
         Ok(line) => line,
         Err(e) => format!("255e shadow: refused: the image's link: {e:?}"),
     }
+}
+
+/// WP-255e2 S3 (the stage with STATE rows): `UpdateRows` (the stored
+/// rows with `d` and the update's own rows, state ids) built and compared
+/// with front 2's `FrontRows`, `rows::sym` for every global (keys by
+/// name). The `.got` plan's two inputs that are not rows (WP-255c F-1) are
+/// front 2's. The line for the findings file.
+fn shadow_s3(
+    view: &StateView<'_>,
+    stored: &mortar_core::incr::StoredLayout<'_>,
+    f: &crate::front::Front<'_>,
+    l: &mortar_image::link::Link<'_, '_>,
+    set: &ShadowSet,
+) -> String {
+    use mortar_core::resolution::{Def, InternalDef};
+    let got_table = f.resolution.def.iter().any(|(s, d)| {
+        matches!(d, Def::Internal(InternalDef::Provide { conditional: false }))
+            && f.inputs.symbols.get(s).is_some_and(|k| k.name == b"_GLOBAL_OFFSET_TABLE_")
+    });
+    let mut got_output = f.scanned.demands.output;
+    if got_table {
+        got_output |= mortar_core::demands::GlobalFlags::GOT_BASE;
+    }
+    let variant = f.synth.got.variant();
+    let base = match stored_rows::StoredRows::from_placement(
+        view,
+        stored,
+        set.data.d.placement.clone(),
+        f.arch.get(),
+        got_output,
+        variant,
+    ) {
+        Ok(b) => b,
+        Err(e) => return format!("S3: refused: update rows: {}", e.report()),
+    };
+    let rows = update_rows::UpdateRows::new(base, view, stored, &set.data);
+    let front = mortar_image::rows::FrontRows::new(*l);
+    let globals = f.inputs.symbols.len();
+    format!("S3: {}", update_rows::compare_values(&rows, view, &front, globals))
 }
 
 /// Why [`placement`] gave no placement: a producer refused (recorded by
