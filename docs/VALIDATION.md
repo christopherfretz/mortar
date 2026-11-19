@@ -17,7 +17,7 @@ mortar is never its own judge where an external judge exists.
 |---|---|
 | GNU ld 2.44, lld 19 and 22, mold 2.37 | Whether a link should succeed, what the linked program does, which symbols are exported, which libraries are needed. Three implementations: where they agree, that is the behavior; where they differ, the spec records the difference and the choice. |
 | `mortar_plumb` | Every relocated field and the structural rules of an output (`docs/ARCHITECTURE.md`, "The verifier"). Itself judged by running it on the reference linkers' outputs. |
-| `readelf`, `llvm-readobj`, `llvm-dwarfdump --verify`, `eu-elflint` | Structure as other tools read it. |
+| `readelf`, `llvm-readobj`, `llvm-dwarfdump --verify`, `eu-elflint` | Structure as other tools read it. Every `llvm-dwarfdump --verify` runs under a timeout and a timeout is recorded as TIMEOUT, never as 0 errors (WP-258). |
 | The loader and the program | A linked program runs and prints what it prints when linked by a reference linker. |
 | gdb 16, lldb 19 | The same debug session gives the same transcript on a mortar-linked and a reference-linked program. |
 | Test suites of other projects | mold's and lld's ELF link tests, libc++'s tests, the test suites of the open-source projects mortar links. Fetched and pinned, never vendored. |
