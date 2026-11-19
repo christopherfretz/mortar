@@ -477,8 +477,9 @@ fn input_rewritten_after_u4_is_input_changed() {
 // [new end, old end) are zeros; WP-218 resume ruling 2), and the guard of
 // that zeroing: c.o loses an absolute global and the full link's table is
 // one entry shorter. Where the previous table's tail is the new output's
-// `.strtab` (no slack after the table), zeroing it is refused by name,
-// never written over another section; where IN-49's slack follows the
+// `.strtab` (no slack after the table), zeroing it is refused by name
+// (`update-not-implemented (symtab)`, WP-225 gc-2), never written over
+// another section; where IN-49's slack follows the
 // table (an incremental-mode output since U-5), the tail is inside the
 // table's own reserve, the zeros are written and the patched output is the
 // full link's. The zeros themselves:
@@ -518,9 +519,9 @@ fn symtab_shrink_zeroes_its_own_tail_only() {
                         "{arch:?}: the old tail held an entry"
                     );
                 }
-                Err(RefillError::Fallback(IncrReason::StateCorrupt(d))) if !reserved => {
-                    assert!(d.contains("reaches another section"), "{arch:?}: {d}");
-                }
+                Err(RefillError::Fallback(IncrReason::UpdateNotImplemented(Some(
+                    mortar_core::incr::Unimplemented::Symtab,
+                )))) if !reserved => {}
                 other => panic!(
                     "{arch:?}: reserve after the table {reserved}, got {:?}",
                     other.map(|x| x.2)

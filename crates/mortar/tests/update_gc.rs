@@ -5,13 +5,17 @@
 //!
 //! - An edit that keeps every section's liveness: an update, `live::live`
 //!   judged against the front's mark (`gc-lift: live agrees`, 0 flips),
-//!   the output byte-equal to the full link of the new inputs, and the
-//!   program runs.
+//!   the delta's placement judged under `--gc-sections` too (M2b-2d: no
+//!   producer refuses, `layout_in`'s `(live)` lifted; the identity case
+//!   requires the full link's offsets), the output byte-equal to the full
+//!   link of the new inputs, and the program runs.
 //! - A function's last caller removed (`helper`'s section in the unchanged
 //!   `a.cc.o` dies): `live` agrees with the front, the section flips, so
 //!   the placement is not the stored one: `update-not-implemented
-//!   (layout)` by name (until M2b-3); the full link that follows equals
-//!   the full link of the new inputs.
+//!   (layout)` by name (until M2b-3); the delta's placement is refused by
+//!   name first, since `live` draws in `a.cc.o`, whose layout inputs are
+//!   not produced (M2b-2d, gc-3); the full link that follows equals the
+//!   full link of the new inputs.
 //! - The same edit with `-g`: `update-not-implemented (debug)` (G-3).
 //!
 //! No line of the findings file (`MORTAR_UPDATE_FINDINGS`) is a FINDING.
@@ -182,6 +186,13 @@ fn gc_update_that_keeps_liveness_is_taken() {
             text.lines().any(|l| l.starts_with("gc-lift: live agrees") && l.ends_with(" 0 flips")),
             "{label}: no judgement of live:\n{text}"
         );
+        // M2b-2d: the placement ran to its judgement (no producer's
+        // refusal recorded; in the identity case a judged placement at
+        // another offset is a FINDING).
+        assert!(
+            !text.lines().any(|l| l.contains("fallback")),
+            "{label}: the placement is not judged:\n{text}"
+        );
         p.equals_full_link("o", &label);
         assert_eq!(p.run("o"), "user=22 keep=0\n", "{label}: v1");
         // A second update from the state the first one wrote (its
@@ -225,6 +236,10 @@ fn gc_update_whose_section_dies_falls_back_layout() {
             "{label}: no flip judged:\n{text}"
         );
         assert!(text.contains("flip liveness, not the stored placement"), "{label}:\n{text}");
+        assert!(
+            text.lines().any(|l| l.starts_with("M2b-2d: placement: live draws in 1 unchanged")),
+            "{label}: the drawn-in file is not refused by name:\n{text}"
+        );
         // A fall-back's full link (`small-output` comes first here).
         let (ok, err) = p.link("o", &["--incremental", "--incremental-report"]);
         assert!(ok, "{label}: {err}");
