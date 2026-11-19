@@ -280,6 +280,7 @@ struct Reference {
     clippy::too_many_arguments,
     reason = "path (A)'s front, U1's view and binding, the step timer"
 )]
+#[allow(clippy::too_many_lines, reason = "U4 to the identity check, in IN-70's order")]
 fn reference_of(
     session: &Session,
     view: &StateView<'_>,
@@ -361,9 +362,10 @@ fn reference_of(
     // U4-U5 (M2b-1): the changed files' rows in the update's ids, then
     // `extract` and `resolve` on them; the update goes on only where they
     // say what the front (its capture) says.
-    let u5 = changed::u5(view, &detected.changed_files, &detected.positional, f, &state, &mut |n| {
-        steps.mark(n);
-    })?;
+    let u5 =
+        changed::u5(view, &detected.changed_files, &detected.positional, f, &state, &mut |n| {
+            steps.mark(n);
+        })?;
     // U6-U7 (M2b-2b): the delta's placement of the changed files, judged
     // against the front's (a disagreement is a FINDING, by name).
     let placed = match u5 {
@@ -446,6 +448,7 @@ struct Placed {
 /// first, so no comparison of a section's `dead` reads a stored bit, F-8:
 /// the scan's own recomputation is the only one).
 #[allow(clippy::too_many_arguments, reason = "the update's inputs, each read once")]
+#[allow(clippy::too_many_lines, reason = "U6-U7's producers in order, then the judgement")]
 fn placement(
     view: &StateView<'_>,
     stored: &mortar_core::incr::StoredLayout<'_>,
@@ -463,12 +466,11 @@ fn placement(
     use mortar_scan::ScanOptions;
     let options = mortar_resolve::tables::option_keys(&f.plan, &f.inputs.link.directives);
     let live = mortar_incr::update::live::live(view, cf, &delta, &options).map_err(refused)?;
-    let mut cache = file_front::FrontCache::new(store, f.pool.clone(), cwd);
+    let mut cache = file_front::FrontCache::new(store, f.pool, cwd);
     let relocs = ArchRelocs(f.arch.get());
-    let inputs = layout_in::layout_inputs(
-        &mut cache, view, stored, &f.plan, cf, &delta, &relocs, &f.pool,
-    )
-    .map_err(refused)?;
+    let inputs =
+        layout_in::layout_inputs(&mut cache, view, stored, &f.plan, cf, &delta, &relocs, &f.pool)
+            .map_err(refused)?;
     let dynamic = crate::dynamic::arch_status(&f.plan, f.target.machine)
         .map_err(|_| refused(IncrReason::UpdateNotImplemented(Some(Unimplemented::Scan))))?
         == mortar_arch::Status::M2;
@@ -487,7 +489,8 @@ fn placement(
     let mut defined: Vec<(mortar_core::SymbolId, u32)> = Vec::new();
     for c in &cf.files {
         let ff = cache.get(c.file).ok_or_else(layout_in_lost).map_err(refused)?;
-        let facts = file_split::changed_facts(ff, view, &f.plan, &delta.keepers).map_err(refused)?;
+        let facts =
+            file_split::changed_facts(ff, view, &f.plan, &delta.keepers).map_err(refused)?;
         let null = file_split::SectionFact {
             kind: SectionKind::Null,
             kept: false,
@@ -546,42 +549,43 @@ fn placement(
         demands: &demands,
         debug: false,
     };
-    let d = mortar_layout::delta::layout(stored, &input, &f.target).inspect_err(|e| {
-        // With the front's answer for each change it does not place (the
-        // other side of a refusal about a section the full link drops).
-        let mut unplaced = String::new();
-        for c in &inputs.changes {
-            let fid = f.resolution.section_id(c.file, SectionIndex(c.index));
-            let full = fid.and_then(|s| f.layout.placement.place.get(s)).and_then(|p| p.get());
-            if let Some((fc, fo)) = full {
-                use std::fmt::Write as _;
-                let out = f.layout.placement.chunks[fc].kind.out();
-                let name = out.map(|o| String::from_utf8_lossy(f.assignment.outsecs[o].name));
-                let _ = write!(
-                    unplaced,
-                    " (placed {} size {} at {name:?}+{fo:#x})",
-                    String::from_utf8_lossy(c.key.name),
-                    c.size
-                );
+    let d = mortar_layout::delta::layout(stored, &input, &f.target)
+        .inspect_err(|e| {
+            // With the front's answer for each change it does not place (the
+            // other side of a refusal about a section the full link drops).
+            let mut unplaced = String::new();
+            for c in &inputs.changes {
+                let fid = f.resolution.section_id(c.file, SectionIndex(c.index));
+                let full = fid.and_then(|s| f.layout.placement.place.get(s)).and_then(|p| p.get());
+                if let Some((fc, fo)) = full {
+                    use std::fmt::Write as _;
+                    let out = f.layout.placement.chunks[fc].kind.out();
+                    let name = out.map(|o| String::from_utf8_lossy(f.assignment.outsecs[o].name));
+                    let _ = write!(
+                        unplaced,
+                        " (placed {} size {} at {name:?}+{fo:#x})",
+                        String::from_utf8_lossy(c.key.name),
+                        c.size
+                    );
+                }
+                if full.is_none() && c.index != 0 {
+                    use std::fmt::Write as _;
+                    let _ = write!(
+                        unplaced,
+                        " [{} size {} kept {} old {:?}]",
+                        String::from_utf8_lossy(c.key.name),
+                        c.size,
+                        c.kept,
+                        c.old
+                    );
+                }
             }
-            if full.is_none() && c.index != 0 {
-                use std::fmt::Write as _;
-                let _ = write!(
-                    unplaced,
-                    " [{} size {} kept {} old {:?}]",
-                    String::from_utf8_lossy(c.key.name),
-                    c.size,
-                    c.kept,
-                    c.old
-                );
-            }
-        }
-        changed::record(&format!(
-            "M2b-2b fallback: delta::layout: {}; not placed by the front:{unplaced}",
-            e.report()
-        ));
-    })
-    .map_err(|_| Why::Refused)?;
+            changed::record(&format!(
+                "M2b-2b fallback: delta::layout: {}; not placed by the front:{unplaced}",
+                e.report()
+            ));
+        })
+        .map_err(|_| Why::Refused)?;
     judge(view, stored, f, &inputs, &d).map_err(|what| {
         Why::Finding(changed::finding_as(
             &format!("M2b-2b placement: {what}"),
@@ -599,6 +603,7 @@ enum Why {
 }
 
 /// A producer's refusal, recorded.
+#[allow(clippy::needless_pass_by_value, reason = "a `map_err` argument")]
 fn refused(e: IncrReason) -> Why {
     changed::record(&format!("M2b-2b fallback: {}", e.report()));
     Why::Refused
@@ -693,6 +698,7 @@ fn facts_into(
 /// the other files' sections, the update's); every merged piece's
 /// fragment in the stored `FRAGS` or the delta's new ones. `Err` is the
 /// disagreement, both answers in the text.
+#[allow(clippy::too_many_lines, reason = "M2b2a-2's properties, one after the other")]
 fn judge(
     view: &StateView<'_>,
     stored: &mortar_core::incr::StoredLayout<'_>,
@@ -718,7 +724,9 @@ fn judge(
         let now = match d.place_of(stored, c.id).map_err(e)? {
             PlaceNow::Here(p) => p.get(),
             PlaceNow::NotPlaced => None,
-            PlaceNow::Stored(_) => return Err(format!("{name}: a changed file's section is Stored")),
+            PlaceNow::Stored(_) => {
+                return Err(format!("{name}: a changed file's section is Stored"));
+            }
         };
         let (Some((uc, uo)), Some((fc, fo))) = (now, full) else {
             if now.is_some() != full.is_some() {
@@ -729,7 +737,8 @@ fn judge(
             }
             continue;
         };
-        let uchunk = d.placement.chunks.get(uc).ok_or_else(|| format!("{name}: no chunk {uc:?}"))?;
+        let uchunk =
+            d.placement.chunks.get(uc).ok_or_else(|| format!("{name}: no chunk {uc:?}"))?;
         let fchunk = &f.layout.placement.chunks[fc];
         let uout = match uchunk.kind.out() {
             Some(o) => {
@@ -776,11 +785,15 @@ fn judge(
     others.sort_unstable();
     for (k, a) in mine.iter().enumerate() {
         let empty = |x: &(u32, u64, u64)| x.1 >= x.2;
-        let hit = others.iter().chain(&mine[k + 1..]).find(|b| {
-            a.0 == b.0 && a.1 < b.2 && b.1 < a.2 && !empty(a) && !empty(b)
-        });
+        let hit = others
+            .iter()
+            .chain(&mine[k + 1..])
+            .find(|b| a.0 == b.0 && a.1 < b.2 && b.1 < a.2 && !empty(a) && !empty(b));
         if let Some(b) = hit {
-            return Err(format!("chunk {} [{:#x}, {:#x}) overlaps [{:#x}, {:#x})", a.0, a.1, a.2, b.1, b.2));
+            return Err(format!(
+                "chunk {} [{:#x}, {:#x}) overlaps [{:#x}, {:#x})",
+                a.0, a.1, a.2, b.1, b.2
+            ));
         }
     }
     let mut pieces = 0usize;

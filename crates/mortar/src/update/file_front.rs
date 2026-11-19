@@ -286,17 +286,14 @@ fn open<'s>(
             (row, None, path)
         }
         Ids::Update { first_section, row } => {
-            let path = match update_strings {
-                Some(c) => c.string(view, row.path)?,
-                None => {
-                    let strings = view.count(mortar_incr::format::kind::STRINGS);
-                    if u64::from(row.path.off) + u64::from(row.path.len) > strings {
-                        return Err(IncrReason::UpdateNotImplemented(Some(
-                            Unimplemented::Resolve,
-                        )));
-                    }
-                    view.string(row.path)?
+            let path = if let Some(c) = update_strings {
+                c.string(view, row.path)?
+            } else {
+                let strings = view.count(mortar_incr::format::kind::STRINGS);
+                if u64::from(row.path.off) + u64::from(row.path.len) > strings {
+                    return Err(IncrReason::UpdateNotImplemented(Some(Unimplemented::Resolve)));
                 }
+                view.string(row.path)?
             };
             (row, Some(first_section), path)
         }
