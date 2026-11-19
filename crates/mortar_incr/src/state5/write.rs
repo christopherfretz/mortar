@@ -222,8 +222,9 @@ pub fn encode(m: &MemoryState) -> Result<Vec<u8>, StateError> {
     let (st_body, _) = by_file(files, m.symtab.iter().copied(), &mut ranges, FileTable::Symtab)?;
     let (reg_body, _) = by_file(files, m.regions.iter().copied(), &mut ranges, FileTable::Regions)?;
     for (f, idx) in ranges.iter().enumerate() {
-        if idx.ranges[FileTable::Symtab as usize].count > 1 {
-            return Err(state_corrupt(format!("SYMTAB: file {f} has more than one row")));
+        // File 0's range: the global area, then the internal block (WP-264).
+        if idx.ranges[FileTable::Symtab as usize].count > if f == 0 { 2 } else { 1 } {
+            return Err(state_corrupt(format!("SYMTAB: file {f} has too many rows")));
         }
     }
     let mut patches = m.patches.clone();

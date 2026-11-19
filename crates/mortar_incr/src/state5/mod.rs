@@ -32,10 +32,10 @@ use crate::format::{
 };
 use crate::update::diags::{DiagRef, DiagRow, Subject};
 use crate::update::rows::{
-    CloneProbe, CommonRow, CopyRow, DebugStrRow, EdgeRow, FileIndexRow, FileRow, FileTable,
-    FragRow, FragUseRow, GroupRow, HoleRow, IndexRow, KeyRefRow, LocalRange, MentionRow, MetaRow,
-    NameRow, RegionRow, ResolvedRow, RowRange, SlotRow, SymbolRow, SymtabKeyRow, SymtabRow,
-    key_ref_flags, sym_kind,
+    CommonRow, CopyRow, DebugStrRow, EdgeRow, FileIndexRow, FileRow, FileTable, FragRow,
+    FragUseRow, GroupRow, HoleRow, IndexRow, KeyRefRow, LocalRange, MentionRow, MetaRow, NameRow,
+    RegionRow, ResolvedRow, RowRange, SlotRow, SymbolRow, SymtabKeyRow, SymtabRow, key_ref_flags,
+    sym_kind,
 };
 use crate::update::view::Rows;
 
@@ -65,8 +65,13 @@ pub const MAGIC: [u8; 8] = *b"MORTARSR";
 /// WP-263 (`SYMTAB`'s rows and `META.symtab` written by the full link's
 /// capture, and `META.gnu_warning_orphans`: a version-8 state holds no
 /// block and zero sizes, which IN-49a's plan reads as an empty table; it
-/// is refused, `state-version`).
-pub const VERSION: u32 = 9;
+/// is refused, `state-version`). 10 since WP-264 (`REGIONS` written by
+/// the full link's capture, file 0's `SYMTAB` range with the internal
+/// file's block as its second row, `META.boot_id` written, `META`'s clone
+/// probe removed: a version-9 state holds no region, which IN-72 item 2
+/// reads as a file with none, and a 228-byte `META`; it is refused,
+/// `state-version`).
+pub const VERSION: u32 = 10;
 /// The header's size.
 pub const HEADER: usize = 80;
 /// A directory entry's size.
@@ -502,15 +507,14 @@ impl Rec for u8 {
 }
 
 impl Rec for MetaRow {
-    const WIDTH: usize = 228;
+    const WIDTH: usize = 196;
     fn put(&self, w: &mut W<'_>) {
-        let p = self.clone_probe.unwrap_or_default();
         w.s(self.version).u16(self.machine).u8(self.class).u8(self.output_kind);
         w.u8(self.leaf_fn).u8(self.build_id_len).u8(u8::from(self.output_synced));
-        w.u8(u8::from(self.clone_probe.is_some()));
+        // A pad byte (zero): the clone probe's flag before WP-264.
+        w.u8(0);
         w.u64(self.file_size).u64(self.sealed_start).u64(self.sealed_end);
         w.bytes(&self.build_id).bytes(&self.boot_id).u32(self.compactions).u32(self.iterations);
-        w.u64(p.dev).bytes(&p.fs_type).u64(p.copy_ns_per_mib);
         let t = &self.symtab;
         w.u32(t.sh_info).u32(t.tail_first).u32(t.tail_capacity).u32(self.versioned);
         w.u64(t.symtab_size).u64(t.symtab_slack).u64(t.strtab_size).u64(t.strtab_slack);
@@ -518,12 +522,11 @@ impl Rec for MetaRow {
     }
     fn get(r: &mut R<'_>) -> Self {
         let (version, machine, class, output_kind) = (r.s(), r.u16(), r.u8(), r.u8());
-        let (leaf_fn, build_id_len, synced, probed) = (r.u8(), r.u8(), r.u8(), r.u8());
+        let (leaf_fn, build_id_len, synced, pad) = (r.u8(), r.u8(), r.u8(), r.u8());
         let (file_size, sealed_start, sealed_end) = (r.u64(), r.u64(), r.u64());
         let build_id: [u8; 64] = r.take();
         let boot_id: [u8; 16] = r.take();
         let (compactions, iterations) = (r.u32(), r.u32());
-        let probe = CloneProbe { dev: r.u64(), fs_type: r.take(), copy_ns_per_mib: r.u64() };
         let (sh_info, tail_first, tail_capacity) = (r.u32(), r.u32(), r.u32());
         let versioned = r.u32();
         let symtab = mortar_core::incr::SymtabTables {
@@ -537,10 +540,7 @@ impl Rec for MetaRow {
         };
         let live_hash: [u8; 16] = r.take();
         let gnu_warning_orphans = r.u32();
-        if synced > 1 || probed > 1 || u32::from(build_id_len) > crate::format::MAX_BUILD_ID {
-            r.bad_pad = true;
-        }
-        if probed == 0 && probe != CloneProbe::default() {
+        if synced > 1 || pad != 0 || u32::from(build_id_len) > crate::format::MAX_BUILD_ID {
             r.bad_pad = true;
         }
         Self {
@@ -559,7 +559,6 @@ impl Rec for MetaRow {
             compactions,
             iterations,
             versioned,
-            clone_probe: (probed == 1).then_some(probe),
             symtab,
             live_hash,
             gnu_warning_orphans,
@@ -1256,7 +1255,7 @@ mod tests {
 
     // spec: WP-238 "Step 2" S4 (`META.live_hash`, 16 bytes after
     // `versioned`'s area), WP-263 (`gnu_warning_orphans`, 4 bytes after
-    // it: META is 228 bytes)
+    // it); WP-264 (the clone probe's 32 bytes removed: META is 196 bytes)
     #[test]
     fn meta_live_hash_is_read_back() {
         let m = MetaRow {
@@ -1266,9 +1265,9 @@ mod tests {
         };
         let b = encode_rows(std::slice::from_ref(&m));
         assert_eq!(b.len(), <MetaRow as Rec>::WIDTH);
-        assert_eq!(b.len(), 228);
-        assert_eq!(&b[208..224], &m.live_hash);
-        assert_eq!(&b[224..], &0x0102_0304u32.to_le_bytes());
+        assert_eq!(b.len(), 196);
+        assert_eq!(&b[176..192], &m.live_hash);
+        assert_eq!(&b[192..], &0x0102_0304u32.to_le_bytes());
         let back = decode_rows::<MetaRow>(&b, kind::META, 0).expect("reads");
         assert_eq!(back, vec![m]);
     }

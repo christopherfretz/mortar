@@ -532,6 +532,9 @@ impl StateRows for &MemoryState {
     fn symtab_of(&self, file: FileId) -> Rows<Option<SymtabRow>> {
         Ok(of(&self.symtab, file).first().copied())
     }
+    fn symtab_internal(&self) -> Rows<Option<SymtabRow>> {
+        Ok(of(&self.symtab, FileId(0)).get(1).copied())
+    }
     fn regions_of(&self, file: FileId) -> Rows<Vec<RegionRow>> {
         let mut v = of(&self.regions, file);
         v.sort_by_key(|r| (r.out, r.category, r.ordinal));

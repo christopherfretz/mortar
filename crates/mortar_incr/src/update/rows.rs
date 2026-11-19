@@ -807,22 +807,10 @@ pub struct DebugStrRow {
     pub offset: u32,
 }
 
-/// W-1's clone probe record in `META` (IN-76a): the output's device, its
-/// file system type and the measured copy time.
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
-pub struct CloneProbe {
-    /// `st_dev` of the output.
-    pub dev: u64,
-    /// The mount's file system type (`/proc/self/mountinfo`), as bytes,
-    /// zero-padded.
-    pub fs_type: [u8; 16],
-    /// Nanoseconds per MiB of the timed `std::io::copy` trial.
-    pub copy_ns_per_mib: u64,
-}
-
 /// `META` (kind 1, whole; IN-18c, IN-77c, IN-76a): format 4's columns with
 /// the build id inline, plus the boot id, `output-synced`, the compaction
-/// count, the clone probe and the symbol tables' sizes. Written by capture
+/// count and the symbol tables' sizes (W-1's clone probe, neither written
+/// nor read, removed by WP-264). Written by capture
 /// and U-2 (W5's binding); read by U1 (the join), U-5, W-1.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct MetaRow {
@@ -839,14 +827,15 @@ pub struct MetaRow {
     /// bytes (IN-18e: not in `STRINGS`).
     pub build_id_len: u8,
     pub build_id: [u8; 64],
-    /// `/proc/sys/kernel/random/boot_id`'s 16 bytes (IN-77c).
+    /// `/proc/sys/kernel/random/boot_id`'s 16 bytes (IN-77c), as the link
+    /// that wrote the state read it (WP-264: `mortar::update::write::
+    /// boot_id`); zero when it could not, which no boot matches (the
+    /// update re-hashes the output's leaves).
     pub boot_id: [u8; 16],
     /// 0 from a full link, 1 from W5/C4 (IN-77c).
     pub output_synced: bool,
     /// Compactions since the last full link (a history field, IN-78).
     pub compactions: u32,
-    /// W-1's record, when probed.
-    pub clone_probe: Option<CloneProbe>,
     /// `.symtab`/`.strtab` sizes and slack (IN-49a).
     pub symtab: mortar_core::incr::SymtabTables,
     /// The iterations of resolve.md §4.1's closure in the full link that
@@ -891,7 +880,6 @@ impl Default for MetaRow {
             boot_id: [0; 16],
             output_synced: false,
             compactions: 0,
-            clone_probe: None,
             symtab: mortar_core::incr::SymtabTables::default(),
             iterations: 0,
             versioned: 0,

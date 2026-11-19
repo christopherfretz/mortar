@@ -17,18 +17,21 @@
 //!   output starts a stored block.
 //! - Its `.strtab` region holds exactly its entries' names (fixed names
 //!   apart), zeros after them to its capacity.
-//! - The blocks tile `[1, tail_first)` after the internal file's block
-//!   (no row: the record's finding); `[tail_first, sh_info)` is fillers;
-//!   `META.symtab`'s `sh_info` and sizes are the section headers', its
-//!   slacks lie before the next section; file 0's row is the global area.
+//! - The blocks tile `[1, tail_first)` after the internal file's block;
+//!   `[tail_first, sh_info)` is fillers; `META.symtab`'s `sh_info` and
+//!   sizes are the section headers', its slacks lie before the next
+//!   section; file 0's first row is the global area, its second the
+//!   internal file's block (WP-264: entry 1 on, its entries then its
+//!   fillers up to the first file's block, its names in its region).
 //!
 //! `orphan_gnu_warning_is_counted`: the same link with and without a unit
 //! holding `.gnu.warning.nosuchkey` (no file mentions `nosuchkey`):
 //! `META.gnu_warning_orphans` 1 and 0.
 //!
-//! `version_8_state_is_refused`: the header with version 8 (WP-262's
-//! format, which has no `SYMTAB` rows) is refused `state-version`, by the
-//! reader and end to end.
+//! `version_9_state_is_refused`: the header with version 9 (WP-263's
+//! format: no `REGIONS` rows, file 0's `SYMTAB` range without the
+//! internal block, a 228-byte `META`; WP-264 made it 10) is refused
+//! `state-version`, by the reader and end to end.
 
 mod support;
 
@@ -259,9 +262,12 @@ fn judge(label: &str, m: &MemoryState, dir: &Path) -> Judged {
         assert!(o.filler(i), "{label}: tail entry {i} is not a filler");
     }
     j.tail = t.tail_capacity;
-    // File 0's row: the global area.
+    // File 0's rows: the global area, then the internal file's block
+    // (WP-264; none when it has no entry).
     let rows: Vec<(FileId, SymtabBlock)> = m.symtab.clone();
-    let area = rows.iter().find(|(f, _)| f.0 == 0).map(|r| r.1).expect("file 0's row");
+    let zero: Vec<SymtabBlock> = rows.iter().filter(|(f, _)| f.0 == 0).map(|r| r.1).collect();
+    assert!(matches!(zero.len(), 1 | 2), "{label}: file 0 has {} rows", zero.len());
+    let (area, internal) = (zero[0], zero.get(1).copied());
     assert_eq!(
         (area.first, area.count, area.capacity),
         (o.sh_info, entries - o.sh_info, entries - o.sh_info),
@@ -283,12 +289,44 @@ fn judge(label: &str, m: &MemoryState, dir: &Path) -> Judged {
     blocks.sort_by_key(|(f, _)| *f);
     let mut starts: Vec<u32> = Vec::new();
     let mut at = blocks.first().map_or(t.tail_first, |(_, b)| b.first);
-    j.internal = at - 1;
     for i in 1..at {
         assert!(
             o.syms[i as usize].sym_type() != STT_FILE,
             "{label}: an STT_FILE in the internal block, {i}"
         );
+    }
+    // The internal block (WP-264): entry 1 on, its entries then its
+    // fillers up to the first file's block; its names in its region.
+    match internal {
+        None => assert_eq!(at, 1, "{label}: entries before the first file's block, no row"),
+        Some(b) => {
+            let who = format!("{label}: the internal block {b:?}");
+            assert_eq!(b.first, 1, "{who}: its first entry");
+            assert_eq!(b.first + b.capacity, at, "{who}: it ends where the first file's starts");
+            assert_eq!(b.capacity, b.count + (b.count / 8).max(2), "{who}: capacity (IN-49a)");
+            let mut names_len = 0u64;
+            for i in b.first..b.first + b.count {
+                assert!(!o.filler(i), "{who}: entry {i} is a filler");
+                let name = &o.names[i as usize];
+                if !fixed(name) {
+                    let off = u64::from(o.syms[i as usize].st_name);
+                    assert!(
+                        off >= b.strtab_offset
+                            && off + (name.len() as u64) < b.strtab_offset + b.strtab_len,
+                        "{who}: entry {i}'s name at {off}, outside its region"
+                    );
+                    names_len += name.len() as u64 + 1;
+                }
+            }
+            for i in b.first + b.count..at {
+                assert!(o.filler(i), "{who}: entry {i} of its slack is not a filler");
+            }
+            assert_eq!(names_len, b.strtab_len, "{who}: its region against its entries' names");
+            let slack = &o.strtab[(b.strtab_offset + b.strtab_len) as usize
+                ..(b.strtab_offset + b.strtab_capacity) as usize];
+            assert!(slack.iter().all(|&c| c == 0), "{who}: its region's slack is not zeros");
+            j.internal = b.count;
+        }
     }
     for &(file, b) in &blocks {
         let who = format!(
@@ -397,6 +435,7 @@ fn stored_blocks_are_the_output_blocks() {
             t.strtab_slack,
             m.symtab.iter().find(|(f, _)| f.0 == 0).map(|r| r.1)
         );
+        assert!(j.internal > 0, "{label}: the internal block has a row");
         ran += 1;
     }
     assert!(ran == 2 || !tools_required(), "{ran} of 2 links");
@@ -431,30 +470,30 @@ fn orphan_gnu_warning_is_counted() {
 }
 
 #[test]
-fn version_8_state_is_refused() {
+fn version_9_state_is_refused() {
     let mut ran = 0;
     for line in lines(false) {
         let label = line.label;
         let (_, mut bytes) = state(&line);
         assert_eq!(&bytes[..8], b"MORTARSR", "{label}: format 5's magic");
-        assert_eq!(bytes[8..12], 9u32.to_le_bytes(), "{label}: the state's version");
-        bytes[8..12].copy_from_slice(&8u32.to_le_bytes());
-        let e = mortar_incr::state5::read::decode(&bytes).expect_err("a version-8 state decodes");
+        assert_eq!(bytes[8..12], 10u32.to_le_bytes(), "{label}: the state's version");
+        bytes[8..12].copy_from_slice(&9u32.to_le_bytes());
+        let e = mortar_incr::state5::read::decode(&bytes).expect_err("a version-9 state decodes");
         let shown = format!("{e:?}");
         assert!(
-            shown.contains("Version") && shown.contains("format version 8"),
+            shown.contains("Version") && shown.contains("format version 9"),
             "{label}: {shown}"
         );
         let at = line.dir.join("out.mortar-state");
         let mut disk = std::fs::read(&at).expect("the state");
         assert_eq!(&disk[..8], b"MORTARSR", "{label}: the written state's magic");
-        disk[8..12].copy_from_slice(&8u32.to_le_bytes());
+        disk[8..12].copy_from_slice(&9u32.to_le_bytes());
         std::fs::write(&at, disk).expect("the state");
         let args = incremental_args(&line, "--incremental=update");
         let second = mortar::invoke_in("mortar", &args, &line.dir);
         let report = format!("{:?}\n{}", second.outcome, second.incremental);
         assert!(report.contains("state-version"), "{label}: {report}");
-        eprintln!("[wp263] {label}: a version-8 state: state-version");
+        eprintln!("[wp263] {label}: a version-9 state: state-version");
         ran += 1;
     }
     assert!(ran == 2 || !tools_required(), "{ran} of 2 links");

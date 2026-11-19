@@ -542,11 +542,20 @@ impl StateRows for Reader {
         Ok(rows)
     }
     fn symtab_of(&self, file: FileId) -> Rows<Option<SymtabRow>> {
-        let mut rows: Vec<SymtabRow> = self.core.range(file, FileTable::Symtab)?;
-        if rows.len() > 1 {
+        let rows: Vec<SymtabRow> = self.core.range(file, FileTable::Symtab)?;
+        // File 0's range: the global area, then the internal file's block
+        // (WP-264); any other file's: its block.
+        if rows.len() > if file.0 == 0 { 2 } else { 1 } {
             return Err(corrupt(format!("SYMTAB: file {} has {} rows", file.0, rows.len())));
         }
-        Ok(rows.pop())
+        Ok(rows.first().copied())
+    }
+    fn symtab_internal(&self) -> Rows<Option<SymtabRow>> {
+        let rows: Vec<SymtabRow> = self.core.range(FileId(0), FileTable::Symtab)?;
+        if rows.len() > 2 {
+            return Err(corrupt(format!("SYMTAB: file 0 has {} rows", rows.len())));
+        }
+        Ok(rows.get(1).copied())
     }
     fn regions_of(&self, file: FileId) -> Rows<Vec<RegionRow>> {
         let mut v: Vec<RegionRow> = self.core.range(file, FileTable::Regions)?;
@@ -873,8 +882,10 @@ pub(crate) fn decode_core(c: &Core) -> Rows<MemoryState> {
         }
         m.symtab.extend(symtab[at(FileTable::Symtab)].iter().map(|r| (file, *r)));
         m.regions.extend(regions[at(FileTable::Regions)].iter().map(|r| (file, *r)));
-        if idx.ranges[FileTable::Symtab as usize].count > 1 {
-            return Err(corrupt(format!("SYMTAB: file {f} has more than one row")));
+        // File 0's range: the global area, then the internal file's block
+        // (WP-264); every other file's: its block.
+        if idx.ranges[FileTable::Symtab as usize].count > if file.0 == 0 { 2 } else { 1 } {
+            return Err(corrupt(format!("SYMTAB: file {f} has too many rows")));
         }
     }
     for t in FILE_TABLES {
@@ -1275,7 +1286,9 @@ impl LayoutRows for LayoutOf<'_, '_> {
         Ok((tls, (l.bits & layout_bits::ENTRY != 0).then_some(l.entry)))
     }
     fn symtab_block(&self, file: FileId) -> Result<Option<SymtabBlock>, IncrReason> {
-        self.view.symtab_of(file)
+        // File 0's block is the internal file's (its range's second row);
+        // its first row is the global area, `symtab_tables`' (WP-264).
+        if file.0 == 0 { self.view.symtab_internal() } else { self.view.symtab_of(file) }
     }
     fn symtab_tables(&self) -> Result<(SymtabBlock, SymtabTables), IncrReason> {
         let global = self.view.symtab_of(FileId(0))?.unwrap_or_default();
