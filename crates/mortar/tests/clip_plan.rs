@@ -3,6 +3,8 @@
 //! x86-64: U-6's three files (`a.o` with `_start`, `b.o` with 4 MiB of
 //! data and merged strings, `c.o` with the edited function) and the pad
 //! fixture (c.o's function grown by 0x3000 bytes, the review's code gap).
+//! WP-255c2b adds to b.o a merge section of its own output section
+//! (`.mycst`, two 8-byte constants).
 //! The clip plan is built from the link's rows (`FrontRows`) and data
 //! lists computed from the `Link`; inside the clips its rows are the whole
 //! plan's rows, and its fill is `refill_ranges`' fill.
@@ -52,6 +54,7 @@ fn sources(arch: Arch, pad: usize) -> [String; 3] {
             "\t.data\n\t.globl d\nd:\t.quad 7\n\
              \t.section .rodata.str1.1,\"aMS\",@progbits,1\n\t.asciz \"hello\"\n\t.asciz \"world\"\n\
              \t.section .rodata.cst8,\"aM\",@progbits,8\n\t.p2align 3\n\t.quad 0x1122334455667788\n\
+             \t.section .mycst,\"aM\",@progbits,8\n\t.p2align 3\n\t.quad 0x99aabbccddeeff00\n\t.quad 0x0123456789abcdef\n\
              \t.section .note.GNU-stack,\"\",@progbits\n\t.data\n\t.skip 0x400000, 1\n"
                 .to_owned(),
             format!(
@@ -69,6 +72,7 @@ fn sources(arch: Arch, pad: usize) -> [String; 3] {
             "\t.data\n\t.globl d\nd:\t.quad 7\n\
              \t.section .rodata.str1.1,\"aMS\",%progbits,1\n\t.asciz \"hello\"\n\t.asciz \"world\"\n\
              \t.section .rodata.cst8,\"aM\",%progbits,8\n\t.p2align 3\n\t.quad 0x1122334455667788\n\
+             \t.section .mycst,\"aM\",%progbits,8\n\t.p2align 3\n\t.quad 0x99aabbccddeeff00\n\t.quad 0x0123456789abcdef\n\
              \t.section .note.GNU-stack,\"\",%progbits\n\t.data\n\t.skip 0x400000, 1\n"
                 .to_owned(),
             format!(
@@ -163,7 +167,8 @@ enum View<'p> {
     Input(InputUnit, &'p [u8], Option<&'p RelocSection>),
     Bytes(&'p [u8]),
     Synth(u32),
-    Merged(u32),
+    /// The fragment order's chunk and the output section's name.
+    Merged(u32, &'p [u8]),
     Gap(Pattern),
 }
 
@@ -186,7 +191,10 @@ fn rows_over<'p>(plan: &'p Plan, piece: &Range<u64>) -> Vec<(Range<u64>, View<'p
             }
             Unit::Bytes(i) => View::Bytes(&plan.bytes[i as usize]),
             Unit::Synth(i) => View::Synth(i),
-            Unit::Merged(i) => View::Merged(i),
+            Unit::Merged(i) => {
+                let m = &plan.merged[i as usize];
+                View::Merged(m.chunk, plan.name(m.name))
+            }
             Unit::Gap(p) => View::Gap(p),
         };
         out.push((r.offset.max(piece.start)..r.end().min(piece.end), v));
@@ -224,6 +232,10 @@ fn cases(l: &Link<'_, '_>) -> Vec<Case> {
     assert!(!gaps.is_empty(), "the .text chunk has a code gap");
     let mut several = vec![0..0x40, c_text.start + 1..c_text.end - 1, boundary - 16..boundary + 16];
     several.sort_by_key(|r| r.start);
+    let strs = merged_chunk(l, true);
+    let cst = merged_chunk(l, false);
+    let mut both = vec![strs.clone(), cst.clone()];
+    both.sort_by_key(|r| r.start);
     vec![
         ("one section", vec![c_text.start + 1..c_text.end - 1]),
         ("a section's edge", vec![a_text.end - 2..a_text.end + 2]),
@@ -231,7 +243,33 @@ fn cases(l: &Link<'_, '_>) -> Vec<Case> {
         ("a code gap", gaps),
         ("the headers", vec![0..0x40]),
         ("several", several),
+        ("inside the merged strings", vec![strs.start + 2..strs.end - 2]),
+        ("the merged strings' edge", vec![strs.start - 2..strs.start + 3]),
+        ("the merged strings whole", vec![strs.clone()]),
+        ("inside the merged constant", vec![cst.start + 1..cst.end - 1]),
+        ("the merged constant's edge", vec![cst.end - 3..cst.end + 2]),
+        ("both merged chunks whole", both),
     ]
+}
+
+/// The file range of the merged chunk holding the strings (`strings`,
+/// in `.rodata` with b.o's constant) or of the merged constant chunk
+/// (`.mycst`: two 8-byte constants).
+fn merged_chunk(l: &Link<'_, '_>, strings: bool) -> Range<u64> {
+    let want: &[u8] = if strings { b".rodata" } else { b".mycst" };
+    let (_, c) = l
+        .layout
+        .placement
+        .chunks
+        .iter()
+        .find(|(_, c)| {
+            matches!(c.kind, ChunkKind::Merged(_))
+                && c.in_file()
+                && c.size > 0
+                && c.name(l.assignment) == Some(want)
+        })
+        .expect("the merged chunk");
+    c.offset..c.offset + c.size
 }
 
 // spec: WP-255.md §9.1 (the clip plan calls the whole plan's row makers;
@@ -276,8 +314,10 @@ fn clip_plan_rows_equal_the_whole_plan_clipped() {
 // name). The bytes the clip plan fills are `refill_ranges`' bytes and its
 // bitmap is full; a pad row (the code gap) or a header row turned into a
 // zero gap by the test's hook is the internal error at its first byte;
-// a clip over `.symtab` is `NotYet(Synth)`, over the merged strings
-// `NotYet(Merged)`.
+// a clip over `.symtab` is `NotYet(Synth)`. WP-255c2b: the cases include
+// clips inside, across the edge of and covering the merged string and
+// constant chunks; one fragment dropped from the index (the hook) is
+// refused by the gap rule at its first byte.
 #[test]
 #[allow(clippy::single_range_in_vec_init)]
 fn clip_plan_fills_every_byte() {
@@ -336,19 +376,52 @@ fn clip_plan_fills_every_byte() {
                 matches!(r, Err(Ok(ClipError::NotYet(NotYet::Synth, c))) if c == symtab),
                 "{arch:?} .symtab: {r:?}"
             );
-            let merged = l
-                .layout
-                .placement
-                .chunks
-                .iter()
-                .find(|(_, c)| matches!(c.kind, ChunkKind::Merged(_)) && c.in_file() && c.size > 0)
-                .expect("a merged chunk");
-            let r = refill_clip_plan(l, &[merged.1.offset..merged.1.offset + 1], |_| {});
-            assert!(
-                matches!(r, Err(Ok(ClipError::NotYet(NotYet::Merged, c))) if c == merged.0),
-                "{arch:?} merged: {r:?}"
-            );
+            merged_drop_refused(l, arch);
         });
+    }
+}
+
+/// WP-255c2b: one fragment dropped from the index of the merged string
+/// chunk and of the merged constant chunk is refused by the gap rule at
+/// its first byte.
+#[allow(clippy::many_single_char_names)]
+fn merged_drop_refused(l: &Link<'_, '_>, arch: Arch) {
+    for strings in [true, false] {
+        let r = merged_chunk(l, strings);
+        let (c, _) = l
+            .layout
+            .placement
+            .chunks
+            .iter()
+            .find(|(_, c)| c.offset == r.start && matches!(c.kind, ChunkKind::Merged(_)))
+            .unwrap();
+        let frags = mortar_image::link::clip_frags_for_test(l, c, 0..r.end - r.start)
+            .expect("the fragments");
+        let (f, p) = frags[0];
+        let at = r.start + p.offset;
+        let res = refill_clip_plan_with(
+            l,
+            std::slice::from_ref(&r),
+            |m| {
+                if let Some(x) = m.merged.get_mut(&c) {
+                    x.frags.retain(|g| g.frag != f);
+                }
+            },
+            |_| {},
+        );
+        let want = format!("image: clip byte {at:#x} written by no row");
+        match res {
+            Err(Ok(ClipError::Internal(e))) => {
+                assert!(format!("{e:?}").contains(&want), "{arch:?}: {e:?}");
+            }
+            other => panic!("{arch:?}: fragment {} dropped: {other:?}", f.0),
+        }
+        eprintln!(
+            "[clip-fill] {arch:?} merged (strings {strings}, {} fragments): fragment {} \
+             dropped: `{want}`",
+            frags.len(),
+            f.0
+        );
     }
 }
 
@@ -470,6 +543,17 @@ fn sections_agree(l: &Link<'_, '_>, label: &str) {
         }
     }
     let mut clips: Vec<Range<u64>> = bodies(l).into_iter().map(|b| b.1).collect();
+    let merged: Vec<Range<u64>> = l
+        .layout
+        .placement
+        .chunks
+        .iter()
+        .filter(|(_, c)| matches!(c.kind, ChunkKind::Merged(_)) && c.in_file() && c.size > 0)
+        .map(|(_, c)| c.offset..c.offset + c.size)
+        .collect();
+    let n_merged = merged.len();
+    clips.extend(merged);
+    clips.sort_by_key(|r| r.start);
     let fill = loop {
         match refill_clip_plan(l, &clips, |_| {}) {
             Ok(f) => break f,
@@ -486,7 +570,7 @@ fn sections_agree(l: &Link<'_, '_>, label: &str) {
     assert_eq!(fill.jobs, want.jobs, "{label}: every body chunk's bytes");
     eprintln!(
         "[clip-sections] {label}: {chunks} body chunks, {secs} sections, {} queries agree; \
-         {} chunks filled through the gap rule",
+         {} chunks ({n_merged} merged) filled through the gap rule",
         queries.len(),
         clips.len()
     );

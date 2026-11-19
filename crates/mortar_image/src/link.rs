@@ -2053,7 +2053,7 @@ fn clip_model<'l>(link: &Link<'l, '_>) -> Model<'l, 'l> {
 ///
 /// An unreadable input section header.
 pub fn clip_members(link: &Link<'_, '_>) -> Result<crate::clip_plan::Members, Diagnostic> {
-    use crate::clip_plan::{Member, Members};
+    use crate::clip_plan::{FragMember, Member, Members, MergedMembers};
     let model = clip_model(link);
     let pl = &link.layout.placement;
     let mut by: std::collections::BTreeMap<ChunkId, Vec<(u64, Member)>> =
@@ -2083,7 +2083,48 @@ pub fn clip_members(link: &Link<'_, '_>) -> Result<crate::clip_plan::Members, Di
             (c, v.into_iter().map(|m| m.1).collect())
         })
         .collect();
-    Ok(Members { by_chunk })
+    // The merged chunks: the whole plan's unit (`layout_plan::merged`) and
+    // the fragment order's placed fragments.
+    let mut merged = std::collections::BTreeMap::new();
+    for (c, ch) in pl.chunks.iter() {
+        let ChunkKind::Merged(o) = ch.kind else { continue };
+        if !ch.in_file() || ch.size == 0 {
+            continue;
+        }
+        let Ok(k) = link.order.chunks.binary_search_by_key(&o, |mc| mc.out) else {
+            return Err(Diagnostic::error(Kind::InternalError {
+                what: format!("image: merged chunk {} is not in the fragment order", c.0),
+            }));
+        };
+        let span = link.order.chunks[k].frags;
+        let mut frags: Vec<(u64, FragMember)> = link.order.order
+            [span.start as usize..(span.start + span.len) as usize]
+            .iter()
+            .filter_map(|&f| {
+                let row = link.split.frags[f];
+                let off = link.layout.merge.offset(f)?;
+                Some((
+                    off,
+                    FragMember {
+                        frag: f,
+                        section: row.section,
+                        size: u64::from(row.size),
+                        align: 1u64 << row.align.min(63),
+                    },
+                ))
+            })
+            .collect();
+        frags.sort_by_key(|f| (f.0, f.1.frag.0));
+        merged.insert(
+            c,
+            MergedMembers {
+                order: k as u32,
+                name: link.assignment.outsecs[o].name.into(),
+                frags: frags.into_iter().map(|f| f.1).collect(),
+            },
+        );
+    }
+    Ok(Members { by_chunk, merged })
 }
 
 /// The inputs of [`crate::clip_plan::for_clips`] for `ranges` from
@@ -2126,6 +2167,7 @@ fn clip_plan_of<R: Rows>(
         abbrev: layout_plan::abbrev_offset(&pl.holes, &pl.chunks)?,
         structure: &structure,
         proof: link.proof,
+        merge_source: &|s| layout_plan::merge_source(&model, s),
     };
     crate::clip_plan::for_clips(rows, ranges, &members, &front, &parts)
 }
@@ -2149,6 +2191,23 @@ pub fn clip_sections_for_test(
         .iter()
         .map(|(c, r)| crate::clip_plan::sections_in(tables.rows(), &members, *c, r.clone()))
         .collect())
+}
+
+/// [`crate::clip_plan::frags_in`] over `link`'s rows and
+/// [`clip_members`] (a test's path, WP-255c2b).
+///
+/// # Errors
+///
+/// [`clip_members`]' error, or `frags_in`'s.
+#[doc(hidden)]
+pub fn clip_frags_for_test(
+    link: &Link<'_, '_>,
+    c: ChunkId,
+    range: std::ops::Range<u64>,
+) -> Result<Vec<(mortar_core::FragId, crate::clip_plan::Placed)>, crate::clip_plan::ClipError> {
+    let tables = LinkTables::new(*link);
+    let members = clip_members(link)?;
+    crate::clip_plan::frags_in(tables.rows(), &members, c, range)
 }
 
 /// What [`refill_clip_plan`] built and filled.

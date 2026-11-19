@@ -29,12 +29,12 @@ use std::ops::Range;
 use mortar_arch::ProofRun;
 use mortar_core::layout::{Chunk, ChunkKind, Hole};
 use mortar_core::par::Pool;
-use mortar_core::{ChunkId, Column, FileId, SectionId};
+use mortar_core::{ChunkId, Column, FileId, FragId, SectionId};
 use mortar_diag::{Diagnostic, Kind};
 use mortar_elf::SectionIndex;
 
 use crate::layout_plan::{ChunkView, SegView, hole_bytes, pads};
-use crate::plan::{Builder, Pattern, Plan, Unit};
+use crate::plan::{Builder, MergeSource, MergedUnit, Pattern, Plan, Unit};
 use crate::rows::{Rows, SectionFront, row_for};
 use crate::target::Target;
 
@@ -60,6 +60,31 @@ pub struct Member {
 #[derive(Debug, Clone, Default)]
 pub struct Members {
     pub by_chunk: BTreeMap<ChunkId, Vec<Member>>,
+    /// Every in-file `Merged` chunk with bytes ([`MergedMembers`]).
+    pub merged: BTreeMap<ChunkId, MergedMembers>,
+}
+
+/// One placed fragment of a `Merged` chunk as [`MergedMembers`] lists it:
+/// the fragment, the merge section its bytes are copied from, its size and
+/// its alignment (the index's data: [`Rows`] gives neither the section nor
+/// the size of a fragment).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct FragMember {
+    pub frag: FragId,
+    pub section: SectionId,
+    pub size: u64,
+    pub align: u64,
+}
+
+/// A `Merged` chunk's index (I-38): its unit (the chunk's index in the
+/// fragment order, `MergedUnit::chunk`, and its output section's name) and
+/// every placed fragment, in offset order (where each one is comes from
+/// [`Rows::frag_place`]).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct MergedMembers {
+    pub order: u32,
+    pub name: Box<[u8]>,
+    pub frags: Vec<FragMember>,
 }
 
 /// A placed input section [`sections_in`] gives: its id, its offset in
@@ -105,6 +130,9 @@ pub struct ClipParts<'p> {
     pub structure: &'p BTreeMap<ChunkId, Box<[u8]>>,
     /// The proof runs of input section `(file, index)` of `len` bytes.
     pub proof: &'p dyn Fn(FileId, SectionIndex, u64) -> Vec<ProofRun>,
+    /// Where merge section `s`'s bytes are (the fragments a clip meets are
+    /// copied from it); `None` is an error of [`for_clips`].
+    pub merge_source: &'p dyn Fn(SectionId) -> Result<Option<MergeSource>, Diagnostic>,
 }
 
 impl std::fmt::Debug for ClipParts<'_> {
@@ -120,8 +148,6 @@ impl std::fmt::Debug for ClipParts<'_> {
 /// What a clip meets that the clip plan does not build yet (255c2b).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum NotYet {
-    /// A `Merged` chunk (I-38).
-    Merged,
     /// A synthetic chunk (§13), `.symtab` and `.eh_frame` included.
     Synth,
     /// A patch island (thunks, erratum patches).
@@ -170,41 +196,76 @@ fn placed<R: Rows>(rows: &R, c: ChunkId, m: &Member) -> Result<Placed, ClipError
     }
 }
 
-/// The index `k` in `list` of the first member that ends after `lo`, and
-/// the members from `k` on that meet `[lo, hi)` (chunk offsets), checked
-/// in order and disjoint. O(log members + members met).
-fn span<R: Rows>(
+/// Fragment `m` of merged chunk `c` placed by `rows`.
+fn frag_placed<R: Rows>(rows: &R, c: ChunkId, m: &FragMember) -> Result<Placed, ClipError> {
+    match rows.frag_place(m.frag) {
+        Some((pc, offset)) if pc == c && rows.merged_chunk(m.section) == Some(c) => {
+            Ok(Placed { section: m.section, offset, size: m.size, align: m.align.max(1) })
+        }
+        _ => Err(internal(&format!("fragment {} of chunk {} has no place in it", m.frag.0, c.0))),
+    }
+}
+
+/// Every placed fragment of merged chunk `c` that meets `[lo, hi)`
+/// (offsets in the chunk), in offset order, each as a [`Placed`] of its
+/// merge section (WP-255c2b; [`sections_in`]'s twin). A chunk `members`
+/// does not list has none.
+///
+/// # Errors
+///
+/// [`ClipError::Internal`] for a fragment `rows` does not place in `c`,
+/// or fragments out of order or overlapping.
+pub fn frags_in<R: Rows>(
     rows: &R,
+    members: &Members,
     c: ChunkId,
-    list: &[Member],
+    range: Range<u64>,
+) -> Result<Vec<(FragId, Placed)>, ClipError> {
+    let Some(m) = members.merged.get(&c) else { return Ok(Vec::new()) };
+    let at = |i: usize| frag_placed(rows, c, &m.frags[i]);
+    let got = span(m.frags.len(), &at, c, range.start, range.end)?.1;
+    Ok(got.into_iter().map(|(i, p)| (m.frags[i].frag, p)).collect())
+}
+
+/// Item `i` of a chunk's index, placed by the rows.
+type At<'a> = &'a dyn Fn(usize) -> Result<Placed, ClipError>;
+
+/// The index `k` of the first of the `len` items of chunk `c` (in offset
+/// order, placed by `at`) that ends after `lo`, and the items from `k` on
+/// that meet `[lo, hi)` (chunk offsets) with their indices, checked in
+/// order and disjoint. O(log items + items met).
+fn span(
+    len: usize,
+    at: At<'_>,
+    c: ChunkId,
     lo: u64,
     hi: u64,
-) -> Result<(usize, Vec<Placed>), ClipError> {
-    let k = list.partition_point(|m| match (rows.place(m.section), rows.section_size(m.section)) {
-        (Some((_, o)), Some(z)) => o + z <= lo,
-        _ => false,
-    });
+) -> Result<(usize, Vec<(usize, Placed)>), ClipError> {
+    let (mut k, mut e) = (0, len);
+    while k < e {
+        let mid = k + (e - k) / 2;
+        if at(mid).is_ok_and(|p| p.end() <= lo) {
+            k = mid + 1;
+        } else {
+            e = mid;
+        }
+    }
     let mut out = Vec::new();
-    let mut prev = if k > 0 { placed(rows, c, &list[k - 1])?.end() } else { 0 };
-    for m in &list[k..] {
-        let p = placed(rows, c, m)?;
-        if p.offset < prev {
+    let mut prev = if k > 0 { at(k - 1)?.end() } else { 0 };
+    for i in k..len {
+        let p = at(i)?;
+        if p.offset < prev || (p.size > 0 && p.offset < hi && p.end() <= lo) {
             return Err(internal(&format!(
-                "member {} of chunk {} is out of order or overlaps its predecessor",
-                m.section.0, c.0
+                "item {i} of chunk {} is out of order or overlaps its predecessor",
+                c.0
             )));
         }
         if p.offset >= hi {
             break;
         }
         prev = p.end();
-        if p.size > 0 && p.end() > lo {
-            out.push(p);
-        } else if p.size > 0 {
-            return Err(internal(&format!(
-                "member {} of chunk {} is out of order",
-                m.section.0, c.0
-            )));
+        if p.size > 0 {
+            out.push((i, p));
         }
     }
     Ok((k, out))
@@ -227,7 +288,8 @@ pub fn sections_in<R: Rows>(
     range: Range<u64>,
 ) -> Result<Vec<Placed>, ClipError> {
     let Some(list) = members.by_chunk.get(&c) else { return Ok(Vec::new()) };
-    Ok(span(rows, c, list, range.start, range.end)?.1)
+    let at = |i: usize| placed(rows, c, &list[i]);
+    Ok(span(list.len(), &at, c, range.start, range.end)?.1.into_iter().map(|x| x.1).collect())
 }
 
 /// `x` rounded up to a multiple of `a` (a power of two, or 1).
@@ -273,51 +335,100 @@ fn explain(
     Ok(())
 }
 
-/// The gap rule over the clip `[lo, hi)` (chunk offsets) of `Body` chunk
-/// `c`: every gap between consecutive members (and before the first and
-/// after the last) that meets the clip is explained ([`explain`]); after
-/// the last member the chunk's tail up to its size is explained as a gap
-/// before an item of alignment 1, and `[size, capacity)` is the slack
-/// (the same capacity [`pads`]' views read). Returns the members met.
-#[allow(clippy::too_many_arguments)]
-fn gaps<R: Rows>(
-    rows: &R,
-    c: ChunkId,
-    chunk: &Chunk,
-    list: &[Member],
+/// The gap rule over the clip `[lo, hi)` (chunk offsets) of chunk `c`
+/// whose `len` items (members of a `Body` chunk, fragments of a `Merged`
+/// one) `at` places: every gap between consecutive items (and before the
+/// first and after the last) that meets the clip is explained
+/// ([`explain`]); after the last item the chunk's tail up to its size is
+/// explained as a gap before an item of alignment 1, and `[size,
+/// capacity)` is the slack (the same capacity [`pads`]' views read).
+/// Returns the items met, with their indices.
+fn gaps(
+    len: usize,
+    at: At<'_>,
+    (c, chunk): (ChunkId, &Chunk),
     holes: &[(u64, u64)],
     lo: u64,
     hi: u64,
-) -> Result<Vec<Placed>, ClipError> {
-    let (k, got) = span(rows, c, list, lo, hi)?;
+) -> Result<Vec<(usize, Placed)>, ClipError> {
+    let (k, got) = span(len, at, c, lo, hi)?;
     let meets_clip = |a: u64, b: u64| a < hi && lo < b && a < b;
-    let mut p = if k > 0 { placed(rows, c, &list[k - 1])?.end() } else { 0 };
-    for n in &got {
+    let mut p = if k > 0 { at(k - 1)?.end() } else { 0 };
+    for (_, n) in &got {
         if meets_clip(p, n.offset) {
             explain(chunk, holes, p, n.offset, n.align, lo)?;
         }
-        p = n.end();
+        p = p.max(n.end());
     }
-    if let Some(m) = list.get(k + got.len()) {
-        let n = placed(rows, c, m)?;
+    let next = got.last().map_or(k, |l| l.0 + 1);
+    // The next item with bytes (a zero-sized one explains nothing).
+    let mut j = next;
+    while j < len && at(j)?.size == 0 {
+        j += 1;
+    }
+    if j < len {
+        let n = at(j)?;
         if n.offset < p {
-            return Err(internal(&format!(
-                "member {} of chunk {} overlaps its predecessor",
-                m.section.0, c.0
-            )));
+            return Err(internal(&format!("item {j} of chunk {} overlaps its predecessor", c.0)));
         }
         if meets_clip(p, n.offset) {
             explain(chunk, holes, p, n.offset, n.align, lo)?;
         }
     } else {
         if p > chunk.size {
-            return Err(internal(&format!("chunk {}'s members end past its size", c.0)));
+            return Err(internal(&format!("chunk {}'s items end past its size", c.0)));
         }
         if meets_clip(p, chunk.size) {
             explain(chunk, holes, p, chunk.size, 1, lo)?;
         }
     }
     Ok(got)
+}
+
+/// The items of chunk `c` (`len` of them, placed by `at`) that the clips
+/// meet, each clip's gaps checked by [`gaps`] with the chunk's holes.
+fn met(
+    clips: &[Range<u64>],
+    (id, c): (ChunkId, &Chunk),
+    parts: &ClipParts<'_>,
+    len: usize,
+    at: At<'_>,
+) -> Result<Vec<Placed>, ClipError> {
+    let mut holes: Vec<(u64, u64)> = parts
+        .holes
+        .iter()
+        .filter(|(h, _)| h.chunk == id)
+        .map(|(h, _)| (h.offset, h.offset + h.size))
+        .collect();
+    holes.sort_unstable();
+    let mut out = Vec::new();
+    let k = clips.partition_point(|r| r.end <= c.offset);
+    for r in &clips[k..] {
+        if r.start >= c.offset + c.size {
+            break;
+        }
+        let lo = r.start.saturating_sub(c.offset);
+        let hi = (r.end - c.offset).min(c.size);
+        out.extend(gaps(len, at, (id, c), &holes, lo, hi)?.into_iter().map(|x| x.1));
+    }
+    Ok(out)
+}
+
+/// The bytes of structural chunk `id` from `parts.structure`, at its size.
+fn structural(parts: &ClipParts<'_>, id: ChunkId, c: &Chunk) -> Result<Box<[u8]>, ClipError> {
+    let bytes = parts
+        .structure
+        .get(&id)
+        .ok_or_else(|| internal(&format!("the structural chunk {} has no bytes", id.0)))?;
+    if bytes.len() as u64 != c.size {
+        return Err(internal(&format!(
+            "the structural chunk {} has {} bytes for {}",
+            id.0,
+            bytes.len(),
+            c.size
+        )));
+    }
+    Ok(bytes.clone())
 }
 
 /// The plan of `clips` (sorted, disjoint, non-empty ranges of the file):
@@ -357,6 +468,7 @@ pub fn for_clips<R: Rows>(
         .unwrap_or(0);
     let mut b = Builder::new(parts.target, file_size);
     let mut bodies: Vec<(ChunkId, &Chunk)> = Vec::new();
+    let mut merged: Vec<(ChunkId, &Chunk)> = Vec::new();
     for (id, c) in chunks.iter() {
         if !c.in_file() || c.size == 0 || !meets(clips, c.offset, c.offset + c.size) {
             continue;
@@ -367,21 +479,13 @@ pub fn for_clips<R: Rows>(
                 continue;
             }
             ChunkKind::FileHeader | ChunkKind::ProgramHeaders | ChunkKind::SectionHeaders => {
-                let bytes = parts.structure.get(&id).ok_or_else(|| {
-                    internal(&format!("the structural chunk {} has no bytes", id.0))
-                })?;
-                if bytes.len() as u64 != c.size {
-                    return Err(internal(&format!(
-                        "the structural chunk {} has {} bytes for {}",
-                        id.0,
-                        bytes.len(),
-                        c.size
-                    )));
-                }
-                b.bytes(c.offset, bytes.clone());
+                b.bytes(c.offset, structural(parts, id, c)?);
                 continue;
             }
-            ChunkKind::Merged(_) => NotYet::Merged,
+            ChunkKind::Merged(_) => {
+                merged.push((id, c));
+                continue;
+            }
             ChunkKind::Synthetic(_) => NotYet::Synth,
             ChunkKind::Patches(_) => NotYet::Patches,
             ChunkKind::Group(_) | ChunkKind::Relocs(_) => NotYet::Relocatable,
@@ -392,27 +496,25 @@ pub fn for_clips<R: Rows>(
     // The gap rule over every body chunk first; then the rows.
     let mut todo: Vec<(ChunkId, Placed)> = Vec::new();
     for &(id, c) in &bodies {
-        let mut holes: Vec<(u64, u64)> = parts
-            .holes
-            .iter()
-            .filter(|(h, _)| h.chunk == id)
-            .map(|(h, _)| (h.offset, h.offset + h.size))
-            .collect();
-        holes.sort_unstable();
         let list = members.by_chunk.get(&id).map_or(&[][..], Vec::as_slice);
-        let k = clips.partition_point(|r| r.end <= c.offset);
-        for r in &clips[k..] {
-            if r.start >= c.offset + c.size {
-                break;
-            }
-            let lo = r.start.saturating_sub(c.offset);
-            let hi = (r.end - c.offset).min(c.size);
-            for p in gaps(rows, id, c, list, &holes, lo, hi)? {
-                if todo.last().is_none_or(|l| l.1.section != p.section) {
-                    todo.push((id, p));
-                }
+        let at = |i: usize| placed(rows, id, &list[i]);
+        for p in met(clips, (id, c), parts, list.len(), &at)? {
+            if todo.last().is_none_or(|l| l.1.section != p.section) {
+                todo.push((id, p));
             }
         }
+    }
+    // The same over every merged chunk: the fragments the clips meet, and
+    // the merge sections they are copied from.
+    let mut units: Vec<(ChunkId, &MergedMembers)> = Vec::new();
+    let mut sources: std::collections::BTreeSet<SectionId> = std::collections::BTreeSet::new();
+    for &(id, c) in &merged {
+        let Some(m) = members.merged.get(&id) else {
+            return Err(internal(&format!("merged chunk {} has no fragment index", id.0)));
+        };
+        let at = |i: usize| frag_placed(rows, id, &m.frags[i]);
+        sources.extend(met(clips, (id, c), parts, m.frags.len(), &at)?.iter().map(|p| p.section));
+        units.push((id, m));
     }
     for (c, p) in todo {
         let Some(f) = front(p.section, (c, p.offset))? else {
@@ -428,6 +530,17 @@ pub fn for_clips<R: Rows>(
             return Err(ClipError::NotYet(NotYet::EhFrame, c));
         }
         row_for(rows, p.section, (c, p.offset), &f, parts.proof, &mut b)?;
+    }
+    for (id, m) in units {
+        let c = &chunks[id];
+        let name = b.name(&m.name);
+        b.merged(c.offset, c.size, MergedUnit { chunk: m.order, name });
+    }
+    for s in sources {
+        let Some(src) = (parts.merge_source)(s)? else {
+            return Err(internal(&format!("merge section {}: no bytes for it", s.0)));
+        };
+        b.merge_source(src);
     }
     for (h, name) in parts.holes {
         let Some(c) = chunks.get(h.chunk) else {

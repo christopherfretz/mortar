@@ -470,26 +470,37 @@ fn merged(
     secs.sort_unstable();
     secs.dedup();
     for s in secs {
-        let (file, index) = m
-            .resolution
-            .sh_index(s)
-            .ok_or_else(|| internal(&format!("section {} has no file", s.0)))?;
-        let Reader::Object(obj) = &m.inputs.files[file].reader else { continue };
-        let sec = obj.section(index).map_err(|e| internal(&format!("{e:?}")))?;
-        let Some(range) = sec.file_range().map_err(|e| internal(&format!("{e:?}")))? else {
-            continue;
-        };
-        if m.resolution.sections[s].reloc.0 != 0 {
-            // S-6: a merge section has no relocations; resolve demotes one.
-            return Err(internal(&format!(
-                "merge section {} of file {} has relocations",
-                index.0, file.0
-            )));
-        }
-        paths.entry(file).or_insert_with(|| file_ref(m.inputs, file));
-        b.merge_source(MergeSource { section: s, file, src: range.start as u64, size: sec.size() });
+        let Some(src) = merge_source(m, s)? else { continue };
+        paths.entry(src.file).or_insert_with(|| file_ref(m.inputs, src.file));
+        b.merge_source(src);
     }
     Ok(())
+}
+
+/// Where merge section `s`'s bytes are ([`merged`]'s source of each
+/// section a fragment is copied from), or `None` when it has none: not in
+/// an object, or no file range.
+pub(crate) fn merge_source(
+    m: &Model<'_, '_>,
+    s: SectionId,
+) -> Result<Option<MergeSource>, Diagnostic> {
+    let (file, index) = m
+        .resolution
+        .sh_index(s)
+        .ok_or_else(|| internal(&format!("section {} has no file", s.0)))?;
+    let Reader::Object(obj) = &m.inputs.files[file].reader else { return Ok(None) };
+    let sec = obj.section(index).map_err(|e| internal(&format!("{e:?}")))?;
+    let Some(range) = sec.file_range().map_err(|e| internal(&format!("{e:?}")))? else {
+        return Ok(None);
+    };
+    if m.resolution.sections[s].reloc.0 != 0 {
+        // S-6: a merge section has no relocations; resolve demotes one.
+        return Err(internal(&format!(
+            "merge section {} of file {} has relocations",
+            index.0, file.0
+        )));
+    }
+    Ok(Some(MergeSource { section: s, file, src: range.start as u64, size: sec.size() }))
 }
 
 /// S-52: every live input `.eh_frame` section with relocations.
