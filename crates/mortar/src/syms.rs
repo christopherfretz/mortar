@@ -173,31 +173,8 @@ impl SymSource for CoreSyms<'_, '_> {
         Some(match def {
             Def::Defined(e) => {
                 let (s, t) = self.sym(e)?;
-                // resolve.md §3.7, synth.md S-75, dyn.md D-23: a unique
-                // definition stays `STB_GNU_UNIQUE` in every output kind,
-                // static included (GNU ld and lld; WP-059 B).
-                let binding = if props.binding == STB_GLOBAL && s.st_info >> 4 == STB_GNU_UNIQUE {
-                    STB_GNU_UNIQUE
-                } else {
-                    props.binding
-                };
-                let mut g = row(s.sym_type(), s.st_size, self.def_of(e, &s, t), e.file, binding);
-                g.other |= s.st_other & !3;
-                // synth.md S-75 (WP-150): a definition its object writes
-                // with a version (`foo@V1`, `foo@@V2`, `.symver`) keeps
-                // that name, GNU ld's form. The key's name is the
-                // entry's before any `@` (resolve.md §2.3), so one byte
-                // of the entry's string decides: no scan of the name
-                // for an unversioned definition.
-                let strings = t.strings().bytes();
-                let at = (s.st_name as usize).saturating_add(key.name.len());
-                if strings.get(at) == Some(&b'@')
-                    && let Ok(full) = t.name(&s)
-                    && full.starts_with(key.name)
-                {
-                    g.name = full;
-                }
-                g
+                let g = row(STT_NOTYPE, 0, self.def_of(e, &s, t), e.file, props.binding);
+                defined_global(g, &s, t)
             }
             Def::Common(e) => {
                 let size = self.resolution.common_of(id).map_or(0, |c| c.size);
@@ -279,6 +256,43 @@ impl SymSource for CoreSyms<'_, '_> {
             SymKind::Local(e) => self.sym(e).and_then(|(s, t)| t.name(&s).ok()).unwrap_or_default(),
         }
     }
+}
+
+/// resolve.md §3.7, synth.md S-75, S-121: a DEFINED key's entry from its
+/// chosen definition `s` of table `t`. `g` is the key as resolution leaves
+/// it: its name (the key's, before any `@`), the resolution's binding, the
+/// merged visibility in `other`, the definition, the defining file,
+/// whether a live relocation refers to it; its type and size are `s`'s.
+/// - A unique definition stays `STB_GNU_UNIQUE` in every output kind,
+///   static included (dyn.md D-23; GNU ld and lld; WP-059 B).
+/// - `st_other`'s bits above the visibility (`STO_AARCH64_VARIANT_PCS`)
+///   are the defining entry's.
+/// - A definition its object writes with a version (`foo@V1`, `foo@@V2`,
+///   `.symver`) keeps that name, GNU ld's form (WP-150). The key's name is
+///   the entry's before any `@` (resolve.md §2.3), so one byte of the
+///   entry's string decides: no scan of the name for an unversioned
+///   definition.
+///
+/// The full link's [`CoreSyms`] and an update's global changes (IN-49a)
+/// call it.
+#[must_use]
+pub fn defined_global<'n>(g: GlobalIn<'n>, s: &Sym, t: &SymbolTable<'n>) -> GlobalIn<'n> {
+    let binding = if g.binding == STB_GLOBAL && s.st_info >> 4 == STB_GNU_UNIQUE {
+        STB_GNU_UNIQUE
+    } else {
+        g.binding
+    };
+    let mut g = GlobalIn { typ: s.sym_type(), size: s.st_size, binding, ..g };
+    g.other |= s.st_other & !3;
+    let strings = t.strings().bytes();
+    let at = (s.st_name as usize).saturating_add(g.name.len());
+    if strings.get(at) == Some(&b'@')
+        && let Ok(full) = t.name(s)
+        && full.starts_with(g.name)
+    {
+        g.name = full;
+    }
+    g
 }
 
 /// [`Sections`] of a link: `CoreSections`, where a section without a

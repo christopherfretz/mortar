@@ -56,6 +56,15 @@ pub struct ResolveDelta {
     pub key_ids: Vec<(FileId, Vec<SymbolId>)>,
     /// Each affected key's new `RESOLVED` row (sorted by key).
     pub resolved: Vec<(SymbolId, ResolvedRow)>,
+    /// Per key of `resolved` (position for position), the resolution's
+    /// merged answer that `.symtab`'s rule reads (`GlobalIn`'s `other`
+    /// and `referenced`; ruling R-4 of 255d2b): the merged visibility as
+    /// `st_other`'s low bits (resolve.md §3.5: the most constraining over
+    /// the live objects' mentions; `STV_HIDDEN` for internal, as the full
+    /// link's `SymProps::visibility`), and whether a live object refers
+    /// to the key, or a root names a key that is not left undefined (the
+    /// full link's `RefFlags::FROM_OBJECT`, resolve.md §3.7).
+    pub merged: Vec<(SymbolId, u8, bool)>,
     /// Keys no file mentions any more (`SYMBOLS.kind` `GONE`): globals
     /// only, never one with the `option` bit (a replaced or gone file's
     /// old locals are marked by U-2 through `FileRanges::locals`; seam 6).
@@ -642,9 +651,17 @@ impl<'c, 'a, 's> Res<'c, 'a, 's> {
     /// Whether a live object refers to `key` (an undefined mention binding
     /// to it) or a root names it; `strong` asks for a non-weak one.
     fn referenced(&self, key: u32, old: bool, strong: bool) -> Result<bool, IncrReason> {
-        if self.cx.roots.iter().any(|r| r.0 == key) {
-            return Ok(true);
-        }
+        Ok(self.rooted(key) || self.object_ref(key, old, strong)?)
+    }
+
+    /// Whether a root of §4.2 names `key`.
+    fn rooted(&self, key: u32) -> bool {
+        self.cx.roots.iter().any(|r| r.0 == key)
+    }
+
+    /// [`Self::referenced`] without the roots: a live object's undefined
+    /// mention binding to `key`.
+    fn object_ref(&self, key: u32, old: bool, strong: bool) -> Result<bool, IncrReason> {
         for s in self.cx.sources(key)? {
             let ments = if old { self.cx.ments_old(s)? } else { self.cx.ments_new(s)? };
             for m in ments {
@@ -826,6 +843,13 @@ impl<'c, 'a, 's> Res<'c, 'a, 's> {
         }
         self.commons(k, &ments, &old_ments)?;
         self.at(k, &ments)?;
+        // R-4: the full link's `RefFlags::FROM_OBJECT` (resolve's
+        // `sym_props`): an object's reference (a demoted strong definition
+        // included), and for a key that is not left undefined a root too.
+        let referenced = demoted_strong
+            || self.object_ref(k, false, false)?
+            || (row.kind != def_kind::UNDEFINED && self.rooted(k));
+        self.out.merged.push((SymbolId(k), rank_vis(vis), referenced));
         self.out.resolved.push((SymbolId(k), row));
         Ok(())
     }
