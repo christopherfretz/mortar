@@ -1448,6 +1448,47 @@ pub fn compute(
             d.holes.push(Hole { old: o as u32, new: n, reasons: r });
         }
     }
+    // An `.eh_frame` contribution with records in the old link and none in
+    // the new one (every FDE's code died, so its CIEs went too: S-46,
+    // mortar_live I-3) is not placed, so the loop above never sees it. Its
+    // old records are dead bytes (IN-27's liveness and COMDAT rows; IN-34a:
+    // the file's range becomes a padding CIE): a hole of that section.
+    let mut old_eh = vec![false; old.sections.len()];
+    for y in ro {
+        if let Some(e) = old_eh.get_mut(y.section as usize) {
+            *e = true;
+        }
+    }
+    let mut comdat_files: Option<HashSet<u32>> = None;
+    for (o, x) in old.sections.iter().enumerate() {
+        if !old_eh[o] || !is_eh(old, x) {
+            continue;
+        }
+        let n = sec_o2n[o];
+        if n != NONE && present.get(n as usize).copied().unwrap_or(false) {
+            continue;
+        }
+        let r = match ofile(x.file) {
+            FileState::Gone | FileState::Unextracted => reason::GONE,
+            FileState::Unchanged => {
+                // COMDAT when one of the file's placed sections is a COMDAT
+                // hole (a keeper change), else liveness.
+                let comdat = comdat_files.get_or_insert_with(|| {
+                    d.holes
+                        .iter()
+                        .filter(|h| h.reasons & reason::COMDAT != 0)
+                        .map(|h| old.sections[h.old as usize].file)
+                        .collect()
+                });
+                if comdat.contains(&x.file) { reason::COMDAT } else { reason::LIVE }
+            }
+            _ => reason::FILE,
+        };
+        let r = r & !drop.reasons;
+        if r != 0 {
+            d.holes.push(Hole { old: o as u32, new: n, reasons: r });
+        }
+    }
     // ---- units -----------------------------------------------------------
     for (i, &r) in set.units.iter().enumerate() {
         if r != 0 {
