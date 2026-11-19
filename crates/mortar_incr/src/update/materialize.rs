@@ -55,9 +55,6 @@ fn image(what: String) -> Refusal {
 fn eh(what: String) -> Refusal {
     not(Unimplemented::Eh, what)
 }
-fn symtab(what: String) -> Refusal {
-    not(Unimplemented::Symtab, what)
-}
 fn corrupt(what: String) -> Refusal {
     (IncrReason::StateCorrupt(what.clone()), what)
 }
@@ -893,48 +890,43 @@ fn eh_records(
     Ok(keyed.into_iter().flat_map(|k| k.2).collect())
 }
 
-/// `slots.symtab_locals`: the stored `(first, count)` of each file with a
-/// `SYMTAB` row, checked equal to the front's; the internal file's the
-/// front's (no stored block relied on: F-1).
-fn symtab_locals(
-    stored: &StoredLayout<'_>,
-    computed: &Layout,
-) -> Result<Column<FileId, mortar_core::id::Span>, Refusal> {
-    let spans = &computed.slots.symtab_locals;
-    for (file, sp) in spans.iter() {
-        if file == FileId::INTERNAL {
-            continue;
-        }
-        match stored.symtab_block(file).map_err(read)? {
-            Some(b) if (b.first, b.capacity) == (sp.start, sp.len) => {}
-            None if sp.len == 0 => {}
-            b => {
-                return Err(symtab(format!(
-                    "symtab_locals: file {}: stored {:?}, the front ({}, {})",
-                    file.0,
-                    b.map(|b| (b.first, b.capacity)),
-                    sp.start,
-                    sp.len
-                )));
-            }
-        }
-    }
-    Ok(spans.clone())
+/// `slots.symtab_locals` (WP-225 M2b-5 item 2, ruling "After M2b-4's
+/// hand-back" 4): each file's `(first, count)` from the `.symtab` plan of
+/// the update's inputs, which is the front's (`SymtabPlan::new` over the
+/// front's symbols in incremental mode, IN-49a's room: S-88's spans), not
+/// the stored blocks. Front 2 builds `.symtab` from the same plan and
+/// takes no other spans (`SymtabPlan::check_spans`, S-88: "format version
+/// 1 admits no other value"; a difference fails front 2, a FINDING), so
+/// a file whose local count changed, or a file with a block now and none
+/// stored (a drawn-in file's locals), moves the blocks after it: front 2
+/// writes the whole `.symtab` (R-3's refill over every chunk), and
+/// [`sizes`] gives the chunk the plan's size within its capacity. The
+/// stored blocks are the previous output's and are not read here (IN-49a's
+/// in-place rewrite is `symtab_incr::plan`'s, C''s, not front 2's).
+fn symtab_locals(computed: &Layout) -> Column<FileId, mortar_core::id::Span> {
+    computed.slots.symtab_locals.clone()
 }
 
 /// `slots.sizes`: the front's list; each synthetic chunk's translated size
-/// must be it, except `.eh_frame` and `.eh_frame_hdr`, which the delta
-/// sizes itself (IN-72 item 5, `delta.rs:129-134`: the stored ranges and
-/// pads kept, so the size is the stored layout's, not a fresh link's):
-/// their translated size is taken (within the chunk's capacity), and front
-/// 2 judges it, rebuilding both plans from the materialized records and
-/// pads and checking every plan's size against this list (`front.rs`,
-/// "Every plan's size is its chunk's"; a difference fails front 2, a
-/// FINDING).
-fn sizes(computed: &Layout, chunks: &[Chunk]) -> Result<Vec<(ChunkId, u64)>, Refusal> {
+/// must be it, except:
+/// - `.eh_frame` and `.eh_frame_hdr`, which the delta sizes itself (IN-72
+///   item 5, `delta.rs:129-134`: the stored ranges and pads kept, so the
+///   size is the stored layout's, not a fresh link's): their translated
+///   size is taken (within the chunk's capacity), and front 2 judges it,
+///   rebuilding both plans from the materialized records and pads and
+///   checking every plan's size against this list (`front.rs`, "Every
+///   plan's size is its chunk's"; a difference fails front 2, a FINDING);
+/// - `.symtab` and `.strtab` (M2b-5 item 2): the front's size, which is
+///   the size of the plan that gives [`symtab_locals`]' spans, is the
+///   chunk's new size when it is within the chunk's stored capacity (the
+///   chunk keeps its offset and capacity; the chunks after it do not
+///   move), judged by front 2 as above. Past the capacity the table would
+///   push the chunks after it: the delta has no growth step for a
+///   synthetic chunk it does not size, so `reserve-exhausted` by name.
+fn sizes(computed: &Layout, chunks: &mut [Chunk]) -> Result<Vec<(ChunkId, u64)>, Refusal> {
     let mut out = Vec::with_capacity(computed.slots.sizes.len());
     for &(c, size) in &computed.slots.sizes {
-        let x = &chunks[c.slot()];
+        let x = &mut chunks[c.slot()];
         if x.size == size {
             out.push((c, size));
             continue;
@@ -947,16 +939,20 @@ fn sizes(computed: &Layout, chunks: &[Chunk]) -> Result<Vec<(ChunkId, u64)>, Ref
             "sizes: chunk {} ({name}): translated {:#x}, the front's {size:#x}",
             c.0, x.size
         );
-        let eh = matches!(x.kind, ChunkKind::Synthetic(_))
-            && (name == ".eh_frame" || name == ".eh_frame_hdr");
+        let synthetic = matches!(x.kind, ChunkKind::Synthetic(_));
+        let eh = synthetic && (name == ".eh_frame" || name == ".eh_frame_hdr");
         if eh && x.size <= x.capacity {
             out.push((c, x.size));
             continue;
         }
+        let table = synthetic && (name == ".symtab" || name == ".strtab");
+        if table && size <= x.capacity {
+            x.size = size;
+            out.push((c, size));
+            continue;
+        }
         return Err(if size > x.capacity || (eh && x.size > x.capacity) {
             (IncrReason::ReserveExhausted(name), what)
-        } else if name == ".symtab" || name == ".strtab" {
-            symtab(what)
         } else {
             layout(what)
         });
@@ -1013,7 +1009,7 @@ fn materialize_in(
     let ids = ids(view, stored, d, changes, front)?;
     let mut g = Globals { whole: None, keys: front.keys, cache: HashMap::default() };
     let chunk_rows = stored.chunks().map_err(read)?;
-    let chunks = chunks(d, &ids, computed)?;
+    let mut chunks = chunks(d, &ids, computed)?;
     let order = stored
         .order()
         .map_err(read)?
@@ -1067,8 +1063,8 @@ fn materialize_in(
     let frag_off = frag_off(stored, d, &ids, front)?;
     let mut slots = slot_lists(view, link, stored, d, &ids, &mut g, computed)?;
     slots.eh_records = eh_records(view, stored, d, front)?.into();
-    slots.symtab_locals = symtab_locals(stored, computed)?;
-    slots.sizes = sizes(computed, &chunks)?.into();
+    slots.symtab_locals = symtab_locals(computed);
+    slots.sizes = sizes(computed, &mut chunks)?.into();
     segment_ends(d, &chunks)?;
     let moves = moves_code(link, d, &ids, &chunk_rows, &chunks)?;
     let sized = sized(computed, &chunks, moves.as_deref())?;
@@ -1133,13 +1129,19 @@ fn sized(
 /// `placement.segments` (the delta's, derived again by `delta::layout`):
 /// the memory of every `PT_LOAD` ends where a chunk's `size` ends
 /// (`spec/layout.md` L-9; the verifier's S18: an incremental policy gives
-/// the last chunk of a `PT_LOAD` no slack, L-87's list). FINDING (M2b-3
+/// the last chunk of a `PT_LOAD` no slack, L-87's list). P3-1 (M2b-3
 /// Part 3, the lane's `s4_frag_ordinals` and `w6_string_dedup_into_changed`
-/// hop 2, gcc, both targets): after a growth step of `.rodata` (capacity
-/// 0x14 to 0x1014, the last chunk of the `R` `PT_LOAD`) the delta's
-/// segment has `p_memsz` 0x1134, the chunk's CAPACITY end, where the
-/// section ends at 0x134. Refused by name, before front 2. (`p_filesz`
-/// runs to a capacity end by L-125 when NOBITS chunks follow: not checked.)
+/// hop 2, gcc, both targets; the verifier caught it): after a growth step
+/// of `.rodata` (capacity 0x14 to 0x1014, the last chunk of the `R`
+/// `PT_LOAD`) the delta's segment has `p_memsz` 0x1134, the chunk's
+/// CAPACITY end, where the section ends at 0x134. A refusal by name
+/// (WP-225 M2b-5 item 4), before front 2: what is missing is a growth
+/// step that keeps L-9 for the last chunk of a `PT_LOAD`, and neither
+/// side is this function's: `derive_segments` (`mortar_core`) ends a
+/// `PT_LOAD`'s memory at its last chunk's capacity end, and
+/// `delta::layout`'s growth step (`mortar_layout`) gives the grown chunk
+/// slack whether or not it ends a `PT_LOAD`. (`p_filesz` runs to a
+/// capacity end by L-125 when NOBITS chunks follow: not checked.)
 fn segment_ends(d: &LayoutDelta, chunks: &[Chunk]) -> Result<(), Refusal> {
     for (k, g) in d.placement.segments.as_slice().iter().enumerate() {
         if g.p_type != mortar_elf::consts::PT_LOAD || g.memsz == 0 {
@@ -1148,9 +1150,9 @@ fn segment_ends(d: &LayoutDelta, chunks: &[Chunk]) -> Result<(), Refusal> {
         let end = g.addr + g.memsz;
         if !chunks.iter().any(|c| c.size > 0 && c.addr.is_some_and(|a| a + c.size == end)) {
             return Err(layout(format!(
-                "FINDING: segments: the delta's PT_LOAD {k} (addr {:#x} memsz {:#x}) ends at \
-                 {end:#x}, where no chunk's size ends (L-9, S18: a growth step gave the last \
-                 chunk of a PT_LOAD slack)",
+                "segments: the delta's PT_LOAD {k} (addr {:#x} memsz {:#x}) would end at \
+                 {end:#x}, where no chunk's size ends (L-9, S18): a growth step of the last \
+                 chunk of a PT_LOAD keeping L-9 is not built (P3-1)",
                 g.addr, g.memsz
             )));
         }
