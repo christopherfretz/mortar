@@ -157,6 +157,10 @@ fn a_grown_function_is_taken_through_front_two_or_refused_by_name() {
                     s1.starts_with("255e shadow: equal"),
                     "{label}: hop {hop}: C' is not front 2: {shadow}"
                 );
+                // WP-255e3: S2 (the clip plan, synthetic chunks included)
+                // is equal or refused by name, never a finding.
+                let s2 = shadow.split(" | ").nth(1).unwrap_or("");
+                assert!(!s2.contains("finding"), "{label}: hop {hop}: S2: {s2}");
                 // WP-255e2 S3: `rows::sym` over the update's STATE rows
                 // (`UpdateRows`) equals front 2's for every global matched
                 // by name; a key it cannot value is refused by name.

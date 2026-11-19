@@ -1615,9 +1615,12 @@ fn shadow_255e(
                 Err(e) => format!("255e shadow: refused: the previous output: {e}"),
             }
         };
-        // S2: S1's dirty ranges, cut to the in-file chunks that are not
-        // synthetic.
+        // S2: S1's dirty ranges, cut to the in-file chunks; WP-255e3: the
+        // synthetic chunks INCLUDED first (255c2c plans `.symtab`, `.strtab`,
+        // `.eh_frame`, ...), and only when that is refused `NotYet`, again
+        // without them (the chunks left out named).
         let mut clips: Vec<std::ops::Range<u64>> = Vec::new();
+        let mut all: Vec<std::ops::Range<u64>> = Vec::new();
         let mut skipped: std::collections::BTreeSet<String> = std::collections::BTreeSet::new();
         for r in &c.ranges {
             let (lo, hi) = (r.offset, r.offset + r.len);
@@ -1626,6 +1629,7 @@ fn shadow_255e(
                 if !k.in_file() || a >= b || hi <= a || b <= lo {
                     continue;
                 }
+                all.push(lo.max(a)..hi.min(b));
                 if let Some(s) = synth.iter().find(|s| s.0 == a) {
                     skipped.insert(s.2.clone());
                     continue;
@@ -1633,19 +1637,21 @@ fn shadow_255e(
                 clips.push(lo.max(a)..hi.min(b));
             }
         }
-        clips.sort_by_key(|r| r.start);
-        let mut merged: Vec<std::ops::Range<u64>> = Vec::new();
-        for r in clips {
-            match merged.last_mut() {
-                Some(m) if m.end >= r.start => m.end = m.end.max(r.end),
-                _ => merged.push(r),
+        let union = |mut v: Vec<std::ops::Range<u64>>| {
+            v.sort_by_key(|r| r.start);
+            let mut m: Vec<std::ops::Range<u64>> = Vec::new();
+            for r in v {
+                match m.last_mut() {
+                    Some(x) if x.end >= r.start => x.end = x.end.max(r.end),
+                    _ => m.push(r),
+                }
             }
-        }
+            m
+        };
+        let (all, merged) = (union(all), union(clips));
         let starts: Vec<u64> = c.ranges.iter().map(|r| r.offset).collect();
-        let s2 = if merged.is_empty() {
-            "clip plan: no range outside synthetic chunks".to_owned()
-        } else {
-            match mortar_image::link::refill_clip_plan(l, &merged, |_| {}) {
+        let s2_of = |merged: &[std::ops::Range<u64>]| {
+            match mortar_image::link::refill_clip_plan(l, merged, |_| {}) {
                 Ok(fill) => {
                     let mut diff = None;
                     'jobs: for (j, bytes) in &fill.jobs {
@@ -1715,8 +1721,24 @@ fn shadow_255e(
             }
         };
         let skipped: Vec<String> = skipped.into_iter().collect();
+        let s2 = if all.is_empty() {
+            "clip plan: no range".to_owned()
+        } else {
+            let whole = s2_of(&all);
+            if !whole.starts_with("clip plan: refused NotYet") {
+                format!("{whole} (synthetic chunks included)")
+            } else if merged.is_empty() {
+                format!("{whole}; no range outside synthetic chunks")
+            } else {
+                format!(
+                    "{whole}; without the synthetic chunks: {}; left out: {}",
+                    s2_of(&merged),
+                    skipped.join(" ")
+                )
+            }
+        };
         let s3 = shadow_s3(view, stored, f, l, set);
-        format!("{s1} | {s2}; NotYet(Synth) left out: {} | {s3}", skipped.join(" "))
+        format!("{s1} | {s2} | {s3}")
     });
     match r {
         Ok(line) => line,
