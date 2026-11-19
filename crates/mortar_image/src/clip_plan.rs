@@ -538,7 +538,7 @@ fn synth_rows(
         }
         let end = c.offset + c.size;
         let pieces: Vec<Range<u64>> = if row.whole {
-            vec![0..c.size]
+            std::iter::once(0..c.size).collect()
         } else {
             clips
                 .iter()
@@ -578,6 +578,10 @@ fn synth_rows(
 /// `front` does not supply (or supplies at another size), a structural
 /// chunk the clip meets and `parts.structure` does not hold (or holds at
 /// another size), and the plan check's own (I-27).
+#[allow(
+    clippy::too_many_lines,
+    reason = "the clip plan's arms in order: members, merged, synthetic, structure"
+)]
 pub fn for_clips<R: Rows>(
     rows: &R,
     clips: &[Range<u64>],

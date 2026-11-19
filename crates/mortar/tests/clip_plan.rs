@@ -833,6 +833,7 @@ fn chunk_clips(r: &Range<u64>) -> Vec<(&'static str, Range<u64>)> {
 /// The `[clip-synth]` comparison over link `l`: each planned synthetic
 /// chunk under the clips of [`chunk_clips`], then all of them at once;
 /// with `all`, each must exist.
+#[allow(clippy::many_single_char_names, reason = "a test's chunk, clip and byte offsets")]
 fn synth_agree(l: &Link<'_, '_>, label: &str, all: bool) {
     let mut every = Vec::new();
     for name in PLANNED {
@@ -1007,7 +1008,7 @@ fn a_patch_island_under_a_clip() {
             let mut cases = chunk_clips(r);
             cases.push(("with the code before it", r.start - 8..r.start + 4));
             for (what, clip) in cases {
-                let f = agree(l, &format!("island {r:x?} {what}"), &[clip.clone()]);
+                let f = agree(l, &format!("island {r:x?} {what}"), std::slice::from_ref(&clip));
                 eprintln!(
                     "[clip-patch] island {r:x?} {what} {clip:x?}: equal ({} pieces)",
                     f.jobs.len()

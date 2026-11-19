@@ -2143,7 +2143,7 @@ fn clip_plan_of<R: Rows>(
     ranges: &[std::ops::Range<u64>],
     members_edit: impl FnOnce(&mut crate::clip_plan::Members),
     synth: &std::collections::BTreeMap<ChunkId, (SynthKind, SynthRow)>,
-    sealed: Option<std::ops::Range<u64>>,
+    sealed: Option<&std::ops::Range<u64>>,
 ) -> Result<crate::plan::Plan, crate::clip_plan::ClipError> {
     use crate::clip_plan::ClipParts;
     let model = clip_model(link);
@@ -2180,7 +2180,7 @@ fn clip_plan_of<R: Rows>(
         synth,
         eh_sections: &eh_sections,
         patches: &patches,
-        sealed: sealed.as_ref(),
+        sealed,
     };
     crate::clip_plan::for_clips(rows, ranges, &members, &front, &parts)
 }
@@ -2322,8 +2322,14 @@ pub fn refill_clip_plan_with(
                 Some((u.id, (kind, SynthRow { index: u.chunk, whole: u.whole, eh: u.eh })))
             })
             .collect();
-        let mut clip = match clip_plan_of(link, tables.rows(), ranges, members_edit, &synth, sealed)
-        {
+        let mut clip = match clip_plan_of(
+            link,
+            tables.rows(),
+            ranges,
+            members_edit,
+            &synth,
+            sealed.as_ref(),
+        ) {
             Ok(c) => c,
             Err(e) => {
                 built = Some(Err(e));
