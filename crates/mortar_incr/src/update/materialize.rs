@@ -14,7 +14,9 @@
 use mortar_core::hash::HashMap;
 
 use mortar_core::column::Column;
-use mortar_core::id::{ChunkId, FileId, FragId, Id, OutSecId, SectionId, SymKey, SymKind, SymbolId};
+use mortar_core::id::{
+    ChunkId, FileId, FragId, Id, OutSecId, SectionId, SymKey, SymKind, SymbolId,
+};
 use mortar_core::identity::{
     ChunkIdentity, ChunkTag, FileIdentity, Lookup, OutSecIdentity, SymbolIdentity, chunk_id,
     chunk_ordinals, outsec_id, symbol_id, symbol_lookup,
@@ -96,7 +98,8 @@ pub fn chunk_map(
     let mut chunks = Vec::with_capacity(rows.len());
     for (i, c) in rows.iter().enumerate() {
         let tag = *TAGS.get(c.tag as usize).ok_or("a chunk tag")?;
-        let bytes = if tag == ChunkTag::Synthetic || c.out != NONE { Some(name(c.name)?) } else { None };
+        let bytes =
+            if tag == ChunkTag::Synthetic || c.out != NONE { Some(name(c.name)?) } else { None };
         let identity = ChunkIdentity { kind: tag, name: bytes.as_deref(), ordinal: c.ordinal };
         let id = chunk_id(&ord, &identity)
             .ok_or_else(|| format!("CHUNKS row {i}: no such chunk in this link"))?;
@@ -188,15 +191,21 @@ impl Globals<'_> {
             return Ok(s);
         }
         if u64::from(row.0) >= ids.symbols {
-            return Err(layout(format!("{what}: key {} is past SYMBOLS (an update-only key)", row.0)));
+            return Err(layout(format!(
+                "{what}: key {} is past SYMBOLS (an update-only key)",
+                row.0
+            )));
         }
         let y = view.symbol(row).map_err(read)?;
         if y.kind == sym_kind::LOCAL {
             return Err(corrupt(format!("{what}: SYMBOLS row {}: a local", row.0)));
         }
         let name = view.string(y.name).map_err(read)?;
-        let version =
-            if y.kind == sym_kind::VERSIONED { Some(view.string(y.version).map_err(read)?) } else { None };
+        let version = if y.kind == sym_kind::VERSIONED {
+            Some(view.string(y.version).map_err(read)?)
+        } else {
+            None
+        };
         let g = SymbolIdentity { name: &name, version: version.as_deref() };
         let lookup = if self.keys.complete {
             &self.keys.symbols
@@ -234,7 +243,10 @@ impl Globals<'_> {
                     )));
                 }
                 if link.inputs.files.get(e.file).is_none() {
-                    return Err(image(format!("{what}: a local of file {}: no such file", e.file.0)));
+                    return Err(image(format!(
+                        "{what}: a local of file {}: no such file",
+                        e.file.0
+                    )));
                 }
                 Ok(key)
             }
@@ -242,7 +254,10 @@ impl Globals<'_> {
     }
 }
 
-fn file_name(view: &StateView<'_>, row: &crate::update::rows::FileRow) -> Result<(Vec<u8>, Vec<u8>), Refusal> {
+fn file_name(
+    view: &StateView<'_>,
+    row: &crate::update::rows::FileRow,
+) -> Result<(Vec<u8>, Vec<u8>), Refusal> {
     Ok((view.string(row.path).map_err(read)?, view.string(row.member_name).map_err(read)?))
 }
 
@@ -331,11 +346,9 @@ fn ids<'v>(
             let (sh_type, _, size, _, _) =
                 crate::capture::header_fields(link.inputs, file, SectionIndex(k));
             let name: &[u8] = match object {
-                Some(o) if k > 0 => o
-                    .section(SectionIndex(k))
-                    .ok()
-                    .and_then(|s| s.name().ok())
-                    .unwrap_or_default(),
+                Some(o) if k > 0 => {
+                    o.section(SectionIndex(k)).ok().and_then(|s| s.name().ok()).unwrap_or_default()
+                }
                 _ => &[],
             };
             if r.index != k || r.name != name || r.sh_type != sh_type || r.size != size {
@@ -348,13 +361,13 @@ fn ids<'v>(
                     String::from_utf8_lossy(name)
                 )));
             }
-            let fid = res.section_id(file, SectionIndex(k)).ok_or_else(|| {
-                corrupt(format!("sections: file {i} has no section {k}"))
-            })?;
+            let fid = res
+                .section_id(file, SectionIndex(k))
+                .ok_or_else(|| corrupt(format!("sections: file {i} has no section {k}")))?;
             of_front[fid.slot()] = r.id.0;
         }
     }
-    let mut changed: HashMap<u32, SectionId> = HashMap::default();
+    let mut by_change: HashMap<u32, SectionId> = HashMap::default();
     for c in changes {
         if d.files.binary_search(&c.file).is_err() {
             return Err(layout(format!(
@@ -363,9 +376,12 @@ fn ids<'v>(
             )));
         }
         let fid = res.section_id(c.file, SectionIndex(c.index)).ok_or_else(|| {
-            layout(format!("sections: change {} (file {} index {}): no such section", c.id.0, c.file.0, c.index))
+            layout(format!(
+                "sections: change {} (file {} index {}): no such section",
+                c.id.0, c.file.0, c.index
+            ))
         })?;
-        if of_front[fid.slot()] != NONE || changed.insert(c.id.0, fid).is_some() {
+        if of_front[fid.slot()] != NONE || by_change.insert(c.id.0, fid).is_some() {
             return Err(layout(format!(
                 "sections: section {} of file {} named twice by the changes",
                 c.index, c.file.0
@@ -390,7 +406,7 @@ fn ids<'v>(
         outsecs,
         out_rows,
         of_front,
-        changed,
+        changed: by_change,
         sections,
         symbols: view.count(kind::SYMBOLS),
         files: &d.files,
@@ -485,7 +501,8 @@ fn place(
             _ => false,
         };
         if !same {
-            let kind = |p: Option<(ChunkId, u64)>, t: &[Chunk]| p.map(|(c, o)| (t[c.slot()].kind, o));
+            let kind =
+                |p: Option<(ChunkId, u64)>, t: &[Chunk]| p.map(|(c, o)| (t[c.slot()].kind, o));
             return Err(layout(format!(
                 "FINDING place (ii): section {} (update id {uid}): the delta {:?}, the front {:?}",
                 fid.0,
@@ -594,9 +611,10 @@ fn patches(
         )));
     }
     let section = |row: SectionId, what: &str| -> Result<SectionId, Refusal> {
-        let r = stored.section(row).map_err(read)?.ok_or_else(|| {
-            corrupt(format!("{what}: SECTIONS row {} is no file's", row.0))
-        })?;
+        let r = stored
+            .section(row)
+            .map_err(read)?
+            .ok_or_else(|| corrupt(format!("{what}: SECTIONS row {} is no file's", row.0)))?;
         if ids.is_changed(r.file) {
             return Err(layout(format!(
                 "{what}: SECTIONS row {} is of file {} (d.files: an old row)",
@@ -610,7 +628,10 @@ fn patches(
     for (i, p) in stored.patches().map_err(read)?.into_iter().enumerate() {
         let kind = match p.kind {
             PatchKind::Thunk(ThunkTarget::Sym { key, addend }) => {
-                PatchKind::Thunk(ThunkTarget::Sym { key: g.key(view, link, ids, key, "patches")?, addend })
+                PatchKind::Thunk(ThunkTarget::Sym {
+                    key: g.key(view, link, ids, key, "patches")?,
+                    addend,
+                })
             }
             PatchKind::Thunk(ThunkTarget::Plt(key)) => {
                 PatchKind::Thunk(ThunkTarget::Plt(g.key(view, link, ids, key, "patches")?))
@@ -631,7 +652,11 @@ fn patches(
         let patch = *moved
             .get(r.patch as usize)
             .ok_or_else(|| corrupt(format!("redirects: patch {} past PATCHES", r.patch)))?;
-        redirects.push(Redirect { section: section(r.section, "redirects")?, offset: r.offset, patch });
+        redirects.push(Redirect {
+            section: section(r.section, "redirects")?,
+            offset: r.offset,
+            patch,
+        });
     }
     redirects.sort_by_key(|r| (r.section, r.offset));
     Ok((out.into_iter().map(|(p, _)| p).collect(), redirects))
@@ -685,7 +710,9 @@ fn frag_off(
         }
         let row = ids.out_rows.get(out.0 as usize).copied().unwrap_or(NONE);
         if row == NONE {
-            return Err(layout(format!("frag_off: fragment {i}'s output section has no OUTSECS row")));
+            return Err(layout(format!(
+                "frag_off: fragment {i}'s output section has no OUTSECS row"
+            )));
         }
         let c = class[i];
         let hash = crate::capture::frag_hash(link, frag, &mut buf)
@@ -710,7 +737,9 @@ fn frag_off(
         taken.insert(key);
         *off = at;
     }
-    if let Some(f) = d.frags.iter().find(|f| f.refs > 0 && !taken.contains(&(f.out.0, f.class, f.hash))) {
+    if let Some(f) =
+        d.frags.iter().find(|f| f.refs > 0 && !taken.contains(&(f.out.0, f.class, f.hash)))
+    {
         return Err(layout(format!(
             "FINDING frag_off: d.frags gives (out row {}, class {:#x}) refs {}, the front has it dead",
             f.out.0, f.class, f.refs
@@ -752,17 +781,19 @@ fn slot_lists(
         || !cs.copy_of.is_empty()
         || cs.dynstr != mortar_core::layout::DynStr::default();
     if dynamic {
-        return Err(image("slots: a dynamic table (a dynamic output is not an update in v1)".into()));
+        return Err(image(
+            "slots: a dynamic table (a dynamic output is not an update in v1)".into(),
+        ));
     }
     if let Some(s) = d.slots_appended.first() {
         return Err(layout(format!("slots: an appended slot ({:?} {})", s.kind, s.index)));
     }
     let mut rows: Vec<StoredSlot> = stored.slots().map_err(read)?;
     for s in d.slots_dead.iter().chain(&d.slots_revived).chain(&d.slots_recounted) {
-        let r = rows
-            .iter_mut()
-            .find(|r| r.kind == s.kind && r.index == s.index)
-            .ok_or_else(|| layout(format!("slots: d's row {:?} {} is no SLOTS row", s.kind, s.index)))?;
+        let r =
+            rows.iter_mut().find(|r| r.kind == s.kind && r.index == s.index).ok_or_else(|| {
+                layout(format!("slots: d's row {:?} {} is no SLOTS row", s.kind, s.index))
+            })?;
         *r = *s;
     }
     let mut slots = cs.clone();
@@ -826,7 +857,10 @@ fn eh_records(
             r.offset
         } else {
             if d.eh.as_ref().is_some_and(|e| e.whole) {
-                return Err(eh(format!("eh_records: file {} has records and no range in a whole d.eh", file.0)));
+                return Err(eh(format!(
+                    "eh_records: file {} has records and no range in a whole d.eh",
+                    file.0
+                )));
             }
             // Not rewritten: the stored range stands (a changed file's too,
             // whose mismatch is the delta's, `(eh)`, not the state's).
@@ -900,7 +934,10 @@ fn sizes(computed: &Layout, chunks: &[Chunk]) -> Result<Vec<(ChunkId, u64)>, Ref
             ChunkKind::Synthetic(s) => String::from_utf8_lossy(s.name).into_owned(),
             k => format!("{k:?}"),
         };
-        let what = format!("sizes: chunk {} ({name}): translated {:#x}, the front's {size:#x}", c.0, x.size);
+        let what = format!(
+            "sizes: chunk {} ({name}): translated {:#x}, the front's {size:#x}",
+            c.0, x.size
+        );
         return Err(if size > x.capacity {
             (IncrReason::ReserveExhausted(name), what)
         } else if name == ".symtab" || name == ".strtab" {
@@ -954,7 +991,9 @@ fn materialize_in(
     let link = front.link;
     let computed = front.computed;
     if computed.folds.folded.is_some() {
-        return Err(image("folds: the front folds sections (ICF is refused in incremental mode)".into()));
+        return Err(image(
+            "folds: the front folds sections (ICF is refused in incremental mode)".into(),
+        ));
     }
     let ids = ids(view, stored, d, changes, front)?;
     let mut g = Globals { whole: None, keys: front.keys, cache: HashMap::default() };
@@ -1015,7 +1054,8 @@ fn materialize_in(
         entry: d.placement.entry,
         holes: holes.into(),
     };
-    let l = Layout { folds: computed.folds.clone(), merge: MergeMap { frag_off }, slots, placement };
+    let l =
+        Layout { folds: computed.folds.clone(), merge: MergeMap { frag_off }, slots, placement };
     let d_f = front_delta(view, link, d, &ids, &mut g, &l)?;
     Ok((l, d_f))
 }
@@ -1069,19 +1109,20 @@ fn front_delta(
         Ok(out)
     };
     let out_of = |o: OutSecId, what: &str| -> Result<OutSecId, Refusal> {
-        ids.outsecs
-            .get(o.0 as usize)
-            .copied()
-            .flatten()
-            .ok_or_else(|| image(format!("D-4: {what}: OUTSECS row {} is no output section of this link", o.0)))
+        ids.outsecs.get(o.0 as usize).copied().flatten().ok_or_else(|| {
+            image(format!("D-4: {what}: OUTSECS row {} is no output section of this link", o.0))
+        })
     };
     let mut holes = Vec::with_capacity(d.holes.len());
     for h in &d.holes {
         holes.push(Hole { chunk: ids.chunk(h.chunk, "D-4 holes")?, ..*h });
     }
     holes.sort_unstable();
-    let mut hole_chunks =
-        d.hole_chunks.iter().map(|&c| ids.chunk(c, "D-4 hole_chunks")).collect::<Result<Vec<_>, _>>()?;
+    let mut hole_chunks = d
+        .hole_chunks
+        .iter()
+        .map(|&c| ids.chunk(c, "D-4 hole_chunks"))
+        .collect::<Result<Vec<_>, _>>()?;
     hole_chunks.sort_unstable();
     let mut regions_opened = Vec::with_capacity(d.regions_opened.len());
     for r in &d.regions_opened {
@@ -1093,11 +1134,14 @@ fn front_delta(
     }
     let mut growth_steps = Vec::with_capacity(d.growth_steps.len());
     for s in &d.growth_steps {
-        growth_steps.push(mortar_core::incr::GrowthStep { out: out_of(s.out, "growth_steps")?, ..*s });
+        growth_steps
+            .push(mortar_core::incr::GrowthStep { out: out_of(s.out, "growth_steps")?, ..*s });
     }
     let eh = match &d.eh {
         None => None,
-        Some(e) => Some(mortar_core::incr::EhLayout { chunk: ids.chunk(e.chunk, "D-4 eh")?, ..e.clone() }),
+        Some(e) => {
+            Some(mortar_core::incr::EhLayout { chunk: ids.chunk(e.chunk, "D-4 eh")?, ..e.clone() })
+        }
     };
     let mut frags = Vec::with_capacity(d.frags.len());
     for f in &d.frags {
@@ -1154,10 +1198,12 @@ pub fn unchanged_delta(stored: &StoredLayout<'_>) -> Result<LayoutDelta, IncrRea
 }
 
 /// The first table and row where `a` and `b` differ, or `None` (D-8 1:
-/// chunks, order, segments, place, sym_place, defined, patches,
-/// redirects, sized, tls, entry, holes, frag_off, each slot list, tls_ld,
-/// eh_records, symtab_locals, sizes, folds, the dynamic tables).
+/// `chunks`, `order`, `segments`, `place`, `sym_place`, `defined`,
+/// `patches`, `redirects`, `sized`, `tls`, `entry`, `holes`, `frag_off`,
+/// each slot list, `tls_ld`, `eh_records`, `symtab_locals`, `sizes`,
+/// `folds`, the dynamic tables).
 #[must_use]
+#[allow(clippy::many_single_char_names, reason = "two layouts, table by table")]
 pub fn first_difference(a: &Layout, b: &Layout) -> Option<String> {
     fn rows<T: PartialEq + std::fmt::Debug>(table: &str, a: &[T], b: &[T]) -> Option<String> {
         if let Some(i) = (0..a.len().min(b.len())).find(|&i| a[i] != b[i]) {

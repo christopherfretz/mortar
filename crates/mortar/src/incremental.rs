@@ -667,7 +667,9 @@ pub(crate) fn materialize_hop(view: &mortar_incr::update::view::StateView<'_>, f
             }
         }
         (Err(e), _) => format!("finding: M2b-3 materialize: identity hop: keys: {e}"),
-        (_, Some(Err(why))) => format!("finding: M2b-3 materialize: identity hop: no .eh_frame runs: {why}"),
+        (_, Some(Err(why))) => {
+            format!("finding: M2b-3 materialize: identity hop: no .eh_frame runs: {why}")
+        }
         (_, None) => "finding: M2b-3 materialize: identity hop: no format-5 front data".to_owned(),
     };
     if let Some(path) = std::env::var_os("MORTAR_UPDATE_FINDINGS")

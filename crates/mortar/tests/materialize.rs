@@ -62,7 +62,13 @@ fn programs() -> Vec<Line> {
                 continue;
             };
             let cc = tool(&cc).expect("the compiler");
-            v.push(Line { _scratch: s, label: format!("{a} {lang}"), dir: b.dir, base: b.args, cc });
+            v.push(Line {
+                _scratch: s,
+                label: format!("{a} {lang}"),
+                dir: b.dir,
+                base: b.args,
+                cc,
+            });
         }
     }
     v
@@ -71,7 +77,11 @@ fn programs() -> Vec<Line> {
 /// The line's incremental arguments (the update's plan).
 fn incr_args(line: &Line) -> Vec<String> {
     let mut a = line.base.clone();
-    a.extend(["--incremental=full".into(), "--incremental-state".into(), "out.mortar-state".into()]);
+    a.extend([
+        "--incremental=full".into(),
+        "--incremental-state".into(),
+        "out.mortar-state".into(),
+    ]);
     a
 }
 
@@ -318,7 +328,11 @@ fn refused(label: &str, case: &str, r: Result<Layout, Refusal>, needle: &str) ->
 }
 
 #[test]
-#[allow(clippy::too_many_lines, reason = "one mutation after the other")]
+#[allow(
+    clippy::too_many_lines,
+    clippy::many_single_char_names,
+    reason = "one mutation after the other"
+)]
 fn materialize_mutations_differ_by_the_delta_or_refuse_by_name() {
     let mut reached: Vec<&str> = Vec::new();
     for line in programs() {
@@ -332,16 +346,24 @@ fn materialize_mutations_differ_by_the_delta_or_refuse_by_name() {
                 stored.sections_of(file).expect("SECTIONS").into_iter().map(|r| r.name).collect();
             let (d, changes) = keep_file(view, &stored, file, &names);
             // A changed file whose sections stay where they are: the front's.
-            let l = s.run(view, &d, &changes, computed).unwrap_or_else(|e| panic!("{label}: kept: {e:?}"));
-            assert_eq!(first_difference(&l, computed), None, "{label}: a changed file kept in place");
-            let fid = s.f.resolution.section_id(file, mortar_elf::SectionIndex(code)).expect("its id");
+            let l = s
+                .run(view, &d, &changes, computed)
+                .unwrap_or_else(|e| panic!("{label}: kept: {e:?}"));
+            assert_eq!(
+                first_difference(&l, computed),
+                None,
+                "{label}: a changed file kept in place"
+            );
+            let fid =
+                s.f.resolution.section_id(file, mortar_elf::SectionIndex(code)).expect("its id");
             let uid = changes.iter().find(|c| c.index == code).expect("its change").id;
             let (pc, po) = computed.placement.place[fid].get().expect("placed");
 
             // Moved: one changed section 16 bytes on in its chunk.
             let mut m = d.clone();
             m.placement.place.as_mut_slice()[uid.0 as usize] = {
-                let (sc, so) = stored.section(changes.iter().find(|c| c.id == uid).unwrap().old.unwrap())
+                let (sc, so) = stored
+                    .section(changes.iter().find(|c| c.id == uid).unwrap().old.unwrap())
                     .expect("row")
                     .expect("a row")
                     .place
@@ -350,9 +372,19 @@ fn materialize_mutations_differ_by_the_delta_or_refuse_by_name() {
                 Place::at(sc, so + 16)
             };
             m.moved = vec![uid];
-            let l = s.run(view, &m, &changes, computed).unwrap_or_else(|e| panic!("{label}: moved: {e:?}"));
-            assert_eq!(place_diff(&l, computed), vec![fid.0], "{label}: moved: the place of that section only");
-            assert_eq!(l.placement.place[fid].get(), Some((pc, po + 16)), "{label}: moved: its new offset");
+            let l = s
+                .run(view, &m, &changes, computed)
+                .unwrap_or_else(|e| panic!("{label}: moved: {e:?}"));
+            assert_eq!(
+                place_diff(&l, computed),
+                vec![fid.0],
+                "{label}: moved: the place of that section only"
+            );
+            assert_eq!(
+                l.placement.place[fid].get(),
+                Some((pc, po + 16)),
+                "{label}: moved: its new offset"
+            );
             let mut back = l.clone();
             back.placement.place.as_mut_slice()[fid.0 as usize] = computed.placement.place[fid];
             assert_eq!(first_difference(&back, computed), None, "{label}: moved: nothing else");
@@ -370,19 +402,26 @@ fn materialize_mutations_differ_by_the_delta_or_refuse_by_name() {
             let row = (0..d.placement.chunks.len())
                 .map(ChunkId)
                 .find(|&c| {
-                    matches!(d.placement.chunks[c].kind, ChunkKind::Body(_)) && !def_chunks.contains(&c)
+                    matches!(d.placement.chunks[c].kind, ChunkKind::Body(_))
+                        && !def_chunks.contains(&c)
                 })
                 .expect("a body chunk");
             let mut g = mortar_incr::state5::LayoutOf { view };
             let _ = &mut g;
             let mut m = unchanged_delta(&stored).expect("empty");
             m.placement.chunks.as_mut_slice()[row.0 as usize].size += 16;
-            let l = s.run(view, &m, &[], computed).unwrap_or_else(|e| panic!("{label}: grown: {e:?}"));
+            let l =
+                s.run(view, &m, &[], computed).unwrap_or_else(|e| panic!("{label}: grown: {e:?}"));
             let diff: Vec<usize> = (0..l.placement.chunks.len() as usize)
-                .filter(|&i| l.placement.chunks.as_slice()[i] != computed.placement.chunks.as_slice()[i])
+                .filter(|&i| {
+                    l.placement.chunks.as_slice()[i] != computed.placement.chunks.as_slice()[i]
+                })
                 .collect();
             assert_eq!(diff.len(), 1, "{label}: grown: one chunk");
-            let (a, b) = (&l.placement.chunks.as_slice()[diff[0]], &computed.placement.chunks.as_slice()[diff[0]]);
+            let (a, b) = (
+                &l.placement.chunks.as_slice()[diff[0]],
+                &computed.placement.chunks.as_slice()[diff[0]],
+            );
             assert_eq!(a.size, b.size + 16, "{label}: grown: by 16");
             let mut back = l.clone();
             back.placement.chunks.as_mut_slice()[diff[0]].size = b.size;
@@ -400,7 +439,9 @@ fn materialize_mutations_differ_by_the_delta_or_refuse_by_name() {
                     size: fr.size,
                     refs: fr.refs,
                 }];
-                let l = s.run(view, &m, &[], computed).unwrap_or_else(|e| panic!("{label}: frag: {e:?}"));
+                let l = s
+                    .run(view, &m, &[], computed)
+                    .unwrap_or_else(|e| panic!("{label}: frag: {e:?}"));
                 let (p, q) = (l.merge.frag_off.as_slice(), computed.merge.frag_off.as_slice());
                 let diff: Vec<usize> = (0..p.len()).filter(|&i| p[i] != q[i]).collect();
                 assert!(!diff.is_empty(), "{label}: frag: a difference");
@@ -414,19 +455,32 @@ fn materialize_mutations_differ_by_the_delta_or_refuse_by_name() {
                 let mut m0 = m.clone();
                 m0.frags[0].offset = fr.offset;
                 m0.frags[0].refs = 0;
-                refused(&label, "frag refs 0", s.run(view, &m0, &[], computed), "FINDING frag_off: fragment");
+                refused(
+                    &label,
+                    "frag refs 0",
+                    s.run(view, &m0, &[], computed),
+                    "FINDING frag_off: fragment",
+                );
                 reached.push("frag refs 0");
                 // A key the front has dead, given refs: a FINDING.
                 m0.frags[0].hash = [0xa5; 16];
                 m0.frags[0].refs = 1;
-                refused(&label, "frag dead", s.run(view, &m0, &[], computed), "FINDING frag_off: d.frags gives");
+                refused(
+                    &label,
+                    "frag dead",
+                    s.run(view, &m0, &[], computed),
+                    "FINDING frag_off: d.frags gives",
+                );
                 reached.push("frag reverse");
                 // A live fragment with no row.
                 let mut mem2 = mem.clone();
                 let at = mem2.frags.iter().position(|f| f.refs > 0).expect("a row");
                 mem2.frags.remove(at);
                 let v2 = mem2.view();
-                let e = unchanged_delta(&StoredLayout::new(&mortar_incr::state5::LayoutOf { view: &v2 })).expect("d");
+                let e = unchanged_delta(&StoredLayout::new(&mortar_incr::state5::LayoutOf {
+                    view: &v2,
+                }))
+                .expect("d");
                 refused(&label, "no FRAGS row", s.run(&v2, &e, &[], computed), "has no row");
                 reached.push("frag no row");
             }
@@ -445,12 +499,22 @@ fn materialize_mutations_differ_by_the_delta_or_refuse_by_name() {
                 .find(|&c| !matches!(x.placement.chunks[c].kind, ChunkKind::Body(_)))
                 .expect("a chunk that is not a body");
             x.placement.place.as_mut_slice()[uid.0 as usize] = Place::at(merged, 0);
-            refused(&label, "place (ii)", s.run(view, &x, &changes, computed), "FINDING place (ii)");
+            refused(
+                &label,
+                "place (ii)",
+                s.run(view, &x, &changes, computed),
+                "FINDING place (ii)",
+            );
             reached.push("place (ii)");
             // Not placed where the front places it.
             let mut x = d.clone();
             x.placement.place.as_mut_slice()[uid.0 as usize] = Place::NONE;
-            refused(&label, "place (ii) none", s.run(view, &x, &changes, computed), "FINDING place (ii)");
+            refused(
+                &label,
+                "place (ii) none",
+                s.run(view, &x, &changes, computed),
+                "FINDING place (ii)",
+            );
             // A section of d.files with no change; one named twice.
             refused(&label, "no change", s.run(view, &d, &changes[1..], computed), "has no change");
             reached.push("no change");
@@ -465,11 +529,21 @@ fn materialize_mutations_differ_by_the_delta_or_refuse_by_name() {
             let mut v = x.placement.chunks.into_vec();
             v.pop();
             x.placement.chunks = mortar_core::column::Column::from_vec(v).expect("chunks");
-            refused(&label, "chunk count", s.run(view, &x, &[], computed), "d.placement.chunks has");
+            refused(
+                &label,
+                "chunk count",
+                s.run(view, &x, &[], computed),
+                "d.placement.chunks has",
+            );
             reached.push("chunk count");
             // DEFINED: a value the delta did not follow.
             let mut x = empty.clone();
-            if let Some(row) = x.placement.defined.iter_mut().find(|r| matches!(r.value, DefValue::At { offset, .. } if offset > 0)) {
+            if let Some(row) = x
+                .placement
+                .defined
+                .iter_mut()
+                .find(|r| matches!(r.value, DefValue::At { offset, .. } if offset > 0))
+            {
                 if let DefValue::At { offset, .. } = &mut row.value {
                     *offset += 4;
                 }
@@ -480,14 +554,18 @@ fn materialize_mutations_differ_by_the_delta_or_refuse_by_name() {
             let mut x = empty.clone();
             let mut v = x.placement.defined.to_vec();
             let n = view.count(mortar_incr::format::kind::SYMBOLS) as u32;
-            v.push(mortar_core::layout::Defined { symbol: SymbolId(n), value: DefValue::Absolute(0) });
+            v.push(mortar_core::layout::Defined {
+                symbol: SymbolId(n),
+                value: DefValue::Absolute(0),
+            });
             x.placement.defined = v.into();
             refused(&label, "update-only key", s.run(view, &x, &[], computed), "past SYMBOLS");
             reached.push("update-only key");
             // A DeadSlot hole.
             let mut x = empty.clone();
             x.hole_chunks = vec![row];
-            x.placement.holes = vec![Hole { chunk: row, offset: 0, size: 8, kind: HoleKind::DeadSlot }].into();
+            x.placement.holes =
+                vec![Hole { chunk: row, offset: 0, size: 8, kind: HoleKind::DeadSlot }].into();
             refused(&label, "dead slot hole", s.run(view, &x, &[], computed), "DeadSlot");
             reached.push("dead slot hole");
             // Slots: appended; retired.
@@ -570,10 +648,16 @@ fn materialize_mutations_differ_by_the_delta_or_refuse_by_name() {
             refused(&label, "files", s.run(&v2, &empty, &[], computed), "files:");
             reached.push("files");
             let mut mm = mem.clone();
-            let at = mm.sections.iter().position(|r| r.file == file.0 && r.size > 0).expect("a row");
+            let at =
+                mm.sections.iter().position(|r| r.file == file.0 && r.size > 0).expect("a row");
             mm.sections[at].size += 1;
             let v2 = mm.view();
-            refused(&label, "sections", s.run(&v2, &empty, &[], computed), "sections: SECTIONS row");
+            refused(
+                &label,
+                "sections",
+                s.run(&v2, &empty, &[], computed),
+                "sections: SECTIONS row",
+            );
             reached.push("sections");
             let mut mm = mem.clone();
             mm.chunks[0].ordinal += 7;
@@ -584,7 +668,10 @@ fn materialize_mutations_differ_by_the_delta_or_refuse_by_name() {
                 let mut mm = mem.clone();
                 mm.symbols[dr.symbol as usize].name = mortar_incr::format::Str { off: 0, len: 0 };
                 let v2 = mm.view();
-                let e = unchanged_delta(&StoredLayout::new(&mortar_incr::state5::LayoutOf { view: &v2 })).expect("d");
+                let e = unchanged_delta(&StoredLayout::new(&mortar_incr::state5::LayoutOf {
+                    view: &v2,
+                }))
+                .expect("d");
                 refused(&label, "globals", s.run(&v2, &e, &[], computed), "no such key");
                 reached.push("globals");
             }
@@ -619,9 +706,9 @@ fn refill_answer(
     .expect("the link's view");
     match r {
         Ok(()) => Ok(()),
-        Err(mortar_image::update::RefillError::Fallback(IncrReason::UpdateNotImplemented(Some(
-            Unimplemented::Eh,
-        )))) => Err("(eh)".to_owned()),
+        Err(mortar_image::update::RefillError::Fallback(IncrReason::UpdateNotImplemented(
+            Some(Unimplemented::Eh),
+        ))) => Err("(eh)".to_owned()),
         Err(e) => Err(format!("{e:?}")),
     }
 }
@@ -655,9 +742,12 @@ fn check_moved_code_judges_the_front_section_with_the_front_delta() {
                 .expect("placed");
             d.placement.place.as_mut_slice()[c.id.0 as usize] = Place::at(sc, so + 16);
             d.moved = vec![c.id];
-            let fid = s.f.resolution.section_id(file, mortar_elf::SectionIndex(code)).expect("its id");
+            let fid =
+                s.f.resolution.section_id(file, mortar_elf::SectionIndex(code)).expect("its id");
             assert!(
-                s.f.resolution.sh_index(c.id).is_none_or(|x| x != (file, mortar_elf::SectionIndex(code))),
+                s.f.resolution
+                    .sh_index(c.id)
+                    .is_none_or(|x| x != (file, mortar_elf::SectionIndex(code))),
                 "{label}: the update id {} must not be the code section's front id {}",
                 c.id.0,
                 fid.0
