@@ -322,8 +322,38 @@ impl MemoryState {
     /// first. With a file's rows contiguous in `sections` (the capture's
     /// order, which the encoder keeps per file) a row's position in its
     /// file is the one the encoder writes.
-    pub fn index_sections(&mut self) {
+    ///
+    /// # Errors
+    /// `state-corrupt` (WP-238 P3b-2) when that premise fails, by name:
+    /// "SECTIONS of file N are not contiguous" (a file's rows with another
+    /// file's between them: its range would hold the other's rows and S4
+    /// would sum the wrong sections), or a row naming a file past `FILES`.
+    /// `compact::normalize`'s rows (sorted by file, then position) pass.
+    pub fn index_sections(&mut self) -> Result<(), IncrReason> {
         use super::rows::{FileTable, RowRange};
+        let files = self.file_index.len();
+        let mut ended = vec![false; files];
+        let mut run: Option<u32> = None;
+        for (i, s) in self.sections.iter().enumerate() {
+            if s.file as usize >= files {
+                return Err(IncrReason::StateCorrupt(format!(
+                    "SECTIONS row {i} names file {} past FILES ({files})",
+                    s.file
+                )));
+            }
+            if run != Some(s.file) {
+                if ended[s.file as usize] {
+                    return Err(IncrReason::StateCorrupt(format!(
+                        "SECTIONS of file {} are not contiguous",
+                        s.file
+                    )));
+                }
+                if let Some(r) = run {
+                    ended[r as usize] = true;
+                }
+                run = Some(s.file);
+            }
+        }
         let t = FileTable::Sections as usize;
         for row in &mut self.file_index {
             row.ranges[t] = RowRange::default();
@@ -333,6 +363,7 @@ impl MemoryState {
             FileTable::Sections,
             &mut self.sections.iter().map(|s| s.file),
         );
+        Ok(())
     }
 
     /// `NAMES` made afresh: one row per global (kinds 0 and 1) and `GONE`

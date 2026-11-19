@@ -1281,7 +1281,7 @@ impl Session {
             if let Some(Ok((_, at))) = gc {
                 let start = Instant::now();
                 let mut th = start;
-                m.index_sections();
+                m.index_sections().map_err(|e| e.report())?;
                 let h =
                     mortar_incr::update::live::live_hash(&m.view(), f.liveness.live.as_slice(), at)
                         .map_err(|e| e.report())?;
