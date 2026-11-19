@@ -115,11 +115,17 @@ pub enum Unimplemented {
     /// reports (WP-255d3 D3-3 as ruled by WP-255d2 D2-2): the input did
     /// not change, the update falls back and the full link diagnoses it.
     Split,
+    /// The scan of a changed file (WP-255d5, `scan_of`) meets a case it
+    /// does not answer: a weak-dynamic key (D4-1), an LSDA naming another
+    /// file's symbol (D4-4), `--wrap` (D4-5), a key whose new facts have
+    /// no producer yet (F-1), or a diagnostic, event or overlap the full
+    /// scan reports (F-2). The case is named in the caller's detail.
+    Scan,
 }
 
 impl Unimplemented {
     /// Every word, in `spec/incr.md` §7's order.
-    pub const ALL: [Self; 16] = [
+    pub const ALL: [Self; 17] = [
         Self::State5,
         Self::Resolve,
         Self::Refill,
@@ -136,6 +142,7 @@ impl Unimplemented {
         Self::Eh,
         Self::Slots,
         Self::Split,
+        Self::Scan,
     ];
 
     /// The word (`spec/incr.md` §7).
@@ -158,6 +165,7 @@ impl Unimplemented {
             Self::Eh => "eh",
             Self::Slots => "slots",
             Self::Split => "split",
+            Self::Scan => "scan",
         }
     }
 }
