@@ -453,19 +453,54 @@ fn type_units_are_debug_unit_kind() {
     }
 }
 
-// spec: incr.md IN-70, IN-56 (WP-230): a renamed local appends a string:
-// not the identity case; since M2b-3 Part 3 a non-identity hop with debug
-// sections falls back by G-3's name, `update-not-implemented (debug)`
-// (G-1 in the non-identity case is G-4's), and no FINDING.
+// spec: incr.md IN-70, IN-56 (WP-230 G-4): a renamed local appends a
+// string: not the identity case. G-1 appends it (IN-56), but front 2
+// writes front 1's merge (`materialize`'s `frag_off`), not an appended
+// tail: refused by name (`G-4: ... appended`, `(debug)`), no FINDING.
 #[test]
 fn renamed_local_is_not_the_identity_case() {
     for arch in targets() {
-        let Some(l) = refused(arch, "rename", &[], &[], "renamed_local_wp230") else { continue };
-        assert!(
-            l.contains("cannot update: update-not-implemented (debug)"),
-            "{}: {l}",
-            arch.name()
-        );
+        let Some(p) = Prog::new(arch, "rename", &[], false) else { continue };
+        let (ok, err) = p.link("o", &["--incremental"]);
+        assert!(ok, "rename: the first link: {err}");
+        let (line, text) = not_taken(&p, "rename", &[], &|p| {
+            p.rebuild_c(&c_cc(9, "renamed_local_wp230"), &[]);
+        });
+        assert!(line.contains("cannot update: update-not-implemented (debug)"), "{line}");
+        assert!(text.contains("G-3 fallback: G-4: ") && text.contains("appended"), "{text}");
+        assert!(!text.contains("finding"), "{}:\n{text}", arch.name());
+    }
+}
+
+// spec: incr.md IN-56 (WP-230 G-4): a new relocation whose callee the
+// changed file did not declare before adds a declaration and its names
+// (strings already in the output: no append), and GCC orders the file's
+// `.debug_str` afresh; front 1's merge of the new inputs is then not the
+// previous output's bytes, and front 2 writes it: refused by name (`G-4:
+// .debug_str: front 1's merge ...`, `(debug)`), no FINDING.
+#[test]
+fn new_declaration_that_moves_stored_strings_is_refused_by_name() {
+    let next = c_big(0, None);
+    // The start lacks the declaration and has three more locals (room in
+    // `.debug_info`'s allotment for the declaration's DIE).
+    let start = next.replace("int u_dead(int);\n", "").replace("u_dead(x) + ", "").replace(
+        "int c_fill42(int x) { int t = x * 44; return t - x; }",
+        "int c_fill42(int x) { int t = x * 44; int w1 = t; int w2 = w1; int w3 = w2; return w3 - x; }",
+    );
+    let start: &'static str = Box::leak(start.into_boxed_str());
+    for arch in targets() {
+        let sources = [
+            Source { name: "main.cc", text: MAIN },
+            Source { name: "u.cc", text: U },
+            Source { name: "c.cc", text: start },
+        ];
+        let Some(p) = Prog::with(arch, "newdecl", &["-g"], &[], false, &sources) else { continue };
+        let (ok, err) = p.link("o", &["--incremental"]);
+        assert!(ok, "newdecl: the first link: {err}");
+        let (line, text) = not_taken(&p, "newdecl", &[], &|p| p.rebuild_c(&next, &[]));
+        assert!(line.contains("cannot update: update-not-implemented (debug)"), "{line}\n{text}");
+        assert!(text.contains("G-3 fallback: G-4: .debug_str: front 1's merge"), "{text}");
+        assert!(!text.contains("finding"), "{}:\n{text}", arch.name());
     }
 }
 
@@ -768,16 +803,14 @@ fn shnum(b: &[u8]) -> u16 {
     u16::from_le_bytes([b[0x3c], b[0x3d]])
 }
 
-// spec: incr.md IN-56 `new-output-section` (WP-230 G-3b): every file is
-// DWARF 4 (no `.debug_line_str`, no `.debug_rnglists`); the changed file's
-// new version is DWARF 5 and brings those output sections. G-1's
-// `strings` would refuse `new-output-section`, but path (A)'s refill of the
-// front comes first (`reference_of`, before U5 and the placement): the
-// front's output has more section headers than the previous output, and
-// `mortar_image::update::refill` refuses `update-not-implemented (image)`
-// (its section-count check). The counts are the bytes shown.
+// spec: incr.md IN-56 `new-output-section` (WP-230 G-3b, G-4): every file
+// is DWARF 4 (no `.debug_line_str`, no `.debug_rnglists`); the changed
+// file's new version is DWARF 5 and brings those output sections. U2's
+// debug condition refuses `new-output-section` (no `OUTSECS` row), before
+// path (A)'s refill of the front (whose section-count check gave `(image)`
+// before G-4). The counts are the bytes shown.
 #[test]
-fn new_debug_output_section_is_image_before_g1() {
+fn new_debug_output_section_is_new_output_section() {
     for arch in targets() {
         let Some(p) = Prog::new(arch, "newsec", &["-gdwarf-4"], false) else { continue };
         let label = format!("newsec {}", arch.name());
@@ -786,7 +819,7 @@ fn new_debug_output_section_is_image_before_g1() {
         let (line, text) = not_taken(&p, &label, &[], &|p| {
             p.rebuild_c_as(&c_cc(9, "scaled"), &["-g", "-gdwarf-5"]);
         });
-        assert!(line.contains("cannot update: update-not-implemented (image)"), "{label}: {line}");
+        assert!(line.contains("cannot update: new-output-section: .debug_"), "{label}: {line}");
         assert!(!text.contains("G-3 debug: placed"), "{label}: G-1 ran:\n{text}");
         let (ok, err) = p.link("full", &["--incremental=full"]);
         assert!(ok, "{label}: the full link: {err}");
@@ -798,14 +831,29 @@ fn new_debug_output_section_is_image_before_g1() {
 
 // ---- G-4 (WP-230): `-g` in the non-identity update -----------------------
 
-/// `c.cc` whose `c_value` calls `u_helper` (another file's function: a new
-/// relocation against `.text` of `u.cc`, and `u_helper`'s name, already a
-/// string of the output), `n` statements longer than [`c_cc`]'s.
-fn c_calls(n: usize) -> String {
-    format!(
-        "#define C_K 9\nint u_helper(int);\nint c_value(int x) {{\n  int scaled = x * C_K;\n  {}return scaled + u_helper(1);\n}}\n",
-        "scaled = scaled * 3 + 1; ".repeat(n)
-    )
+/// A larger `c.cc` (a small one's debug contributions have almost no
+/// room in their allotments: IN-50's remainder is 0 or at least the
+/// section's minimum form, 32 bytes for `.debug_line`): `c_value` with
+/// `n` statements more than [`c_cc`]'s, calling `callee` (another file's
+/// function: a new relocation against `u.cc`'s `.text`) when given, then
+/// 43 small functions (`.debug_line` 625 to 633 bytes in the first
+/// version: allotted 704, room for 39 to 47 more) and one that calls
+/// `u_dead` and `u_helper` (so every
+/// version has the abbreviations and the declarations of both callees:
+/// calling one adds no debug string; under `--gc-sections` `u_helper` is
+/// live in every version, `u_dead` is not). `c_value`'s `return` is on line 5.
+fn c_big(n: usize, callee: Option<&str>) -> String {
+    use std::fmt::Write as _;
+    let mut s = format!(
+        "#define C_K 9\nint u_helper(int);\nint u_dead(int);\nint c_value(int x) {{\n  int scaled = x * C_K;\n  {}return scaled + {};\n}}\n",
+        "scaled = scaled * 3 + 1; ".repeat(n),
+        callee.map_or_else(|| "1".to_owned(), |c| format!("{c}(1)"))
+    );
+    for i in 0..43 {
+        let _ = writeln!(s, "int c_fill{i}(int x) {{ int t = x * {}; return t - x; }}", i + 2);
+    }
+    s.push_str("int c_fill_call(int x) { return u_dead(x) + u_helper(x); }\n");
+    s
 }
 
 /// The non-identity case on `p`: each version of `c.cc` in `versions`
@@ -813,32 +861,86 @@ fn c_calls(n: usize) -> String {
 /// in the findings file, no FINDING), byte-equal to the full link of the
 /// same inputs, runs as it, and gdb (and lldb on its host) answer as on
 /// it; returns each update's judged line.
-fn moved_case(p: &mut Prog, label: &str, versions: &[String]) -> Vec<String> {
+///
+/// `refused(hop)`: the reason a hop falls back by instead (the producer's
+/// own name, R-2 (a)), its `cannot update:` line then holding it, no
+/// FINDING, the output untouched.
+fn moved_case(
+    p: &mut Prog,
+    label: &str,
+    versions: &[String],
+    refused: &dyn Fn(usize) -> Option<&'static str>,
+) -> Vec<String> {
     let mut judged = Vec::new();
     let (ok, err) = p.link("o", &["--incremental"]);
     assert!(ok, "{label}: the first link: {err}");
     for (hop, text) in versions.iter().enumerate() {
         let _ = std::fs::remove_file(&p.findings);
+        let before = p.bytes("o");
         p.rebuild_c(text, &[]);
         let (ok, err) = p.link("o", &["--incremental=update", "--incremental-report"]);
+        if let Some(why) = refused(hop) {
+            assert!(!ok, "{label} hop {hop}: updated, expected {why}");
+            let line = err.lines().find(|l| l.contains("cannot update: ")).unwrap_or_default();
+            assert!(line.contains(&format!("cannot update: {why}")), "{label} hop {hop}: {err}");
+            no_finding(p, label);
+            assert_eq!(before, p.bytes("o"), "{label} hop {hop}: a refused update wrote");
+            judged.push(format!("refused: {why}"));
+            continue;
+        }
         assert!(ok, "{label} hop {hop}: not an update: {err}\nfindings:\n{}", p.findings());
         assert!(err.contains("incremental: update ("), "{label} hop {hop}: {err}");
         let findings = no_finding(p, label);
         let line = findings.lines().find(|l| l.starts_with("G-4 debug: judged"));
         let Some(line) = line else { panic!("{label} hop {hop}: G-4 not judged:\n{findings}") };
         assert!(findings.contains("taken: front 2"), "{label} hop {hop}:\n{findings}");
-        judged.push(line.to_owned());
         let o = p.bytes("o");
-        p.equals_full_link("o", &format!("{label} hop {hop}"));
+        let (ok, err) = p.link("full", &["--incremental=full"]);
+        assert!(ok, "{label}: the full link: {err}");
+        let full = p.bytes("full");
+        if let Some(d) = std::env::var_os("G4_DUMP") {
+            let d = Path::new(&d);
+            std::fs::create_dir_all(d).expect("G4_DUMP");
+            let n = label.replace(' ', "-");
+            std::fs::write(d.join(format!("{n}-{hop}-o")), &o).expect("dump");
+            std::fs::write(d.join(format!("{n}-{hop}-full")), &full).expect("dump");
+        }
+        // Not the identity case: the full link of the new inputs allots
+        // the new sizes afresh (a grown `.text` region of another size
+        // class moves every later file), the update keeps the stored
+        // allotments. Byte-equal when the full link's headers are the
+        // update's (and its symbol table: every address); judged otherwise
+        // by the verifier, `llvm-dwarfdump
+        // --verify`, the program and the debuggers.
+        let same_headers = headers(&o) == headers(&full);
+        if same_headers {
+            assert!(o == full, "{label} hop {hop}: the full link's headers, other bytes");
+        }
+        let findings = support::plumb::verify(&p.dir.join("o"), &p.dir.join("o.map"), &p.dir);
+        assert!(findings.is_empty(), "{label} hop {hop}: the verifier: {findings:?}");
+        let (vu, vf) = (dwarf_verify(&p.dir.join("o")), dwarf_verify(&p.dir.join("full")));
+        assert_ne!(vu.as_deref(), Some("TIMEOUT"), "{label} hop {hop}: llvm-dwarfdump --verify");
+        assert_eq!(vu, vf, "{label} hop {hop}: llvm-dwarfdump --verify (update, full link)");
         assert_eq!(p.run("o"), p.run("full"), "{label} hop {hop}: the program's output");
         let (gu, gf) = (p.gdb("o", "scaled"), p.gdb("full", "scaled"));
         assert_ne!(gu, "TIMEOUT", "{label} hop {hop}: gdb on the update");
         assert!(gu.contains("c_value"), "{label} hop {hop}: gdb:\n{gu}");
+        let (gu, gf) = (code_addresses(&gu), code_addresses(&gf));
         assert_eq!(gu, gf, "{label} hop {hop}: gdb answers differ (update, full link)");
+        let mut lldb = "no lldb";
         if let (Some(lu), Some(lf)) = (p.lldb("o", "scaled"), p.lldb("full", "scaled")) {
             assert_ne!(lu, "TIMEOUT", "{label} hop {hop}: lldb on the update");
-            assert_eq!(lu, lf, "{label} hop {hop}: lldb answers differ");
+            assert_eq!(
+                code_addresses(&lu),
+                code_addresses(&lf),
+                "{label} hop {hop}: lldb answers differ"
+            );
+            lldb = "lldb equal";
         }
+        judged.push(format!(
+            "{line} | headers {} | verify {vu:?} | gdb equal | {lldb}",
+            if same_headers { "equal, bytes equal" } else { "differ" }
+        ));
         assert_eq!(o, p.bytes("o"), "{label}: the update's output changed under the debuggers");
         eprintln!("{label} hop {hop}: {line}\ngdb transcript:\n{gu}");
     }
@@ -846,9 +948,76 @@ fn moved_case(p: &mut Prog, label: &str, versions: &[String]) -> Vec<String> {
     judged
 }
 
-/// Grow, shrink and new-relocation versions of `c.cc` (no new string).
+/// The section and program header tables of the ELF64 file `b` (offsets,
+/// addresses, sizes of every section and segment) and its `.symtab`
+/// (every symbol's address): equal in two outputs when the full link
+/// placed every section and symbol where the update did.
+fn headers(b: &[u8]) -> Vec<u8> {
+    let u64_at = |at: usize| u64::from_le_bytes(b[at..at + 8].try_into().expect("8 bytes"));
+    let u32_at = |at: usize| u32::from_le_bytes(b[at..at + 4].try_into().expect("4 bytes"));
+    let u16_at = |at: usize| usize::from(u16::from_le_bytes([b[at], b[at + 1]]));
+    let (sh, shn) = (usize::try_from(u64_at(0x28)).expect("e_shoff"), u16_at(0x3c));
+    let (ph, phn) = (usize::try_from(u64_at(0x20)).expect("e_phoff"), u16_at(0x38));
+    let mut out = b[sh..sh + 64 * shn].to_vec();
+    out.extend_from_slice(&b[ph..ph + 56 * phn]);
+    for k in 0..shn {
+        let h = sh + 64 * k;
+        if u32_at(h + 4) == 2 {
+            let at = usize::try_from(u64_at(h + 0x18)).expect("sh_offset");
+            let len = usize::try_from(u64_at(h + 0x20)).expect("sh_size");
+            out.extend_from_slice(&b[at..at + len]);
+        }
+    }
+    out
+}
+
+/// `text` with every code or data address (`0x` and six or more hex
+/// digits) as `<addr>`: the update keeps the stored allotments, the full
+/// link of the same inputs allots afresh, so a function after a grown
+/// region is at another address; names, lines and values stay.
+fn code_addresses(text: &str) -> String {
+    text.split_inclusive(|c: char| !c.is_ascii_alphanumeric())
+        .map(|w| {
+            let (word, end) =
+                w.split_at(w.trim_end_matches(|c: char| !c.is_ascii_alphanumeric()).len());
+            let hex = word
+                .strip_prefix("0x")
+                .is_some_and(|h| h.len() >= 6 && h.chars().all(|c| c.is_ascii_hexdigit()));
+            if hex { format!("<addr>{end}") } else { w.to_owned() }
+        })
+        .collect()
+}
+
+/// `llvm-dwarfdump --verify`'s last line on `out` (`timeout 120`; a
+/// timeout is `TIMEOUT`); `None` without the tool.
+fn dwarf_verify(out: &Path) -> Option<String> {
+    let tool = tool("llvm-dwarfdump")?;
+    let mut c = Command::new("timeout");
+    c.arg("120").arg(tool).arg("--verify").arg(out);
+    let o = run_with(&mut c, b"", Duration::from_secs(130));
+    if o.timed_out() || o.status.and_then(|s| s.code()) == Some(124) {
+        return Some("TIMEOUT".into());
+    }
+    let text = o.stdout_text();
+    let errors = text.lines().filter(|l| l.trim_start().starts_with("error:")).count();
+    Some(format!("{errors} errors: {}", text.lines().last().unwrap_or_default()))
+}
+
+/// Grow, shrink and new-relocation versions of [`c_big`] (no new string).
 fn moved_versions() -> Vec<String> {
-    vec![c_body(2), c_body(0), c_body(3), c_calls(1), c_body(1)]
+    vec![c_big(2, None), c_big(0, None), c_big(3, None), c_big(1, Some("u_helper")), c_big(1, None)]
+}
+
+/// The G-4 program: `main.cc`, `u.cc`, then [`c_big`]`(0, false)` as
+/// `c.cc` (last in link order).
+fn moved_prog(arch: Arch, case: &str, flags: &[&'static str], gc: bool) -> Option<Prog> {
+    let c: &'static str = Box::leak(c_big(0, None).into_boxed_str());
+    let sources = [
+        Source { name: "main.cc", text: MAIN },
+        Source { name: "u.cc", text: U },
+        Source { name: "c.cc", text: c },
+    ];
+    Prog::with(arch, case, &["-g"], flags, gc, &sources)
 }
 
 // spec: incr.md IN-50, IN-54, IN-56, IN-70 (WP-230 G-4): a `-g` program
@@ -860,10 +1029,11 @@ fn moved_versions() -> Vec<String> {
 #[test]
 fn grow_shrink_and_new_relocation_with_debug_are_taken() {
     for arch in targets() {
-        let Some(mut p) = Prog::new(arch, "g4moved", &[], false) else { continue };
+        let Some(mut p) = moved_prog(arch, "g4moved", &[], false) else { continue };
         let label = format!("g4 moved {}", arch.name());
-        let judged = moved_case(&mut p, &label, &moved_versions());
+        let judged = moved_case(&mut p, &label, &moved_versions(), &|_| None);
         assert_eq!(judged.len(), moved_versions().len(), "{label}");
+        eprintln!("{label}:\n{}", judged.join("\n"));
     }
 }
 
@@ -873,9 +1043,17 @@ fn grow_shrink_and_new_relocation_with_debug_are_taken() {
 fn gc_grow_shrink_and_new_relocation_with_debug_are_taken() {
     const GC: [&str; 2] = ["-ffunction-sections", "-fdata-sections"];
     for arch in targets() {
-        let Some(mut p) = Prog::new(arch, "g4movedgc", &GC, true) else { continue };
+        let Some(mut p) = moved_prog(arch, "g4movedgc", &GC, true) else { continue };
         let label = format!("g4 moved gc {}", arch.name());
-        let judged = moved_case(&mut p, &label, &moved_versions());
+        // AArch64: hop 2 (72 bytes more than the first version) is past
+        // `.text._Z7c_valuei`'s room, and `delta::layout` refuses the
+        // tail of `.text`, a patch island's (R-2 (a), the producer's name).
+        let refused = |hop: usize| {
+            (arch == Arch::Aarch64 && hop == 2)
+                .then_some("reserve-exhausted: .text: its tail is in a patch island chunk")
+        };
+        let judged = moved_case(&mut p, &label, &moved_versions(), &refused);
         assert_eq!(judged.len(), moved_versions().len(), "{label}");
+        eprintln!("{label}:\n{}", judged.join("\n"));
     }
 }

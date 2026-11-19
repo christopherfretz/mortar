@@ -2447,17 +2447,17 @@ fn u1_and_u2_reasons_in_order_on_a_format5_state() {
     assert_eq!(cannot_update(&prog, &[]), "update-not-implemented (resolve)");
     // (U2's debug, U6's live): a gc link alone reaches U4 (gc-lift: no
     // refusal by the option): nothing changed, `resolve`. G-3 (WP-230):
-    // U2's debug condition is IN-55/IN-55a only, so plain `-g` sections,
-    // in the new version or in the old one's rows, pass it; debug sections
-    // that appear or go are not the stored placement, and path (A)'s image
-    // of the front falls back `(image)` (`reference_of`), by name.
+    // U2's debug condition is IN-55/IN-55a, and (G-4) a debug output
+    // section that appears (`new-output-section`: no `OUTSECS` row) or
+    // goes (`(debug)`: no other file's row is placed in it), by name.
     prog.link("o", &["--incremental", "--gc-sections"]);
     assert_eq!(cannot_update(&prog, &["--gc-sections"]), "update-not-implemented (resolve)");
     reassemble(&prog, ASM, &["-g"]);
-    assert_eq!(cannot_update(&prog, &["--gc-sections"]), "update-not-implemented (image)");
+    let line = cannot_update(&prog, &["--gc-sections"]);
+    assert!(line.starts_with("new-output-section"), "{line}");
     prog.link("o", &["--incremental"]);
     reassemble(&prog, ASM, &[]);
-    assert_eq!(cannot_update(&prog, &[]), "update-not-implemented (image)");
+    assert_eq!(cannot_update(&prog, &[]), "update-not-implemented (debug)");
     // Nothing written by a fall-back of the update: a full link follows.
     line_with(&prog.link("o", &inc), "(small-output)");
 }

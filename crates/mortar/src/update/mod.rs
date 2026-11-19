@@ -2360,32 +2360,6 @@ fn debug_judge(
             bytes.len()
         )));
     }
-    let split = &f.merge.split;
-    let mut strings = 0usize;
-    for &file in files {
-        for (id, name, _) in front_sections(f, file) {
-            let Some(class) = debug::str_class(name) else { continue };
-            let Ok(row) = split.merge_of.binary_search_by_key(&id, |m| m.section) else {
-                return Err(debug_finding(&format!(
-                    "file {} class {class}: a string section the front did not split",
-                    file.0
-                )));
-            };
-            let span = split.merge_of[row].pieces;
-            for p in span.start..span.start + span.len {
-                let (off, frag) = (split.piece_off[p as usize], split.piece_frag[p as usize]);
-                let full = f.layout.merge.offset(frag);
-                let mine = plan.strings.output_offset(file, class, u64::from(off));
-                if full != mine {
-                    return Err(debug_finding(&format!(
-                        "file {} class {class} string at input {off:#x}: G-1 {mine:?}, the front {full:?}",
-                        file.0
-                    )));
-                }
-                strings += 1;
-            }
-        }
-    }
     // The new output's bytes of `range`: the previous output's with the
     // refill's ranges over them.
     let new_bytes = |lo: u64, len: u64| -> Result<Vec<u8>, IncrReason> {
@@ -2450,13 +2424,45 @@ fn debug_judge(
             ));
         }
     }
+    // Each changed file's string where G-1 puts it (after the bytes: in
+    // the non-identity case a merge that is not the previous output's is
+    // refused by name above, so a difference here is G-1's).
+    let split = &f.merge.split;
+    let mut strings = 0usize;
+    for &file in files {
+        for (id, name, _) in front_sections(f, file) {
+            let Some(class) = debug::str_class(name) else { continue };
+            let Ok(row) = split.merge_of.binary_search_by_key(&id, |m| m.section) else {
+                return Err(debug_finding(&format!(
+                    "file {} class {class}: a string section the front did not split",
+                    file.0
+                )));
+            };
+            let span = split.merge_of[row].pieces;
+            for p in span.start..span.start + span.len {
+                let (off, frag) = (split.piece_off[p as usize], split.piece_frag[p as usize]);
+                let full = f.layout.merge.offset(frag);
+                let mine = plan.strings.output_offset(file, class, u64::from(off));
+                if full != mine {
+                    return Err(debug_finding(&format!(
+                        "file {} class {class} string at input {off:#x}: G-1 {mine:?}, the front {full:?}",
+                        file.0
+                    )));
+                }
+                strings += 1;
+            }
+        }
+    }
     // IN-54.
     let mut aranges = 0usize;
     if !identity {
         // By construction (`debug_placed`: each changed file's input
         // section at its stored place and size); the chunk's size is the
         // stored one.
-        let (now, was) = (chunk_named(b".debug_aranges").map(|(_, c)| c.size), stored_chunk(b".debug_aranges")?.map(|c| c.size));
+        let (now, was) = (
+            chunk_named(b".debug_aranges").map(|(_, c)| c.size),
+            stored_chunk(b".debug_aranges")?.map(|c| c.size),
+        );
         if now != was {
             return Err(debug_fallback(
                 &format!("G-4: .debug_aranges: front 1's {now:?} bytes, stored {was:?}"),
