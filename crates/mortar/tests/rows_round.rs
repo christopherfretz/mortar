@@ -22,15 +22,16 @@ use std::path::PathBuf;
 use mortar::front::{Env, front};
 use mortar::incremental::State5;
 use mortar::timing::Timer;
+use mortar_core::incr::{IncrReason, OptionKeys};
 use mortar_core::par::Pool;
 use mortar_diag::{Collector, Policy};
 use mortar_incr::format::def_kind;
+use mortar_incr::update::extract;
 use mortar_incr::update::rows::file_flags;
 use mortar_incr::update::testing::MemoryState;
-use mortar_testutil::{Scratch, run, tool, tools_required};
-use mortar_core::incr::{IncrReason, OptionKeys};
-use mortar_incr::update::extract;
 use mortar_incr::update::view::ChangedFiles;
+use mortar_testutil::target::Arch;
+use mortar_testutil::{Scratch, run, tool, tools_required};
 use support::{Driver, Source, build, build_by, with_output};
 
 const STB_WEAK: u8 = 2;
@@ -51,10 +52,9 @@ struct Line {
 
 fn lines() -> Vec<Line> {
     let mut v = Vec::new();
-    for (label, cc, a64) in [
-        ("aarch64 g++", Driver::Gxx.tool(), true),
-        ("x86-64 g++", "x86_64-linux-gnu-g++".into(), false),
-    ] {
+    for (label, cc, a64) in
+        [("aarch64 g++", Driver::Gxx.tool(), true), ("x86-64 g++", Arch::X86_64.gnu("g++"), false)]
+    {
         let s = Scratch::new(if a64 { "wp261-a64" } else { "wp261-x64" });
         let built = if a64 {
             build(&s, Driver::Gxx, &["-O1"], support::CXX_PROGRAM)
@@ -159,9 +159,9 @@ fn walk(m: &MemoryState) -> Vec<u32> {
         }
     }
     let mut layer: Vec<usize> = Vec::new();
-    for f in 1..n {
+    for (f, o) in out.iter_mut().enumerate().skip(1) {
         if live(f) && !member(f) {
-            out[f] = Some(0);
+            *o = Some(0);
             layer.push(f);
         }
     }
@@ -300,15 +300,17 @@ int wp261_y(void) { return 1; }\n",
 // iterated link falls back `closure-iterated`, by name, from `extract`
 // and end to end.
 #[test]
+#[allow(clippy::many_single_char_names)]
 fn iterated_link_stores_its_iterations_and_its_update_falls_back() {
     let mut ran = 0;
-    for (label, cc) in [("aarch64", "gcc"), ("x86-64", "x86_64-linux-gnu-gcc")] {
+    for (label, cc) in [("aarch64", Arch::Aarch64.gnu("gcc")), ("x86-64", Arch::X86_64.gnu("gcc"))]
+    {
         let s = Scratch::new(&format!("wp261-iter-{label}"));
-        let Some(b) = build_by(&s, cc, &["-O1"], &ITERATED) else {
+        let Some(b) = build_by(&s, &cc, &["-O1"], &ITERATED) else {
             assert!(!tools_required(), "{cc} is required");
             continue;
         };
-        let compiler = tool(cc).expect("the compiler");
+        let compiler = tool(&cc).expect("the compiler");
         let hx_src = s.write("hx.c", "void wp261_hx(void) {}\n");
         let hx = s.join("hx.o");
         let o = run(
@@ -345,8 +347,7 @@ fn iterated_link_stores_its_iterations_and_its_update_falls_back() {
         std::fs::rename(&obj, line.dir.join("wa.c.o")).expect("rename");
         let mut args = with_output(&line.args, &line.dir.join("out"));
         args.extend(
-            ["--incremental=update", "--incremental-state", "out.mortar-state"]
-                .map(OsString::from),
+            ["--incremental=update", "--incremental-state", "out.mortar-state"].map(OsString::from),
         );
         let second = mortar::invoke_in("mortar", &args, &line.dir);
         let report = format!("{:?}\n{}", second.outcome, second.incremental);
