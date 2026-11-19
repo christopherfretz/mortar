@@ -286,7 +286,7 @@ pub fn section_keys<'s>(
 /// The content hash of a fragment's bytes (`L128`, IN-18a `FRAGS`).
 /// `buf` holds the bytes of a fragment not resident in the store; it is
 /// reused from one fragment to the next.
-fn frag_hash(link: &Link<'_, '_>, frag: FragId, buf: &mut Vec<u8>) -> Option<[u8; 16]> {
+pub(crate) fn frag_hash(link: &Link<'_, '_>, frag: FragId, buf: &mut Vec<u8>) -> Option<[u8; 16]> {
     let f = link.split.frags.get(frag)?;
     let (file, index) = link.resolution.sh_index(f.section)?;
     let Reader::Object(object) = link.inputs.files.get(file)?.reader else { return None };
@@ -2263,10 +2263,10 @@ pub fn state5_encode(m: &crate::update::testing::MemoryState) -> Result<Vec<u8>,
 // ---- replay (IN-61) ------------------------------------------------------------
 
 /// The present link's id of each state row of a table.
-struct Map {
+pub(crate) struct Map {
     files: Vec<Option<FileId>>,
     sections: Vec<Option<SectionId>>,
-    chunks: Vec<ChunkId>,
+    pub(crate) chunks: Vec<ChunkId>,
     symbols: Vec<Option<SymKey>>,
     outsecs: Vec<Option<OutSecId>>,
 }
@@ -2291,9 +2291,9 @@ fn anchor_of(s: &State, kind: u8, name: Str) -> Anchor<'_> {
 /// WP-094: the parts of a replay, timed (name, ms).
 pub type Laps = Vec<(&'static str, f64)>;
 
-struct Clock<'l> {
-    laps: &'l mut Laps,
-    at: std::time::Instant,
+pub(crate) struct Clock<'l> {
+    pub(crate) laps: &'l mut Laps,
+    pub(crate) at: std::time::Instant,
 }
 
 impl Clock<'_> {
@@ -2563,7 +2563,7 @@ fn recapture_rows(
 }
 
 #[allow(clippy::too_many_lines)] // one block per table
-fn map(
+pub(crate) fn map(
     link: &Link<'_, '_>,
     keys: &Keys<'_>,
     s: &State,
