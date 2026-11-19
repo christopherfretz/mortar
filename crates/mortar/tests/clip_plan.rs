@@ -907,37 +907,34 @@ fn clip_plan_plans_the_synthetic_chunks() {
     }
 }
 
-// spec: WP-255c2c (`ClipParts::eh_sections`: a section left out is a
-// relocation the fill does not apply), synth.md S-52. The residue named
-// for the ruling: with one input `.eh_frame` section removed from the clip
-// plan's list (the test's hook), the clip of the output `.eh_frame` fills
-// other bytes than the whole plan's, and nothing in the fill refuses it.
+// spec: WP-255e3 R-c2 (ruling "After 255c2c" item 2), synth.md S-52. With
+// one input `.eh_frame` section removed from the clip plan's list (the
+// test's hook), the clip of the output `.eh_frame` is refused
+// `internal-error` by name (a kept record with relocations whose section
+// the plan does not list), never filled with the relocations left out.
 #[test]
-fn an_eh_section_left_out_is_not_seen_by_the_fill() {
+fn an_eh_section_left_out_is_refused_by_the_fill() {
     for arch in ARCHES {
         let Some(s) = fixture(arch, "clip-eh-drop", 0) else { continue };
         with_link(&s, |l| {
             let (_, r, _) = chunk(l, b".eh_frame");
             let clips = std::slice::from_ref(&r);
-            let whole = refill_ranges_for_test(l, clips).expect("the whole plan's fill");
             let mut gone = None;
             let got = refill_clip_plan(l, clips, |p| {
                 let mut eh = p.eh.to_vec();
                 gone = Some(eh.remove(0).section);
                 p.eh = eh.into_boxed_slice();
-            })
-            .unwrap_or_else(|e| panic!("{arch:?}: {e:?}"));
-            let (a, b) = (&got.jobs[0].1, &whole.jobs[0].1);
-            let first = a.iter().zip(b.iter()).position(|(x, y)| x != y);
-            assert!(first.is_some(), "{arch:?}: the bytes are equal without the section");
-            let at = r.start + first.unwrap() as u64;
-            eprintln!(
-                "[clip-eh] {arch:?}: section {} left out: first difference at {at:#x} \
-                 (clip {:#04x}, whole {:#04x}), no diagnostic",
-                gone.unwrap().0,
-                a[first.unwrap()],
-                b[first.unwrap()]
+            });
+            let Err(Err(failed)) = got else {
+                panic!("{arch:?}: a section left out is not refused: {:?}", got.map(|_| ()))
+            };
+            let text = format!("{:?}", failed.diagnostics);
+            assert!(
+                text.contains("InternalError")
+                    && text.contains("has relocations, and its section is not in the plan"),
+                "{arch:?}: {text}"
             );
+            eprintln!("[clip-eh] {arch:?}: section {} left out: refused: {text}", gone.unwrap().0);
         });
     }
 }

@@ -455,10 +455,20 @@ pub(crate) fn compare_values<F: Rows>(
                 differ.push(String::new());
             }
             Err(e) => {
-                let r = refused.entry(e.report()).or_insert((0, String::new()));
+                // WP-255e3: the class of a refused key: the read that
+                // refused and the stored definition's kind.
+                let site = rows.base.refused_at().unwrap_or("-");
+                let kind = view
+                    .resolved(SymbolId(sid))
+                    .map_or_else(|_| "new".to_owned(), |r| format!("{}", r.kind));
+                let at = format!("{} at {site}, RESOLVED.kind {kind}", e.report());
+                let r = refused.entry(at).or_insert((0, String::new()));
                 r.0 += 1;
-                if r.1.is_empty() {
-                    r.1 = String::from_utf8_lossy(&name).into_owned();
+                if r.1.len() < 160 {
+                    if !r.1.is_empty() {
+                        r.1.push(' ');
+                    }
+                    r.1.push_str(&String::from_utf8_lossy(&name));
                 }
             }
         }

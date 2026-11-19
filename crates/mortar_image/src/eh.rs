@@ -27,9 +27,9 @@ pub(crate) fn relocate(
         let what = "fill: the .eh_frame chunk without its plan".to_owned();
         return Err((Key::new(PHASE_IMAGE, 0, 0), Diagnostic::error(Kind::InternalError { what })));
     };
-    if img.plan.eh.is_empty() {
-        return Ok(());
-    }
+    // R-c2: no early return on an empty `Plan::eh`: every kept record in
+    // `[a, b)` is checked below (one with relocations and no listed section
+    // is refused).
     let frames = e.src.frames();
     let n = e.plan.records().len();
     // The first output record ending after `a`.
@@ -48,11 +48,38 @@ pub(crate) fn relocate(
             break;
         }
         let (row, g) = e.plan.source(k);
+        // R-c2 (WP-255e3): a kept record names its record and its section
+        // row; one that does not is an internal error, never a skip.
         let (Some(rec), Some(sec)) = (frames.records.get(g as usize), frames.sections.get(row))
         else {
-            continue;
+            let what = format!(
+                "fill: output .eh_frame record {k} names input record {g} of section row {row}, \
+                 which the .eh_frame source does not hold"
+            );
+            return Err((
+                Key::new(PHASE_IMAGE, 0, 0),
+                Diagnostic::error(Kind::InternalError { what }),
+            ));
         };
-        let Some(es) = img.plan.eh_section(sec.section) else { continue };
+        let Some(es) = img.plan.eh_section(sec.section) else {
+            // S-52: `Plan::eh` lists every live input `.eh_frame` section
+            // with relocations, and a kept record's section is live. A kept
+            // record with relocations whose section the plan does not list
+            // would be written with none applied: refused, not skipped. A
+            // record without relocations has nothing to apply.
+            if rec.relocs.len == 0 {
+                continue;
+            }
+            let what = format!(
+                "fill: output .eh_frame record {k} (input section {}) has relocations, and its \
+                 section is not in the plan's .eh_frame sections",
+                sec.section.0
+            );
+            return Err((
+                Key::new(PHASE_IMAGE, 0, 0),
+                Diagnostic::error(Kind::InternalError { what }),
+            ));
+        };
         let rs = &img.plan.relocs[es.relocs as usize];
         // The record's input bytes land at `at..at + 4 + len` (its
         // padding, S-47, holds no field).

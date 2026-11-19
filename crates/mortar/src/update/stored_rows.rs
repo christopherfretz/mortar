@@ -77,6 +77,9 @@ pub struct StoredRows<'a, 's> {
     names: Box<[OnceLock<NamePage>]>,
     /// The first reason a read could not answer (see the module doc).
     failed: Mutex<Option<IncrReason>>,
+    /// WP-255e3 (S3's refused keys by class): the read that refused first
+    /// (`front_only`'s site, a function name), cleared with `failed`.
+    refused_at: Mutex<Option<&'static str>>,
 }
 
 impl std::fmt::Debug for StoredRows<'_, '_> {
@@ -224,6 +227,7 @@ impl<'a, 's> StoredRows<'a, 's> {
             mentions: Mutex::new(HashMap::new()),
             names,
             failed: Mutex::new(None),
+            refused_at: Mutex::new(None),
         })
     }
 
@@ -236,6 +240,23 @@ impl<'a, 's> StoredRows<'a, 's> {
     /// Clears the recorded failure (WP-255e2: `UpdateRows::value_of`).
     pub(crate) fn clear_failure(&self) {
         *self.failed.lock().unwrap_or_else(PoisonError::into_inner) = None;
+        *self.refused_at.lock().unwrap_or_else(PoisonError::into_inner) = None;
+    }
+
+    /// The read that refused first since the last clear (a function name),
+    /// for the shadow's record of S3's refused keys.
+    pub(crate) fn refused_at(&self) -> Option<&'static str> {
+        *self.refused_at.lock().unwrap_or_else(PoisonError::into_inner)
+    }
+
+    /// `front_only()` recorded, with the read that refused (`site`).
+    fn refuse(&self, site: &'static str) {
+        let mut at = self.refused_at.lock().unwrap_or_else(PoisonError::into_inner);
+        if at.is_none() && self.failure().is_none() {
+            *at = Some(site);
+        }
+        drop(at);
+        self.fail(front_only());
     }
 
     /// `rows::value` of `key` with its stored facts, or the reason a read
@@ -244,7 +265,7 @@ impl<'a, 's> StoredRows<'a, 's> {
     /// # Errors
     /// The first reason recorded while valuing `key`.
     pub fn value_of(&self, key: SymKey) -> Result<SymValue, IncrReason> {
-        *self.failed.lock().unwrap_or_else(PoisonError::into_inner) = None;
+        self.clear_failure();
         let v = mortar_image::rows::sym(self, key);
         self.failure().map_or(Ok(v), Err)
     }
@@ -322,7 +343,7 @@ impl<'a, 's> StoredRows<'a, 's> {
         if found.next().is_some() {
             // Two definitions of one key in one file: which one won is
             // not stored (the file's own front).
-            self.fail(front_only());
+            self.refuse("definer_entry");
             return None;
         }
         let index = m.0.checked_add(u32::try_from(k).ok()?)?;
@@ -337,7 +358,7 @@ impl<'a, 's> StoredRows<'a, 's> {
             refs.iter().filter(|r| !r.tomb && r.def == def_kind::ABSOLUTE && r.bind == bind);
         let first = found.next();
         if found.next().is_some() || first.is_none() {
-            self.fail(front_only());
+            self.refuse("absolute_file");
             return None;
         }
         Some(FileId(first?.file))
@@ -391,46 +412,46 @@ impl Rows for StoredRows<'_, '_> {
     }
 
     fn kept_copy(&self, _d: SectionId) -> Option<SectionId> {
-        self.fail(front_only());
+        self.refuse("kept_copy");
         None
     }
 
     fn named_piece(&self, _s: SectionId, _v: u64) -> Option<PieceRef> {
         // §9.3 class (d): the definer's section split by `mortar_merge`,
         // then `FRAGS`: needs the section's bytes (255d's front).
-        self.fail(front_only());
+        self.refuse("named_piece");
         None
     }
 
     fn split_row(&self, _s: SectionId) -> Option<u32> {
-        self.fail(front_only());
+        self.refuse("split_row");
         None
     }
 
     fn section_piece(&self, _s: SectionId, _row: u32, _r: i64) -> Option<Result<PieceRef, What>> {
-        self.fail(front_only());
+        self.refuse("section_piece");
         None
     }
 
     fn frag_live(&self, _f: FragId) -> bool {
         // Only reached through `named_piece`/`section_piece`, which fall
         // back first.
-        self.fail(front_only());
+        self.refuse("frag_live");
         true
     }
 
     fn frag_place(&self, _f: FragId) -> Option<(ChunkId, u64)> {
-        self.fail(front_only());
+        self.refuse("frag_place");
         None
     }
 
     fn frag_offset(&self, _f: FragId) -> Option<u64> {
-        self.fail(front_only());
+        self.refuse("frag_offset");
         None
     }
 
     fn merged_chunk(&self, _s: SectionId) -> Option<ChunkId> {
-        self.fail(front_only());
+        self.refuse("merged_chunk");
         None
     }
 
@@ -454,7 +475,7 @@ impl Rows for StoredRows<'_, '_> {
     }
 
     fn eh_value(&self, _s: SectionId, _r: i64, _who: EhWho) -> Option<Result<EhValue, SynthError>> {
-        self.fail(front_only());
+        self.refuse("eh_value");
         None
     }
 
@@ -485,7 +506,7 @@ impl Rows for StoredRows<'_, '_> {
             // is the `DEFINED` row.
             def_kind::INTERNAL => RowDef::Internal,
             def_kind::SHARED => {
-                self.fail(front_only());
+                self.refuse("def");
                 return None;
             }
             _ => {
@@ -499,7 +520,7 @@ impl Rows for StoredRows<'_, '_> {
         let m = self.mentions(e.file)?;
         let Some(k) = e.index.0.checked_sub(m.0) else {
             // A local: the file's own front.
-            self.fail(front_only());
+            self.refuse("entry");
             return None;
         };
         let Some(row) = m.1.get(k as usize) else {
@@ -513,7 +534,7 @@ impl Rows for StoredRows<'_, '_> {
         if !defines {
             // An entry that is not its key's resolved definition: the
             // stored row is the winner's, not this entry's.
-            self.fail(front_only());
+            self.refuse("entry");
             return None;
         }
         let place = match r.kind {
@@ -548,7 +569,7 @@ impl Rows for StoredRows<'_, '_> {
 
     fn facts(&self, key: SymKey) -> SymFacts {
         let SymKind::Global(id) = key.kind() else {
-            self.fail(front_only());
+            self.refuse("facts");
             return UNKNOWN_FACTS;
         };
         let Some(r) = self.ok(self.view.resolved(id)) else { return UNKNOWN_FACTS };
@@ -560,14 +581,14 @@ impl Rows for StoredRows<'_, '_> {
 
     fn facts_at(&self, key: SymKey, mention: Option<SymEntry>) -> SymFacts {
         if mention.is_some() {
-            self.fail(front_only());
+            self.refuse("facts_at");
         }
         self.facts(key)
     }
 
     fn name(&self, key: SymKey) -> &[u8] {
         let SymKind::Global(id) = key.kind() else {
-            self.fail(front_only());
+            self.refuse("name");
             return b"";
         };
         let i = id.0 as usize;
@@ -586,7 +607,7 @@ impl Rows for StoredRows<'_, '_> {
 
     fn demand(&self, key: SymKey) -> DemandFlags {
         let SymKind::Global(id) = key.kind() else {
-            self.fail(front_only());
+            self.refuse("demand");
             return DemandFlags::empty();
         };
         let Some(refs) = self.ok(self.view.key_refs(id)) else { return DemandFlags::empty() };

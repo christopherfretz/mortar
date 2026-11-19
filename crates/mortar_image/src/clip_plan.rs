@@ -202,12 +202,6 @@ pub enum NotYet {
     /// A synthetic chunk (§13) of a kind not in [`PLANNED`], or one
     /// [`ClipParts::synth`] does not hold.
     Synth,
-    /// A patch island (thunks, erratum patches). Not refused since
-    /// WP-255c2c.
-    Patches,
-    /// An input `.eh_frame` section placed in a body chunk. Not refused
-    /// since WP-255c2c.
-    EhFrame,
     /// A `-r` chunk (a group or a relocation section).
     Relocatable,
 }
@@ -700,6 +694,37 @@ pub fn for_clips<R: Rows>(
         b.sealed(s.clone());
     }
     Ok(b.finish(crate::IMAGE_BLOCK, &Pool::sequential())?)
+}
+
+/// c2b-1 (ruling "After 255e2" item 3): THE member rule, the one function
+/// both member indexes call: the full link's ([`crate::link::clip_members`],
+/// over a `Link`) and the update's (over stored `SECTIONS` and `CHUNKS`
+/// rows). A section is a member of `chunk` when it is kept, of a placed
+/// kind, live and not folded (P-1), not `SHT_NOBITS`, has bytes, and
+/// `chunk` is an in-file `Body` chunk. It takes the fields it reads, not a
+/// `Link` (each caller reads them from its own rows).
+#[must_use]
+#[allow(
+    clippy::fn_params_excessive_bools,
+    reason = "P-1's four facts, each read from a different column by each caller"
+)]
+pub fn is_clip_member(
+    kept: bool,
+    placed_kind: bool,
+    live: bool,
+    folded: bool,
+    sh_type: u32,
+    size: u64,
+    chunk: &Chunk,
+) -> bool {
+    const SHT_NOBITS: u32 = 8;
+    kept && placed_kind
+        && live
+        && !folded
+        && sh_type != SHT_NOBITS
+        && size > 0
+        && chunk.in_file()
+        && matches!(chunk.kind, ChunkKind::Body(_))
 }
 
 /// c2b-3 (ruling "After 255c2b" item 3): before the first row, every
