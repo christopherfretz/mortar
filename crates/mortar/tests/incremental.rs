@@ -2445,16 +2445,19 @@ fn u1_and_u2_reasons_in_order_on_a_format5_state() {
     // `--incremental=update` reaches U2 (it ignores `small-output`): the
     // skeleton names the first step not wired.
     assert_eq!(cannot_update(&prog, &[]), "update-not-implemented (resolve)");
-    // (U2's debug, U6's live): `debug` first; a gc link alone reaches U4
-    // (gc-lift: no refusal by the option): nothing changed, `resolve`.
+    // (U2's debug, U6's live): a gc link alone reaches U4 (gc-lift: no
+    // refusal by the option): nothing changed, `resolve`. G-3 (WP-230):
+    // U2's debug condition is IN-55/IN-55a only, so plain `-g` sections,
+    // in the new version or in the old one's rows, pass it; debug sections
+    // that appear or go are not the stored placement, and path (A)'s image
+    // of the front falls back `(image)` (`reference_of`), by name.
     prog.link("o", &["--incremental", "--gc-sections"]);
     assert_eq!(cannot_update(&prog, &["--gc-sections"]), "update-not-implemented (resolve)");
     reassemble(&prog, ASM, &["-g"]);
-    assert_eq!(cannot_update(&prog, &["--gc-sections"]), "update-not-implemented (debug)");
-    // The old version's debug rows decide too (the new one has none).
+    assert_eq!(cannot_update(&prog, &["--gc-sections"]), "update-not-implemented (image)");
     prog.link("o", &["--incremental"]);
     reassemble(&prog, ASM, &[]);
-    assert_eq!(cannot_update(&prog, &[]), "update-not-implemented (debug)");
+    assert_eq!(cannot_update(&prog, &[]), "update-not-implemented (image)");
     // Nothing written by a fall-back of the update: a full link follows.
     line_with(&prog.link("o", &inc), "(small-output)");
 }

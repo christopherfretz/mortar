@@ -452,7 +452,15 @@ fn reference_of(
         ));
     }
     // G-3 (WP-230): G-1's decisions judged against the front's bytes.
-    debug_judged(view, &stored, f, files, placed.as_ref().and_then(|p| p.debug.as_ref()), &refill, out)?;
+    debug_judged(
+        view,
+        &stored,
+        f,
+        files,
+        placed.as_ref().and_then(|p| p.debug.as_ref()),
+        &refill,
+        out,
+    )?;
     steps.mark("check");
     #[cfg(feature = "testhooks")]
     crate::incremental::materialize_hop(view, f);
@@ -1425,7 +1433,8 @@ fn debug_judged(
     let mut has_debug = false;
     for &file in files {
         for r in view.sections_of(file)? {
-            has_debug |= r.sh_flags & SHF_ALLOC == 0 && view.string(r.name)?.starts_with(b".debug_");
+            has_debug |=
+                r.sh_flags & SHF_ALLOC == 0 && view.string(r.name)?.starts_with(b".debug_");
         }
     }
     if !has_debug {
@@ -1519,8 +1528,8 @@ fn debug_judged(
         // (the identity check has already equated the stored chunks).
         let replaced: Vec<(u64, u64, Vec<u8>)> =
             plan.aranges.iter().map(|&(_, s, e)| (s, e, Vec::new())).collect();
-        let mine = debug::aranges(&[], &replaced)
-            .map_err(|e| debug_fallback("debug::aranges", e))?;
+        let mine =
+            debug::aranges(&[], &replaced).map_err(|e| debug_fallback("debug::aranges", e))?;
         if !mine.is_empty() {
             return Err(debug_finding(&format!(
                 ".debug_aranges: none in the front, and G-1's rewrite is {} bytes",
@@ -1558,8 +1567,8 @@ fn debug_judged(
             }
             replaced.push((s, e, sets));
         }
-        let mine = debug::aranges(&prev, &replaced)
-            .map_err(|e| debug_fallback("debug::aranges", e))?;
+        let mine =
+            debug::aranges(&prev, &replaced).map_err(|e| debug_fallback("debug::aranges", e))?;
         if mine != now {
             let at = mine.iter().zip(&now).position(|(a, b)| a != b);
             return Err(debug_finding(&format!(
