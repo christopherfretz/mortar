@@ -34,6 +34,7 @@ use mortar_core::par::Pool;
 use mortar_core::resolution::SectionKind;
 use mortar_diag::{Collector, Policy};
 use mortar_elf::SectionIndex;
+use mortar_elf::consts::{SHF_COMPRESSED, SHF_EXCLUDE, SHF_MERGE};
 use mortar_incr::update::rows::FileTable;
 use mortar_incr::update::view::StateView;
 use mortar_merge::eh::{Code, EhReloc, Kind, Record, Target};
@@ -295,6 +296,8 @@ struct Seen {
     eh_relocs: u32,
     frag_uses: u32,
     dead_split: u32,
+    /// `FILES.eh_records` summed (checked exactly per file).
+    eh_kept: u32,
 }
 
 /// The split of one object file against the whole front's and the rows.
@@ -410,16 +413,31 @@ fn compare(
     seen.frag_uses += stored.len() as u32;
     // A kept merge section that liveness drops is split all the same.
     seen.dead_split += dead.len() as u32;
-    // `FILES.eh_*`: the selected records are among the parsed ones.
-    let (records, fdes) = (
-        got.eh.records.len() as u32,
-        got.eh.records.iter().filter(|r| r.fde().is_some()).count() as u32,
-    );
-    let row = &ff.row;
-    assert!(row.eh_records <= records && row.eh_fdes <= fdes, "{}", what("FILES.eh_*"));
-    if records == 0 {
-        assert_eq!((row.eh_records, row.eh_capacity), (0, 0), "{}", what("FILES.eh_* empty"));
+    // `FILES.eh_*`, exactly (S-41, S-42, S-44 with IN-34a's per-file
+    // CIEs): the split's FDEs whose code section is live in the whole
+    // front (no `--icf` here: nothing is folded), and one CIE per identity
+    // class (the split numbers them over the file) that a live FDE uses.
+    let (mut fdes, mut classes) = (0u32, BTreeSet::new());
+    for g in &got.eh.sections {
+        let records = &got.eh.records[g.records.slots()];
+        for r in records {
+            let Some(fde) = r.fde() else { continue };
+            let Code::Section { section, .. } = fde.code else { continue };
+            if !f.liveness.is_live(x.front_id(section)) {
+                continue;
+            }
+            fdes += 1;
+            let cie = records[fde.cie as usize].cie().expect("an FDE's CIE");
+            classes.insert(cie.class);
+        }
     }
+    let records = fdes + classes.len() as u32;
+    let row = &ff.row;
+    assert_eq!((row.eh_records, row.eh_fdes), (records, fdes), "{}", what("FILES.eh_*"));
+    if records == 0 {
+        assert_eq!(row.eh_capacity, 0, "{}", what("FILES.eh_* empty"));
+    }
+    seen.eh_kept += records;
     got
 }
 
@@ -442,6 +460,7 @@ fn check(line: &Line) -> Seen {
     }
     eprintln!("{}: {seen:?}", line.label);
     assert!(seen.pieces > 0 && seen.records > 0 && seen.frag_uses > 0, "{}: {seen:?}", line.label);
+    assert!(seen.eh_kept > 0, "{}: no kept .eh_frame record", line.label);
     seen
 }
 
@@ -501,5 +520,98 @@ fn one_string_edited_is_one_piece() {
         }
         assert_eq!(differ, 1, "{}: {differ} pieces differ", a.label);
         assert!(x.pieces.len() >= 3, "{}: the strings are pieces", a.label);
+    }
+}
+
+/// S-6's uncompressed shapes, each an `SHF_MERGE` section with
+/// `sh_entsize > 0` that is placed whole: writable, code, TLS, the target
+/// of a relocation section, empty, `sh_entsize` above 2^16; and an
+/// `SHF_EXCLUDE` section with a relocation section of its own (`.rela`
+/// is never `Excluded`, resolve.md §10: the `Reloc` row is first; it
+/// applies to nothing, `reloc_fate`).
+const S6: &str = r#"int wp255d2d_sym = 5;
+__asm__(".section .rodata.wp255d2d_w,\"awMS\",%progbits,1\n.asciz \"w1\"\n"
+        ".section .text.wp255d2d_x,\"axMS\",%progbits,1\n.asciz \"x1\"\n"
+        ".section .tdata.wp255d2d_t,\"aTM\",%progbits,4\n.word 7\n"
+        ".section .rodata.wp255d2d_r,\"aM\",%progbits,8\n.quad wp255d2d_sym\n"
+        ".section .rodata.wp255d2d_e,\"aMS\",%progbits,1\n"
+        ".section .rodata.wp255d2d_b,\"aM\",%progbits,131072\n.zero 131072\n"
+        ".section .wp255d2d_ex,\"e\",%progbits\n.quad wp255d2d_sym\n"
+        ".text\n");
+int wp255d2d_use(void) { return wp255d2d_sym; }
+"#;
+
+/// The names `S6` gives its sections, and the kind the whole link gives each.
+const S6_KINDS: [(&[u8], SectionKind); 7] = [
+    (b".rodata.wp255d2d_w", SectionKind::Regular),
+    (b".text.wp255d2d_x", SectionKind::Regular),
+    (b".tdata.wp255d2d_t", SectionKind::Regular),
+    (b".rodata.wp255d2d_r", SectionKind::Regular),
+    (b".rodata.wp255d2d_e", SectionKind::Regular),
+    (b".rodata.wp255d2d_b", SectionKind::Regular),
+    (b".wp255d2d_ex", SectionKind::Excluded),
+];
+
+/// D3-5: `Unit::Whole` is unreachable for an uncompressed merge section
+/// (S-6 makes every such section `Regular` in resolve, so phase 60 never
+/// meets it), and a relocation section applying to an excluded section
+/// changes nothing in the split. The whole front's kinds by name; the
+/// split of every object equal to the whole front's (`compare`), with no
+/// section placed whole.
+#[test]
+fn merge_sections_placed_whole_are_regular() {
+    for (_, a64) in TARGETS {
+        let label = format!("{} gcc S-6", TARGETS[usize::from(!a64)].0);
+        let sources = [support::C_PROGRAM[0], Source { name: "wp255d2d6.c", text: S6 }];
+        let Some(line) = line_of(label, a64, "c", &sources) else { continue };
+        let store = support::store();
+        let f = line.front(&store);
+        let file = objects(&f)
+            .into_iter()
+            .find(|&id| f.inputs.files[id].path.ends_with(b"wp255d2d6.c.o"))
+            .expect("the S-6 object");
+        let Reader::Object(obj) = f.inputs.files[file].reader else { panic!("not an object") };
+        let mut found = 0;
+        let mut relocs = 0;
+        for k in 1..obj.section_count() {
+            let s = obj.section(SectionIndex(k)).expect("section");
+            let name = s.name().expect("name");
+            let kind = f.resolution.section_id(file, SectionIndex(k)).map(|id| {
+                let row = f.resolution.sections[id];
+                (row.kind, row.reloc)
+            });
+            if let Some(&(_, want)) = S6_KINDS.iter().find(|(n, _)| *n == name) {
+                // As written: `SHF_MERGE` with `sh_entsize > 0` (`Merge` by
+                // §10's first rows), or `SHF_EXCLUDE`.
+                let merge = s.flags() & SHF_MERGE != 0 && s.header().sh_entsize > 0;
+                let shape = if want == SectionKind::Excluded {
+                    s.flags() & SHF_EXCLUDE != 0
+                } else {
+                    merge && s.flags() & SHF_COMPRESSED == 0
+                };
+                assert!(shape, "{}: {} as written", line.label, String::from_utf8_lossy(name));
+                let (kind, reloc) = kind.expect("a row");
+                assert_eq!(kind, want, "{}: {}", line.label, String::from_utf8_lossy(name));
+                // The relocated one is S-6's by its relocation section;
+                // the excluded one's applies to nothing (`reloc_fate`).
+                let relocated = name == b".rodata.wp255d2d_r";
+                assert_eq!(reloc.0 != 0, relocated, "{}: {:?}'s reloc", line.label, name);
+                found += 1;
+            }
+            if name == b".rela.wp255d2d_ex" {
+                let (kind, _) = kind.expect("a row");
+                assert_eq!(
+                    kind,
+                    SectionKind::Reloc,
+                    "{}: the excluded section's .rela",
+                    line.label
+                );
+                relocs += 1;
+            }
+        }
+        assert_eq!((found, relocs), (S6_KINDS.len(), 1), "{}: the S-6 sections", line.label);
+        drop(f);
+        let seen = check(&line);
+        assert_eq!(seen.whole, 0, "{}: a section placed whole reached phase 60", line.label);
     }
 }

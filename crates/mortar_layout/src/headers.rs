@@ -6,12 +6,12 @@
 
 use mortar_core::check::{SectionShapes, Shape};
 use mortar_core::column::Column;
-use mortar_core::id::{FileId, SectionId};
+use mortar_core::id::{FileId, IdRange, SectionId};
 use mortar_core::inputs::{Inputs, Reader};
 use mortar_core::par::Pool;
 use mortar_core::resolution::Resolution;
-use mortar_elf::SectionIndex;
 use mortar_elf::consts::SHF_COMPRESSED;
+use mortar_elf::{Object, SectionIndex};
 
 use crate::diag::{LayoutDiag, internal};
 
@@ -70,34 +70,7 @@ pub fn gather<'n>(
                 rows.push(Header::EMPTY);
                 continue;
             }
-            let at = || format!("file {f} section {index}");
-            let s = object.section(SectionIndex(index)).map_err(|_| at())?;
-            let name = s.name().map_err(|_| at())?;
-            let mut align = s.alignment().map_err(|_| at())?.max(1);
-            let mut size = s.size();
-            if s.flags() & SHF_COMPRESSED != 0
-                && let Ok(Some(c)) = s.compression()
-            {
-                size = c.header.ch_size;
-                align = c.header.ch_addralign.max(1);
-            }
-            if !align.is_power_of_two() {
-                return Err(format!("{}: alignment {align}", at()));
-            }
-            let link = s
-                .link()
-                .ok()
-                .filter(|l| l.0 != 0 && l.0 < range.len())
-                .map(|l| SectionId(range.start.0 + l.0));
-            rows.push(Header {
-                name,
-                sh_type: s.sh_type(),
-                flags: s.flags(),
-                size,
-                align: align.trailing_zeros() as u8,
-                link,
-                entsize: s.header().sh_entsize,
-            });
+            rows.push(header_of(&object, file, SectionIndex(index), range)?);
         }
         Ok(rows)
     });
@@ -106,6 +79,53 @@ pub fn gather<'n>(
         all.extend(rows.map_err(internal)?);
     }
     Column::from_vec(all).map_err(|_| internal("too many sections"))
+}
+
+/// The header of section `index` (not 0) of `object`, file `file` whose
+/// sections are the ids `range` (`gather`'s row of it): the name, type,
+/// flags, `sh_entsize`; the size and alignment placed (the decompressed
+/// ones of a `SHF_COMPRESSED` input, L-52); `sh_link` as the id in `range`
+/// (none for 0 or an index past the file's sections).
+///
+/// # Errors
+///
+/// The text of the problem (`file F section I`, with the alignment when it
+/// is not a power of two) when the section, its name or its alignment
+/// cannot be read or the alignment is not a power of two.
+pub fn header_of<'n>(
+    object: &Object<'n>,
+    file: FileId,
+    index: SectionIndex,
+    range: IdRange<SectionId>,
+) -> Result<Header<'n>, String> {
+    let at = || format!("file {} section {}", file.0, index.0);
+    let s = object.section(index).map_err(|_| at())?;
+    let name = s.name().map_err(|_| at())?;
+    let mut align = s.alignment().map_err(|_| at())?.max(1);
+    let mut size = s.size();
+    if s.flags() & SHF_COMPRESSED != 0
+        && let Ok(Some(c)) = s.compression()
+    {
+        size = c.header.ch_size;
+        align = c.header.ch_addralign.max(1);
+    }
+    if !align.is_power_of_two() {
+        return Err(format!("{}: alignment {align}", at()));
+    }
+    let link = s
+        .link()
+        .ok()
+        .filter(|l| l.0 != 0 && l.0 < range.len())
+        .map(|l| SectionId(range.start.0 + l.0));
+    Ok(Header {
+        name,
+        sh_type: s.sh_type(),
+        flags: s.flags(),
+        size,
+        align: align.trailing_zeros() as u8,
+        link,
+        entsize: s.header().sh_entsize,
+    })
 }
 
 /// The headers as the shapes `Layout::check` reads.
