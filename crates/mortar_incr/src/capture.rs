@@ -2853,6 +2853,56 @@ pub struct FileRows {
     pub commons: Vec<(u32, u64, u64)>,
     pub copies: Vec<(u32, u32, u64, u8)>,
     pub groups: Vec<Vec<u8>>,
+    /// WP-225 M2b-1: its `INDEX` rows (`tables::index_file`, the
+    /// capture's own maker), the LINK's ids (`unit` a `SectionId`, a
+    /// key target a `SymbolId`). Empty from [`file_rows`]; filled by
+    /// [`file_rows_index_edges`].
+    pub index: Vec<crate::format::IndexRow>,
+    /// WP-225 M2b-1: its sections' IN-29 rows under `--gc-sections`
+    /// (`mortar_live::stored_edges`' rows whose source is one of its
+    /// sections, in their order), the LINK's ids. Empty from
+    /// [`file_rows`] and without `--gc-sections`; filled by
+    /// [`file_rows_index_edges`].
+    pub edges: Vec<mortar_core::incr::LiveEdge>,
+}
+
+/// WP-225 M2b-1: [`FileRows::index`] and [`FileRows::edges`] of `rows`
+/// (made by [`file_rows`]): `INDEX` by `tables::index_file`, the
+/// capture's own maker, over each live object's symbol table; `EDGES` the
+/// slice of `edges` (`mortar_live::stored_edges`' rows, sorted by
+/// source; `None` without `--gc-sections`) whose source is one of the
+/// file's sections. O(those files' sections and relocations).
+///
+/// # Errors
+/// As `index_file`, or a symbol table that cannot be read.
+pub fn file_rows_index_edges(
+    link: &Link<'_, '_>,
+    arch: &dyn mortar_arch::Arch,
+    edges: Option<&[mortar_core::incr::LiveEdge]>,
+    rows: &mut [FileRows],
+) -> Result<(), String> {
+    use mortar_core::resolution::FileLive;
+    let inputs = link.inputs;
+    let res = link.resolution;
+    for r in rows.iter_mut() {
+        let f = inputs.files.get(r.file).ok_or("a file of the list is not the link's")?;
+        let live = res.file_live.get(r.file).is_some_and(|l| *l != FileLive::Dead);
+        if live && let Reader::Object(object) = f.reader {
+            let bad = || format!("{}: symbol table", String::from_utf8_lossy(f.path));
+            if let Some(table) = object.symbols().map_err(|_| bad())? {
+                let mut index = Vec::new();
+                crate::tables::index_file(inputs, link, r.file, &object, &table, arch, &mut index)?;
+                r.index = index;
+            }
+        }
+        if let Some(all) = edges {
+            let range = res.section_base.get(r.file).copied().ok_or("a file without sections")?;
+            let lo = all.partition_point(|e| e.source.0 < range.start.0);
+            let hi = all.partition_point(|e| e.source.0 < range.end.0);
+            r.edges = all[lo..hi].to_vec();
+        }
+    }
+    Ok(())
 }
 
 /// [`FileRows`] for each of `files`, in that order: O(those files'
@@ -2895,6 +2945,8 @@ pub fn file_rows(
             commons: Vec::new(),
             copies: Vec::new(),
             groups: Vec::new(),
+            index: Vec::new(),
+            edges: Vec::new(),
         };
         // KEY_REFS, COMMONS, COPIES, GROUPS: the capture's per-file task
         // (`copies`: `Link5::copies`, the link's `--odr` mode).
