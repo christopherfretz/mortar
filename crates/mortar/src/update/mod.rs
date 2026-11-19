@@ -1657,6 +1657,13 @@ fn shadow_255e(
                     'jobs: for (j, bytes) in &fill.jobs {
                         for (i, &v) in bytes.iter().enumerate() {
                             let x = j.start + i as u64;
+                            // WP-255e3: the build id's descriptor is the
+                            // fill's zeros (I-73, `fill.rs`), written after
+                            // the hash; the jobs' bytes are before it (the
+                            // build id itself is S1's `build_id` judgement).
+                            if fill.clip.sealed.as_ref().is_some_and(|r| r.contains(&x)) {
+                                continue;
+                            }
                             let want = refill_byte(&c, &starts, x);
                             // A byte outside C''s ranges is the previous
                             // output's (a refilled range equal to it is
