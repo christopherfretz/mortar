@@ -348,14 +348,15 @@ const CALLER: &str =
     "int wp264_warned(int);\nint wp264_w2(int x) { return wp264_warned(x) + 2; }\n";
 
 /// DIAGS (IN-75a, WP-263 F-2): what an update loses today. The full link
-/// prints the reference-site warning, and its state holds no `DIAGS` row.
+/// prints the reference-site warning; since WP-265 its state holds the
+/// warning's `DIAGS` row (`diags_producer.rs` judges the rows).
 /// An update with nothing changed, and one with an unrelated file
 /// (`m1.o`) changed, are then run: both refuse, the second
 /// `update-not-implemented (diags)` (its front saw the warning). So no
 /// warning is lost today; the update is: a link with any warning never
 /// updates. Once the join replays `DIAGS` (U-9), an empty `DIAGS` would
-/// drop the warning of an unchanged file. When a producer lands, the
-/// first assertion flips.
+/// drop the warning of an unchanged file. The producer has landed
+/// (WP-265): the first assertion flipped.
 #[test]
 fn diags_hold_no_warning_today() {
     let m1v = format!("{}{TAG}", update::M1);
@@ -388,7 +389,11 @@ fn diags_hold_no_warning_today() {
             &std::fs::read(line.dir.join("out.state5")).expect("the state"),
         )
         .expect("the state decodes");
-        assert!(m.diags.is_empty(), "{label}: DIAGS has a producer now: {:?}", m.diags);
+        assert!(
+            m.diags.iter().any(|d| d.code == "gnu-warning" && d.ref_count == 1),
+            "{label}: DIAGS holds the warning (WP-265): {:?}",
+            m.diags
+        );
         let mut upd = a.clone();
         upd.push("--incremental=update".into());
         let same = mortar::invoke_in("mortar", &upd, &line.dir);

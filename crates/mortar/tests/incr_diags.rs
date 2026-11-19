@@ -585,7 +585,7 @@ fn stored(a: &Full) -> MemoryState {
     order(&mut want);
     order(&mut have);
     assert_eq!(have, want, "the capture's DIAGS rows");
-    m.diags = a.rows.clone();
+    m.diags.clone_from(&a.rows);
     m
 }
 
