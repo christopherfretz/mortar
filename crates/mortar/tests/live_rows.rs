@@ -40,8 +40,16 @@ impl Line {
 }
 
 /// The two 64-bit targets' C drivers and their return-address column.
-const TARGETS: [(&str, &str, u32); 2] =
-    [("aarch64", "gcc", 30), ("x86-64", "x86_64-linux-gnu-gcc", 16)];
+/// The two targets, each with its C driver as this host names it (plain
+/// on its own host, `<triple>-gcc` elsewhere: the hosted x86-64 lane runs
+/// natively) and its return-address register.
+fn targets() -> [(&'static str, &'static str, u32); 2] {
+    use mortar_testutil::target::Arch;
+    [
+        ("aarch64", Arch::Aarch64.gnu("gcc").leak(), 30),
+        ("x86-64", Arch::X86_64.gnu("gcc").leak(), 16),
+    ]
+}
 
 /// Compiles `sources` with `cc` and `flags`; the static link line with
 /// `--gc-sections` and `extra` appended (`None`: the tool is missing).
@@ -129,7 +137,7 @@ fn leak(s: String) -> &'static str {
 /// roots.sh s1: `-init=myinit` is the only root of myinit's section.
 #[test]
 fn s1_init_root_agrees() {
-    for (arch, cc, _) in TARGETS {
+    for (arch, cc, _) in targets() {
         let src = [
             Source { name: "a.c", text: "int main(void){ return 0; }\n" },
             Source {
@@ -154,7 +162,7 @@ fn s1_init_root_agrees() {
 /// is live only through that row.
 #[test]
 fn s2_start_stop_from_nonalloc_agrees() {
-    for (arch, cc, _) in TARGETS {
+    for (arch, cc, _) in targets() {
         let src = [
             Source { name: "a.c", text: "int main(void){ return 0; }\n" },
             Source {
@@ -178,7 +186,7 @@ fn s2_start_stop_from_nonalloc_agrees() {
 /// `REFUSE` row, and the walk refuses `fde-global`.
 #[test]
 fn fde_global_is_refused() {
-    for (arch, cc, ra) in TARGETS {
+    for (arch, cc, ra) in targets() {
         let f = leak(format!(
             "  .section .text.foo,\"ax\",%progbits\n  .weak foo\n  .type foo,%function\nfoo:\n  ret\n\
              \x20 .size foo,.-foo\n  .section .rodata.lsda,\"a\",%progbits\nlsda:\n  .long 0x4c534441\n\
@@ -215,7 +223,7 @@ const LO_M: &str = "int gfun(void);\nint main(void){ return gfun(); }\n";
 /// without the group: a.o's copy wins, `.meta` kept) agrees.
 #[test]
 fn link_order_def_dropped_is_refused() {
-    for (arch, cc, _) in TARGETS {
+    for (arch, cc, _) in targets() {
         for (n, b, refuse) in [("lo1", LO_B_GROUP, true), ("lo2 v0", LO_B_PLAIN, false)] {
             let src = [
                 Source { name: "m.c", text: LO_M },
@@ -240,7 +248,7 @@ fn link_order_def_dropped_is_refused() {
 /// piece).
 #[test]
 fn kbig_value_agrees() {
-    for (arch, cc, _) in TARGETS {
+    for (arch, cc, _) in targets() {
         let main = if arch == "x86-64" {
             "  .text\n  .globl main\nmain:\n  movl $0, %eax\n  ret\n"
         } else {
@@ -269,7 +277,7 @@ fn kbig_value_agrees() {
 /// OCCURRENCE, F14, tells them apart): the hash over both copies agrees.
 #[test]
 fn duplicate_file_agrees() {
-    for (arch, cc, _) in TARGETS {
+    for (arch, cc, _) in targets() {
         let src = [
             Source { name: "m.c", text: "int wf(void);\nint main(void){ return wf(); }\n" },
             Source {
@@ -308,7 +316,7 @@ fn duplicate_file_agrees() {
 #[test]
 #[allow(clippy::many_single_char_names, reason = "l, m, f, s, k: the line, its state, its front")]
 fn live_roots_are_resolves_roots() {
-    for (arch, cc, _) in TARGETS {
+    for (arch, cc, _) in targets() {
         let src = [
             Source { name: "a.c", text: "int main(void){ return 0; }\n" },
             Source {
@@ -383,7 +391,7 @@ fn live_roots_are_resolves_roots() {
 /// no `gonly`): nothing marks a section that is not kept (P0-2).
 #[test]
 fn root_in_a_lost_comdat_copy_agrees() {
-    for (arch, cc, _) in TARGETS {
+    for (arch, cc, _) in targets() {
         let src = [
             Source { name: "m.c", text: LO_M },
             Source { name: "b.s", text: LO_B_GROUP },
@@ -404,7 +412,7 @@ fn root_in_a_lost_comdat_copy_agrees() {
 /// under stripping) on roots.sh s1's inputs.
 #[test]
 fn stripped_links_agree() {
-    for (arch, cc, _) in TARGETS {
+    for (arch, cc, _) in targets() {
         for strip in ["-s", "-S"] {
             let src = [
                 Source { name: "a.c", text: "int main(void){ return 0; }\n" },
@@ -427,7 +435,7 @@ fn stripped_links_agree() {
 /// through `ar rcsT`.
 #[test]
 fn thin_archive_agrees() {
-    for (arch, cc, _) in TARGETS {
+    for (arch, cc, _) in targets() {
         let src = [
             Source { name: "m.c", text: "int wf(void);\nint main(void){ return wf(); }\n" },
             Source {
@@ -463,7 +471,7 @@ fn thin_archive_agrees() {
 /// differs), and `META.live_hash` changed (the hash differs).
 #[test]
 fn the_oracle_names_a_difference() {
-    let (arch, cc, _) = TARGETS[0];
+    let (arch, cc, _) = targets()[0];
     let src = [
         Source { name: "a.c", text: "int main(void){ return 0; }\n" },
         Source { name: "b.c", text: "int myinit(void){ return 40; }\n" },
@@ -524,7 +532,7 @@ fn subject() -> PathBuf {
 #[test]
 fn the_capture_oracle_judges_the_written_hash() {
     let mut tried = 0;
-    for (arch, cc, _) in TARGETS {
+    for (arch, cc, _) in targets() {
         let src = [
             Source { name: "a.c", text: "int main(void){ return 0; }\n" },
             Source { name: "b.c", text: "int myinit(void){ return 40; }\n" },
@@ -576,7 +584,7 @@ fn the_capture_oracle_judges_the_written_hash() {
 #[test]
 fn fde_naming_a_local_symbol_agrees() {
     let mut tried = 0;
-    for (arch, cc, ra) in TARGETS {
+    for (arch, cc, ra) in targets() {
         let f = leak(format!(
             "  .section .text.m,\"axM\",%progbits,4\n  .globl foo\n  .type foo,%function\nfoo:\n\
              \x20 .long 0\nlfoo:\n  .long 0\n  .size foo,.-foo\n\

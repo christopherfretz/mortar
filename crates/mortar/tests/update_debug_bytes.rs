@@ -1389,7 +1389,11 @@ fn norm(t: &str, prog: &Path) -> String {
                 let n = h.chars().take_while(char::is_ascii_hexdigit).count();
                 let w = &h[..n];
                 let die = out.ends_with("id = {");
-                let stack = w.trim_start_matches('0').starts_with("ff") && n >= 10;
+                // A stack address: `0xffff...` (AArch64) or `0x7ff...`
+                // (x86-64), which ASLR moves on a native run (the hosted
+                // x86-64 lane; gdb cannot disable it in a container).
+                let top = w.trim_start_matches('0');
+                let stack = (top.starts_with("ff") || top.starts_with("7ff")) && n >= 10;
                 // A DIE's offset (lldb's `id`) is a position, not a meaning:
                 // an update moves units (IN-50).
                 out.push_str(if stack {
