@@ -165,6 +165,7 @@ pub fn layout_inputs<'s>(
             kind: mortar_core::resolution::SectionKind::Null,
             kept: false,
             out: None,
+            reloc: SectionIndex(0),
         };
         let by_index = |i: SectionIndex| facts.get(i.0 as usize).copied().unwrap_or(null);
         let s = split_of(ff, view, &by_index, relocs, pool, Some(delta))?;

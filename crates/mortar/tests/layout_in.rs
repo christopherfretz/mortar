@@ -131,6 +131,7 @@ fn layout_inputs_of_changed_files_against_the_full_link() {
                 kind: mortar_core::resolution::SectionKind::Null,
                 kept: false,
                 out: None,
+                reloc: SectionIndex(0),
             };
             let by_index = |i: SectionIndex| facts.get(i.0 as usize).copied().unwrap_or(null);
             let split = mortar::update::file_split::split_of(

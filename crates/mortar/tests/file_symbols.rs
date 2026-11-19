@@ -161,9 +161,10 @@ fn compare(
                 );
             }
         }
-        let null = SectionFact { kind: SectionKind::Null, kept: false, out: None };
+        let null =
+            SectionFact { kind: SectionKind::Null, kept: false, out: None, reloc: SectionIndex(0) };
         let by_index = |i: SectionIndex| facts.get(i.0 as usize).copied().unwrap_or(null);
-        let split = split_of(ff, &old, &by_index, &ArchRelocs(full.arch.get()), &full.pool)
+        let split = split_of(ff, &old, &by_index, &ArchRelocs(full.arch.get()), &full.pool, None)
             .unwrap_or_else(|e| panic!("{}: {e:?}", line.label));
         let got = file_symbols(ff, &facts, full.plan.shaping.discard, &split, &[])
             .unwrap_or_else(|e| panic!("{}: {e:?}", line.label));
