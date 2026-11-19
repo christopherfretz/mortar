@@ -89,7 +89,7 @@ impl Prog {
         all.extend_from_slice(flags);
         // Headers are written beside the units, not compiled.
         let (headers, units): (Vec<&Source>, Vec<&Source>) =
-            sources.iter().partition(|s| s.name.ends_with(".h"));
+            sources.iter().partition(|s| Path::new(s.name).extension().is_some_and(|e| e == "h"));
         for h in headers {
             scratch.write(h.name, h.text);
         }
@@ -704,7 +704,11 @@ fn kept_group_that_moves_falls_back_before_g1() {
 /// by a local: `.debug_info` grows by about 10 bytes a member, the code
 /// barely.
 fn c_typed(n: usize) -> String {
-    let members: String = (0..n).map(|i| format!("int m{i};")).collect();
+    let members = (0..n).fold(String::new(), |mut m, i| {
+        use std::fmt::Write as _;
+        let _ = write!(m, "int m{i};");
+        m
+    });
     format!(
         "struct big {{ {members} }};\nint c_value(int x) {{\n  big *b = 0; int scaled = x * 9; (void)b;\n  return scaled + 1;\n}}\n"
     )
