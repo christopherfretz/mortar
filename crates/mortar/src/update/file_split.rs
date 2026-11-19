@@ -18,7 +18,10 @@
 //!   per-file producer for a changed file by 255d2). This module derives
 //!   none of them.
 //! - `global`: the key from `FileFront::keys` (`find_key`), its
-//!   resolution from `RESOLVED`;
+//!   resolution from `RESOLVED` for an unchanged file, from the update's
+//!   `ResolveDelta::resolved` for a changed one (ruling F-9: the stored row
+//!   is the OLD link's: a definer that moved, or the file's own definition
+//!   at its old section id);
 //! - `class`, `form`: `LinkTarget::of` the object's machine (the full
 //!   link's own rule).
 //!
@@ -37,6 +40,7 @@ use mortar_core::resolution::SectionKind;
 use mortar_elf::consts::{GRP_COMDAT, SHT_GROUP, SHT_REL, SHT_RELA, STB_WEAK};
 use mortar_elf::{Class, Object, Section, SectionIndex, SymbolIndex};
 use mortar_incr::format::{NONE, def_kind};
+use mortar_incr::update::resolve::ResolveDelta;
 use mortar_incr::update::view::StateView;
 use mortar_input::facts::effective_signature;
 use mortar_layout::Header;
@@ -94,6 +98,9 @@ struct FileLink<'a, 's, F> {
     view: &'a StateView<'a>,
     facts: &'a F,
     target: LinkTarget,
+    /// F-9: the update's resolution, for a CHANGED file (`Ids::Update`);
+    /// `None` for an unchanged one (its keys' `RESOLVED` rows stand).
+    delta: Option<&'a ResolveDelta>,
 }
 
 impl<F> FileLink<'_, '_, F> {
@@ -145,11 +152,40 @@ impl<'s, F: Fn(SectionIndex) -> SectionFact + Sync> phase::Link<'s> for FileLink
         let Some(key) = k.and_then(|k| self.front.keys.get(k)) else {
             return Err(What::Malformed(format!("symbol {} has no key", index.0)));
         };
-        // A changed file's new key (U-3 allocates it): no resolution here.
-        let Some(id) = key.key else {
-            return Err(What::Malformed(format!("symbol {} names a new key", index.0)));
+        let Some(delta) = self.delta else {
+            // An unchanged file: its key's stored resolution.
+            let Some(id) = key.key else {
+                return Err(What::Malformed(format!("symbol {} names a new key", index.0)));
+            };
+            let r = self.view.resolved(id).map_err(|e| What::Malformed(format!("{e:?}")))?;
+            return Ok(target_of(id, r.kind, r.bind, r.section, r.value));
         };
-        let r = self.view.resolved(id).map_err(|e| What::Malformed(format!("{e:?}")))?;
+        // F-9: a changed file's key is affected (IN-71: every key a changed
+        // file mentions), so the update's row is THE answer; its section
+        // is in the update's ids, as `section_id`'s. A key `find_key` did
+        // not find is U-3's new key of that name (`new_keys`, numbered
+        // past `SYMBOLS`).
+        let id = match key.key {
+            Some(id) => id,
+            None => {
+                let version = key.version.unwrap_or_default();
+                let at = delta
+                    .new_keys
+                    .iter()
+                    .position(|n| n.name == key.name && n.version == version)
+                    .ok_or_else(|| {
+                        What::Malformed(format!("symbol {}: no new key of its name", index.0))
+                    })?;
+                let symbols = self.view.count(mortar_incr::format::kind::SYMBOLS);
+                u32::try_from(symbols + at as u64)
+                    .map(SymbolId)
+                    .map_err(|_| What::Malformed("SYMBOLS past u32".into()))?
+            }
+        };
+        let at = delta.resolved.binary_search_by_key(&id, |r| r.0).map_err(|_| {
+            What::Malformed(format!("symbol {}: key {} is not affected", index.0, id.0))
+        })?;
+        let r = &delta.resolved[at].1;
         Ok(target_of(id, r.kind, r.bind, r.section, r.value))
     }
 
@@ -197,6 +233,10 @@ fn reason() -> IncrReason {
 /// The split of the file of `front`, with `facts` answering each section
 /// index's kind, kept-ness and output section, and `relocs` the target's
 /// relocation classification (`phase::ArchRelocs` of the link's `Arch`).
+/// `delta`: the update's resolution when the file is CHANGED (opened with
+/// `Ids::Update`; ruling F-9: its globals answer from
+/// `ResolveDelta::resolved`), `None` for an unchanged file; a file whose
+/// row's hash is not the stored one's given with `None` is refused.
 ///
 /// # Errors
 /// `update-not-implemented (split)` for a section the split refuses or
@@ -208,12 +248,17 @@ pub fn split_of<F>(
     facts: &F,
     relocs: &dyn Relocs,
     pool: &Pool,
+    delta: Option<&ResolveDelta>,
 ) -> Result<FileSplit, IncrReason>
 where
     F: Fn(SectionIndex) -> SectionFact + Sync,
 {
+    // F-9: a changed file's bytes never answer from the old link's rows.
+    if delta.is_none() && front.row.hash != view.file(front.file)?.hash {
+        return Err(reason());
+    }
     let target = LinkTarget::of(front.object.machine());
-    let link = FileLink { front, view, facts, target };
+    let link = FileLink { front, view, facts, target, delta };
     let units = phase::units(&link, front.file, relocs).map_err(|_| reason())?;
     let mut pieces = Vec::new();
     let mut whole = Vec::new();
@@ -262,6 +307,29 @@ where
     drop(eh_in);
     let eh_relocs = eh_units.into_iter().map(|u| u.3).collect();
     Ok(FileSplit { file: front.file, pieces, whole, eh, eh_relocs })
+}
+
+/// The `.eh_frame` source of `frames` (a [`FileSplit::eh`] of the same
+/// `front`, `facts` and `delta`): `mortar_synth::eh::MergeEh::new` over
+/// the file's `FileLink`, the full link's one producer of each section's
+/// `EhInfo` and bytes (WP-225 M2b-2a: `EhPlan::select_in` reads it for
+/// IN-72 item 5's records).
+///
+/// # Errors
+/// `update-not-implemented (split)` when the rows are not the split's.
+pub fn eh_source<'a, 's: 'a, F>(
+    front: &FileFront<'s>,
+    view: &StateView<'_>,
+    facts: &F,
+    delta: Option<&ResolveDelta>,
+    frames: &'a EhFrames,
+) -> Result<mortar_synth::eh::MergeEh<'a>, IncrReason>
+where
+    F: Fn(SectionIndex) -> SectionFact + Sync,
+{
+    let target = LinkTarget::of(front.object.machine());
+    let link = FileLink { front, view, facts, target, delta };
+    mortar_synth::eh::MergeEh::new(frames, &link).map_err(|_| reason())
 }
 
 /// The section facts of a CHANGED file (`front`, opened with

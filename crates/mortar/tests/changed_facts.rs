@@ -211,7 +211,18 @@ fn changed_facts_and_split_of_an_edited_file() {
         }
         let null = SectionFact { kind: SectionKind::Null, kept: false, out: None };
         let by_index = |i: SectionIndex| facts.get(i.0 as usize).copied().unwrap_or(null);
-        let got = split_of(ff, &old, &by_index, &ArchRelocs(f.arch.get()), &f.pool)
+        // F-9: the changed file's globals answer from the update's
+        // resolution (U4-U5 over the new link's capture).
+        let capture = mortar_incr::state5::read::decode(
+            &std::fs::read(line.dir.join("new.state5")).expect("the new state"),
+        )
+        .expect("the new state decodes");
+        assert_eq!(nf, file, "{}", what("the same FILES row in both links"));
+        let (cf, delta) = mortar::update::changed::u5(&old, &[file], &[], &f, &capture, &mut |_| {})
+            .unwrap_or_else(|e| panic!("{}", what(&format!("U4-U5: {}", e.report()))))
+            .expect("m1.o changed");
+        assert_eq!(cf.files[0].first_section, SectionId(first), "{}", what("the ids"));
+        let got = split_of(ff, &old, &by_index, &ArchRelocs(f.arch.get()), &f.pool, Some(&delta))
             .unwrap_or_else(|e| panic!("{}", what(&format!("{e:?}"))));
         let x = Ids2 { f: &f, view: &old, file, first };
         let range = f.resolution.section_base[nf];

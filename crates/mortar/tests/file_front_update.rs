@@ -333,7 +333,7 @@ fn update_split_problem_falls_back_as_split() {
                 SectionFact { kind: SectionKind::Null, kept: false, out: None }
             }
         };
-        let r = split_of(ff, &old, &facts, &ArchRelocs(f.arch.get()), &f.pool).map(|x| x.file);
+        let r = split_of(ff, &old, &facts, &ArchRelocs(f.arch.get()), &f.pool, None).map(|x| x.file);
         let want = IncrReason::UpdateNotImplemented(Some(Unimplemented::Split));
         assert_eq!(r, Err(want.clone()), "{}", line.label);
         // The full link of the line that extracts it reports the problem.
