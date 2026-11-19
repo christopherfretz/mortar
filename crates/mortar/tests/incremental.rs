@@ -2445,9 +2445,10 @@ fn u1_and_u2_reasons_in_order_on_a_format5_state() {
     // `--incremental=update` reaches U2 (it ignores `small-output`): the
     // skeleton names the first step not wired.
     assert_eq!(cannot_update(&prog, &[]), "update-not-implemented (resolve)");
-    // (U2's debug, U6's live): `debug` first; a gc link alone: `live`.
+    // (U2's debug, U6's live): `debug` first; a gc link alone reaches U4
+    // (gc-lift: no refusal by the option): nothing changed, `resolve`.
     prog.link("o", &["--incremental", "--gc-sections"]);
-    assert_eq!(cannot_update(&prog, &["--gc-sections"]), "update-not-implemented (live)");
+    assert_eq!(cannot_update(&prog, &["--gc-sections"]), "update-not-implemented (resolve)");
     reassemble(&prog, ASM, &["-g"]);
     assert_eq!(cannot_update(&prog, &["--gc-sections"]), "update-not-implemented (debug)");
     // The old version's debug rows decide too (the new one has none).

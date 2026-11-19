@@ -1,0 +1,11 @@
+# WP-238 Part 4's cxx-eh-owner pair (live_pairs.rs): main.o's call is
+# thrower's only one. EDIT removes it: thrower's .text and its
+# .gcc_except_table die (and its FDE goes).
+proves: an exception table whose owner dies under --gc-sections is judged by live::live against the front's mark, and the update falls back (layout) by name while the placement flips
+source: WP-238 Part 4 ("Step 2 Part 4", cxx-eh-owner); WP-225 gc-lift
+edit: main.cc
+link: main.o b.o
+cflags: -ffunction-sections -fdata-sections
+options: --gc-sections
+expect-full: update-not-implemented (layout): a section that dies or revives changes the stored placement (SECTIONS.bits, META.live_hash), which the image takes only from M2b-3 on (WP-225 gc-lift)
+compilers: gcc kiln

@@ -178,7 +178,7 @@ pub fn with_ops<T>(ops: Box<dyn mortar_incr::ops::WriteOps>, go: impl FnOnce() -
 
 fn run_with(
     session: &Session,
-    parsed: &Parsed,
+    _parsed: &Parsed,
     cwd: &Path,
     ctx: &Ctx<'_>,
     ops: &mut dyn mortar_incr::ops::WriteOps,
@@ -188,11 +188,8 @@ fn run_with(
     let view = mortar_incr::state5::open(lock, session.plan_hash())?;
     let detected = detect(&view, cwd)?;
     debug_condition(&view, &detected, cwd)?;
-    // Option-only reasons the callees give from the plan alone, on every
-    // update: `--gc-sections` (U6's `live::live`, WP-215 seam 3).
-    if parsed.plan.shaping.gc_sections {
-        return Err(IncrReason::UpdateNotImplemented(Some(Unimplemented::Live)).into());
-    }
+    // `--gc-sections` (gc-lift): U6's `live::live` runs in `reference_of`,
+    // judged against path (A)'s own mark (`live_judged`).
     // G-7: no update producer of the text map (`-Map`, `-M`,
     // `--print-map`), and none yet of the machine map's `arg` records or
     // of the dependency file: `(image)`, before anything is read.
@@ -357,7 +354,18 @@ fn reference_of(
     let (mut state, rows5) = session.state(f, ctx.store, &written, cwd).map_err(|_| image())?;
     state.leaves.clone_from(&refill.leaves);
     let rows5 = rows5.ok_or_else(image)?;
-    let state = mortar_incr::capture::state5_rows(&state, rows5, false).map_err(|_| image())?;
+    let mut state = mortar_incr::capture::state5_rows(&state, rows5, false).map_err(|_| image())?;
+    // gc-lift (FINDING gc-1): under `--gc-sections` the full link's
+    // `META.live_hash` (WP-238 S4) is the driver's, after `state5_rows`
+    // (`incremental.rs`, the capture's live-set hash); the update's state
+    // takes it the same way, from the front's mark and positions, or it
+    // would be written with a zero hash (the next update's `no-live-hash`).
+    if let Some(Ok((_, at))) = f.incr5.as_ref().and_then(|i| i.live_rows.as_ref()) {
+        state.index_sections()?;
+        let h =
+            mortar_incr::update::live::live_hash(&state.view(), f.liveness.live.as_slice(), at)?;
+        state.meta.live_hash = mortar_incr::testhook::live_hash_mutated(h);
+    }
     steps.mark("capture");
     // U4-U5 (M2b-1): the changed files' rows in the update's ids, then
     // `extract` and `resolve` on them; the update goes on only where they
@@ -366,10 +374,18 @@ fn reference_of(
         changed::u5(view, &detected.changed_files, &detected.positional, f, &state, &mut |n| {
             steps.mark(n);
         })?;
+    // U6 (gc-lift): under `--gc-sections`, `live::live`'s delta judged
+    // against the front's mark (a disagreement is a FINDING, by name); the
+    // number of sections whose liveness flips.
+    let mut flips = 0usize;
     // U6-U7 (M2b-2b): the delta's placement of the changed files, judged
     // against the front's (a disagreement is a FINDING, by name).
     let placed = match u5 {
         Some((cf, delta)) => {
+            if f.plan.shaping.gc_sections {
+                flips = live_judged(view, f, &cf, &delta)?;
+                steps.mark("u6");
+            }
             // While the image cannot take the delta's placement (below), a
             // producer's refusal is recorded and the identity check decides
             // alone; a FINDING (the delta disagrees with the front) falls
@@ -407,6 +423,21 @@ fn reference_of(
                 p.summary
             ));
         }
+        // A section that dies or revives changes the placement (its
+        // `SECTIONS` row's `COLLECTED` bit, its place): taken from M2b-3 on.
+        if flips > 0 {
+            changed::record(&format!(
+                "gc-lift: {flips} sections flip liveness, not the stored placement: (layout)"
+            ));
+        }
+        // The first differences, for the findings file.
+        let first: Vec<String> = diffs
+            .iter()
+            .filter(|d| !matches!(d.kind, kind::STAT | kind::LEAVES))
+            .take(4)
+            .map(|d| format!("[{} {} {}]", d.kind, d.row, d.what))
+            .collect();
+        changed::record(&format!("identity: not the stored state: (layout) {}", first.join(" ")));
         return Err(layout());
     }
     // The identity case: the front's placement is the stored one, so the
@@ -424,6 +455,150 @@ fn reference_of(
     }
     steps.mark("check");
     Ok(Reference { refill, size, state, map })
+}
+
+/// U6 under `--gc-sections` (gc-lift; IN-71a): `live::live` on the join's
+/// change, judged against path (A)'s front. The front's mark (`f.liveness`,
+/// the one the image discards by and the capture writes the new state's
+/// `COLLECTED` bits and live hash from) is moved into the update's ids
+/// (an unchanged file's section at its stored `SECTIONS` range, a section of
+/// a file of `cf` at its `first_section`); the stored mark is the state's
+/// `SECTIONS` bits (`KEPT` and not `COLLECTED`: the full link's mark as it
+/// wrote it; a mark is a subset of the kept sections). `now_live` and
+/// `now_dead` must be exactly the two marks' difference, and every unchanged
+/// file with a section in it must be in `drawn_in`. A disagreement is a
+/// FINDING (both sets, by name), and `live`'s own refusal falls back by its
+/// name (`update-not-implemented (live)`, its rule recorded).
+///
+/// Returns the number of sections whose liveness flips: of the unchanged
+/// files, and of the files of `cf` by `sh_index` (a replaced file's live
+/// sections are in `now_dead` by their old ids and in `now_live` by their
+/// fresh ones even when nothing flips).
+fn live_judged(
+    view: &StateView<'_>,
+    f: &crate::front::Front<'_>,
+    cf: &mortar_incr::update::view::ChangedFiles,
+    delta: &mortar_incr::update::resolve::ResolveDelta,
+) -> Result<usize, IncrReason> {
+    use mortar_core::SectionId;
+    use mortar_incr::format::section_bits::{COLLECTED, KEPT};
+    use mortar_incr::update::rows::FileTable;
+    let options = mortar_resolve::tables::option_keys(&f.plan, &f.inputs.link.directives);
+    let d =
+        mortar_incr::update::live::live_why(view, cf, delta, &options).map_err(|(e, why)| {
+            changed::record(&format!("gc-lift fallback: live: {why}"));
+            e
+        })?;
+    let finding = |what: String| {
+        changed::finding_as(
+            &format!("gc-lift: {what}"),
+            IncrReason::UpdateNotImplemented(Some(Unimplemented::Live)),
+        )
+    };
+    let files = u32::try_from(view.count(kind::FILES)).map_err(|_| finding("FILES".into()))?;
+    // The stored mark, by the rows of the files that are not gone.
+    let mut old: Vec<SectionId> = Vec::new();
+    for g in (0..files).map(FileId) {
+        if view.file(g)?.flags & file_flags::GONE != 0 {
+            continue;
+        }
+        let r = view.file_index(g)?.ranges[FileTable::Sections as usize];
+        for s in (r.first..r.first + r.count).map(SectionId) {
+            let b = view.section(s)?.bits;
+            if b & KEPT != 0 && b & COLLECTED == 0 {
+                old.push(s);
+            }
+        }
+    }
+    old.sort_unstable();
+    // The front's mark in the update's ids.
+    let mut new: Vec<SectionId> = Vec::new();
+    for (i, &v) in f.liveness.live.as_slice().iter().enumerate() {
+        if !v {
+            continue;
+        }
+        let s = SectionId(u32::try_from(i).map_err(|_| finding("section ids".into()))?);
+        let (g, index) = f.resolution.sh_index(s).ok_or_else(|| finding(format!("{s:?}")))?;
+        let (first, count) = match cf.files.iter().find(|c| c.file == g) {
+            Some(c) => (c.first_section.0, u32::try_from(c.sections.len()).unwrap_or(u32::MAX)),
+            None if g.0 < files => {
+                let r = view.file_index(g)?.ranges[FileTable::Sections as usize];
+                (r.first, r.count)
+            }
+            None => return Err(finding(format!("live section {s:?} of file {} past FILES", g.0))),
+        };
+        if index.0 >= count {
+            return Err(finding(format!(
+                "live section {} of file {} past its {count} rows",
+                index.0, g.0
+            )));
+        }
+        new.push(SectionId(first + index.0));
+    }
+    new.sort_unstable();
+    let now_live: Vec<SectionId> =
+        new.iter().filter(|s| old.binary_search(s).is_err()).copied().collect();
+    let now_dead: Vec<SectionId> =
+        old.iter().filter(|s| new.binary_search(s).is_err()).copied().collect();
+    let base = view.count(kind::SECTIONS);
+    let mut flipped: Vec<FileId> = now_live
+        .iter()
+        .chain(&now_dead)
+        .filter(|s| u64::from(s.0) < base)
+        .map(|&s| view.section(s).map(|r| FileId(r.file)))
+        .collect::<Result<_, _>>()?;
+    flipped.retain(|g| !cf.files.iter().any(|c| c.file == *g));
+    flipped.sort_unstable();
+    flipped.dedup();
+    let missing: Vec<FileId> =
+        flipped.iter().filter(|g| d.drawn_in.binary_search(g).is_err()).copied().collect();
+    if d.now_live != now_live || d.now_dead != now_dead || !missing.is_empty() {
+        let names = |v: &[SectionId]| -> Vec<String> {
+            v.iter()
+                .map(|&s| match changed::update_section(view, cf, s.0) {
+                    Ok(k) => format!("{} {}:{}", s.0, k.0, String::from_utf8_lossy(&k.3)),
+                    Err(e) => format!("{} ({})", s.0, e.report()),
+                })
+                .collect()
+        };
+        return Err(finding(format!(
+            "live gives now_live {:?} now_dead {:?} drawn_in {:?}; the marks' difference now_live {:?} now_dead {:?}, unchanged files flipping {:?}",
+            names(&d.now_live),
+            names(&d.now_dead),
+            d.drawn_in,
+            names(&now_live),
+            names(&now_dead),
+            flipped
+        )));
+    }
+    // The flips: the unchanged files' sections in the difference, and per
+    // file of `cf` the `sh_index`es live on one side only.
+    let mut flips = 0usize;
+    for &s in now_live.iter().chain(&now_dead) {
+        if u64::from(s.0) < base
+            && !cf.files.iter().any(|c| c.file.0 == view.section(s).map_or(u32::MAX, |r| r.file))
+        {
+            flips += 1;
+        }
+    }
+    for c in &cf.files {
+        let r = view.file_index(c.file)?.ranges[FileTable::Sections as usize];
+        let at = |v: &[SectionId], first: u32, count: u32| -> Vec<u32> {
+            v.iter().filter(|s| s.0 >= first && s.0 - first < count).map(|s| s.0 - first).collect()
+        };
+        let was = at(&old, r.first, r.count);
+        let count = u32::try_from(c.sections.len()).unwrap_or(u32::MAX);
+        let is = at(&new, c.first_section.0, count);
+        flips += was.iter().filter(|k| is.binary_search(k).is_err()).count();
+        flips += is.iter().filter(|k| was.binary_search(k).is_err()).count();
+    }
+    changed::record(&format!(
+        "gc-lift: live agrees with the front's mark: now_live {} now_dead {} drawn_in {}, {flips} flips",
+        d.now_live.len(),
+        d.now_dead.len(),
+        d.drawn_in.len()
+    ));
+    Ok(flips)
 }
 
 /// The delta's placement of the changed files, judged ([`placement`]).

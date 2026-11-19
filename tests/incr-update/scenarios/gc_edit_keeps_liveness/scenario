@@ -1,0 +1,11 @@
+# WP-225 gc-lift: under --gc-sections, c.o's call to u_helper keeps its
+# target; only an immediate changes (5 -> 7, the same size). No section's
+# liveness flips, so `live` agrees with the front and every hop after the
+# first can be an update.
+proves: an update under --gc-sections whose edit flips no section's liveness equals the full link (a), with live::live judged against the front's mark
+source: WP-225 gc-lift (spec/landed/incr/WP-225.md "gc-lift"), the operator's configuration without -g
+edit: c.cc
+link: main.o c.o u.o
+cflags: -ffunction-sections -fdata-sections
+options: --gc-sections
+compilers: gcc kiln
