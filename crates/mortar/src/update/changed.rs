@@ -370,6 +370,12 @@ pub fn u5(
     r
 }
 
+/// Whether `MORTAR_UPDATE_FINDINGS` is set: work done only to be recorded
+/// (WP-255e's shadow) runs only then, so a real update does not pay for it.
+pub(super) fn recording() -> bool {
+    std::env::var_os("MORTAR_UPDATE_FINDINGS").is_some()
+}
+
 /// Appends `line` to the `MORTAR_UPDATE_FINDINGS` file when it is set.
 pub(super) fn record(line: &str) {
     if let Some(path) = std::env::var_os("MORTAR_UPDATE_FINDINGS") {

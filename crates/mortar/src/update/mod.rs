@@ -931,7 +931,11 @@ fn placement(
     // layout with `d`, in the front's ids (R-1).
     if materialize {
         placed.materialized = Some(materialize_on(view, stored, f, &d, &inputs.changes));
-        placed.shadow = Some(shadow_set(view, stored, cf, &delta, &d));
+        // WP-255e's shadow: only when recorded (an update's own cost
+        // must not include it).
+        if changed::recording() {
+            placed.shadow = Some(shadow_set(view, stored, cf, &delta, &d));
+        }
     }
     Ok(placed)
 }
@@ -1091,8 +1095,19 @@ fn front_two(
             refill.counts.ranges, refill.counts.dirty
         ));
         // WP-255e: C' in shadow, against front 2's bytes (never written).
-        changed::record(&shadow_255e(view, &stored, f, ctx, out, &df, shadow.as_ref(), &refill));
-        steps.mark("shadow");
+        if changed::recording() {
+            changed::record(&shadow_255e(
+                view,
+                &stored,
+                f,
+                ctx,
+                out,
+                &df,
+                shadow.as_ref(),
+                &refill,
+            ));
+            steps.mark("shadow");
+        }
         Ok(Reference { refill, size, state, map })
     });
     match (r, why.into_inner()) {
@@ -1181,7 +1196,11 @@ fn chunk_name(f: &crate::front::Front<'_>, x: u64) -> String {
     for (_, c) in f.layout.placement.chunks.iter() {
         if c.in_file() && c.offset <= x && x < c.offset + c.size.max(c.capacity) {
             let name = c.name(&f.assignment).map(|n| String::from_utf8_lossy(n).into_owned());
-            return format!("{}+{:#x}", name.unwrap_or_else(|| format!("{:?}", c.kind)), x - c.offset);
+            return format!(
+                "{}+{:#x}",
+                name.unwrap_or_else(|| format!("{:?}", c.kind)),
+                x - c.offset
+            );
         }
     }
     "no chunk".to_owned()
@@ -1227,7 +1246,12 @@ fn first_output_difference(
 /// A FINDING's neighbourhood: the members of the chunk at file offset `x`
 /// within 0x80 of it (section, chunk offset, size, alignment, the input
 /// section's name) and the chunk's holes there.
-fn shadow_near(l: &mortar_image::link::Link<'_, '_>, f: &crate::front::Front<'_>, x: u64) -> String {
+#[allow(clippy::many_single_char_names, reason = "a diagnostic's offsets and rows, short-lived")]
+fn shadow_near(
+    l: &mortar_image::link::Link<'_, '_>,
+    f: &crate::front::Front<'_>,
+    x: u64,
+) -> String {
     use std::fmt::Write as _;
     let pl = &f.layout.placement;
     let Some((id, c)) = pl
@@ -1276,7 +1300,11 @@ fn shadow_near(l: &mortar_image::link::Link<'_, '_>, f: &crate::front::Front<'_>
             }
         }
     }
-    for h in pl.holes.iter().filter(|h| h.chunk == id && h.offset < at + 0x80 && at < h.offset + h.size + 0x80) {
+    for h in pl
+        .holes
+        .iter()
+        .filter(|h| h.chunk == id && h.offset < at + 0x80 && at < h.offset + h.size + 0x80)
+    {
         let _ = write!(s, " hole {:?} [{:#x},{:#x});", h.kind, h.offset, h.offset + h.size);
     }
     s
@@ -1291,6 +1319,7 @@ fn shadow_near(l: &mortar_image::link::Link<'_, '_>, f: &crate::front::Front<'_>
 /// file; nothing is written and the update is not changed.
 #[allow(clippy::too_many_lines, reason = "S1 then S2, each with its record")]
 #[allow(clippy::too_many_arguments, reason = "front 2, its refill and C''s inputs")]
+#[allow(clippy::many_single_char_names, reason = "S1's and S2's offsets and refills, short-lived")]
 fn shadow_255e(
     view: &StateView<'_>,
     stored: &mortar_core::incr::StoredLayout<'_>,
@@ -1346,7 +1375,15 @@ fn shadow_255e(
         .collect();
     let r = crate::image::with_link(f, ctx.store, &|_| {}, |l| {
         let t = std::time::Instant::now();
-        let c = mortar_image::update::refill(l, df, &SymtabPlan::default(), &cset, stored, out, &leaves);
+        let c = mortar_image::update::refill(
+            l,
+            df,
+            &SymtabPlan::default(),
+            &cset,
+            stored,
+            out,
+            &leaves,
+        );
         let took = t.elapsed();
         let c = match c {
             Ok(c) => c,
@@ -1438,19 +1475,13 @@ fn shadow_255e(
                             // A byte outside C''s ranges is the previous
                             // output's (a refilled range equal to it is
                             // dropped): read it.
-                            let want = match want {
-                                Some(w) => w,
-                                None => {
-                                    let mut b = [0u8; 1];
-                                    if std::os::unix::fs::FileExt::read_exact_at(out, &mut b, x)
-                                        .is_err()
-                                    {
-                                        0
-                                    } else {
-                                        b[0]
-                                    }
-                                }
-                            };
+                            // A failed read gives 0: a (false) finding,
+                            // never a silent equality.
+                            let want = want.unwrap_or_else(|| {
+                                let mut b = [0u8; 1];
+                                std::os::unix::fs::FileExt::read_exact_at(out, &mut b, x)
+                                    .map_or(0, |()| b[0])
+                            });
                             if v != want {
                                 diff = Some((x, want, v));
                                 break 'jobs;
