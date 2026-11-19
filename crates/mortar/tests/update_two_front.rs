@@ -157,6 +157,15 @@ fn a_grown_function_is_taken_through_front_two_or_refused_by_name() {
                     s1.starts_with("255e shadow: equal"),
                     "{label}: hop {hop}: C' is not front 2: {shadow}"
                 );
+                // WP-255e3: S2 (the clip plan, synthetic chunks included)
+                // is equal or refused by name, never a finding, S2-1 aside
+                // (x86-64 hop 2, `clip byte .. written by no row`: the
+                // delta's missing `Fill` hole before a region start, ruled
+                // to WP-255g, "After 255e2" item 1; an internal error, no
+                // wrong byte).
+                let s2 = shadow.split(" | ").nth(1).unwrap_or("");
+                let s2_1 = s2.contains("written by no row") && s2.matches("finding").count() == 1;
+                assert!(!s2.contains("finding") || s2_1, "{label}: hop {hop}: S2: {s2}");
                 // WP-255e2 S3: `rows::sym` over the update's STATE rows
                 // (`UpdateRows`) equals front 2's for every global matched
                 // by name; a key it cannot value is refused by name.

@@ -2060,20 +2060,39 @@ pub fn clip_members(link: &Link<'_, '_>) -> Result<crate::clip_plan::Members, Di
         std::collections::BTreeMap::new();
     for (s, place) in pl.place.iter() {
         let Some((c, off)) = place.get() else { continue };
-        if !layout_plan::is_member(&model, s) {
+        // c2b-1: the ONE member rule (`clip_plan::is_clip_member`), on this
+        // link's fields; the update's index calls it on stored rows.
+        let row = &link.resolution.sections[s];
+        let Some((f, i)) = link.resolution.sh_index(s) else { continue };
+        let Reader::Object(o) = &link.inputs.files[f].reader else { continue };
+        let sec = o.section(i).map_err(|e| {
+            Diagnostic::error(Kind::InternalError { what: format!("image: {e:?}") })
+        })?;
+        if !crate::clip_plan::is_clip_member(
+            matches!(row.state, mortar_core::resolution::SectionState::Kept),
+            row.kind.is_placed(),
+            link.liveness.is_live(s),
+            link.layout.folds.is_folded(s),
+            sec.sh_type(),
+            sec.size(),
+            &pl.chunks[c],
+        ) {
             continue;
         }
-        if layout_plan::member_front(&model, s, &pl.chunks[c])?.is_none() {
-            continue;
+        // The row's own maker agrees (`from_layout`: `is_member` and
+        // `member_front`); a member it would not make a row of is an
+        // internal error, not a second rule.
+        if !layout_plan::is_member(&model, s)
+            || layout_plan::member_front(&model, s, &pl.chunks[c])?.is_none()
+        {
+            return Err(Diagnostic::error(Kind::InternalError {
+                what: format!(
+                    "image: section {} is a member by the member rule and takes no row",
+                    s.0
+                ),
+            }));
         }
-        let align = link
-            .resolution
-            .sh_index(s)
-            .and_then(|(f, i)| match &link.inputs.files[f].reader {
-                Reader::Object(o) => o.section(i).ok().and_then(|x| x.alignment().ok()),
-                _ => None,
-            })
-            .unwrap_or(1);
+        let align = sec.alignment().unwrap_or(1);
         by.entry(c).or_default().push((off, Member { section: s, align }));
     }
     let by_chunk = by
