@@ -1190,8 +1190,8 @@ impl Session {
                     let mut failed = None;
                     let r = self.write_state(
                         f,
-                        state,
-                        rows5,
+                        (state, rows5),
+                        diagnostics,
                         out_path,
                         written,
                         &mut stderr,
@@ -1245,8 +1245,8 @@ impl Session {
     fn write_state(
         &self,
         f: &Front<'_>,
-        state: State,
-        rows5: Option<mortar_incr::capture::Rows5>,
+        (state, rows5): (State, Option<mortar_incr::capture::Rows5>),
+        diagnostics: &Collector,
         out_path: &Path,
         written: &Written,
         stderr: &mut String,
@@ -1261,7 +1261,8 @@ impl Session {
                     .map(|()| true)
                     .map_err(|e| format!("cannot write {}: {e}", p.display()));
             }
-            let bytes = self.state5_bytes(f, &state, rows5, &mut t, stderr, failed)?;
+            let bytes =
+                self.state5_bytes(f, (&state, rows5), diagnostics, &mut t, stderr, failed)?;
             if let Some(p) = &self.state4_path {
                 // The side state of a testhooks build (the floor, the dry
                 // run): best effort, removed when it cannot be written.
@@ -1318,14 +1319,31 @@ impl Session {
     fn state5_bytes(
         &self,
         f: &Front<'_>,
-        state: &State,
-        rows5: Option<mortar_incr::capture::Rows5>,
+        (state, rows5): (&State, Option<mortar_incr::capture::Rows5>),
+        diagnostics: &Collector,
         t: &mut Instant,
         stderr: &mut String,
         failed: &mut Option<String>,
     ) -> Result<Vec<u8>, String> {
         let s5 = self.state5.as_ref();
-        let rows = rows5.ok_or_else(|| "the link computed no format-5 data".to_owned())?;
+        let mut rows = rows5.ok_or_else(|| "the link computed no format-5 data".to_owned())?;
+        // DIAGS (IN-75a, WP-265): the link's warnings, read before its
+        // report is finished, each with its subjects; a warning whose
+        // subjects are not known: no state (named).
+        let warnings = diagnostics.warnings();
+        let gnu_warnings = &f.gnu_warnings;
+        if !warnings.is_empty() || !gnu_warnings.is_empty() {
+            let start = Instant::now();
+            rows.put_diags(mortar_incr::capture::diag_rows(
+                &f.inputs,
+                gnu_warnings,
+                state,
+                &warnings,
+            )?);
+            let mut th = start;
+            lap(&self.times, &mut th, "format 5: DIAGS");
+            *t += start.elapsed();
+        }
         if s5.is_some() {
             for n in &rows.notes {
                 let _ = writeln!(stderr, "incremental: state5 {n}");

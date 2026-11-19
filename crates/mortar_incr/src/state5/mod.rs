@@ -70,8 +70,11 @@ pub const MAGIC: [u8; 8] = *b"MORTARSR";
 /// file's block as its second row, `META.boot_id` written, `META`'s clone
 /// probe removed: a version-9 state holds no region, which IN-72 item 2
 /// reads as a file with none, and a 228-byte `META`; it is refused,
+/// `state-version`). 11 since WP-265 (`DIAGS` written by the full link's
+/// capture: a version-10 state of a link that warned holds no row, which
+/// IN-75a reads as a link without warnings; it is refused,
 /// `state-version`).
-pub const VERSION: u32 = 10;
+pub const VERSION: u32 = 11;
 /// The header's size.
 pub const HEADER: usize = 80;
 /// A directory entry's size.

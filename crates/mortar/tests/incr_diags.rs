@@ -137,6 +137,9 @@ struct Full {
     failed: bool,
     warnings: Vec<Captured>,
     state: MemoryState,
+    /// Its `DIAGS` rows as the capture makes them
+    /// (`mortar_incr::capture::diag_rows`, WP-265), in the state's ids.
+    rows: Vec<DiagRow>,
 }
 
 const PROG: &str = "mortar";
@@ -212,6 +215,7 @@ fn link(fx: &Fixture<'_>, inputs: &[&str], extra: &[&str]) -> Full {
     };
     let files = display_index(&f);
     let mut warnings = Vec::new();
+    let collected: Vec<(Key, Diagnostic)> = plain.warnings().map(|(k, d)| (k, d.clone())).collect();
     for (key, d) in plain.warnings() {
         let mut c = Captured {
             key,
@@ -294,6 +298,8 @@ fn link(fx: &Fixture<'_>, inputs: &[&str], extra: &[&str]) -> Full {
         capture(&link, &keys, &f.layout, &mut strings, &|_| Some([0; 16]), f.arch.get())
             .expect("capture");
     state.strings = strings.into_bytes();
+    let rows = mortar_incr::capture::diag_rows(&f.inputs, &f.gnu_warnings, &state, &collected)
+        .expect("the capture's DIAGS rows");
     // FILES.hash: the input file's bytes hashed, with a member's span (capture is
     // given the content hash; a rewritten archive changes all its members here).
     for (n, r) in state.files.iter_mut().enumerate() {
@@ -317,7 +323,7 @@ fn link(fx: &Fixture<'_>, inputs: &[&str], extra: &[&str]) -> Full {
             r.flags |= file_flags::LAZY;
         }
     }
-    Full { stderr, failed, warnings, state }
+    Full { stderr, failed, warnings, state, rows }
 }
 
 /// The file an input was read from (its archive for a member).
@@ -561,11 +567,12 @@ fn row_of(
     row(key, &d, subjects, refs)
 }
 
-/// A's stored `DIAGS`.
+/// A's stored `DIAGS`: the capture's rows (`capture::diag_rows`, WP-265),
+/// which equal the rows this test's own `row_of` makes of A's warnings.
 fn stored(a: &Full) -> MemoryState {
     let mut m = a.state.clone();
     let rank = |f: FileId| a.state.files[f.0 as usize].rank;
-    m.diags = a
+    let mut want: Vec<DiagRow> = a
         .warnings
         .iter()
         .map(|c| {
@@ -573,6 +580,12 @@ fn stored(a: &Full) -> MemoryState {
             row_of(c, &keyed, &|f| f, &rank, &|_| true, true).expect("a row")
         })
         .collect();
+    let mut have = a.rows.clone();
+    let order = |v: &mut Vec<DiagRow>| v.sort_by(|x, y| (x.key, &x.text).cmp(&(y.key, &y.text)));
+    order(&mut want);
+    order(&mut have);
+    assert_eq!(have, want, "the capture's DIAGS rows");
+    m.diags = a.rows.clone();
     m
 }
 
