@@ -430,14 +430,12 @@ fn reference_of(
                 "gc-lift: {flips} sections flip liveness, not the stored placement: (layout)"
             ));
         }
-        // The first differences, for the findings file.
-        let first: Vec<String> = diffs
-            .iter()
-            .filter(|d| !matches!(d.kind, kind::STAT | kind::LEAVES))
-            .take(4)
-            .map(|d| format!("[{} {} {}]", d.kind, d.row, d.what))
-            .collect();
-        changed::record(&format!("identity: not the stored state: (layout) {}", first.join(" ")));
+        // The tables that differ (kind: rows), for the findings file.
+        let mut tables: std::collections::BTreeMap<u32, usize> = std::collections::BTreeMap::new();
+        for d in diffs.iter().filter(|d| !identity(std::slice::from_ref(d), files)) {
+            *tables.entry(d.kind).or_default() += 1;
+        }
+        changed::record(&format!("identity: not the stored state: (layout) tables {tables:?}"));
         return Err(layout());
     }
     // The identity case: the front's placement is the stored one, so the

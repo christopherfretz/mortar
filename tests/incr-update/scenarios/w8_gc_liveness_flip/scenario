@@ -4,7 +4,7 @@ source: tests/incr-review/w-meaning.sh, case W8
 edit: x.S
 link: a.o x.o
 options: --gc-sections
-expect-full: update-not-implemented (live): an update under --gc-sections is that named full link by rule (IN-71a, WP-215 seam 3; WP-238 later lifts it), so no hop expects a gc UPDATE: a hop that updates fails, a hop that falls back earlier (no-state, small-output) is n/a
+expect-full: update-not-implemented (layout): every hop flips a section's liveness, which changes the stored placement (SECTIONS.bits, META.live_hash); `live` is judged against the front's mark and the image takes a new placement only from M2b-3 on (WP-225 gc-lift), so no hop expects a gc UPDATE: a hop that updates fails, a hop that falls back earlier (no-state, small-output) is n/a
 compilers: gcc
 not kiln: assembly (.S): kiln compiles C++ only; the shape is written in the assembly
 nolibc: yes
