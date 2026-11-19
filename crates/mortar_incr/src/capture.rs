@@ -923,6 +923,8 @@ struct FileCols {
     stack: u8,
     /// `FILES.properties`' bytes (seam 6; empty: none).
     properties: Vec<u8>,
+    /// `FILES.round` (IN-71b): resolve's `Resolution::file_round`.
+    round: u32,
 }
 
 /// The rows of format 5 that format 4 does not hold, captured beside a
@@ -949,6 +951,9 @@ pub struct Rows5 {
     /// `EDGES` (WP-238 S1), by the source's file.
     edges: Vec<(FileId, crate::update::rows::EdgeRow)>,
     versioned: u32,
+    /// `META.iterations` (IN-71b "Iterations", WP-261): resolve's
+    /// `Resolution::iterations`, at least 1.
+    iterations: u32,
     /// `DEBUG_STRS` (WP-247, [`debug_str_rows`]).
     debug_strs: Vec<crate::update::rows::DebugStrRow>,
     /// Counts for the experiments (`incremental: state5 ...` lines).
@@ -1176,6 +1181,24 @@ pub fn debug_exports(
     })
 }
 
+/// `FILES.round` of `file` (IN-71b, WP-261): resolve's round of an
+/// extracted lazy file, which is at least 1; 0 for every other file. A
+/// round that breaks this (an extracted lazy file of round 0, another
+/// file of a round) is the producer's defect: no state is written.
+fn file_round(res: &Resolution, file: FileId) -> Result<u32, String> {
+    use mortar_core::resolution::FileLive;
+    let round = res.file_round.get(file.0 as usize).copied().unwrap_or(0);
+    let extracted = matches!(res.file_live.get(file), Some(FileLive::Extracted(_)));
+    if extracted == (round == 0) {
+        return Err(format!(
+            "file {}: FILES.round {round} for a file {} (IN-71b)",
+            file.0,
+            if extracted { "extracted from an archive" } else { "not extracted" }
+        ));
+    }
+    Ok(round)
+}
+
 /// One file's part of [`rows5`], with keys as `SymbolId`s.
 #[derive(Default)]
 struct File5<'s> {
@@ -1213,10 +1236,15 @@ fn file5<'s>(
     let f = &inputs.files[file];
     let Reader::Object(object) = f.reader else { return Ok(File5::default()) };
     let bad = || format!("{}: symbol table", String::from_utf8_lossy(f.path));
-    let Some(table) = object.symbols().map_err(|_| bad())? else {
-        return Ok(File5::default());
-    };
     let live = live_file(file);
+    let Some(table) = object.symbols().map_err(|_| bad())? else {
+        // WP-261 (F-7): an object without a symbol table (x86-64's
+        // libstdc++ `tinfo2.o`, `compatibility-*.o`, libm's
+        // `w_*_compat.o`) has no mention, so no edge reaches it: an
+        // archive member of that kind is never extracted and its row is
+        // `LAZY` like any member not extracted (it was stored live).
+        return Ok(File5 { lazy: !live, flags: object_flags(inputs, file), ..File5::default() });
+    };
     let first = table.first_global().0;
     let mut acc = File5 { first_global: first, lazy: !live, ..File5::default() };
     acc.flags = object_flags(inputs, file);
@@ -1562,12 +1590,18 @@ fn rows5(
     let eh = extra.eh.map_err(|why| format!("no .eh_frame ranges: {why}"))?;
     out.files = files5
         .iter()
-        .map(|f| FileCols {
-            flags: f.flags | if f.lazy { crate::update::rows::file_flags::LAZY } else { 0 },
-            first_global: f.first_global,
-            ..FileCols::default()
+        .enumerate()
+        .map(|(i, f)| {
+            let file = FileId(i as u32);
+            let round = file_round(res, file)?;
+            Ok(FileCols {
+                flags: f.flags | if f.lazy { crate::update::rows::file_flags::LAZY } else { 0 },
+                first_global: f.first_global,
+                round,
+                ..FileCols::default()
+            })
         })
-        .collect();
+        .collect::<Result<_, String>>()?;
     for e in eh {
         let [offset, capacity, records] =
             crate::state5::eh_columns(e.offset, e.capacity, u64::from(e.records))
@@ -1600,6 +1634,10 @@ fn rows5(
     let exports = exports.count();
     out.option_keys = extra.option_keys.to_vec();
     out.versioned = files5.iter().map(|f| f.versioned).sum();
+    if res.iterations == 0 {
+        return Err("META.iterations 0: no closure ran (IN-71b)".into());
+    }
+    out.iterations = res.iterations;
     let debug_note;
     (out.debug_strs, debug_note) = debug_str_rows(link, keys, layout, live_frags)?;
     out.notes = vec![
@@ -1775,6 +1813,7 @@ pub fn state5_rows(
         f.flags |= c.flags;
         [f.eh_offset, f.eh_capacity, f.eh_records, f.eh_fdes] = c.eh;
         f.stack = c.stack;
+        f.round = c.round;
         if !c.properties.is_empty() {
             f.properties = if let Some(&v) = interned.get(&c.properties) {
                 v
@@ -1801,6 +1840,7 @@ pub fn state5_rows(
     m.copies = rows.copies;
     m.edges = rows.edges;
     m.meta.versioned = rows.versioned;
+    m.meta.iterations = rows.iterations;
     m.debug_strs = rows.debug_strs;
     if rows.slot_refs.len() != m.slots.len() {
         return Err("SLOTS: the rows are not this state's".into());
