@@ -767,6 +767,27 @@ fn residue_is_not_seen(arch: Arch) {
                 .unwrap_or_else(|e| panic!("{arch:?}: the residue was refused: {e:?}"));
             let whole = refill_ranges_for_test(l, std::slice::from_ref(&r)).unwrap();
             assert_ne!(got.jobs, whole.jobs, "{arch:?}: a dropped member changes bytes");
+            // c2b-3: the per-chunk member count from a source independent
+            // of the (edited) member list refuses it before any row.
+            let all = mortar_image::link::clip_members(l).expect("the member index");
+            let mut edited = all.clone();
+            if let Some(v) = edited.by_chunk.get_mut(&c) {
+                v.retain(|x| x.section != d.section);
+            }
+            let base = l.layout.placement.chunks[c].offset;
+            let clip = [base + d.offset..base + d.offset + d.size];
+            let count = |k| all.by_chunk.get(&k).map(Vec::len);
+            let chunks = &l.layout.placement.chunks;
+            assert!(
+                mortar_image::clip_plan::check_member_counts(&all, chunks, &clip, &count).is_ok(),
+                "{arch:?}: the whole index has the count"
+            );
+            let refused =
+                mortar_image::clip_plan::check_member_counts(&edited, chunks, &clip, &count);
+            assert!(
+                matches!(&refused, Err(ClipError::Internal(e)) if format!("{e:?}").contains("the independent count")),
+                "{arch:?}: the residue is refused by the count: {refused:?}"
+            );
             let n = got.jobs[0].1.iter().zip(&whole.jobs[0].1).filter(|(a, b)| a != b).count();
             eprintln!(
                 "[clip-residue] {arch:?} {}: {:#x} bytes dropped inside the next member's \

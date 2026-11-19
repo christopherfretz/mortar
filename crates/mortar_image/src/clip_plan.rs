@@ -558,6 +558,49 @@ pub fn for_clips<R: Rows>(
     Ok(b.finish(crate::IMAGE_BLOCK, &Pool::sequential())?)
 }
 
+/// c2b-3 (ruling "After 255c2b" item 3): before the first row, every
+/// in-file `Body` chunk a clip meets lists in `members` exactly as many
+/// members as `count` gives for it, a count from a source INDEPENDENT of
+/// the member list (a dropped member smaller than the next item's
+/// alignment is otherwise unseen by the gap rule). `count` answering
+/// `None` (no independent count) refuses too. O(chunks + clips).
+///
+/// # Errors
+///
+/// `internal-error (image: clip plan: chunk {c}: the member index lists
+/// {n} members, the independent count {m})`, or `(... no independent
+/// member count)`.
+pub fn check_member_counts(
+    members: &Members,
+    chunks: &Column<ChunkId, Chunk>,
+    clips: &[Range<u64>],
+    count: &dyn Fn(ChunkId) -> Option<usize>,
+) -> Result<(), ClipError> {
+    for (id, c) in chunks.iter() {
+        if !c.in_file()
+            || c.size == 0
+            || !matches!(c.kind, ChunkKind::Body(_))
+            || !meets(clips, c.offset, c.offset + c.size)
+        {
+            continue;
+        }
+        let n = members.by_chunk.get(&id).map_or(0, Vec::len);
+        match count(id) {
+            Some(m) if m == n => {}
+            Some(m) => {
+                return Err(internal(&format!(
+                    "chunk {}: the member index lists {n} members, the independent count {m}",
+                    id.0
+                )));
+            }
+            None => {
+                return Err(internal(&format!("chunk {}: no independent member count", id.0)));
+            }
+        }
+    }
+    Ok(())
+}
+
 /// §9.1's written-bitmap rule over clip piece `piece` of `plan`: every
 /// byte is written by an explicit row (an `Input`, `Bytes`, `Synth` or
 /// `Merged` unit, or a gap of a non-zero pattern, which only [`pads`]
