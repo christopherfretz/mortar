@@ -472,6 +472,8 @@ fn reference_of(
 /// files, and of the files of `cf` by `sh_index` (a replaced file's live
 /// sections are in `now_dead` by their old ids and in `now_live` by their
 /// fresh ones even when nothing flips).
+#[allow(clippy::too_many_lines, reason = "live, the two marks, the judgement, the flips in order")]
+#[allow(clippy::many_single_char_names, reason = "the front, a file, a section, a row, the delta")]
 fn live_judged(
     view: &StateView<'_>,
     f: &crate::front::Front<'_>,

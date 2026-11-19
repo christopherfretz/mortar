@@ -82,7 +82,7 @@ impl Prog {
             .args(extra)
             .current_dir(&self.dir)
             .env("MORTAR_UPDATE_FINDINGS", &self.findings);
-        let o = run_with(&mut c, b"", Duration::from_secs(300));
+        let o = run_with(&mut c, b"", Duration::from_mins(5));
         (o.success(), o.stderr_text())
     }
 
@@ -94,7 +94,7 @@ impl Prog {
         let tmp = self.dir.join("b.cc.o.new");
         let mut c = Command::new(&self.cxx);
         c.args(FLAGS).args(extra).arg("-c").arg(&src).arg("-o").arg(&tmp);
-        let o = run_with(&mut c, b"", Duration::from_secs(120));
+        let o = run_with(&mut c, b"", Duration::from_mins(2));
         assert!(o.success(), "{}: {}", self.cxx, o.stderr_text());
         std::fs::rename(&tmp, self.dir.join("b.cc.o")).expect("rename b.cc.o");
     }
@@ -118,7 +118,7 @@ impl Prog {
     /// The program's standard output (under its emulator off the host).
     fn run(&self, out: &str) -> String {
         let mut c = self.arch.command(&self.dir.join(out), None);
-        let o = run_with(&mut c, b"", Duration::from_secs(120));
+        let o = run_with(&mut c, b"", Duration::from_mins(2));
         assert!(!o.timed_out(), "{out}: TIMEOUT");
         assert!(o.success(), "{out}: {}", o.stderr_text());
         o.stdout_text()
