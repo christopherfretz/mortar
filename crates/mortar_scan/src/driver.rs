@@ -59,103 +59,129 @@ pub(crate) fn units(
     view: &View<'_, '_>,
     diags: &mut Vec<(Key, Diagnostic)>,
 ) -> (Vec<Unit>, Vec<SectionId>) {
-    let mut out = Vec::new();
-    let mut deferred = Vec::new();
-    let mut bufs = Bufs::default();
-    let mut defer = Defer::new(view);
-    let types = !view.arch.nonalloc_demand_types().is_empty();
+    let mut cut = Cut {
+        out: Vec::new(),
+        deferred: Vec::new(),
+        bufs: Bufs::default(),
+        defer: Defer::new(view),
+        types: !view.arch.nonalloc_demand_types().is_empty(),
+    };
+    for (file, range) in view.resolution.section_base.iter() {
+        file_units(view, file, range.iter(), &mut cut, diags);
+    }
+    (cut.out, cut.deferred)
+}
+
+/// What [`units`] carries from file to file.
+struct Cut<'v, 'a, 's> {
+    out: Vec<Unit>,
+    deferred: Vec<SectionId>,
+    bufs: Bufs,
+    defer: Defer<'v, 'a, 's>,
+    /// The architecture has non-alloc demand types.
+    types: bool,
+}
+
+/// The units of ONE file (sections `sections`, in index order), appended
+/// to `cut`: [`units`]' step for each file (WP-255d4).
+fn file_units<'v, 'a, 's>(
+    view: &'v View<'a, 's>,
+    file: FileId,
+    sections: impl Iterator<Item = SectionId>,
+    cut: &mut Cut<'v, 'a, 's>,
+    diags: &mut Vec<(Key, Diagnostic)>,
+) {
+    let Cut { out, deferred, bufs, defer, types } = cut;
+    let types = *types;
     let r = view.resolution;
-    for (file, range) in r.section_base.iter() {
-        for (k, sid) in range.iter().enumerate() {
-            let row = r.sections[sid];
-            if row.reloc.0 == 0 || !view.liveness.is_live(sid) {
-                continue;
-            }
-            let index = k as u32;
-            if let Some(n) = defer.count(file, index, row.reloc.0, row.kind) {
-                if n > 0 {
-                    deferred.push(sid);
-                    if types {
-                        out.push(Unit {
-                            file,
-                            section: sid,
-                            index,
-                            rel: row.reloc.0,
-                            lo: 0,
-                            hi: n,
-                            parts: 1,
-                            types_only: true,
-                        });
-                    }
+    for (k, sid) in sections.enumerate() {
+        let row = r.sections[sid];
+        if row.reloc.0 == 0 || !view.liveness.is_live(sid) {
+            continue;
+        }
+        let index = k as u32;
+        if let Some(n) = defer.count(file, index, row.reloc.0, row.kind) {
+            if n > 0 {
+                deferred.push(sid);
+                if types {
+                    out.push(Unit {
+                        file,
+                        section: sid,
+                        index,
+                        rel: row.reloc.0,
+                        lo: 0,
+                        hi: n,
+                        parts: 1,
+                        types_only: true,
+                    });
                 }
+            }
+            continue;
+        }
+        if let Some(n) = header_count(view, file, row.reloc.0) {
+            // One unit, opened and checked by its walk: the scan
+            // reads the records once (`spec/image.md` I-81), and the
+            // list of units is made from section headers alone.
+            out.push(Unit {
+                file,
+                section: sid,
+                index,
+                rel: row.reloc.0,
+                lo: 0,
+                hi: n,
+                parts: 1,
+                types_only: false,
+            });
+            continue;
+        }
+        let sec = match Sec::open(view, file, sid, index, row.reloc.0, bufs) {
+            Ok(s) => s,
+            Err(d) => {
+                diags.push(d);
                 continue;
             }
-            if let Some(n) = header_count(view, file, row.reloc.0) {
-                // One unit, opened and checked by its walk: the scan
-                // reads the records once (`spec/image.md` I-81), and the
-                // list of units is made from section headers alone.
-                out.push(Unit {
-                    file,
-                    section: sid,
-                    index,
-                    rel: row.reloc.0,
-                    lo: 0,
-                    hi: n,
-                    parts: 1,
-                    types_only: false,
-                });
-                continue;
+        };
+        let n = sec.recs.records.len();
+        let Ok(n) = u32::try_from(n) else {
+            let d = Diagnostic::refused(
+                RefusalClass::Feature,
+                "a relocation section of more than 2^32 - 1 records",
+            );
+            diags.push((
+                key_at(file, index, 0),
+                d.at(Place::section(sec.path(), sec.name_str(), 0)),
+            ));
+            continue;
+        };
+        if n == 0 {
+            continue;
+        }
+        let block = SCAN_BLOCK as u32;
+        let mut cuts = vec![0u32];
+        let mut cut = block;
+        while cut < n {
+            let c = cut_at(view, &sec, cut, n);
+            if c >= n {
+                break;
             }
-            let sec = match Sec::open(view, file, sid, index, row.reloc.0, &mut bufs) {
-                Ok(s) => s,
-                Err(d) => {
-                    diags.push(d);
-                    continue;
-                }
-            };
-            let n = sec.recs.records.len();
-            let Ok(n) = u32::try_from(n) else {
-                let d = Diagnostic::refused(
-                    RefusalClass::Feature,
-                    "a relocation section of more than 2^32 - 1 records",
-                );
-                diags.push((
-                    key_at(file, index, 0),
-                    d.at(Place::section(sec.path(), sec.name_str(), 0)),
-                ));
-                continue;
-            };
-            if n == 0 {
-                continue;
-            }
-            let block = SCAN_BLOCK as u32;
-            let mut cuts = vec![0u32];
-            let mut cut = block;
-            while cut < n {
-                let c = cut_at(view, &sec, cut, n);
-                if c >= n {
-                    break;
-                }
-                cuts.push(c);
-                cut = c.saturating_add(block);
-            }
-            let parts = cuts.len() as u32;
-            for (part, &lo) in cuts.iter().enumerate() {
-                let hi = cuts.get(part + 1).copied().unwrap_or(n);
-                out.push(Unit {
-                    file,
-                    section: sid,
-                    index,
-                    rel: row.reloc.0,
-                    lo,
-                    hi,
-                    parts,
-                    types_only: false,
-                });
-            }
+            cuts.push(c);
+            cut = c.saturating_add(block);
+        }
+        let parts = cuts.len() as u32;
+        for (part, &lo) in cuts.iter().enumerate() {
+            let hi = cuts.get(part + 1).copied().unwrap_or(n);
+            out.push(Unit {
+                file,
+                section: sid,
+                index,
+                rel: row.reloc.0,
+                lo,
+                hi,
+                parts,
+                types_only: false,
+            });
         }
     }
-    (out, deferred)
 }
 
 /// Which relocated sections the scan leaves to fill (`spec/image.md`
