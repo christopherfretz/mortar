@@ -3191,11 +3191,14 @@ mod wp262 {
         (m, area)
     }
 
+    /// A way to break [`good`]'s table.
+    type Break = fn(&mut MemoryState, &mut SymtabBlock);
+
     #[test]
     fn a_good_table_passes_and_each_break_is_refused() {
         let (m, area) = good();
         assert_eq!(symtab_keys_check(&m, Some(area)), Ok(()));
-        let cases: [(&str, fn(&mut MemoryState, &mut SymtabBlock)); 7] = [
+        let cases: [(&str, Break); 7] = [
             ("outside", |m, _| m.symtab_keys[0].index = 12),
             ("one index", |m, _| m.symtab_keys[1] = SymtabKeyRow { index: 10, strtab: 40 }),
             ("named by no row", |m, _| m.symtab_keys[1] = SymtabKeyRow { index: NONE, strtab: 0 }),

@@ -151,7 +151,12 @@ impl Judged {
         format!(
             ".symtab {} entries, sh_info {}, {} globals; SYMBOLS {rows} rows: {} with an entry, \
              {} global rows NONE, {} local rows",
-            self.entries, self.sh_info, self.globals, self.stored, self.none_global, self.local_rows
+            self.entries,
+            self.sh_info,
+            self.globals,
+            self.stored,
+            self.none_global,
+            self.local_rows
         )
     }
 }
@@ -167,7 +172,7 @@ fn judge(label: &str, m: &MemoryState, out: &Path) -> Judged {
         by_index.insert(*i, (name.as_slice(), *st_name));
         by_name.entry(name.as_slice()).or_default().push(*i);
     }
-    let mut named: HashMap<u32, usize> = HashMap::new();
+    let mut row_at: HashMap<u32, usize> = HashMap::new();
     let (mut stored, mut none_global, mut local_rows) = (0, 0, 0);
     for (r, (sym, k)) in m.symbols.iter().zip(&m.symtab_keys).enumerate() {
         let name = text(m, sym.name);
@@ -191,7 +196,7 @@ fn judge(label: &str, m: &MemoryState, out: &Path) -> Judged {
         };
         assert_eq!(ename, name, "{label}: row {r}: entry {} is another name's", k.index);
         assert_eq!(k.strtab, st_name, "{label}: row {r} {shown}: strtab against st_name");
-        if let Some(other) = named.insert(k.index, r) {
+        if let Some(other) = row_at.insert(k.index, r) {
             panic!("{label}: rows {other} and {r} name entry {}", k.index);
         }
     }
@@ -199,7 +204,7 @@ fn judge(label: &str, m: &MemoryState, out: &Path) -> Judged {
     // entry left unnamed (`=>` of the equivalence).
     for (i, name, _) in &globals {
         assert!(
-            named.contains_key(i),
+            row_at.contains_key(i),
             "{label}: global entry {i} {} is named by no row",
             String::from_utf8_lossy(name)
         );
@@ -209,7 +214,7 @@ fn judge(label: &str, m: &MemoryState, out: &Path) -> Judged {
             let name = text(m, sym.name);
             if let Some(e) = by_name.get(name) {
                 assert!(
-                    e.iter().all(|i| named.get(i).is_some_and(|&o| o != r)),
+                    e.iter().all(|i| row_at.get(i).is_some_and(|&o| o != r)),
                     "{label}: row {r} {} is NONE and its name has an entry",
                     String::from_utf8_lossy(name)
                 );
@@ -249,10 +254,7 @@ fn stored_keys_name_the_output_globals() {
         assert!(j.locals.iter().any(|n| n == b"wp262_hidden"), "{label}: wp262_hidden is a local");
         let end = row_of(b"_end");
         let e = m.symtab_keys[end];
-        assert!(
-            j.names.get(&e.index).is_some_and(|x| x == b"_end"),
-            "{label}: _end's row {e:?}"
-        );
+        assert!(j.names.get(&e.index).is_some_and(|x| x == b"_end"), "{label}: _end's row {e:?}");
         let sink = m.symtab_keys[row_of(b"wp262_sink")];
         assert_ne!(sink.index, NONE, "{label}: wp262_sink's row");
         eprintln!(
@@ -276,7 +278,10 @@ fn version_7_state_is_refused() {
         bytes[8..12].copy_from_slice(&7u32.to_le_bytes());
         let e = mortar_incr::state5::read::decode(&bytes).expect_err("a version-7 state decodes");
         let shown = format!("{e:?}");
-        assert!(shown.contains("Version") && shown.contains("format version 7"), "{label}: {shown}");
+        assert!(
+            shown.contains("Version") && shown.contains("format version 7"),
+            "{label}: {shown}"
+        );
         // End to end: the link's own state at version 7, then an update.
         let at = line.dir.join("out.mortar-state");
         let mut disk = std::fs::read(&at).expect("the state");
