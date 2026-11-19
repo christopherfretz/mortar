@@ -24,7 +24,7 @@ mod support;
 
 use std::collections::HashMap;
 use std::ffi::OsString;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use mortar::incremental::State5;
 use mortar_incr::update::rows::sym_kind;
@@ -111,8 +111,8 @@ fn text(m: &MemoryState, s: mortar_incr::format::Str) -> &[u8] {
 /// entry `(index, name, st_name)`; the local entries' names.
 type Globals = (u32, u32, Vec<(u32, Vec<u8>, u32)>, Vec<Vec<u8>>);
 
-fn output_globals(line: &Line) -> Globals {
-    let bytes = std::fs::read(line.dir.join("out")).expect("the output");
+fn output_globals(label: &str, out: &Path) -> Globals {
+    let bytes = std::fs::read(out).expect("the output");
     let h = mortar_elf::FileHeader::parse(&bytes).expect("an ELF header");
     let t = mortar_elf::section::SectionTable::parse(&bytes, &h).expect("section headers");
     let syms = t
@@ -126,11 +126,108 @@ fn output_globals(line: &Line) -> Globals {
         if i.0 < first {
             locals.push(name);
         } else {
-            assert_ne!(s.binding(), STB_LOCAL, "{}: a local entry {i:?} past sh_info", line.label);
+            assert_ne!(s.binding(), STB_LOCAL, "{label}: a local entry {i:?} past sh_info");
             globals.push((i.0, name, s.st_name));
         }
     }
     (first, syms.len(), globals, locals)
+}
+
+/// What [`judge`] counted.
+struct Judged {
+    sh_info: u32,
+    entries: u32,
+    globals: usize,
+    stored: usize,
+    none_global: usize,
+    local_rows: usize,
+    /// The global entries' names by index.
+    names: HashMap<u32, Vec<u8>>,
+    locals: Vec<Vec<u8>>,
+}
+
+impl Judged {
+    fn line(&self, rows: usize) -> String {
+        format!(
+            ".symtab {} entries, sh_info {}, {} globals; SYMBOLS {rows} rows: {} with an entry, \
+             {} global rows NONE, {} local rows",
+            self.entries, self.sh_info, self.globals, self.stored, self.none_global, self.local_rows
+        )
+    }
+}
+
+/// The oracle: `m`'s `SYMTAB_KEYS` against `out`'s `.symtab` and `.strtab`.
+fn judge(label: &str, m: &MemoryState, out: &Path) -> Judged {
+    let (sh_info, entries, globals, locals) = output_globals(label, out);
+    assert_eq!(m.symtab_keys.len(), m.symbols.len(), "{label}: one SYMTAB_KEYS row per key");
+    // Per global entry: its name and st_name, and the row naming it.
+    let mut by_index: HashMap<u32, (&[u8], u32)> = HashMap::new();
+    let mut by_name: HashMap<&[u8], Vec<u32>> = HashMap::new();
+    for (i, name, st_name) in &globals {
+        by_index.insert(*i, (name.as_slice(), *st_name));
+        by_name.entry(name.as_slice()).or_default().push(*i);
+    }
+    let mut named: HashMap<u32, usize> = HashMap::new();
+    let (mut stored, mut none_global, mut local_rows) = (0, 0, 0);
+    for (r, (sym, k)) in m.symbols.iter().zip(&m.symtab_keys).enumerate() {
+        let name = text(m, sym.name);
+        let shown = String::from_utf8_lossy(name);
+        let global = matches!(sym.kind, sym_kind::GLOBAL | sym_kind::VERSIONED);
+        if !global {
+            local_rows += 1;
+            assert_eq!(k.index, NONE, "{label}: row {r} {shown} (kind {}) has an entry", sym.kind);
+            continue;
+        }
+        if k.index == NONE {
+            none_global += 1;
+            continue;
+        }
+        stored += 1;
+        let Some(&(ename, st_name)) = by_index.get(&k.index) else {
+            panic!(
+                "{label}: row {r} {shown}: index {} is no global entry [{sh_info}, {entries})",
+                k.index
+            )
+        };
+        assert_eq!(ename, name, "{label}: row {r}: entry {} is another name's", k.index);
+        assert_eq!(k.strtab, st_name, "{label}: row {r} {shown}: strtab against st_name");
+        if let Some(other) = named.insert(k.index, r) {
+            panic!("{label}: rows {other} and {r} name entry {}", k.index);
+        }
+    }
+    // Every global entry is named; a NONE global row's name has no
+    // entry left unnamed (`=>` of the equivalence).
+    for (i, name, _) in &globals {
+        assert!(
+            named.contains_key(i),
+            "{label}: global entry {i} {} is named by no row",
+            String::from_utf8_lossy(name)
+        );
+    }
+    for (r, (sym, k)) in m.symbols.iter().zip(&m.symtab_keys).enumerate() {
+        if matches!(sym.kind, sym_kind::GLOBAL | sym_kind::VERSIONED) && k.index == NONE {
+            let name = text(m, sym.name);
+            if let Some(e) = by_name.get(name) {
+                assert!(
+                    e.iter().all(|i| named.get(i).is_some_and(|&o| o != r)),
+                    "{label}: row {r} {} is NONE and its name has an entry",
+                    String::from_utf8_lossy(name)
+                );
+            }
+        }
+    }
+    assert_eq!(stored, globals.len(), "{label}: rows with an entry against global entries");
+    let names = globals.iter().map(|(i, n, _)| (*i, n.clone())).collect();
+    Judged {
+        sh_info,
+        entries,
+        globals: globals.len(),
+        stored,
+        none_global,
+        local_rows,
+        names,
+        locals,
+    }
 }
 
 #[test]
@@ -139,65 +236,7 @@ fn stored_keys_name_the_output_globals() {
     for line in lines() {
         let label = line.label;
         let (m, _) = state(&line);
-        let (sh_info, entries, globals, locals) = output_globals(&line);
-        assert_eq!(m.symtab_keys.len(), m.symbols.len(), "{label}: one SYMTAB_KEYS row per key");
-        // Per global entry: its name and st_name, and the row naming it.
-        let mut by_index: HashMap<u32, (&[u8], u32)> = HashMap::new();
-        let mut by_name: HashMap<&[u8], Vec<u32>> = HashMap::new();
-        for (i, name, st_name) in &globals {
-            by_index.insert(*i, (name.as_slice(), *st_name));
-            by_name.entry(name.as_slice()).or_default().push(*i);
-        }
-        let mut named: HashMap<u32, usize> = HashMap::new();
-        let (mut stored, mut none_global, mut local_rows) = (0, 0, 0);
-        for (r, (sym, k)) in m.symbols.iter().zip(&m.symtab_keys).enumerate() {
-            let name = text(&m, sym.name);
-            let shown = String::from_utf8_lossy(name);
-            let global = matches!(sym.kind, sym_kind::GLOBAL | sym_kind::VERSIONED);
-            if !global {
-                local_rows += 1;
-                assert_eq!(k.index, NONE, "{label}: row {r} {shown} (kind {}) has an entry", sym.kind);
-                continue;
-            }
-            if k.index == NONE {
-                none_global += 1;
-                continue;
-            }
-            stored += 1;
-            let Some(&(ename, st_name)) = by_index.get(&k.index) else {
-                panic!(
-                    "{label}: row {r} {shown}: index {} is no global entry [{sh_info}, {entries})",
-                    k.index
-                )
-            };
-            assert_eq!(ename, name, "{label}: row {r}: entry {} is another name's", k.index);
-            assert_eq!(k.strtab, st_name, "{label}: row {r} {shown}: strtab against st_name");
-            if let Some(other) = named.insert(k.index, r) {
-                panic!("{label}: rows {other} and {r} name entry {}", k.index);
-            }
-        }
-        // Every global entry is named; a NONE global row's name has no
-        // entry left unnamed (`=>` of the equivalence).
-        for (i, name, _) in &globals {
-            assert!(
-                named.contains_key(i),
-                "{label}: global entry {i} {} is named by no row",
-                String::from_utf8_lossy(name)
-            );
-        }
-        for (r, (sym, k)) in m.symbols.iter().zip(&m.symtab_keys).enumerate() {
-            if matches!(sym.kind, sym_kind::GLOBAL | sym_kind::VERSIONED) && k.index == NONE {
-                let name = text(&m, sym.name);
-                if let Some(e) = by_name.get(name) {
-                    assert!(
-                        e.iter().all(|i| named.get(i).is_some_and(|&o| o != r)),
-                        "{label}: row {r} {} is NONE and its name has an entry",
-                        String::from_utf8_lossy(name)
-                    );
-                }
-            }
-        }
-        assert_eq!(stored, globals.len(), "{label}: rows with an entry against global entries");
+        let j = judge(label, &m, &line.dir.join("out"));
         // The two keys of x3.cpp.
         let row_of = |n: &[u8]| {
             m.symbols
@@ -207,21 +246,18 @@ fn stored_keys_name_the_output_globals() {
         };
         let hidden = row_of(b"wp262_hidden");
         assert_eq!(m.symtab_keys[hidden].index, NONE, "{label}: the hidden global's row");
-        assert!(locals.iter().any(|n| n == b"wp262_hidden"), "{label}: wp262_hidden is a local");
+        assert!(j.locals.iter().any(|n| n == b"wp262_hidden"), "{label}: wp262_hidden is a local");
         let end = row_of(b"_end");
         let e = m.symtab_keys[end];
         assert!(
-            by_index.get(&e.index).is_some_and(|x| x.0 == b"_end"),
+            j.names.get(&e.index).is_some_and(|x| x == b"_end"),
             "{label}: _end's row {e:?}"
         );
         let sink = m.symtab_keys[row_of(b"wp262_sink")];
         assert_ne!(sink.index, NONE, "{label}: wp262_sink's row");
         eprintln!(
-            "[wp262] {label}: .symtab {entries} entries, sh_info {sh_info}, {} globals; \
-             SYMBOLS {} rows: {stored} with an entry, {none_global} global rows NONE, \
-             {local_rows} local rows; _end at {}, wp262_hidden NONE",
-            globals.len(),
-            m.symbols.len(),
+            "[wp262] {label}: {}; _end at {}, wp262_hidden NONE",
+            j.line(m.symbols.len()),
             e.index
         );
         ran += 1;
@@ -255,4 +291,18 @@ fn version_7_state_is_refused() {
         ran += 1;
     }
     assert!(ran == 2 || !tools_required(), "{ran} of 2 links");
+}
+
+// WP-262 task 5 (a check, not a gate): an update's state against its
+// output. With `MORTAR_WP262_W=<dir>` (an `incr-update` run kept with
+// `--keep`: its `w` directory, after a hop that was an update in place),
+// `prog.mortar-state` against `prog`.
+#[test]
+#[ignore = "reads a kept incr-update run named by MORTAR_WP262_W"]
+fn kept_update_state_names_its_output_globals() {
+    let w = PathBuf::from(std::env::var_os("MORTAR_WP262_W").expect("MORTAR_WP262_W"));
+    let bytes = std::fs::read(w.join("prog.mortar-state")).expect("the state");
+    let m = mortar_incr::state5::read::decode(&bytes).expect("the state decodes");
+    let j = judge("update", &m, &w.join("prog"));
+    eprintln!("[wp262] {}: {}", w.display(), j.line(m.symbols.len()));
 }
