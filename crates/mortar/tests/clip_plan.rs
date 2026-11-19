@@ -761,6 +761,16 @@ fn residue_is_not_seen(arch: Arch) {
     let out = run_with(&mut cmd, b"", Duration::from_mins(1));
     assert!(out.success(), "gcc: {}", out.stderr_text());
     let args: Vec<OsString> = ["r.o", "-static", "-o", "out"].iter().map(OsString::from).collect();
+    // c2b-3 from the STATE (WP-255g): the same link in incremental mode
+    // writes `CHUNKS.members`, the count the update reads.
+    let mut inc = args.clone();
+    inc.extend(["--incremental=full", "--incremental-state", "out.mortar-state"].map(OsString::from));
+    let path = dir.join("out.state5");
+    let state5 = mortar::incremental::State5 { path: path.clone(), collide: false, rows: None };
+    let inv = mortar::invoke_state5("mortar", &inc, dir.path(), state5);
+    assert!(matches!(inv.outcome, mortar::Outcome::Linked { .. }), "{:?}", inv.outcome);
+    let state = mortar_incr::state5::read::decode(&std::fs::read(&path).expect("the state"))
+        .expect("the state decodes");
     with_link_args(dir.path(), &args, |l| {
         for name in [&b".text.b"[..], b".data.b"] {
             let r = placed(l, "r.o", name);
@@ -793,8 +803,19 @@ fn residue_is_not_seen(arch: Arch) {
             let base = l.layout.placement.chunks[c].offset;
             let range = base + d.offset..base + d.offset + d.size;
             let clip = std::slice::from_ref(&range);
-            let count = |k| all.by_chunk.get(&k).map(Vec::len);
             let chunks = &l.layout.placement.chunks;
+            // The state's row of a chunk: the one at its offset and size.
+            let count = |k: mortar_core::ChunkId| {
+                let c = &chunks[k];
+                let mut rows = state.chunks.iter().filter(|r| r.offset == c.offset && r.size == c.size);
+                let (Some(r), None) = (rows.next(), rows.next()) else { return None };
+                Some(r.members as usize)
+            };
+            assert_eq!(
+                count(c),
+                all.by_chunk.get(&c).map(Vec::len),
+                "{arch:?}: the state's count is the member index's"
+            );
             assert!(
                 mortar_image::clip_plan::check_member_counts(&all, chunks, clip, &count).is_ok(),
                 "{arch:?}: the whole index has the count"
@@ -803,7 +824,7 @@ fn residue_is_not_seen(arch: Arch) {
                 mortar_image::clip_plan::check_member_counts(&edited, chunks, clip, &count);
             assert!(
                 matches!(&refused, Err(ClipError::Internal(e)) if format!("{e:?}").contains("the independent count")),
-                "{arch:?}: the residue is refused by the count: {refused:?}"
+                "{arch:?}: the residue is refused by the state's count: {refused:?}"
             );
             let n = got.jobs[0].1.iter().zip(&whole.jobs[0].1).filter(|(a, b)| a != b).count();
             eprintln!(
