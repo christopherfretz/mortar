@@ -46,9 +46,9 @@ const M1: &str = "int wp255d_m1_data = 1;\nint wp255d_m1(int x) { return x + wp2
 const M2: &str = "static volatile int wp255d_m1_data = 3;\n\
                   int wp255d_m2(int x) { return x * wp255d_m1_data + 7; }\n";
 /// `m1.o` edited (C++): `wp255d_m1` grown, a renamed function, an added
-/// section, an added COMDAT group (`inline`, used).
+/// section, an added COMDAT group (`inline`, `noinline` so -O1 keeps it, used).
 const M1_EDITED: &str = "extern \"C\" { int wp255d_m1_data = 1; }\n\
-    inline int wp255d_inl(int x) { return x * 3 + wp255d_m1_data; }\n\
+    inline __attribute__((noinline)) int wp255d_inl(int x) { return x * 3 + wp255d_m1_data; }\n\
     extern \"C\" int wp255d_m1_renamed(int x) { return x ^ 5; }\n\
     extern \"C\" __attribute__((section(\".text.wp255d2_added\"))) int wp255d_added(int x) \
     { return x + 11; }\n\
@@ -258,7 +258,8 @@ fn compare(
     let mut cache = FrontCache::new(&fresh, pool(), &line.dir);
     let ids = Ids::Update { first_section: SectionId(first) };
     let what = |s: &str| format!("{}: file {}: {s}", line.label, file.0);
-    let ff = front_of(&mut cache, view, file, ids).unwrap_or_else(|e| panic!("{}", what(&format!("{e:?}"))));
+    let ff = front_of(&mut cache, view, file, ids)
+        .unwrap_or_else(|e| panic!("{}", what(&format!("{e:?}"))));
     assert_eq!(ff.sections.len(), want.sections.len(), "{}", what("section count"));
     assert!(!want.sections.is_empty(), "{}", what("an extracted file has sections"));
     for (k, (s, w)) in ff.sections.iter().zip(&want.sections).enumerate() {
@@ -267,7 +268,12 @@ fn compare(
         let got = (s.sh_type, s.flags, s.size, s.align, s.offset);
         assert_eq!(got, (w.sh_type, w.sh_flags, w.size, w.align, w.offset), "{}", at("header"));
         assert_eq!(strings.add(s.name), w.name, "{}", at("name"));
-        assert_eq!(anchor_row(&mut strings, s.anchor), (w.anchor_kind, w.anchor), "{}", at("anchor"));
+        assert_eq!(
+            anchor_row(&mut strings, s.anchor),
+            (w.anchor_kind, w.anchor),
+            "{}",
+            at("anchor")
+        );
         assert_eq!(s.ordinal, w.ordinal, "{}", at("ordinal"));
         assert!(s.place.is_none() && s.rela.is_none(), "{}", at("no place in the update's ids"));
         seen.sections += 1;
@@ -286,13 +292,48 @@ fn compare(
         match key.key {
             Some(row) => {
                 let r = view.symbol(row).expect("SYMBOLS");
-                assert_eq!(view.string(r.name).expect("name"), key.name, "{}", at("the row's name"));
+                assert_eq!(
+                    view.string(r.name).expect("name"),
+                    key.name,
+                    "{}",
+                    at("the row's name")
+                );
                 let v = view.string(r.version).expect("version");
                 assert_eq!(&v[..], key.version.unwrap_or_default(), "{}", at("the row's version"));
             }
             None => seen.new_keys += 1,
         }
         seen.keys += 1;
+    }
+}
+
+/// The record's example (ruling "After 255c3" item 2): the first key of
+/// the old link's front whose `SymbolId` is not its `SYMBOLS` row (found
+/// by name and version), and how many globals are at another row.
+fn renumbering(line: &Line, args: &[String], view: &StateView<'_>) {
+    let store = support::store();
+    let f = whole(line, args, &store);
+    let (mut first, mut other, mut rowless) = (None, 0, 0);
+    for i in 0..f.inputs.symbols.len() {
+        let sym = &f.inputs.symbols[SymbolId(i)];
+        let row = view.find_key(sym.name, sym.version.unwrap_or_default()).expect("SYMBOLS");
+        match row {
+            Some(r) if r.0 != i => {
+                other += 1;
+                first = first.or(Some((i, r.0, sym.name)));
+            }
+            Some(_) => {}
+            None => rowless += 1,
+        }
+    }
+    if let Some((i, r, name)) = first {
+        eprintln!(
+            "{}: the first renumbered key: {}: SymbolId {i}, SYMBOLS row {r}; {other} of {} \
+             keys at another row, {rowless} without a row",
+            line.label,
+            String::from_utf8_lossy(name),
+            f.inputs.symbols.len()
+        );
     }
 }
 
@@ -304,8 +345,10 @@ fn first_free(view: &StateView<'_>) -> u32 {
 fn update_front_of_an_extracted_member() {
     for line in lines() {
         line.archive(&["m1.o", "m2.o", "m4.o"]);
-        let old = state(&line, &line.args(&["wp255d_m2", "wp255d_m1"]), "old");
+        let old_args = line.args(&["wp255d_m2", "wp255d_m1"]);
+        let old = state(&line, &old_args, "old");
         let m4 = member(&old, "m4.o");
+        renumbering(&line, &old_args, &old);
         let new_args = line.args(&["wp255d_m2", "wp255d_m1", "wp255d_m4"]);
         let store = support::store();
         let f = whole(&line, &new_args, &store);
@@ -319,13 +362,20 @@ fn update_front_of_an_extracted_member() {
         // resolution of each, for the record.
         let fresh = support::store();
         let mut cache = FrontCache::new(&fresh, pool(), &line.dir);
-        let ff = front_of(&mut cache, &old, m4, Ids::Update { first_section: SectionId(first_free(&old)) })
-            .expect("m4");
+        let ff = front_of(
+            &mut cache,
+            &old,
+            m4,
+            Ids::Update { first_section: SectionId(first_free(&old)) },
+        )
+        .expect("m4");
         for name in [&b"_DYNAMIC"[..], b"_end", b"wp255d_nowhere"] {
             let key = ff.keys.iter().find(|k| k.name == name).expect("the key is mentioned");
             let full = (0..f.inputs.symbols.len())
                 .map(SymbolId)
-                .find(|&s| f.inputs.symbols[s].name == name && f.inputs.symbols[s].version.is_none())
+                .find(|&s| {
+                    f.inputs.symbols[s].name == name && f.inputs.symbols[s].version.is_none()
+                })
                 .map(|s| f.resolution.def[s]);
             eprintln!(
                 "{}: {}: old state's key {:?}, the full link's def {full:?}",

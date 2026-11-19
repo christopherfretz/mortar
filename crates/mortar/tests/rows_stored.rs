@@ -379,7 +379,9 @@ fn compare(
                 return Err(format!("{label}: key {i} ({shown}) has no single SYMBOLS row"));
             };
             if before == 0 && seen.renumbered == 1 {
-                eprintln!("{label}: the first renumbered key: {shown}: SymbolId {i}, SYMBOLS row {sid}");
+                eprintln!(
+                    "{label}: the first renumbered key: {shown}: SymbolId {i}, SYMBOLS row {sid}"
+                );
             }
             let skey = SymKey::global(SymbolId(sid));
             seen.keys += 1;

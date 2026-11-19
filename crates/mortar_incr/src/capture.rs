@@ -232,7 +232,6 @@ impl<'s> Keys<'s> {
     }
 }
 
-
 /// §7.1 for one object: each section's key (anchor, then name), section
 /// 0 included, and the names of its local symbol-table entries in order.
 /// The anchor is `comdat(i)` (the section's COMDAT signature, as the

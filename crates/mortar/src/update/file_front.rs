@@ -38,9 +38,7 @@ use mortar_core::identity::Anchor;
 use mortar_core::incr::{IncrReason, Unimplemented};
 use mortar_core::intern::SymName;
 use mortar_core::par::Pool;
-use mortar_elf::consts::{
-    GRP_COMDAT, SHF_LINK_ORDER, SHT_GROUP, SHT_REL, SHT_RELA,
-};
+use mortar_elf::consts::{GRP_COMDAT, SHF_LINK_ORDER, SHT_GROUP, SHT_REL, SHT_RELA};
 use mortar_elf::{Object, SectionIndex};
 use mortar_image::plan::RelaTable;
 use mortar_image::rows::SectionFront;
