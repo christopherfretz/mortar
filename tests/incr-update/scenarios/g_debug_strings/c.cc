@@ -1,7 +1,8 @@
 // The changed file (WP-230 G-5). GROW: c_value grows by two statements
 // (its .text, .debug_line and .debug_info contributions change size).
 // RENAME: c_fill7's local is renamed (a new .debug_str string appended,
-// the old one dead). DECL: u_dead is declared and called (GCC orders the
+// the old one dead: its name is used once and longer than a string
+// offset, so GCC puts it in .debug_str too, not inline). DECL: u_dead is declared and called (GCC orders the
 // file's .debug_str afresh: front 1's merge moves stored strings).
 // Forty-odd small functions give the debug contributions room in their
 // allotments (in a tiny file every growth is debug-compaction).
@@ -29,7 +30,7 @@ int c_fill6(int x) { int t = x * 8; return t - x; }
 #ifdef RENAME
 int c_fill7(int x) { int renamed_fill_wp230 = x * 9; return renamed_fill_wp230 - x; }
 #else
-int c_fill7(int x) { int t = x * 9; return t - x; }
+int c_fill7(int x) { int original_fill_wp230 = x * 9; return original_fill_wp230 - x; }
 #endif
 int c_fill8(int x) { int t = x * 10; return t - x; }
 int c_fill9(int x) { int t = x * 11; return t - x; }
