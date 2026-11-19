@@ -18,7 +18,8 @@ use mortar_elf::{SectionIndex, SymbolIndex};
 use crate::EhOwner;
 use crate::events::{Acc, Event, EventClass, GroupKey, RefId, UnitEvents, sym_group};
 use crate::view::{
-    Bufs, EhPlace, Raw, ReadFail, RecTable, RecTables, Recs, View, contents, rec_table, with_bufs,
+    Bufs, EhPlace, Program, Raw, ReadFail, RecTable, RecTables, Recs, View, Whole, contents,
+    rec_table, with_bufs,
 };
 
 /// One scan unit: records `lo..hi` of the relocation section `rel` of
@@ -66,41 +67,40 @@ pub(crate) fn units(
         defer: Defer::new(view),
         types: !view.arch.nonalloc_demand_types().is_empty(),
     };
-    for (file, range) in view.resolution.section_base.iter() {
+    for (file, range) in view.whole.resolution.section_base.iter() {
         file_units(view, file, range.iter(), &mut cut, diags);
     }
     (cut.out, cut.deferred)
 }
 
 /// What [`units`] carries from file to file.
-struct Cut<'v, 'a, 's> {
+struct Cut<'v, 'a, 's, W = Program<'a, 's>> {
     out: Vec<Unit>,
     deferred: Vec<SectionId>,
     bufs: Bufs,
-    defer: Defer<'v, 'a, 's>,
+    defer: Defer<'v, 'a, 's, W>,
     /// The architecture has non-alloc demand types.
     types: bool,
 }
 
 /// The units of ONE file (sections `sections`, in index order), appended
 /// to `cut`: [`units`]' step for each file (WP-255d4).
-fn file_units<'v, 'a, 's>(
-    view: &'v View<'a, 's>,
+fn file_units<'v, 'a, 's, W: Whole<'s>>(
+    view: &'v View<'a, 's, W>,
     file: FileId,
     sections: impl Iterator<Item = SectionId>,
-    cut: &mut Cut<'v, 'a, 's>,
+    cut: &mut Cut<'v, 'a, 's, W>,
     diags: &mut Vec<(Key, Diagnostic)>,
 ) {
     let Cut { out, deferred, bufs, defer, types } = cut;
     let types = *types;
-    let r = view.resolution;
     for (k, sid) in sections.enumerate() {
-        let row = r.sections[sid];
-        if row.reloc.0 == 0 || !view.liveness.is_live(sid) {
+        let (reloc, kind) = view.whole.reloc_of(sid);
+        if reloc == 0 || !view.whole.is_live(sid) {
             continue;
         }
         let index = k as u32;
-        if let Some(n) = defer.count(file, index, row.reloc.0, row.kind) {
+        if let Some(n) = defer.count(file, index, reloc, kind) {
             if n > 0 {
                 deferred.push(sid);
                 if types {
@@ -108,7 +108,7 @@ fn file_units<'v, 'a, 's>(
                         file,
                         section: sid,
                         index,
-                        rel: row.reloc.0,
+                        rel: reloc,
                         lo: 0,
                         hi: n,
                         parts: 1,
@@ -118,7 +118,7 @@ fn file_units<'v, 'a, 's>(
             }
             continue;
         }
-        if let Some(n) = header_count(view, file, row.reloc.0) {
+        if let Some(n) = header_count(view, file, reloc) {
             // One unit, opened and checked by its walk: the scan
             // reads the records once (`spec/image.md` I-81), and the
             // list of units is made from section headers alone.
@@ -126,7 +126,7 @@ fn file_units<'v, 'a, 's>(
                 file,
                 section: sid,
                 index,
-                rel: row.reloc.0,
+                rel: reloc,
                 lo: 0,
                 hi: n,
                 parts: 1,
@@ -134,7 +134,7 @@ fn file_units<'v, 'a, 's>(
             });
             continue;
         }
-        let sec = match Sec::open(view, file, sid, index, row.reloc.0, bufs) {
+        let sec = match Sec::open(view, file, sid, index, reloc, bufs) {
             Ok(s) => s,
             Err(d) => {
                 diags.push(d);
@@ -174,7 +174,7 @@ fn file_units<'v, 'a, 's>(
                 file,
                 section: sid,
                 index,
-                rel: row.reloc.0,
+                rel: reloc,
                 lo,
                 hi,
                 parts,
@@ -194,8 +194,8 @@ fn file_units<'v, 'a, 's>(
 /// section's records can only be faults (§4.3), which fill finds as it
 /// applies them; the diagnostics are then the walk's
 /// ([`crate::Walker::deferred_report`]).
-struct Defer<'v, 'a, 's> {
-    view: &'v View<'a, 's>,
+struct Defer<'v, 'a, 's, W = Program<'a, 's>> {
+    view: &'v View<'a, 's, W>,
     /// [`View::event_keys`]: empty in a link without undefined,
     /// mismatched or warned keys, the common case, when no file's
     /// mentions need be looked at.
@@ -204,8 +204,8 @@ struct Defer<'v, 'a, 's> {
     mentions: Vec<u8>,
 }
 
-impl<'v, 'a, 's> Defer<'v, 'a, 's> {
-    fn new(view: &'v View<'a, 's>) -> Self {
+impl<'v, 'a, 's, W: Whole<'s>> Defer<'v, 'a, 's, W> {
+    fn new(view: &'v View<'a, 's, W>) -> Self {
         Self { view, events: view.event_keys(), mentions: Vec::new() }
     }
 
@@ -220,12 +220,14 @@ impl<'v, 'a, 's> Defer<'v, 'a, 's> {
             self.mentions.resize(at + 1, 0);
         }
         if self.mentions[at] == 0 {
-            let r = self.view.resolution;
+            let w = &self.view.whole;
             let hit = |id: SymbolId| self.events.binary_search(&id).is_ok();
-            let any =
-                self.view.inputs.sym_map_of(file).iter().any(|&id| {
-                    hit(id) || r.redirect.get(id).is_some_and(|&to| to != id && hit(to))
-                });
+            let any = w.globals(file).iter().any(|&id| {
+                hit(id) || {
+                    let to = w.redirect(id);
+                    to != id && hit(to)
+                }
+            });
             self.mentions[at] = if any { 2 } else { 1 };
         }
         self.mentions[at] == 2
@@ -281,8 +283,8 @@ impl<'v, 'a, 's> Defer<'v, 'a, 's> {
 /// record size and `sh_size` against a multiple of it). `None`: [`units`]
 /// opens it (none, or more than one block, of records; an unreadable
 /// header).
-fn header_count(view: &View<'_, '_>, file: FileId, rel: u32) -> Option<u32> {
-    let mortar_core::inputs::Reader::Object(obj) = view.inputs.files.get(file)?.reader else {
+fn header_count<'s, W: Whole<'s>>(view: &View<'_, 's, W>, file: FileId, rel: u32) -> Option<u32> {
+    let mortar_core::inputs::Reader::Object(obj) = view.whole.reader(file)? else {
         return None;
     };
     let s = obj.section(SectionIndex(rel)).ok()?;
@@ -304,7 +306,12 @@ const EXTENT_BACK: u32 = 16;
 /// `EXTENT_BACK` records back, ends its `sequence_extent` (R-3) at or
 /// before it. A record that leads nothing has extent 1, so checking
 /// every record, not only the leads, is exact.
-fn cut_at(view: &View<'_, '_>, sec: &Sec<'_, '_, '_, '_>, c: u32, n: u32) -> u32 {
+fn cut_at<'s, W: Whole<'s>>(
+    view: &View<'_, 's, W>,
+    sec: &Sec<'_, '_, 's, '_, W>,
+    c: u32,
+    n: u32,
+) -> u32 {
     let mut c = c;
     let mut j = c.saturating_sub(EXTENT_BACK);
     while j < c && c < n {
@@ -316,31 +323,31 @@ fn cut_at(view: &View<'_, '_>, sec: &Sec<'_, '_, '_, '_>, c: u32, n: u32) -> u32
 }
 
 /// A relocated section opened for the scan.
-pub(crate) struct Sec<'v, 'a, 's, 'b> {
+pub(crate) struct Sec<'v, 'a, 's, 'b, W = Program<'a, 's>> {
     pub file: FileId,
     pub sid: SectionId,
     pub index: u32,
-    pub recs: Recs<'v, 'a, 's, 'b>,
+    pub recs: Recs<'v, 'a, 's, 'b, W>,
     pub place: PlaceFacts,
     pub name: &'s [u8],
     pub proof: Vec<ProofRun>,
-    view: &'v View<'a, 's>,
+    view: &'v View<'a, 's, W>,
 }
 
-impl<'v, 'a, 's: 'b, 'b> Sec<'v, 'a, 's, 'b> {
+impl<'v, 'a, 's: 'b, 'b, W: Whole<'s>> Sec<'v, 'a, 's, 'b, W> {
     #[allow(
         clippy::result_large_err,
         reason = "the error is the diagnostic, made once per section"
     )]
     pub fn open(
-        view: &'v View<'a, 's>,
+        view: &'v View<'a, 's, W>,
         file: FileId,
         sid: SectionId,
         index: u32,
         rel: u32,
         bufs: &'b mut Bufs,
     ) -> Result<Self, (Key, Diagnostic)> {
-        let fref = || view.inputs.files[file].display();
+        let fref = || view.whole.display(file);
         let at = |what: String| {
             let d = malformed(what).at(Place::section(fref(), view.section_name(file, rel), 0));
             (key_at(file, index, 0), d)
@@ -402,7 +409,7 @@ impl<'v, 'a, 's: 'b, 'b> Sec<'v, 'a, 's, 'b> {
     }
 
     pub fn path(&self) -> FileRef {
-        self.view.inputs.files[self.file].display()
+        self.view.whole.display(self.file)
     }
 
     pub fn name_str(&self) -> String {
@@ -428,7 +435,7 @@ impl<'v, 'a, 's: 'b, 'b> Sec<'v, 'a, 's, 'b> {
     }
 
     fn r_type_name(&self, r_type: u32) -> RefName {
-        let m = self.view.inputs.target.machine.e_machine();
+        let m = self.view.whole.machine().e_machine();
         mortar_elf::reloc::name(m, r_type).map_or(RefName::Hex(u64::from(r_type)), RefName::Named)
     }
 
@@ -523,7 +530,11 @@ fn records_all_null(r: &RecTable<'_>) -> bool {
 
 /// The target as a diagnostic names it (`mortar_arch::diag::scan`): the
 /// symbol's name, or `section+0xoff` for a section symbol.
-pub(crate) fn target_name(view: &View<'_, '_>, key: SymKey, addend: i64) -> String {
+pub(crate) fn target_name<'s, W: Whole<'s>>(
+    view: &View<'_, 's, W>,
+    key: SymKey,
+    addend: i64,
+) -> String {
     let name = view.shown_name(key);
     if view.is_section_symbol(key) {
         return if addend < 0 {
@@ -719,7 +730,7 @@ pub(crate) const fn dyn_kind(role: DynRole) -> DynKind {
 /// "text relocation: refused" in its column too; its scan is otherwise a
 /// static one, `output` `Pie` with `dynamic` false, WP-052). A static
 /// non-PIE link has no `TX` cell.
-pub(crate) fn dynamic_error(view: &View<'_, '_>, e: ScanError) -> ScanError {
+pub(crate) fn dynamic_error<'s, W: Whole<'s>>(view: &View<'_, 's, W>, e: ScanError) -> ScanError {
     // A shared object always has `.dynamic` (D-100; D-117: "AbsWord in a
     // read-only place: refused, `text-relocation`").
     let has_dynamic = view.opts.dynamic
@@ -737,7 +748,11 @@ pub(crate) fn dynamic_error(view: &View<'_, '_>, e: ScanError) -> ScanError {
 
 /// Whether `key`'s target kind is `Weak0`, from the definitions alone;
 /// checked against the full facts in debug builds.
-fn weak0(view: &View<'_, '_>, tables: &RecTables<'_, '_, '_>, key: SymKey) -> bool {
+fn weak0<'s, W: Whole<'s>>(
+    view: &View<'_, 's, W>,
+    tables: &RecTables<'_, '_, 's, W>,
+    key: SymKey,
+) -> bool {
     let w = view.is_weak0(key, Some(tables.mention));
     debug_assert_eq!(w, ScanTables::sym(tables, key).kind == mortar_arch::TargetKind::Weak0);
     #[cfg(not(debug_assertions))]
@@ -747,16 +762,61 @@ fn weak0(view: &View<'_, '_>, tables: &RecTables<'_, '_, '_>, key: SymKey) -> bo
 
 /// Walks one unit (§4.1 step 2): every record in record order; its
 /// demands on global keys go to `global` ([`Shared`] in a plain link).
-pub(crate) fn run_unit<G: GlobalDemand>(view: &View<'_, '_>, u: &Unit, global: G) -> UnitOut {
+pub(crate) fn run_unit<'s, W: Whole<'s>, G: GlobalDemand>(
+    view: &View<'_, 's, W>,
+    u: &Unit,
+    global: G,
+) -> UnitOut {
     with_bufs(|bufs| walk_unit(view, u, global, bufs))
+}
+
+/// The scan of ONE file over `whole` (WP-255d5): its units (sections
+/// `sections`, in index order, as [`units`] cuts them), each walked by
+/// [`run_unit`] with the recording sink without the link-wide column
+/// (`Recording { cells: None }`, an update's changed file, WP-239 §5).
+/// Gives the file's slot demand (`FileDemands`: per key the or over its
+/// live units, sorted by key, as the full scan's per-file rows), the
+/// walk's diagnostics, and the number of events and of records whose
+/// window overlaps another unit's (the full scan reports both; an
+/// update cannot).
+pub fn scan_file<'s, W: Whole<'s>>(
+    arch: &dyn mortar_arch::Arch,
+    whole: W,
+    opts: crate::ScanOptions<'_>,
+    eh: Option<&dyn crate::EhOwners>,
+    file: FileId,
+    sections: impl Iterator<Item = SectionId>,
+) -> (mortar_core::incr::FileDemands, Vec<(Key, Diagnostic)>, u64) {
+    let view = View::narrow(arch, whole, opts, eh);
+    let mut diags = Vec::new();
+    let mut cut = Cut {
+        out: Vec::new(),
+        deferred: Vec::new(),
+        bufs: Bufs::default(),
+        defer: Defer::new(&view),
+        types: !arch.nonalloc_demand_types().is_empty(),
+    };
+    file_units(&view, file, sections, &mut cut, &mut diags);
+    let mut rows: Vec<(FileId, SymKey, DemandFlags)> = Vec::new();
+    let mut problems = 0u64;
+    for u in &cut.out {
+        let mut o = run_unit(&view, u, Recording { cells: None, log: Vec::new() });
+        rows.extend(o.demands.drain(..).map(|(id, f)| (file, SymKey::global(id), f)));
+        rows.extend(o.locals.iter().map(|&(l, f)| (file, SymKey::local(l), f)));
+        diags.append(&mut o.diags);
+        problems += o.n_events + o.overlaps.len() as u64;
+    }
+    let demands = crate::file_demands(rows).pop().filter(|d| d.file == file);
+    let demands = demands.unwrap_or(mortar_core::incr::FileDemands { file, demands: Vec::new() });
+    (demands, diags, problems)
 }
 
 /// The demands of the records of a `types_only` unit (I-14) whose type
 /// is one of `Arch::nonalloc_demand_types`: `arch.scan` as the walk calls
 /// it, its demands kept and nothing else (the checks are fill's). The
 /// section is opened only when a record has such a type.
-fn walk_types<G: GlobalDemand>(
-    view: &View<'_, '_>,
+fn walk_types<'s, W: Whole<'s>, G: GlobalDemand>(
+    view: &View<'_, 's, W>,
     u: &Unit,
     global: G,
     bufs: &mut Bufs,
@@ -817,8 +877,8 @@ fn walk_types<G: GlobalDemand>(
 
 /// [`run_unit`] with the worker's buffers.
 #[allow(clippy::too_many_lines, reason = "the per-record steps of §4.1, in order")]
-fn walk_unit<G: GlobalDemand>(
-    view: &View<'_, '_>,
+fn walk_unit<'s, W: Whole<'s>, G: GlobalDemand>(
+    view: &View<'_, 's, W>,
     u: &Unit,
     global: G,
     bufs: &mut Bufs,
@@ -1039,8 +1099,8 @@ fn walk_unit<G: GlobalDemand>(
 /// decision is exact for it when its extent meets no other block's, since
 /// windows of disjoint extents cannot overlap.
 #[allow(clippy::result_large_err, reason = "the error is the diagnostic, made once per section")]
-pub(crate) fn rewalk(
-    view: &View<'_, '_>,
+pub(crate) fn rewalk<'s, W: Whole<'s>>(
+    view: &View<'_, 's, W>,
     blocks: &[(&Unit, &UnitOut)],
 ) -> Result<Vec<u32>, (Key, Diagnostic)> {
     let Some((u, _)) = blocks.first() else { return Ok(Vec::new()) };
@@ -1083,12 +1143,15 @@ pub(crate) fn rewalk(
 /// A read that fails now (the section was walked, so the file changed)
 /// is the read's diagnostic.
 #[allow(clippy::result_large_err, reason = "the error is the diagnostic, made once per section")]
-pub(crate) fn permutation(view: &View<'_, '_>, u: &Unit) -> Result<Box<[u32]>, (Key, Diagnostic)> {
+pub(crate) fn permutation<'s, W: Whole<'s>>(
+    view: &View<'_, 's, W>,
+    u: &Unit,
+) -> Result<Box<[u32]>, (Key, Diagnostic)> {
     let Some(obj) = view.prep(u.file).and_then(|p| p.obj) else { return Ok(Box::new([])) };
     with_bufs(|bufs| {
         let (t, _, _) =
             rec_table(view, u.file, &obj, SectionIndex(u.rel), &mut bufs.rel).map_err(|f| {
-                let path = view.inputs.files[u.file].display();
+                let path = view.whole.display(u.file);
                 let place = Place::section(path.clone(), view.section_name(u.file, u.rel), 0);
                 (key_at(u.file, u.index, 0), f.diagnostic(&path).at(place))
             })?;
@@ -1101,7 +1164,11 @@ pub(crate) fn permutation(view: &View<'_, '_>, u: &Unit) -> Result<Box<[u32]>, (
 }
 
 /// The diagnostic of an overlap found at the merge.
-pub(crate) fn overlap_diag(view: &View<'_, '_>, u: &Unit, record: u32) -> (Key, Diagnostic) {
+pub(crate) fn overlap_diag<'s, W: Whole<'s>>(
+    view: &View<'_, 's, W>,
+    u: &Unit,
+    record: u32,
+) -> (Key, Diagnostic) {
     let mut bufs = Bufs::default();
     match Sec::open(view, u.file, u.section, u.index, u.rel, &mut bufs) {
         Ok(sec) => sec.fault(record, Fault::Scan(ScanError::Overlap)),

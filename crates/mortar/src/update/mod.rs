@@ -21,6 +21,7 @@
 
 pub mod changed;
 pub mod file_front;
+pub mod file_scan;
 pub mod file_split;
 pub mod layout_in;
 pub mod probe;

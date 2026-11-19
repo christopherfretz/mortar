@@ -73,7 +73,7 @@ impl<'a, 's> Walker<'a, 's> {
     /// (a static link has none).
     #[must_use]
     pub fn with_weak_dyn(mut self, weak_dyn: mortar_core::IdSet<mortar_core::SymbolId>) -> Self {
-        self.view.weak_dyn = weak_dyn;
+        self.view.whole.weak_dyn = weak_dyn;
         self
     }
 
@@ -181,7 +181,7 @@ impl<'a, 's> Walker<'a, 's> {
         f: impl FnOnce(&[u8]) -> T,
     ) -> Result<T, (Key, Diagnostic)> {
         let key = mortar_arch::cx::scan_key(file, index, 0);
-        let fref = || self.view.inputs.files[file].display();
+        let fref = || self.view.whole.inputs.files[file].display();
         let place = || Place::section(fref(), self.view.section_name(file, index), 0);
         let fault = |what: String| (key, Diagnostic::error(Kind::Malformed { what }).at(place()));
         let obj = self

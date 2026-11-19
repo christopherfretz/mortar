@@ -184,13 +184,13 @@ pub(crate) fn classes(view: &View<'_, '_>, pool: &Pool) -> WeakKeys {
         return WeakKeys {
             weak_dyn: shared_undefined(view, pool),
             refused: Vec::new(),
-            refused_keys: IdSet::with_len(view.inputs.symbols.len()),
+            refused_keys: IdSet::with_len(view.whole.inputs.symbols.len()),
         };
     }
     if !(view.opts.dynamic && matches!(output, OutputKind::Exec | OutputKind::Pie)) {
         return WeakKeys::default();
     }
-    let n = view.inputs.symbols.len();
+    let n = view.whole.inputs.symbols.len();
     let mut weak = IdSet::with_len(n);
     let mut any = false;
     for i in 0..n {
@@ -208,7 +208,7 @@ pub(crate) fn classes(view: &View<'_, '_>, pool: &Pool) -> WeakKeys {
     if !any {
         return keys;
     }
-    let r = view.resolution;
+    let r = view.whole.resolution;
     let files: Vec<FileId> = r
         .section_base
         .iter()
@@ -216,7 +216,7 @@ pub(crate) fn classes(view: &View<'_, '_>, pool: &Pool) -> WeakKeys {
         .filter(|&f| {
             r.file_live.get(f).is_some_and(|l| l.is_live())
                 && view.prep(f).is_some_and(|p| p.obj.is_some())
-                && view.inputs.sym_map_of(f).iter().any(|&id| {
+                && view.whole.inputs.sym_map_of(f).iter().any(|&id| {
                     weak.contains(id) || r.redirect.get(id).is_some_and(|&to| weak.contains(to))
                 })
         })
@@ -272,8 +272,8 @@ pub(crate) fn classes(view: &View<'_, '_>, pool: &Pool) -> WeakKeys {
 /// mention such a key (one unit per file on `pool`).
 fn shared_undefined(view: &View<'_, '_>, pool: &Pool) -> IdSet<SymbolId> {
     use mortar_core::resolution::RefFlags;
-    let n = view.inputs.symbols.len();
-    let r = view.resolution;
+    let n = view.whole.inputs.symbols.len();
+    let r = view.whole.resolution;
     let mut set = IdSet::with_len(n);
     let mut any = false;
     for i in 0..n {
@@ -294,7 +294,7 @@ fn shared_undefined(view: &View<'_, '_>, pool: &Pool) -> IdSet<SymbolId> {
         .filter(|&f| {
             r.file_live.get(f).is_some_and(|l| l.is_live())
                 && view.prep(f).is_some_and(|p| p.obj.is_some())
-                && view.inputs.sym_map_of(f).iter().any(|&id| {
+                && view.whole.inputs.sym_map_of(f).iter().any(|&id| {
                     set.contains(id) || r.redirect.get(id).is_some_and(|&to| set.contains(to))
                 })
         })
@@ -322,7 +322,7 @@ fn shared_undefined(view: &View<'_, '_>, pool: &Pool) -> IdSet<SymbolId> {
 /// The keys of `keys` the relocations of `file` name, each with whether
 /// the relocated section is live, every relocated section included.
 fn file_names(view: &View<'_, '_>, file: FileId, keys: &IdSet<SymbolId>) -> Vec<(SymbolId, bool)> {
-    let r = view.resolution;
+    let r = view.whole.resolution;
     let mut out = Vec::new();
     let mut bufs = Bufs::default();
     let Some(range) = r.section_base.get(file).copied() else { return out };
@@ -331,7 +331,7 @@ fn file_names(view: &View<'_, '_>, file: FileId, keys: &IdSet<SymbolId>) -> Vec<
         if row.reloc.0 == 0 {
             continue;
         }
-        let live = view.liveness.is_live(sid);
+        let live = view.whole.liveness.is_live(sid);
         // A live section that cannot be read is the walk's diagnostic; a
         // dead one names nothing.
         let Ok(sec) = Sec::open(view, file, sid, k as u32, row.reloc.0, &mut bufs) else {
@@ -353,13 +353,13 @@ fn file_names(view: &View<'_, '_>, file: FileId, keys: &IdSet<SymbolId>) -> Vec<
 /// The uses of undefined weak keys (`weak`) in the live allocated
 /// sections of `file`, in input order.
 fn file_uses(view: &View<'_, '_>, file: FileId, weak: &IdSet<SymbolId>) -> Vec<Use> {
-    let r = view.resolution;
+    let r = view.whole.resolution;
     let mut out = Vec::new();
     let mut bufs = Bufs::default();
     let Some(range) = r.section_base.get(file).copied() else { return out };
     for (k, sid) in range.iter().enumerate() {
         let Some(row) = r.sections.get(sid) else { continue };
-        if row.reloc.0 == 0 || !view.liveness.is_live(sid) {
+        if row.reloc.0 == 0 || !view.whole.liveness.is_live(sid) {
             continue;
         }
         let index = k as u32;

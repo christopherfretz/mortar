@@ -25,7 +25,7 @@ fn file_text(f: &FileRef) -> String {
 /// fails now is a file that changed; the place then says offset 0 and the
 /// image phase's `recheck` reports the change (`spec/input.md` §11.5).
 fn ref_place(view: &View<'_, '_>, r: RefId) -> Place {
-    let path = view.inputs.files[r.file].display();
+    let path = view.whole.inputs.files[r.file].display();
     let section = view.section_name(r.file, r.section);
     Place::section(path, section, ref_offset(view, r))
 }
@@ -34,7 +34,7 @@ fn ref_place(view: &View<'_, '_>, r: RefId) -> Place {
 fn ref_offset(view: &View<'_, '_>, r: RefId) -> u64 {
     (|| {
         let sid = view.section_of(r.file, r.section)?;
-        let rel = view.resolution.sections.get(sid)?.reloc;
+        let rel = view.whole.resolution.sections.get(sid)?.reloc;
         let obj = view.prep(r.file)?.obj?;
         rec_offset(view, r.file, &obj, rel, r.record).ok()?
     })()
@@ -71,7 +71,7 @@ fn undefined(view: &View<'_, '_>, key: SymKey, acc: &Acc) -> Diagnostic {
     let kind = Kind::UndefinedSymbol { name: view.shown_name(key) };
     let (verdict, hidden) = match key.kind() {
         SymKind::Global(id) => {
-            let p = view.resolution.props.get(id).copied().unwrap_or_default();
+            let p = view.whole.resolution.props.get(id).copied().unwrap_or_default();
             (p.verdict, matches!(p.visibility, STV_HIDDEN | STV_INTERNAL))
         }
         SymKind::Local(_) => (Verdict::Error, false),
@@ -86,7 +86,7 @@ fn undefined(view: &View<'_, '_>, key: SymKey, acc: &Acc) -> Diagnostic {
     if let Some(id) = key.as_global() {
         let c = view.closure_only;
         if let Some(&(_, file)) = c.get(c.partition_point(|row| row.0 < id)).filter(|r| r.0 == id) {
-            let path = file_text(&view.inputs.files[file].display());
+            let path = file_text(&view.whole.inputs.files[file].display());
             d = d.note(format!("defined in {path}, which is not on the command line"));
         }
     }
@@ -105,12 +105,13 @@ fn mismatch(view: &View<'_, '_>, key: SymKey, acc: &Acc) -> Diagnostic {
         return with_refs(view, Diagnostic::error(Kind::UndefinedSymbol { name }), acc);
     };
     let signature = view
+        .whole
         .inputs
         .comdats
         .get(m.group)
         .map_or_else(String::new, |c| String::from_utf8_lossy(c.name).into_owned());
-    let kept = file_text(&view.inputs.files[m.keeper].display());
-    let dropped = file_text(&view.inputs.files[m.dropped.file].display());
+    let kept = file_text(&view.whole.inputs.files[m.keeper].display());
+    let dropped = file_text(&view.whole.inputs.files[m.dropped.file].display());
     let raw_name = view.name(key);
     let d = Diagnostic::error(Kind::ComdatMismatch { name, signature: signature.clone() })
         .note(format!("kept copy: {kept}"))
@@ -177,7 +178,7 @@ fn eh_note(view: &View<'_, '_>, d: Diagnostic, r: RefId) -> Diagnostic {
 /// The function at `offset` of section `sid`: a symbol of its file
 /// defined there (a function first), else `section+0xoff`.
 fn function_at(view: &View<'_, '_>, (sid, offset): (SectionId, u64)) -> String {
-    let Some((file, index)) = view.resolution.sh_index(sid) else { return String::new() };
+    let Some((file, index)) = view.whole.resolution.sh_index(sid) else { return String::new() };
     let at = || format!("{}+{offset:#x}", view.section_name(file, index.0));
     let Some(t) = view.prep(file).and_then(|p| p.table().copied()) else { return at() };
     let mut best: Option<(bool, SymbolIndex)> = None;
@@ -223,7 +224,7 @@ fn discarded(view: &View<'_, '_>, file: FileId, group: u64, acc: &Acc) -> Diagno
         && let SymKind::Global(id) = key.kind()
         && let Def::Defined(e) = view.def(id)
     {
-        let path = view.inputs.files[e.file].display();
+        let path = view.whole.inputs.files[e.file].display();
         let dtable = view.prep(e.file).and_then(|p| p.table().copied());
         let section =
             view.sym(e.file, e.index).and_then(|s| match dtable?.section_of(e.index, &s).ok()? {
@@ -235,7 +236,7 @@ fn discarded(view: &View<'_, '_>, file: FileId, group: u64, acc: &Acc) -> Diagno
             .with(Relation::DefinedIn, Place::symbol(path, section.unwrap_or_default()));
         return with_refs(view, d, acc);
     }
-    let path = view.inputs.files[file].display();
+    let path = view.whole.inputs.files[file].display();
     let sym = view.sym(file, SymbolIndex(r_sym));
     let section = sym.and_then(|s| match table?.section_of(SymbolIndex(r_sym), &s).ok()? {
         SymbolSection::Section(i) => Some(i),
@@ -256,19 +257,19 @@ fn discarded(view: &View<'_, '_>, file: FileId, group: u64, acc: &Acc) -> Diagno
     // `.gcc_except_table`; the note on a symbol made local after `ld -r`.
     let group = section
         .and_then(|i| view.section_of(file, i.0))
-        .and_then(|sid| view.resolution.sections.get(sid))
+        .and_then(|sid| view.whole.resolution.sections.get(sid))
         .filter(|row| row.state == SectionState::Dropped(DropReason::Comdat))
         .and_then(|row| row.comdat.get());
     let mut prelink = false;
     if let Some(g) = group {
-        let signature = view.inputs.comdats.get(g).map_or(&[][..], |c| c.name);
-        let keeper = view.resolution.comdat.get(g).and_then(|k| k.get());
+        let signature = view.whole.inputs.comdats.get(g).map_or(&[][..], |c| c.name);
+        let keeper = view.whole.resolution.comdat.get(g).and_then(|k| k.get());
         d = d.note(format!(
             "the section is in a discarded copy of COMDAT group {}",
             String::from_utf8_lossy(signature)
         ));
         if let Some(k) = keeper {
-            d = d.note(format!("kept copy: {}", file_text(&view.inputs.files[k].display())));
+            d = d.note(format!("kept copy: {}", file_text(&view.whole.inputs.files[k].display())));
             let raw = name.as_bytes();
             prelink = !is_section && (raw == signature || defines(view, k, raw, false));
         }
@@ -299,7 +300,7 @@ fn gnu_warning(view: &View<'_, '_>, key: SymKey, acc: &Acc) -> Diagnostic {
                 text = String::from_utf8_lossy(&data[..end]).into_owned();
             }
             Err(f) => {
-                let path = view.inputs.files[w.1].display();
+                let path = view.whole.inputs.files[w.1].display();
                 let place = Place::section(path.clone(), view.section_name(w.1, w.2.0), 0);
                 return f.diagnostic(&path).at(place);
             }

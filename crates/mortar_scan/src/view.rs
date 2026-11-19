@@ -7,6 +7,8 @@
 //! parsed symbol table and the file's mapping marks.
 
 use std::cell::RefCell;
+use std::marker::PhantomData;
+use std::ops::Range;
 use std::sync::OnceLock;
 
 use mortar_arch::{
@@ -15,29 +17,49 @@ use mortar_arch::{
 use mortar_core::assignment::Assignment;
 use mortar_core::inputs::{CopyError, Inputs, Reader};
 use mortar_core::resolution::{
-    Assigned, Def, DropReason, InternalDef, RefFlags, Resolution, SectionState, Verdict,
+    Assigned, Def, DropReason, InternalDef, RefFlags, Resolution, SectionKind, SectionState,
+    Verdict,
 };
 use mortar_core::{FileId, IdSet, Liveness, SectionId, SymEntry, SymKey, SymKind, SymbolId};
 use mortar_diag::{Diagnostic, FileRef, Kind};
 use mortar_elf::consts::{SHT_REL, SHT_RELA, STT_FUNC, STT_GNU_IFUNC, STT_SECTION, STT_TLS};
 use mortar_elf::{
-    Object, Rel, Rela, Section, SectionIndex, Sym, SymbolIndex, SymbolSection, SymbolTable, Table,
+    Machine, Object, Rel, Rela, Section, SectionIndex, Sym, SymbolIndex, SymbolSection,
+    SymbolTable, Table,
 };
 
 use crate::{CodeProof, EhOwner, Mark, Mismatch, ScanInputs, ScanOptions};
 
 /// A file as the scan reads it.
-pub(crate) struct Prep<'s> {
-    pub obj: Option<Object<'s>>,
+pub struct Prep<'s> {
+    pub(crate) obj: Option<Object<'s>>,
     /// The symbol table (`.symtab`; `.dynsym` of a shared object), or why
     /// it cannot be read.
-    pub symtab: Result<Option<SymbolTable<'s>>, String>,
+    pub(crate) symtab: Result<Option<SymbolTable<'s>>, String>,
     /// The mapping marks of the file's sections, sorted by `(section,
     /// value, index)`, and per section index where its marks start.
     marks: OnceLock<FileMarks>,
 }
 
+impl std::fmt::Debug for Prep<'_> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Prep").finish_non_exhaustive()
+    }
+}
+
 impl<'s> Prep<'s> {
+    /// The file `reader` reads (`None`: a file the view does not hold),
+    /// its mapping marks built on first use.
+    #[must_use]
+    pub fn of(reader: Option<Reader<'s>>) -> Self {
+        let (obj, symtab) = match reader {
+            Some(Reader::Object(o)) => (Some(o), o.symbols().map_err(|e| e.to_string())),
+            Some(Reader::Shared(s)) => (None, s.symbols().map_err(|e| e.to_string())),
+            Some(Reader::Internal) | None => (None, Ok(None)),
+        };
+        Prep { obj, symtab, marks: OnceLock::new() }
+    }
+
     pub fn table(&self) -> Option<&SymbolTable<'s>> {
         self.symtab.as_ref().ok().and_then(Option::as_ref)
     }
@@ -47,30 +69,443 @@ impl<'s> Prep<'s> {
     }
 }
 
-/// The scan's view of the link.
-pub(crate) struct View<'a, 's> {
+/// The whole link's program: what [`Whole`] answers in a full link.
+///
+/// Besides the four whole-program tables it holds what the per-key facts
+/// read (WP-255d5): the files as the scan reads them, the COMDAT-mismatch
+/// and `.gnu.warning` keys, the output kind and D-25's `WeakDyn` keys.
+pub struct Program<'a, 's> {
     pub inputs: &'a Inputs<'s>,
     pub resolution: &'a Resolution,
     pub liveness: &'a Liveness,
     pub assignment: Option<&'a Assignment<'a>>,
-    pub arch: &'a dyn Arch,
-    pub opts: ScanOptions<'a>,
+    /// Per file, built on first use ([`Whole::prep`]).
     preps: Vec<OnceLock<Prep<'s>>>,
     /// The keys of `comdat_mismatch`, sorted.
     mismatch: Vec<SymbolId>,
-    /// `comdat_mismatch`, sorted by key.
-    pub mismatches: Vec<Mismatch>,
     /// The keys with a `.gnu.warning.<key>` section, sorted.
     warned: Vec<SymbolId>,
+    output: OutputKind,
+    /// `spec/dyn.md` D-25: the `WeakDyn` keys ([`crate::weak::classes`]);
+    /// empty until it ran, and in every static link.
+    pub(crate) weak_dyn: IdSet<SymbolId>,
+}
+
+impl std::fmt::Debug for Program<'_, '_> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Program").finish_non_exhaustive()
+    }
+}
+
+impl<'a, 's> Program<'a, 's> {
+    pub(crate) fn new(t: &ScanInputs<'a, 's>, output: OutputKind) -> Self {
+        let files = t.inputs.files.len() as usize;
+        let mut mismatch: Vec<SymbolId> = t.comdat_mismatch.iter().map(|m| m.key).collect();
+        mismatch.sort_unstable();
+        mismatch.dedup();
+        let mut warned: Vec<SymbolId> = t.gnu_warnings.iter().map(|w| w.0).collect();
+        warned.sort_unstable();
+        warned.dedup();
+        Self {
+            inputs: t.inputs,
+            resolution: t.resolution,
+            liveness: t.liveness,
+            assignment: t.assignment,
+            preps: (0..files).map(|_| OnceLock::new()).collect(),
+            mismatch,
+            warned,
+            output,
+            weak_dyn: IdSet::new(),
+        }
+    }
+}
+
+impl Program<'_, '_> {
+    /// Key `id`'s definition, as `Assignment::def` leaves it.
+    pub fn def(&self, id: SymbolId) -> Def {
+        let d = self.assignment.and_then(|a| a.def(self.resolution, id));
+        d.or_else(|| self.resolution.def.get(id).copied()).unwrap_or(Def::Undefined { weak: false })
+    }
+
+    fn is_warned(&self, id: SymbolId) -> bool {
+        !self.warned.is_empty() && self.warned.binary_search(&id).is_ok()
+    }
+}
+
+/// The per-key facts of key `id` (the scan's rule, `View::key_facts`
+/// without `comdat_only` and `gnu_warning`), over any [`Whole`]: the whole
+/// link's [`Program`] and an update's narrow view call this ONE function
+/// (WP-255d5, ruling item 2). `depth` bounds an alias chain (8).
+pub fn global_facts<'s, W: Whole<'s> + ?Sized>(w: &W, id: SymbolId, depth: u32) -> SymFacts {
+    let of = |kind, s: Option<Sym>| SymFacts {
+        kind,
+        sym_type: s.map_or(0, |s| s.sym_type()),
+        st_other: s.map_or(0, |s| s.st_other),
+        tls: s.is_some_and(|s| s.sym_type() == STT_TLS),
+        dead: false,
+        comdat_only: false,
+        gnu_warning: false,
+    };
+    let sym = |file: FileId, index: SymbolIndex| w.prep(file)?.sym(index);
+    // A shared definition's merged flag (resolution rule 6), or, in a
+    // shared object, the key's D-112 bit (`Resolution.preemptible`,
+    // `spec/dyn.md` D-113: the target kind `Preemptible`).
+    let preemptible = w.preemptible(id);
+    match w.def(id) {
+        Def::Defined(e) => {
+            let s = sym(e.file, e.index);
+            let place = s.and_then(|s| w.prep(e.file)?.table()?.section_of(e.index, &s).ok());
+            let kind = match (place, s.map(|s| s.sym_type())) {
+                (Some(SymbolSection::Absolute), _) => TargetKind::Abs,
+                (_, Some(STT_GNU_IFUNC)) if !preemptible => TargetKind::Ifunc,
+                _ if preemptible => TargetKind::Preemptible,
+                _ => TargetKind::Local,
+            };
+            // A definition whose section has no place is dead
+            // (resolve.md §10.1 P-1, WP-136): dropped by a named rule
+            // (`SHF_EXCLUDE`, a consumed or stripped kind), kept but
+            // consumed (`.note.gnu.property`), or under
+            // `--gc-sections` kept but not reached by the mark (§6.1,
+            // `spec/image.md` I-7). A debug section's reference to it
+            // gets the tombstone (I-47), any other section's is
+            // `discarded-section-reference` (I-12). A global defined
+            // in a dropped COMDAT copy is demoted (resolve §6.2), so
+            // its `def` is never that copy.
+            let dead = match place {
+                Some(SymbolSection::Section(i)) => !w.has_place(e.file, i),
+                _ => false,
+            };
+            SymFacts { dead, ..of(kind, s) }
+        }
+        Def::Common(e) if preemptible => of(TargetKind::Preemptible, sym(e.file, e.index)),
+        Def::Common(e) => of(TargetKind::Local, sym(e.file, e.index)),
+        Def::Shared(e) => {
+            let s = sym(e.file, e.index);
+            let func = s.is_some_and(|s| matches!(s.sym_type(), STT_FUNC | STT_GNU_IFUNC));
+            of(TargetKind::Shlib { func }, s)
+        }
+        // `--defsym SYM=B` (`spec/resolve.md` §7.2): `B`'s address and
+        // type under `SYM`'s own name. A preemptible `SYM` (a
+        // `-shared` export) is bound through its own dynamic symbol;
+        // otherwise a reference reaches `B`'s definition in this
+        // output, even when `B` itself is preemptible (GNU ld, lld).
+        // resolve refuses an alias of an undefined, a shared or a
+        // `--defsym` symbol, so `B` is a definition of this output.
+        Def::Internal(InternalDef::Alias(to)) if to != id && depth < 8 => {
+            let b = global_facts(w, to, depth + 1);
+            let kind = match b.kind {
+                TargetKind::Abs => TargetKind::Abs,
+                _ if preemptible => TargetKind::Preemptible,
+                TargetKind::Preemptible => TargetKind::Local,
+                k => k,
+            };
+            SymFacts { kind, ..b }
+        }
+        // `SYM=B+N` (§7.2): section-relative, `STT_NOTYPE`; a number
+        // is absolute in every output kind (GNU ld relocates it in a
+        // PIE, lld and mold do not: resolve.md §16).
+        Def::Internal(InternalDef::Assign(i)) => match w.assigned(i) {
+            Some(Assigned::Offset { to, .. }) if to != id && depth < 8 => {
+                let b = global_facts(w, to, depth + 1);
+                let kind = match b.kind {
+                    TargetKind::Abs => TargetKind::Abs,
+                    _ if preemptible => TargetKind::Preemptible,
+                    TargetKind::Undefined => TargetKind::Undefined,
+                    _ => TargetKind::Local,
+                };
+                SymFacts { kind, sym_type: 0, st_other: 0, tls: false, ..b }
+            }
+            _ => of(TargetKind::Abs, None),
+        },
+        Def::Internal(InternalDef::Alias(_)) => of(TargetKind::Abs, None),
+        Def::Internal(InternalDef::Provide { .. }) => {
+            let tls = w.key_name(id).is_some_and(|(name, _)| name == TLS_MODULE_BASE);
+            let sym_type = if tls { STT_TLS } else { 0 };
+            SymFacts {
+                // `_end` and its kind, exported because a shared
+                // input references it (D-110 item 2), stay
+                // preemptible in a shared object (D-112).
+                kind: if preemptible { TargetKind::Preemptible } else { TargetKind::Local },
+                sym_type,
+                st_other: 0,
+                tls,
+                dead: false,
+                comdat_only: false,
+                gnu_warning: false,
+            }
+        }
+        // The mention's type and `st_other`: `mention_facts`.
+        Def::Undefined { weak } => of(undefined_kind(w, id, weak, w.verdict(id)), None),
+    }
+}
+
+/// The target kind of an undefined key (§4.4, I-19): a weak one is
+/// zero, or dynamic when D-25 made it so (`weak_dyn`, per key); a
+/// strong one is `Undefined` unless its verdict is "nothing"
+/// (`--unresolved-symbols=ignore-*`), which makes it zero.
+///
+/// In a shared object (`spec/dyn.md` D-113, D-118) a weak one is
+/// always `WeakDyn`, and a strong one the loader may resolve
+/// (resolution's verdict is not an error: without `-z defs`, and not
+/// hidden) an import of unknown type, `Shlib { func: false }`.
+pub fn undefined_kind<'s, W: Whole<'s> + ?Sized>(
+    w: &W,
+    id: SymbolId,
+    weak: bool,
+    verdict: Verdict,
+) -> TargetKind {
+    if w.output() == OutputKind::Shared {
+        return match (weak, verdict) {
+            (true, _) => TargetKind::WeakDyn,
+            (false, Verdict::Bound | Verdict::Ignored) => TargetKind::Shlib { func: false },
+            _ => TargetKind::Undefined,
+        };
+    }
+    let zero = if weak && w.is_weak_dyn(id) { TargetKind::WeakDyn } else { TargetKind::Weak0 };
+    match (weak, verdict) {
+        (true, _) | (false, Verdict::Ignored) => zero,
+        _ => TargetKind::Undefined,
+    }
+}
+
+/// The whole-program reads of the scan's walk of ONE file (WP-255d5; the
+/// rows of `spec/landed/incr/WP-255d4.md` M1, "Whole-program reads"):
+/// the whole link's [`Program`], or an update's narrow view of a file,
+/// answered from the stored state and the update's own deltas. The walk
+/// is generic over it (monomorphized: no `dyn` in the loop).
+pub trait Whole<'s>: Sync {
+    /// `Some` for the whole link (`spec/dyn.md` D-117's facts are built
+    /// from it; an update never links a `Shared` output).
+    fn program(&self) -> Option<&Program<'_, 's>>;
+    /// The `FileId`s are below this.
+    fn files(&self) -> usize;
+    /// File `file`'s reader; `None`: a file the view does not hold.
+    fn reader(&self, file: FileId) -> Option<Reader<'s>>;
+    /// File `file` as the scan reads it ([`Prep::of`] of its
+    /// [`Whole::reader`], built once); `None`: outside [`Whole::files`].
+    fn prep(&self, file: FileId) -> Option<&Prep<'s>>;
+    /// The file's name in a diagnostic.
+    fn display(&self, file: FileId) -> FileRef;
+    /// The link's target machine.
+    fn machine(&self) -> Machine;
+    /// Whether the file's bytes can be read (`Inputs::copy_to`).
+    fn has_bytes(&self, file: FileId) -> bool;
+    /// `Inputs::copy_to`: `range` of the file into `out`.
+    ///
+    /// # Errors
+    /// The store's.
+    fn copy_to(&self, file: FileId, range: Range<u64>, out: &mut [u8]) -> Result<(), CopyError>;
+    /// The id of section `index` of `file`.
+    fn section_id(&self, file: FileId, index: SectionIndex) -> Option<SectionId>;
+    /// Section `sid`'s relocation section index (0: none) and its kind.
+    fn reloc_of(&self, sid: SectionId) -> (u32, SectionKind);
+    /// Whether section `sid` is live.
+    fn is_live(&self, sid: SectionId) -> bool;
+    /// `spec/resolve.md` §10.1 P-1: whether section `index` of `file` has
+    /// a place.
+    fn has_place(&self, file: FileId, index: SectionIndex) -> bool;
+    /// The keys of the file's non-local symbol-table entries, in order.
+    fn globals(&self, file: FileId) -> &[SymbolId];
+    /// `spec/model.md` §3.3 `redirect` of key `id` (`id` itself without).
+    fn redirect(&self, id: SymbolId) -> SymbolId;
+    /// Whether key `id`'s definition is `Def::Undefined`.
+    fn def_undefined(&self, id: SymbolId) -> bool;
+    /// Whether section `index` of `file` was dropped by COMDAT
+    /// deduplication.
+    fn dropped_by_comdat(&self, file: FileId, index: SectionIndex) -> bool;
+    /// Key `id`'s name and version.
+    fn key_name(&self, id: SymbolId) -> Option<(&'s [u8], Option<&'s [u8]>)>;
+    /// The per-key facts of `id` (`View::key_facts`, `comdat_only` and
+    /// `gnu_warning` included) and whether its definition is undefined.
+    fn key_facts(&self, id: SymbolId) -> (SymFacts, bool);
+    /// Whether key `id`'s kind is `TargetKind::Weak0`, from the
+    /// definitions alone (`View::is_weak0` judges a demoted mention
+    /// first).
+    fn is_weak0(&self, id: SymbolId) -> bool;
+    /// `View::event_keys`, sorted.
+    fn event_keys(&self) -> Vec<SymbolId>;
+    /// Whether key `id` is a `comdat-mismatch` key.
+    fn is_mismatch(&self, id: SymbolId) -> bool;
+    // What [`global_facts`] reads besides `prep`, `has_place` and
+    // `key_name` (WP-255d5, ruling item 2).
+    /// Key `id`'s definition, as `Assignment::def` leaves it.
+    fn def(&self, id: SymbolId) -> Def;
+    /// Whether key `id` is preemptible: a shared definition's merged flag
+    /// (`props.refs` `PREEMPTIBLE`) or, in a shared object, its D-112 bit
+    /// (`Resolution.preemptible`).
+    fn preemptible(&self, id: SymbolId) -> bool;
+    /// Key `id`'s verdict (`props.verdict`).
+    fn verdict(&self, id: SymbolId) -> Verdict;
+    /// The `--defsym` value of `InternalDef::Assign(i)`.
+    fn assigned(&self, i: u32) -> Option<Assigned>;
+    /// The output kind.
+    fn output(&self) -> OutputKind;
+    /// `spec/dyn.md` D-25: whether key `id` is a `WeakDyn` key.
+    fn is_weak_dyn(&self, id: SymbolId) -> bool;
+}
+
+impl<'s> Whole<'s> for Program<'_, 's> {
+    #[inline]
+    fn program(&self) -> Option<&Program<'_, 's>> {
+        Some(self)
+    }
+    fn files(&self) -> usize {
+        self.inputs.files.len() as usize
+    }
+    #[inline]
+    fn reader(&self, file: FileId) -> Option<Reader<'s>> {
+        Some(self.inputs.files.get(file)?.reader)
+    }
+    #[inline]
+    fn prep(&self, file: FileId) -> Option<&Prep<'s>> {
+        let cell = self.preps.get(file.0 as usize)?;
+        Some(cell.get_or_init(|| Prep::of(self.reader(file))))
+    }
+    fn display(&self, file: FileId) -> FileRef {
+        self.inputs.files[file].display()
+    }
+    fn machine(&self) -> Machine {
+        self.inputs.target.machine
+    }
+    #[inline]
+    fn has_bytes(&self, file: FileId) -> bool {
+        self.inputs.files[file].bytes.is_some()
+    }
+    #[inline]
+    fn copy_to(&self, file: FileId, range: Range<u64>, out: &mut [u8]) -> Result<(), CopyError> {
+        self.inputs.copy_to(file, range, out)
+    }
+    #[inline]
+    fn section_id(&self, file: FileId, index: SectionIndex) -> Option<SectionId> {
+        self.resolution.section_id(file, index)
+    }
+    #[inline]
+    fn reloc_of(&self, sid: SectionId) -> (u32, SectionKind) {
+        let row = self.resolution.sections[sid];
+        (row.reloc.0, row.kind)
+    }
+    #[inline]
+    fn is_live(&self, sid: SectionId) -> bool {
+        self.liveness.is_live(sid)
+    }
+    #[inline]
+    fn has_place(&self, file: FileId, index: SectionIndex) -> bool {
+        self.resolution.section_id(file, index).is_some_and(|s| {
+            mortar_core::place::section_place(self.resolution, self.assignment, self.liveness, s)
+                .is_ok()
+        })
+    }
+    #[inline]
+    fn globals(&self, file: FileId) -> &[SymbolId] {
+        self.inputs.sym_map_of(file)
+    }
+    #[inline]
+    fn redirect(&self, id: SymbolId) -> SymbolId {
+        self.resolution.redirect.get(id).copied().unwrap_or(id)
+    }
+    #[inline]
+    fn def_undefined(&self, id: SymbolId) -> bool {
+        matches!(self.def(id), Def::Undefined { .. })
+    }
+    fn dropped_by_comdat(&self, file: FileId, index: SectionIndex) -> bool {
+        self.resolution
+            .section_id(file, index)
+            .and_then(|s| self.resolution.sections.get(s))
+            .is_some_and(|row| row.state == SectionState::Dropped(DropReason::Comdat))
+    }
+    #[inline]
+    fn key_name(&self, id: SymbolId) -> Option<(&'s [u8], Option<&'s [u8]>)> {
+        self.inputs.symbols.get(id).map(|k| (k.name, k.version))
+    }
+    #[inline]
+    fn key_facts(&self, id: SymbolId) -> (SymFacts, bool) {
+        let mut f = global_facts(self, id, 0);
+        f.comdat_only = self.is_mismatch(id);
+        f.gnu_warning = self.is_warned(id);
+        (f, matches!(self.def(id), Def::Undefined { .. }))
+    }
+    fn is_weak0(&self, mut id: SymbolId) -> bool {
+        // As `global_facts`: an alias is followed to depth 8.
+        for depth in 0..=8 {
+            match self.def(id) {
+                Def::Undefined { weak } => {
+                    let verdict =
+                        self.resolution.props.get(id).copied().unwrap_or_default().verdict;
+                    return undefined_kind(self, id, weak, verdict) == TargetKind::Weak0;
+                }
+                Def::Internal(InternalDef::Alias(to)) if to != id && depth < 8 => id = to,
+                _ => return false,
+            }
+        }
+        false
+    }
+    fn event_keys(&self) -> Vec<SymbolId> {
+        let mut v: Vec<SymbolId> = Vec::new();
+        for i in 0..self.inputs.symbols.len() {
+            let id = SymbolId(i);
+            let undefined = match self.def(id) {
+                Def::Defined(_) | Def::Common(_) | Def::Shared(_) => false,
+                Def::Undefined { weak } => {
+                    let verdict = self.resolution.props.get(id).map(|p| p.verdict);
+                    undefined_kind(self, id, weak, verdict.unwrap_or_default())
+                        == TargetKind::Undefined
+                }
+                Def::Internal(_) => global_facts(self, id, 0).kind == TargetKind::Undefined,
+            };
+            if undefined {
+                v.push(id);
+            }
+        }
+        v.extend_from_slice(&self.mismatch);
+        v.extend_from_slice(&self.warned);
+        v.sort_unstable();
+        v.dedup();
+        v
+    }
+    #[inline]
+    fn is_mismatch(&self, id: SymbolId) -> bool {
+        !self.mismatch.is_empty() && self.mismatch.binary_search(&id).is_ok()
+    }
+    #[inline]
+    fn def(&self, id: SymbolId) -> Def {
+        Program::def(self, id)
+    }
+    #[inline]
+    fn preemptible(&self, id: SymbolId) -> bool {
+        let props = self.resolution.props.get(id).copied().unwrap_or_default();
+        props.refs.contains(RefFlags::PREEMPTIBLE) || self.resolution.preemptible.contains(id)
+    }
+    #[inline]
+    fn verdict(&self, id: SymbolId) -> Verdict {
+        self.resolution.props.get(id).copied().unwrap_or_default().verdict
+    }
+    #[inline]
+    fn assigned(&self, i: u32) -> Option<Assigned> {
+        self.resolution.assigned(i)
+    }
+    #[inline]
+    fn output(&self) -> OutputKind {
+        self.output
+    }
+    #[inline]
+    fn is_weak_dyn(&self, id: SymbolId) -> bool {
+        self.weak_dyn.contains(id)
+    }
+}
+
+/// The scan's view of the link.
+pub(crate) struct View<'a, 's, W = Program<'a, 's>> {
+    pub whole: W,
+    pub arch: &'a dyn Arch,
+    pub opts: ScanOptions<'a>,
+    /// `comdat_mismatch`, sorted by key.
+    pub mismatches: Vec<Mismatch>,
     /// `gnu_warnings`, sorted.
     pub gnu_warnings: Vec<(SymbolId, FileId, SectionIndex)>,
     /// `closure_only` (D-12), sorted by key.
     pub closure_only: &'a [(SymbolId, FileId)],
     /// WP-177: the owners of `.eh_frame` and `.gcc_except_table` fields.
     pub eh: Option<&'a dyn crate::EhOwners>,
-    /// `spec/dyn.md` D-25: the `WeakDyn` keys ([`crate::weak::classes`]);
-    /// empty until it ran, and in every static link.
-    pub weak_dyn: IdSet<SymbolId>,
     /// The undefined weak keys refused by D-25: the walk drops what the
     /// architecture's scan says of their relocations.
     pub weak_refused: IdSet<SymbolId>,
@@ -79,6 +514,8 @@ pub(crate) struct View<'a, 's> {
     /// output is a `Shared` object of an architecture with a scope
     /// (`crate::bound::Scope`: AArch64, x86-64).
     bound: Vec<OnceLock<Option<crate::bound::FileFacts>>>,
+    /// The files' lifetime: `W` holds them (`Whole::prep`).
+    files: PhantomData<&'s ()>,
 }
 
 /// The two sections whose fields WP-177 judges by their record
@@ -107,27 +544,15 @@ const TLS_MODULE_BASE: &[u8] = b"_TLS_MODULE_BASE_";
 impl<'a, 's> View<'a, 's> {
     pub fn new(arch: &'a dyn Arch, t: &ScanInputs<'a, 's>, opts: ScanOptions<'a>) -> Self {
         let files = t.inputs.files.len() as usize;
-        let mut mismatch: Vec<SymbolId> = t.comdat_mismatch.iter().map(|m| m.key).collect();
-        mismatch.sort_unstable();
-        mismatch.dedup();
-        let mut warned: Vec<SymbolId> = t.gnu_warnings.iter().map(|w| w.0).collect();
-        warned.sort_unstable();
-        warned.dedup();
         Self {
-            inputs: t.inputs,
-            resolution: t.resolution,
-            liveness: t.liveness,
-            assignment: t.assignment,
+            whole: Program::new(t, opts.output),
             arch,
             opts,
-            preps: (0..files).map(|_| OnceLock::new()).collect(),
-            mismatch,
             mismatches: {
                 let mut v = t.comdat_mismatch.to_vec();
                 v.sort_unstable();
                 v
             },
-            warned,
             gnu_warnings: {
                 let mut v = t.gnu_warnings.to_vec();
                 v.sort_unstable();
@@ -135,8 +560,8 @@ impl<'a, 's> View<'a, 's> {
             },
             closure_only: t.closure_only,
             eh: t.eh,
-            weak_dyn: IdSet::new(),
             weak_refused: IdSet::new(),
+            files: PhantomData,
             bound: if opts.output == OutputKind::Shared
                 && crate::bound::Scope::of(arch.facts().machine).is_some()
             {
@@ -147,24 +572,47 @@ impl<'a, 's> View<'a, 's> {
         }
     }
 
+    pub fn def(&self, id: SymbolId) -> Def {
+        self.whole.def(id)
+    }
+}
+
+impl<'a, 's, W: Whole<'s>> View<'a, 's, W> {
+    /// The view of an update's narrow `whole` (WP-255d5): no COMDAT
+    /// mismatch or warning lists of its own (`whole` answers them), and
+    /// none of D-25's or D-117's facts (an update falls back by name
+    /// before they could matter: `update-not-implemented (scan)`).
+    pub fn narrow(
+        arch: &'a dyn Arch,
+        whole: W,
+        opts: ScanOptions<'a>,
+        eh: Option<&'a dyn crate::EhOwners>,
+    ) -> Self {
+        Self {
+            whole,
+            arch,
+            opts,
+            mismatches: Vec::new(),
+            gnu_warnings: Vec::new(),
+            closure_only: &[],
+            eh,
+            weak_refused: IdSet::new(),
+            bound: Vec::new(),
+            files: PhantomData,
+        }
+    }
+
     /// D-117's facts of object `file` (`crate::bound`): `None` outside a
-    /// `Shared` link with a scope and for a file without a preemptible
-    /// data definition.
+    /// `Shared` link with a scope, for a file without a preemptible data
+    /// definition, and in a [`View::narrow`].
     pub fn bound_facts(&self, file: FileId) -> Option<&crate::bound::FileFacts> {
         let cell = self.bound.get(file.0 as usize)?;
         cell.get_or_init(|| crate::bound::FileFacts::of(self, file)).as_ref()
     }
 
+    #[inline]
     pub fn prep(&self, file: FileId) -> Option<&Prep<'s>> {
-        let cell = self.preps.get(file.0 as usize)?;
-        Some(cell.get_or_init(|| {
-            let (obj, symtab) = match self.inputs.files[file].reader {
-                Reader::Object(o) => (Some(o), o.symbols().map_err(|e| e.to_string())),
-                Reader::Shared(s) => (None, s.symbols().map_err(|e| e.to_string())),
-                Reader::Internal => (None, Ok(None)),
-            };
-            Prep { obj, symtab, marks: OnceLock::new() }
-        }))
+        self.whole.prep(file)
     }
 
     pub fn sym(&self, file: FileId, index: SymbolIndex) -> Option<Sym> {
@@ -187,7 +635,7 @@ impl<'a, 's> View<'a, 's> {
     }
 
     pub fn is_mismatch(&self, id: SymbolId) -> bool {
-        !self.mismatch.is_empty() && self.mismatch.binary_search(&id).is_ok()
+        self.whole.is_mismatch(id)
     }
 
     /// Whether a record whose symbol is `mention` refers to `id` through
@@ -200,7 +648,7 @@ impl<'a, 's> View<'a, 's> {
     /// program. Another file's genuine undefined mention of `id` is not
     /// one.
     pub fn is_demoted_mismatch(&self, id: SymbolId, mention: SymEntry) -> bool {
-        if !self.is_mismatch(id) || !matches!(self.def(id), Def::Undefined { .. }) {
+        if !self.is_mismatch(id) || !self.whole.def_undefined(id) {
             return false;
         }
         let Some(table) = self.prep(mention.file).and_then(Prep::table) else { return false };
@@ -208,19 +656,7 @@ impl<'a, 's> View<'a, 's> {
         let Ok(SymbolSection::Section(sec)) = table.section_of(mention.index, &sym) else {
             return false;
         };
-        self.resolution
-            .section_id(mention.file, sec)
-            .and_then(|s| self.resolution.sections.get(s))
-            .is_some_and(|row| row.state == SectionState::Dropped(DropReason::Comdat))
-    }
-
-    pub fn is_warned(&self, id: SymbolId) -> bool {
-        !self.warned.is_empty() && self.warned.binary_search(&id).is_ok()
-    }
-
-    pub fn def(&self, id: SymbolId) -> Def {
-        let d = self.assignment.and_then(|a| a.def(self.resolution, id));
-        d.or_else(|| self.resolution.def.get(id).copied()).unwrap_or(Def::Undefined { weak: false })
+        self.whole.dropped_by_comdat(mention.file, sec)
     }
 
     /// WP-177 (`spec/resolve.md` §6.3): the owner of the field at
@@ -240,10 +676,7 @@ impl<'a, 's> View<'a, 's> {
     /// defined in one that has none is `dead` to the scan, whatever the
     /// reason (WP-136). The image asks the same predicate.
     pub fn has_place(&self, file: FileId, index: SectionIndex) -> bool {
-        self.resolution.section_id(file, index).is_some_and(|s| {
-            mortar_core::place::section_place(self.resolution, self.assignment, self.liveness, s)
-                .is_ok()
-        })
+        self.whole.has_place(file, index)
     }
 
     /// The key record symbol `r_sym` of `file` names (`spec/model.md`
@@ -266,8 +699,8 @@ impl<'a, 's> View<'a, 's> {
         if r_sym < first {
             return Some(local(r_sym));
         }
-        let id = *self.inputs.sym_map_of(file).get((r_sym - first) as usize)?;
-        let to = self.resolution.redirect.get(id).copied().unwrap_or(id);
+        let id = *self.whole.globals(file).get((r_sym - first) as usize)?;
+        let to = self.whole.redirect(id);
         if to != id {
             let s = t.get(SymbolIndex(r_sym)).ok()?;
             if t.section_of(SymbolIndex(r_sym), &s).ok()? == SymbolSection::Undefined {
@@ -309,11 +742,9 @@ impl<'a, 's> View<'a, 's> {
     /// [`View::key_facts`], and whether the key's definition is
     /// `Def::Undefined` (the one case where the mention's own entry
     /// gives the type and `st_other`).
+    #[inline]
     fn key_facts_def(&self, id: SymbolId) -> (SymFacts, bool) {
-        let mut f = self.global_facts(id, 0);
-        f.comdat_only = self.is_mismatch(id);
-        f.gnu_warning = self.is_warned(id);
-        (f, matches!(self.def(id), Def::Undefined { .. }))
+        self.whole.key_facts(id)
     }
 
     /// The facts of global `id` for a record whose symbol is `mention`,
@@ -322,7 +753,7 @@ impl<'a, 's> View<'a, 's> {
     /// demoted mention is `Undefined` ([`View::is_demoted_mismatch`]).
     /// `None`: `f` itself.
     pub fn at_mention(&self, f: SymFacts, id: SymbolId, mention: Option<SymEntry>) -> SymFacts {
-        let undefined = matches!(self.def(id), Def::Undefined { .. });
+        let undefined = self.whole.def_undefined(id);
         self.mention_facts(f, undefined, id, mention)
     }
 
@@ -385,111 +816,6 @@ impl<'a, 's> View<'a, 's> {
         }
     }
 
-    fn global_facts(&self, id: SymbolId, depth: u32) -> SymFacts {
-        let of = |kind, s: Option<Sym>| SymFacts {
-            kind,
-            sym_type: s.map_or(0, |s| s.sym_type()),
-            st_other: s.map_or(0, |s| s.st_other),
-            tls: s.is_some_and(|s| s.sym_type() == STT_TLS),
-            dead: false,
-            comdat_only: false,
-            gnu_warning: false,
-        };
-        let props = self.resolution.props.get(id).copied().unwrap_or_default();
-        // A shared definition's merged flag (resolution rule 6), or, in a
-        // shared object, the key's D-112 bit (`Resolution.preemptible`,
-        // `spec/dyn.md` D-113: the target kind `Preemptible`).
-        let preemptible =
-            props.refs.contains(RefFlags::PREEMPTIBLE) || self.resolution.preemptible.contains(id);
-        match self.def(id) {
-            Def::Defined(e) => {
-                let s = self.sym(e.file, e.index);
-                let place =
-                    s.and_then(|s| self.prep(e.file)?.table()?.section_of(e.index, &s).ok());
-                let kind = match (place, s.map(|s| s.sym_type())) {
-                    (Some(SymbolSection::Absolute), _) => TargetKind::Abs,
-                    (_, Some(STT_GNU_IFUNC)) if !preemptible => TargetKind::Ifunc,
-                    _ if preemptible => TargetKind::Preemptible,
-                    _ => TargetKind::Local,
-                };
-                // A definition whose section has no place is dead
-                // (resolve.md §10.1 P-1, WP-136): dropped by a named rule
-                // (`SHF_EXCLUDE`, a consumed or stripped kind), kept but
-                // consumed (`.note.gnu.property`), or under
-                // `--gc-sections` kept but not reached by the mark (§6.1,
-                // `spec/image.md` I-7). A debug section's reference to it
-                // gets the tombstone (I-47), any other section's is
-                // `discarded-section-reference` (I-12). A global defined
-                // in a dropped COMDAT copy is demoted (resolve §6.2), so
-                // its `def` is never that copy.
-                let dead = match place {
-                    Some(SymbolSection::Section(i)) => !self.has_place(e.file, i),
-                    _ => false,
-                };
-                SymFacts { dead, ..of(kind, s) }
-            }
-            Def::Common(e) if preemptible => of(TargetKind::Preemptible, self.sym(e.file, e.index)),
-            Def::Common(e) => of(TargetKind::Local, self.sym(e.file, e.index)),
-            Def::Shared(e) => {
-                let s = self.sym(e.file, e.index);
-                let func = s.is_some_and(|s| matches!(s.sym_type(), STT_FUNC | STT_GNU_IFUNC));
-                of(TargetKind::Shlib { func }, s)
-            }
-            // `--defsym SYM=B` (`spec/resolve.md` §7.2): `B`'s address and
-            // type under `SYM`'s own name. A preemptible `SYM` (a
-            // `-shared` export) is bound through its own dynamic symbol;
-            // otherwise a reference reaches `B`'s definition in this
-            // output, even when `B` itself is preemptible (GNU ld, lld).
-            // resolve refuses an alias of an undefined, a shared or a
-            // `--defsym` symbol, so `B` is a definition of this output.
-            Def::Internal(InternalDef::Alias(to)) if to != id && depth < 8 => {
-                let b = self.global_facts(to, depth + 1);
-                let kind = match b.kind {
-                    TargetKind::Abs => TargetKind::Abs,
-                    _ if preemptible => TargetKind::Preemptible,
-                    TargetKind::Preemptible => TargetKind::Local,
-                    k => k,
-                };
-                SymFacts { kind, ..b }
-            }
-            // `SYM=B+N` (§7.2): section-relative, `STT_NOTYPE`; a number
-            // is absolute in every output kind (GNU ld relocates it in a
-            // PIE, lld and mold do not: resolve.md §16).
-            Def::Internal(InternalDef::Assign(i)) => match self.resolution.assigned(i) {
-                Some(Assigned::Offset { to, .. }) if to != id && depth < 8 => {
-                    let b = self.global_facts(to, depth + 1);
-                    let kind = match b.kind {
-                        TargetKind::Abs => TargetKind::Abs,
-                        _ if preemptible => TargetKind::Preemptible,
-                        TargetKind::Undefined => TargetKind::Undefined,
-                        _ => TargetKind::Local,
-                    };
-                    SymFacts { kind, sym_type: 0, st_other: 0, tls: false, ..b }
-                }
-                _ => of(TargetKind::Abs, None),
-            },
-            Def::Internal(InternalDef::Alias(_)) => of(TargetKind::Abs, None),
-            Def::Internal(InternalDef::Provide { .. }) => {
-                let tls = self.inputs.symbols.get(id).is_some_and(|k| k.name == TLS_MODULE_BASE);
-                let sym_type = if tls { STT_TLS } else { 0 };
-                SymFacts {
-                    // `_end` and its kind, exported because a shared
-                    // input references it (D-110 item 2), stay
-                    // preemptible in a shared object (D-112).
-                    kind: if preemptible { TargetKind::Preemptible } else { TargetKind::Local },
-                    sym_type,
-                    st_other: 0,
-                    tls,
-                    dead: false,
-                    comdat_only: false,
-                    gnu_warning: false,
-                }
-            }
-            // The mention's type and `st_other`: `mention_facts`.
-            Def::Undefined { weak } => of(self.undefined_kind(id, weak, props.verdict), None),
-        }
-    }
-
     /// The keys a reference to which can make an event (§4.4): those
     /// whose target kind is `Undefined` (an undefined key, or an alias of
     /// one), those only dropped COMDAT copies define, and those with a
@@ -497,27 +823,7 @@ impl<'a, 's> View<'a, 's> {
     /// these, at a place where a dead target is the tombstone, makes no
     /// event (`spec/image.md` I-14: the sections fill checks).
     pub fn event_keys(&self) -> Vec<SymbolId> {
-        let mut v: Vec<SymbolId> = Vec::new();
-        for i in 0..self.inputs.symbols.len() {
-            let id = SymbolId(i);
-            let undefined = match self.def(id) {
-                Def::Defined(_) | Def::Common(_) | Def::Shared(_) => false,
-                Def::Undefined { weak } => {
-                    let verdict = self.resolution.props.get(id).map(|p| p.verdict);
-                    self.undefined_kind(id, weak, verdict.unwrap_or_default())
-                        == TargetKind::Undefined
-                }
-                Def::Internal(_) => self.global_facts(id, 0).kind == TargetKind::Undefined,
-            };
-            if undefined {
-                v.push(id);
-            }
-        }
-        v.extend_from_slice(&self.mismatch);
-        v.extend_from_slice(&self.warned);
-        v.sort_unstable();
-        v.dedup();
-        v
+        self.whole.event_keys()
     }
 
     /// Whether `facts(key, mention).kind` is `TargetKind::Weak0`, found
@@ -525,57 +831,17 @@ impl<'a, 's> View<'a, 's> {
     /// mention is read only for a `comdat-mismatch` key, whose demoted
     /// mention makes it `Undefined` (WP-176).
     pub fn is_weak0(&self, key: SymKey, mention: Option<SymEntry>) -> bool {
-        let SymKind::Global(mut id) = key.kind() else { return false };
+        let SymKind::Global(id) = key.kind() else { return false };
         if mention.is_some_and(|m| self.is_demoted_mismatch(id, m)) {
             return false;
         }
-        // As `global_facts`: an alias is followed to depth 8.
-        for depth in 0..=8 {
-            match self.def(id) {
-                Def::Undefined { weak } => {
-                    let verdict =
-                        self.resolution.props.get(id).copied().unwrap_or_default().verdict;
-                    return self.undefined_kind(id, weak, verdict) == TargetKind::Weak0;
-                }
-                Def::Internal(InternalDef::Alias(to)) if to != id && depth < 8 => id = to,
-                _ => return false,
-            }
-        }
-        false
-    }
-
-    /// The target kind of an undefined key (§4.4, I-19): a weak one is
-    /// zero, or dynamic when D-25 made it so (`weak_dyn`, per key); a
-    /// strong one is `Undefined` unless its verdict is "nothing"
-    /// (`--unresolved-symbols=ignore-*`), which makes it zero.
-    ///
-    /// In a shared object (`spec/dyn.md` D-113, D-118) a weak one is
-    /// always `WeakDyn`, and a strong one the loader may resolve
-    /// (resolution's verdict is not an error: without `-z defs`, and not
-    /// hidden) an import of unknown type, `Shlib { func: false }`.
-    fn undefined_kind(&self, id: SymbolId, weak: bool, verdict: Verdict) -> TargetKind {
-        if self.opts.output == OutputKind::Shared {
-            return match (weak, verdict) {
-                (true, _) => TargetKind::WeakDyn,
-                (false, Verdict::Bound | Verdict::Ignored) => TargetKind::Shlib { func: false },
-                _ => TargetKind::Undefined,
-            };
-        }
-        let zero = if weak && self.weak_dyn.contains(id) {
-            TargetKind::WeakDyn
-        } else {
-            TargetKind::Weak0
-        };
-        match (weak, verdict) {
-            (true, _) | (false, Verdict::Ignored) => zero,
-            _ => TargetKind::Undefined,
-        }
+        self.whole.is_weak0(id)
     }
 
     /// A key's name as its symbol table has it.
     pub fn name(&self, key: SymKey) -> &'s [u8] {
         match key.kind() {
-            SymKind::Global(id) => self.inputs.symbols.get(id).map_or(&[][..], |k| k.name),
+            SymKind::Global(id) => self.whole.key_name(id).map_or(&[][..], |k| k.0),
             SymKind::Local(e) => {
                 let Some(t) = self.prep(e.file).and_then(Prep::table) else { return &[] };
                 t.get(e.index).ok().and_then(|s| t.name(&s).ok()).unwrap_or_default()
@@ -594,9 +860,9 @@ impl<'a, 's> View<'a, 's> {
     pub fn shown_name(&self, key: SymKey) -> String {
         match key.kind() {
             SymKind::Global(id) => {
-                let Some(k) = self.inputs.symbols.get(id) else { return String::new() };
-                let name = String::from_utf8_lossy(k.name);
-                match k.version {
+                let Some((name, version)) = self.whole.key_name(id) else { return String::new() };
+                let name = String::from_utf8_lossy(name);
+                match version {
                     Some(v) => format!("{name}@{}", String::from_utf8_lossy(v)),
                     None => name.into_owned(),
                 }
@@ -626,7 +892,7 @@ impl<'a, 's> View<'a, 's> {
     }
 
     pub fn section_of(&self, file: FileId, index: u32) -> Option<SectionId> {
-        self.resolution.section_id(file, SectionIndex(index))
+        self.whole.section_id(file, SectionIndex(index))
     }
 }
 
@@ -766,14 +1032,14 @@ pub(crate) fn with_bufs<T>(f: impl FnOnce(&mut Bufs) -> T) -> T {
 }
 
 /// Copies `offset..offset + size` of `file` into `buf` (one `copy_to`).
-fn copy(
-    view: &View<'_, '_>,
+fn copy<'s, W: Whole<'s>>(
+    view: &View<'_, 's, W>,
     file: FileId,
     offset: u64,
     size: u64,
     buf: &mut Vec<u8>,
 ) -> Result<(), ReadFail> {
-    if view.inputs.files[file].bytes.is_none() {
+    if !view.whole.has_bytes(file) {
         return Err(ReadFail::Internal(format!(
             "scan: {size} bytes at offset {offset} of file {} are not resident and it has no store entry",
             file.0
@@ -783,14 +1049,14 @@ fn copy(
     buf.clear();
     buf.resize(len, 0);
     let end = offset.checked_add(size).ok_or(ReadFail::Copy(CopyError::OutOfRange))?;
-    view.inputs.copy_to(file, offset..end, buf).map_err(ReadFail::Copy)
+    view.whole.copy_to(file, offset..end, buf).map_err(ReadFail::Copy)
 }
 
 /// The contents of section `s` of `file`: the resident slice, or one
 /// `copy_to` into `buf` when they are not resident (`spec/input.md`
 /// §11.3).
-pub(crate) fn contents<'b, 's: 'b>(
-    view: &View<'_, 's>,
+pub(crate) fn contents<'b, 's: 'b, W: Whole<'s>>(
+    view: &View<'_, 's, W>,
     file: FileId,
     s: &Section<'s>,
     buf: &'b mut Vec<u8>,
@@ -810,8 +1076,8 @@ pub(crate) fn contents<'b, 's: 'b>(
 /// and `sh_info`, or why they cannot be read: resident, or copied into
 /// `buf` (one `copy_to`) when the store does not hold them (the
 /// relocations of a non-alloc section, `spec/input.md` §11.1).
-pub(crate) fn rec_table<'b, 's: 'b>(
-    view: &View<'_, 's>,
+pub(crate) fn rec_table<'b, 's: 'b, W: Whole<'s>>(
+    view: &View<'_, 's, W>,
     file: FileId,
     obj: &Object<'s>,
     rel: SectionIndex,
@@ -851,8 +1117,8 @@ pub(crate) fn rec_table<'b, 's: 'b>(
 
 /// The `r_offset` of record `record` of relocation section `rel` of
 /// `file`: from the resident records, or one `copy_to` of that record.
-pub(crate) fn rec_offset(
-    view: &View<'_, '_>,
+pub(crate) fn rec_offset<'s, W: Whole<'s>>(
+    view: &View<'_, 's, W>,
     file: FileId,
     obj: &Object<'_>,
     rel: SectionIndex,
@@ -891,8 +1157,8 @@ pub(crate) fn rec_offset(
 
 /// The records of one relocation section as `mortar_arch` reads them
 /// (§3.5): each record's symbol resolved to its key.
-pub(crate) struct Recs<'v, 'a, 's, 'b> {
-    pub view: &'v View<'a, 's>,
+pub(crate) struct Recs<'v, 'a, 's, 'b, W = Program<'a, 's>> {
+    pub view: &'v View<'a, 's, W>,
     pub file: FileId,
     pub table: Option<&'v SymbolTable<'s>>,
     pub records: RecTable<'b>,
@@ -901,7 +1167,7 @@ pub(crate) struct Recs<'v, 'a, 's, 'b> {
     pub bytes: &'b [u8],
 }
 
-impl Recs<'_, '_, '_, '_> {
+impl<'s, W: Whole<'s>> Recs<'_, '_, 's, '_, W> {
     /// The addend of a record: explicit, or read from the field (REL).
     pub fn addend(&self, raw: &Raw, h: &mortar_arch::Howto) -> i64 {
         raw.addend.unwrap_or_else(|| {
@@ -911,7 +1177,7 @@ impl Recs<'_, '_, '_, '_> {
     }
 }
 
-impl Records for Recs<'_, '_, '_, '_> {
+impl<'s, W: Whole<'s>> Records for Recs<'_, '_, 's, '_, W> {
     fn len(&self) -> u32 {
         u32::try_from(self.records.len()).unwrap_or(u32::MAX)
     }
@@ -932,19 +1198,19 @@ impl Records for Recs<'_, '_, '_, '_> {
 
 /// The tables as one record's scan sees them: an undefined key takes
 /// the type of the record's own mention (`SymFacts::sym_type`).
-pub(crate) struct RecTables<'v, 'a, 's> {
-    pub view: &'v View<'a, 's>,
+pub(crate) struct RecTables<'v, 'a, 's, W = Program<'a, 's>> {
+    pub view: &'v View<'a, 's, W>,
     pub key: SymKey,
     pub mention: SymEntry,
 }
 
-impl SymNames for RecTables<'_, '_, '_> {
+impl<'s, W: Whole<'s>> SymNames for RecTables<'_, '_, 's, W> {
     fn name(&self, key: SymKey) -> &[u8] {
         self.view.name(key)
     }
 }
 
-impl ScanTables for RecTables<'_, '_, '_> {
+impl<'s, W: Whole<'s>> ScanTables for RecTables<'_, '_, 's, W> {
     fn sym(&self, key: SymKey) -> SymFacts {
         self.view.facts(key, (key == self.key).then_some(self.mention))
     }

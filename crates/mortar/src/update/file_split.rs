@@ -60,7 +60,8 @@ use super::file_front::FileFront;
 
 /// What `phase::Link::section` answers of a section besides its id and
 /// relocation section: its kind, whether it is kept, its output section
-/// (the full link's `Resolution` row and `Assignment::out`).
+/// (the full link's `Resolution` row and `Assignment::out`), and its
+/// relocation section as resolve's row gives it.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct SectionFact {
     pub kind: SectionKind,
@@ -68,6 +69,10 @@ pub struct SectionFact {
     pub kept: bool,
     /// `None`: no output section (L-30..L-32, consumed, discarded).
     pub out: Option<OutSecId>,
+    /// The relocation section applying to it (`ResolvedSection.reloc`: the
+    /// first applying `SHT_RELA`/`SHT_REL` by `reloc_fate`, 0 for none and
+    /// for an `Excluded` target), from the same row (WP-255d5 F-5).
+    pub reloc: SectionIndex,
 }
 
 /// One split `.eh_frame` section's relocations, as `phase::Phase::eh_relocs`
@@ -427,7 +432,7 @@ pub fn changed_facts(
             }
             Fate::None | Fate::Discard | Fate::Consumed => None,
         };
-        facts.push(SectionFact { kind: row.kind, kept: row.is_kept(), out });
+        facts.push(SectionFact { kind: row.kind, kept: row.is_kept(), out, reloc: row.reloc });
     }
     Ok(facts)
 }

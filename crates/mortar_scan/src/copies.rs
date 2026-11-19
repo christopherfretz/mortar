@@ -59,12 +59,12 @@ fn locally_bound(
     index: u32,
     value: u64,
 ) -> Option<Diagnostic> {
-    let binding = view.inputs.local_binding(file)?;
+    let binding = view.whole.inputs.local_binding(file)?;
     if !binding.binds(index) {
         return None;
     }
     let name = view.shown_name(SymKey::global(id));
-    let path = view.inputs.files[file].display().path().to_owned();
+    let path = view.whole.inputs.files[file].display().path().to_owned();
     let how = match &binding.binds {
         BindsLocally::Symbolic => {
             format!("{path} is linked -Bsymbolic (DT_SYMBOLIC or DF_SYMBOLIC)")
@@ -100,7 +100,7 @@ fn refusal(view: &View<'_, '_>, id: SymbolId) -> Option<Diagnostic> {
     let sym = view.sym(e.file, e.index)?;
     let name = || view.shown_name(SymKey::global(id));
     if sym.visibility() == STV_PROTECTED {
-        let file = view.inputs.files[e.file].display().path().to_owned();
+        let file = view.whole.inputs.files[e.file].display().path().to_owned();
         return Some(Diagnostic::error(Kind::CopyRelocationAgainstProtected {
             name: name(),
             file,
