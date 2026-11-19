@@ -718,10 +718,11 @@ fn r5b_prog(arch: Arch) -> Option<Prog> {
 // spec: incr.md R-5 (b) (WP-230 G-3b): the changed file kept a macro group
 // (`wm4.t.h.*`) and its new version no longer includes the header: the kept
 // copy moves to `main.cc`'s, which G-1's `place` refuses
-// `debug-comdat-keeper`. It is not reached: the placement's inputs refuse
-// first (`layout_in::layout_inputs_live`, a file of the change set that is
-// not `Change::Changed`: `update-not-implemented (layout)`, recorded
-// `M2b-2b fallback`), and the identity check falls back `(layout)`.
+// `debug-comdat-keeper`. It is not reached: since M2b-4 the placement's
+// inputs are produced (the file of the change set that is not
+// `Change::Changed` is read with fresh ids), and the scan's comparison of
+// its rows refuses first, `update-not-implemented (scan)` (F-1, M2b-5's;
+// when F-1 lands, G-1's `debug-comdat-keeper` is the name).
 #[test]
 fn kept_group_that_moves_falls_back_before_g1() {
     for arch in targets() {
@@ -732,11 +733,7 @@ fn kept_group_that_moves_falls_back_before_g1() {
         let (line, text) = not_taken(&p, &label, &[], &|p| {
             p.rebuild_c(&format!("// no t.h\n{}", &c_lit(7)[12..]), &[]);
         });
-        assert!(line.contains("cannot update: update-not-implemented (layout)"), "{label}: {line}");
-        assert!(
-            text.contains("M2b-2b fallback: update-not-implemented (layout)"),
-            "{label}:\n{text}"
-        );
+        assert!(line.contains("cannot update: update-not-implemented (scan)"), "{label}: {line}");
         assert!(!text.contains("G-3 debug: placed"), "{label}: G-1 ran:\n{text}");
         assert!(!text.contains("finding"), "{label}:\n{text}");
     }
