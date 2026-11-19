@@ -178,6 +178,7 @@ fn run_with(
     ctx: &Ctx<'_>,
     ops: &mut dyn mortar_incr::ops::WriteOps,
 ) -> Result<Updated, UpdateError> {
+    let mut steps = Steps::start();
     let lock = session.lock().ok_or_else(|| IncrReason::NoState(String::new()))?;
     let view = mortar_incr::state5::open(lock, session.plan_hash())?;
     let detected = detect(&view, cwd)?;
@@ -208,10 +209,39 @@ fn run_with(
     let out = session.out.as_ref().ok_or_else(|| IncrReason::NoState(String::new()))?;
     // U1's tuple of the output (IN-77a), taken before the front reads.
     let checked = Tuple::of(&out.metadata().map_err(|e| IncrReason::OutputChanged(e.to_string()))?);
+    steps.mark("u1-u3");
     // The front is dropped before the first write.
-    let reference =
-        image_link(ctx, cwd, None, |f| reference_of(session, &view, file, f, ctx, cwd, out))?;
-    write_identity(session, &view, ctx, cwd, out, checked, reference, ops)
+    let reference = image_link(ctx, cwd, None, |f| {
+        steps.mark("front");
+        reference_of(session, &view, file, f, ctx, cwd, out, &mut steps)
+    })?;
+    write_identity(session, &view, ctx, cwd, out, checked, reference, ops, steps)
+}
+
+/// The update's wall time per step, for the report line (the cost table
+/// of the record; `Instant` reads only, in the update path alone).
+struct Steps {
+    at: std::time::Instant,
+    done: Vec<(&'static str, std::time::Duration)>,
+}
+
+impl Steps {
+    fn start() -> Self {
+        Self { at: std::time::Instant::now(), done: Vec::new() }
+    }
+    /// The time since the previous mark, as step `name`.
+    fn mark(&mut self, name: &'static str) {
+        let now = std::time::Instant::now();
+        self.done.push((name, now - self.at));
+        self.at = now;
+    }
+    fn line(&self) -> String {
+        use std::fmt::Write as _;
+        self.done.iter().fold(String::new(), |mut s, (n, d)| {
+            let _ = write!(s, " {n}={:.3}", d.as_secs_f64());
+            s
+        })
+    }
 }
 
 /// What the identity case writes (M2a, ruling M2a-1): the refill's
@@ -243,6 +273,10 @@ struct Reference {
 /// synthetic chunks: `.symtab`, `.eh_frame`, the note), so every byte of
 /// `P_U` that can differ is refilled; a range equal to the previous
 /// output's is dropped (IN-75).
+#[allow(
+    clippy::too_many_arguments,
+    reason = "path (A)'s front, U1's view and binding, the step timer"
+)]
 fn reference_of(
     session: &Session,
     view: &StateView<'_>,
@@ -251,6 +285,7 @@ fn reference_of(
     ctx: &Ctx<'_>,
     cwd: &Path,
     out: &std::fs::File,
+    steps: &mut Steps,
 ) -> Result<Reference, IncrReason> {
     use mortar_core::incr::{LayoutDelta, RefillChunk, RefillSet, StoredLayout, SymtabPlan};
     let layout = || IncrReason::UpdateNotImplemented(Some(Unimplemented::Layout));
@@ -292,6 +327,7 @@ fn reference_of(
         Ok::<_, IncrReason>((u, mortar_image::update::output_size(l), map))
     })
     .map_err(|_| image())??;
+    steps.mark("refill");
     // The capture of `f` with the refill's binding parts.
     let tree = match meta.leaf_fn {
         0 => mortar_digest::TreeFn::L128,
@@ -311,6 +347,7 @@ fn reference_of(
     state.leaves.clone_from(&refill.leaves);
     let rows5 = rows5.ok_or_else(image)?;
     let state = mortar_incr::capture::state5_rows(&state, rows5, false).map_err(|_| image())?;
+    steps.mark("capture");
     // The identity check (G-3's materialization in the identity case).
     let lock = session.lock().ok_or_else(image)?;
     let corrupt = |e: std::io::Error| IncrReason::StateCorrupt(e.to_string());
@@ -325,6 +362,7 @@ fn reference_of(
     if !identity(&diffs, file) {
         return Err(layout());
     }
+    steps.mark("check");
     Ok(Reference { refill, size, state, map })
 }
 
@@ -364,6 +402,7 @@ fn write_identity(
     checked: Tuple,
     r: Reference,
     ops: &mut dyn mortar_incr::ops::WriteOps,
+    mut steps: Steps,
 ) -> Result<Updated, UpdateError> {
     let lock = session.lock().ok_or_else(|| IncrReason::NoState(String::new()))?;
     let pair = write::Pair {
@@ -428,13 +467,15 @@ fn write_identity(
             UpdateError::Failed { step: "map", error: std::io::Error::other(format!("{d:?}")) }
         })?;
     }
+    steps.mark("write");
     let c = &r.refill.counts;
     let line = format!(
-        "incremental: update ({:?}{}) changed=1 ranges={} bytes={} (M2a: O(link) twice over, the front and the whole state; no time is read from it)\n",
+        "incremental: update ({:?}{}) changed=1 ranges={} bytes={} (M2a: O(link) twice over, the front and the whole state) steps:{}\n",
         w.path,
         w.copy_because.map(|b| format!(": {b}")).unwrap_or_default(),
         c.ranges,
-        c.dirty
+        c.dirty,
+        steps.line()
     );
     // `--incremental-report`: the file, or standard error (the driver's).
     let mut lines = String::new();
