@@ -58,6 +58,13 @@ const M1_SYM: &str = "__asm__(\".section .rodata.wp255d2b,\\\"aMS\\\",%progbits,
     { return wp255d2b_helper(x) + *wp255d2b_str(x) + wp255d2b_added; }\n\
     extern \"C\" int wp255d_m1(int x) { return wp255d_m1_renamed(x) + wp255d_m1_data; }\n";
 
+/// `m1.o` (C) with a copy of `m3.o`'s COMDAT group `wp255d_g`: its code
+/// and a data section of the group (AArch64: `$x`, `$d`).
+const M1_GROUP: &str = "__asm__(\".section .text.wp255d_g,\\\"axG\\\",%progbits,wp255d_g,comdat\\n\"\n\
+    \"\\t.globl wp255d_g\\nwp255d_g:\\n\\tret\\n\"\n\
+    \"\\t.section .rodata.wp255d_g,\\\"aG\\\",%progbits,wp255d_g,comdat\\n\\t.byte 1\\n\\t.text\\n\");\n\
+    int wp255d_m1_data = 1;\nint wp255d_m1(int x) { return x + wp255d_m1_data; }\n";
+
 const SHN_ABS: u16 = 0xfff1;
 
 /// One output entry, or one input local, as compared.
@@ -73,14 +80,29 @@ struct Entry {
     abs: Option<u64>,
 }
 
-#[test]
-fn file_symbols_of_an_edited_file() {
-    for line in lines(&[("m1s", "c++", M1_SYM)]) {
-        let args = line.args(&["wp255d_m2", "wp255d_m1"]);
-        line.archive(&["m1.o", "m2.o"]);
-        let old = state(&line, &args, "old");
-        std::fs::copy(line.dir.join("m1s.o"), line.dir.join("m1.o")).expect("the edit");
-        line.archive(&["m1.o", "m2.o"]);
+/// What [`compare`] saw: the kept locals and the cases counted.
+struct Seen {
+    have: Vec<Entry>,
+    cases: BTreeMap<&'static str, usize>,
+}
+
+/// `m1.o` of `lib2.a` (members `members`, roots `roots`) replaced by
+/// `edit`.o; `file_symbols` of it against the full link's output block of
+/// `edit`.src. `keeper` names each COMDAT signature's keeper in the OLD
+/// state (`None`: m1.o's own copy).
+fn compare(
+    line: &update::Line,
+    edit: &str,
+    members: &[&str],
+    roots: &[&str],
+    keeper: &dyn Fn(&mortar_incr::update::view::StateView<'_>, &[u8]) -> Option<FileId>,
+) -> Seen {
+    {
+        let args = line.args(roots);
+        line.archive(members);
+        let old = state(line, &args, "old");
+        std::fs::copy(line.dir.join(format!("{edit}.o")), line.dir.join("m1.o")).expect("edit");
+        line.archive(members);
         // The full link of the new inputs: its output is the oracle.
         let new = state(&line, &args, "new");
         let store = support::store();
@@ -98,8 +120,10 @@ fn file_symbols_of_an_edited_file() {
         let mut keepers: Vec<(Vec<u8>, Option<FileId>)> = Vec::new();
         for s in &ff.sections {
             let Anchor::Comdat(sig) = s.anchor else { continue };
-            assert!(keepers.iter().all(|k| k.0 != sig), "no COMDAT group in this edit");
-            keepers.push((sig.to_vec(), Some(file)));
+            if keepers.iter().any(|k| k.0 == sig) {
+                continue;
+            }
+            keepers.push((sig.to_vec(), Some(keeper(&old, sig).unwrap_or(file))));
         }
         keepers.sort();
         let facts = changed_facts(ff, &old, &full.plan, &keepers)
@@ -145,7 +169,7 @@ fn file_symbols_of_an_edited_file() {
         for (_, s) in syms.locals() {
             let name = syms.name(&s).expect("name");
             if s.st_info & 0xf == STT_FILE {
-                inside = name.ends_with(b"m1s.src");
+                inside = name.ends_with(format!("{edit}.src").as_bytes());
                 if !inside && !want.is_empty() {
                     break;
                 }
@@ -193,15 +217,29 @@ fn file_symbols_of_an_edited_file() {
         // The cases the edit covers, counted on the input.
         let input = ff.object.symbols().expect("symbols").expect("a .symtab");
         let mut dot_l = 0;
-        let named = |n: &[u8]| have.iter().any(|e| e.name.windows(n.len()).any(|w| w == n));
         for i in 1..input.first_global().0 {
             let s = input.get(SymbolIndex(i)).expect("sym");
             if input.name(&s).expect("name").starts_with(b".L") {
                 dot_l += 1;
             }
         }
-        let cases: BTreeMap<&str, usize> = [
+        // Input locals in a section the link does not keep (S-76: dropped).
+        let mut not_kept = 0;
+        for i in 1..input.first_global().0 {
+            let s = input.get(SymbolIndex(i)).expect("sym");
+            let k = s.st_shndx as usize;
+            if s.st_info & 0xf != STT_SECTION && k != 0 && k < 0xff00 && !facts[k].kept {
+                not_kept += 1;
+                eprintln!(
+                    "{}: not kept: {} in section {k}",
+                    line.label,
+                    String::from_utf8_lossy(input.name(&s).expect("name"))
+                );
+            }
+        }
+        let cases: BTreeMap<&'static str, usize> = [
             ("input locals", input.first_global().0 as usize - 1),
+            ("in a section not kept (dropped)", not_kept),
             ("kept", have.len()),
             (".L in the input (dropped)", dot_l),
             ("sections", base.len()),
@@ -210,9 +248,46 @@ fn file_symbols_of_an_edited_file() {
         ]
         .into_iter()
         .collect();
-        eprintln!("{}: m1.o edited: {cases:?}", line.label);
-        assert!(named(b"wp255d2b_helper") && named(b"wp255d2b_counter"), "{}", what("statics"));
-        assert!(dot_l > 0, "{}", what("a .L local in the input"));
+        eprintln!("{}: m1.o edited ({edit}): {cases:?}", line.label);
         assert!(have.iter().all(|e| !e.name.starts_with(b".L")), "{}", what(".L dropped"));
+        Seen { have, cases }
+    }
+}
+
+#[test]
+fn file_symbols_of_an_edited_file() {
+    for line in lines(&[("m1s", "c++", M1_SYM)]) {
+        let seen = compare(&line, "m1s", &["m1.o", "m2.o"], &["wp255d_m2", "wp255d_m1"], &|_, _| {
+            None
+        });
+        let named = |n: &[u8]| seen.have.iter().any(|e| e.name.windows(n.len()).any(|w| w == n));
+        assert!(named(b"wp255d2b_helper") && named(b"wp255d2b_counter"), "{}: statics", line.label);
+        assert!(seen.cases[".L in the input (dropped)"] > 0, "{}: a .L local", line.label);
+    }
+}
+
+/// `m1.o` edited to carry a copy of `m3.o`'s COMDAT group `wp255d_g` (code
+/// and data), `m3.o` first in the archive: its copy is the keeper, m1.o's is
+/// dropped (`SectionFact::kept` false). Ruling item 5 of 255d2b's
+/// hand-back: the locals of the dropped copy (AArch64's `$x`, `$d`) are
+/// dropped by `file_symbols`, as the full link's S-76 drops a dead
+/// section's, and the block equals the full link's output.
+#[test]
+fn file_symbols_drops_a_dropped_comdat_copys_locals() {
+    for line in lines(&[("m1g", "c", M1_GROUP)]) {
+        let seen = compare(
+            &line,
+            "m1g",
+            &["m3.o", "m1.o", "m2.o"],
+            &["wp255d_m3", "wp255d_m2", "wp255d_m1"],
+            &|old, sig| (sig == b"wp255d_g").then(|| member(old, "m3.o")),
+        );
+        if line.label.starts_with("aarch64") {
+            assert!(
+                seen.cases["in a section not kept (dropped)"] >= 1,
+                "{}: the dropped copy's mapping symbols",
+                line.label
+            );
+        }
     }
 }

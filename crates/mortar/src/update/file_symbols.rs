@@ -156,6 +156,13 @@ pub fn file_symbols<'a>(
         let (section, value) = match l.def {
             SymDef::Section { section, value } => {
                 let Some(f) = fact_of(section) else { return Err(not_built()) };
+                // S-76: a dead section's locals are dropped. A section the
+                // link does not keep (a dropped COMDAT copy: an AArch64
+                // copy's `$x`/`$d`) is dead; `kept` is the ONE producer's
+                // (`changed_facts`, ruling item 5 of 255d2b's hand-back).
+                if !f.kept {
+                    continue;
+                }
                 in_eh |= f.kind == SectionKind::EhFrame;
                 (Some(section), value)
             }
