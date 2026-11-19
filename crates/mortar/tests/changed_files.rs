@@ -28,16 +28,27 @@ use support::{Source, build_by, store, with_output};
 const TARGETS: [(&str, &str); 2] = [("aarch64", "gcc"), ("x86-64", "x86_64-linux-gnu-gcc")];
 
 const MAIN: &str = "int f(void);\nint counter;\nint main(void){ return f() + counter; }\n";
+/// `s` and `t` are LOCAL (rulings M2b1-3: no `INDEX`/`EDGES` row of the
+/// file may name a local key; a call to and an address of a local are what
+/// would make one).
 const A0: &str = "extern int counter;\nint g(void){ return 2; }\nint h(void){ return 3; }\n\
-int k(void){ return g() + counter; }\nint f(void){ return k(); }\n";
+static int t = 5;\n__attribute__((noinline)) static int s(int x){ return x * t + counter; }\n\
+int *tp(void){ return &t; }\n\
+int k(void){ return g() + counter + s(counter); }\nint f(void){ return k(); }\n";
 /// The edits of `a.c`: `k` renamed, `g` grown, a symbol added.
-const A_RENAMED: &str = "extern int counter;\nint g(void){ return 2; }\nint h(void){ return 3; }\n\
-int k2(void){ return g() + counter; }\nint f(void){ return k2(); }\n";
-const A_GROWN: &str = "extern int counter;\nint g(void){ int s = 0; for (int i = 0; i < counter; i++) s += i * i; return 2 + s; }\n\
-int h(void){ return 3; }\nint k(void){ return g() + counter; }\nint f(void){ return k(); }\n";
-const A_ADDED: &str = "extern int counter;\nint table[4] = {1, 2, 3, 4};\nint g(void){ return 2; }\n\
+const A_RENAMED: &str = "extern int counter;\nstatic int t = 5;\n__attribute__((noinline)) static int s(int x){ return x * t + counter; }\n\
+int *tp(void){ return &t; }\n\
+int g(void){ return 2; }\nint h(void){ return 3; }\n\
+int k2(void){ return g() + counter + s(counter); }\nint f(void){ return k2(); }\n";
+const A_GROWN: &str = "extern int counter;\nstatic int t = 5;\n__attribute__((noinline)) static int s(int x){ return x * t + counter; }\n\
+int *tp(void){ return &t; }\n\
+int g(void){ int s = 0; for (int i = 0; i < counter; i++) s += i * i; return 2 + s; }\n\
+int h(void){ return 3; }\nint k(void){ return g() + counter + s(counter); }\nint f(void){ return k(); }\n";
+const A_ADDED: &str = "extern int counter;\nstatic int t = 5;\n__attribute__((noinline)) static int s(int x){ return x * t + counter; }\n\
+int *tp(void){ return &t; }\n\
+int table[4] = {1, 2, 3, 4};\nint g(void){ return 2; }\n\
 int h(void){ return 3; }\nint added(int x){ return table[x & 3]; }\n\
-int k(void){ return g() + counter + added(1); }\nint f(void){ return k(); }\n";
+int k(void){ return g() + counter + added(1) + s(counter); }\nint f(void){ return k(); }\n";
 
 const FLAGS: [&str; 3] = ["-O1", "-ffunction-sections", "-fdata-sections"];
 
@@ -277,6 +288,49 @@ fn judge(
     Ok(())
 }
 
+/// Rulings M2b1-3 (the adapter's `keys` are globals only): no `INDEX`
+/// (`GLOBAL`/`SLOT`) or `EDGES` (key target) row the stored `reader` has
+/// for `file` names a LOCAL key (some row names a key; the file's run of
+/// local keys, `FILE_INDEX.locals`, is all LOCAL).
+fn no_local_key(reader: &StateView<'_>, file: FileId) -> Result<(), String> {
+    use mortar_incr::format::sym_kind;
+    let e = |x: mortar_core::incr::IncrReason| x.report();
+    let local = |k: u32| -> Result<bool, String> {
+        Ok(reader.symbol(SymbolId(k)).map_err(e)?.kind == sym_kind::LOCAL)
+    };
+    let mut named = 0;
+    for r in reader.index_of(file).map_err(e)? {
+        if matches!(r.kind, index_kind::GLOBAL | index_kind::SLOT) {
+            named += 1;
+            if local(r.target)? {
+                return Err(format!("INDEX row {r:?} names a local key"));
+            }
+        }
+    }
+    for r in reader.edges_of(file).map_err(e)? {
+        if edge_kind::target(r.kind) == Some(edge_kind::Target::Key) {
+            named += 1;
+            if local(r.target)? {
+                return Err(format!("EDGES row {r:?} names a local key"));
+            }
+        }
+    }
+    // The file's run of local keys (`FILE_INDEX.locals`), each LOCAL.
+    let run = reader.file_index(file).map_err(e)?.locals;
+    let mut locals = 0;
+    for k in run.first..run.first + run.count {
+        if !local(k)? {
+            return Err(format!("key {k} of the file's locals run is not LOCAL"));
+        }
+        locals += 1;
+    }
+    if named == 0 {
+        return Err("the check cannot bite: no INDEX or EDGES row names a key".into());
+    }
+    eprintln!("no_local_key: {named} key rows, {locals} local keys of the file");
+    Ok(())
+}
+
 /// The scenario's `ChangedFiles` for `a.c.o` over `view` from `f`.
 fn adapt(f: &Front<'_>, view: &StateView<'_>, capture: &MemoryState) -> (ChangedFiles, FileId) {
     let a = file_named(f, "a.c.o");
@@ -312,6 +366,7 @@ fn changed_file_of_the_unchanged_file_is_the_stored_rows() {
             assert!(c.sections.iter().all(|s| s.name.len == 0
                 || u64::from(s.name.off) >= view.count(mortar_incr::format::kind::STRINGS)));
             judge(&cf, &view, &view, a).unwrap_or_else(|e| panic!("{label}: {e}"));
+            no_local_key(&view, a).unwrap_or_else(|e| panic!("{label}: {e}"));
             // The mutation: one name's offset moved by a byte is caught.
             let mut bad = cf.clone();
             let s = bad.files[0].sections.iter_mut().find(|s| s.name.len > 1).expect("a name");
@@ -341,6 +396,7 @@ fn changed_file_of_an_edit_is_the_full_links_rows() {
             let view0 = m0.view();
             let (cf, a) = adapt(&f, &view0, &m1);
             judge(&cf, &view0, &m1.view(), a).unwrap_or_else(|e| panic!("{label}: {e}"));
+            no_local_key(&m1.view(), a).unwrap_or_else(|e| panic!("{label}: {e}"));
             // and it is not the OLD file's rows (the edit is seen).
             assert!(judge(&cf, &view0, &view0, a).is_err(), "{label}: the edit is invisible");
         }
