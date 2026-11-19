@@ -8,6 +8,8 @@
 //!
 //! On AArch64 and x86-64.
 
+#![allow(dead_code, reason = "support/update.rs's helpers that other tests use")]
+
 mod support;
 #[path = "support/update.rs"]
 mod update;

@@ -368,9 +368,17 @@ fn reference_of(
     // against the front's (a disagreement is a FINDING, by name).
     let placed = match u5 {
         Some((cf, delta)) => {
-            let p = placement(view, &stored, f, ctx.store, cwd, &cf, delta, &state)?;
+            // While the image cannot take the delta's placement (below), a
+            // producer's refusal is recorded and the identity check decides
+            // alone; a FINDING (the delta disagrees with the front) falls
+            // back by name.
+            let p = match placement(view, &stored, f, ctx.store, cwd, &cf, delta, &state) {
+                Ok(p) => Some(p),
+                Err(Why::Refused) => None,
+                Err(Why::Finding(e)) => return Err(e),
+            };
             steps.mark("u7");
-            Some(p)
+            p
         }
         None => None,
     };
@@ -447,21 +455,22 @@ fn placement(
     cf: &mortar_incr::update::view::ChangedFiles,
     mut delta: mortar_incr::update::resolve::ResolveDelta,
     capture: &mortar_incr::update::testing::MemoryState,
-) -> Result<Placed, IncrReason> {
+) -> Result<Placed, Why> {
     use mortar_core::incr::{FileDemands, LayoutInput};
     use mortar_core::resolution::SectionKind;
     use mortar_elf::SectionIndex;
     use mortar_merge::phase::ArchRelocs;
     use mortar_scan::ScanOptions;
     let options = mortar_resolve::tables::option_keys(&f.plan, &f.inputs.link.directives);
-    let live = mortar_incr::update::live::live(view, cf, &delta, &options)?;
+    let live = mortar_incr::update::live::live(view, cf, &delta, &options).map_err(refused)?;
     let mut cache = file_front::FrontCache::new(store, f.pool.clone(), cwd);
     let relocs = ArchRelocs(f.arch.get());
     let inputs = layout_in::layout_inputs(
         &mut cache, view, stored, &f.plan, cf, &delta, &relocs, &f.pool,
-    )?;
+    )
+    .map_err(refused)?;
     let dynamic = crate::dynamic::arch_status(&f.plan, f.target.machine)
-        .map_err(|_| IncrReason::UpdateNotImplemented(Some(Unimplemented::Scan)))?
+        .map_err(|_| refused(IncrReason::UpdateNotImplemented(Some(Unimplemented::Scan))))?
         == mortar_arch::Status::M2;
     let writable = crate::dynlink::OutWritable(&f.assignment);
     let opts = ScanOptions {
@@ -472,13 +481,13 @@ fn placement(
     };
     let scan = |e: file_scan::Fail| {
         changed::record(&format!("M2b-2b fallback: {} {}", e.0.report(), e.1));
-        e.0
+        Why::Refused
     };
     let mut demands: Vec<FileDemands> = Vec::with_capacity(cf.files.len());
     let mut defined: Vec<(mortar_core::SymbolId, u32)> = Vec::new();
     for c in &cf.files {
-        let ff = cache.get(c.file).ok_or_else(layout_in_lost)?;
-        let facts = file_split::changed_facts(ff, view, &f.plan, &delta.keepers)?;
+        let ff = cache.get(c.file).ok_or_else(layout_in_lost).map_err(refused)?;
+        let facts = file_split::changed_facts(ff, view, &f.plan, &delta.keepers).map_err(refused)?;
         let null = file_split::SectionFact {
             kind: SectionKind::Null,
             kept: false,
@@ -486,7 +495,15 @@ fn placement(
             reloc: SectionIndex(0),
         };
         let by_index = |i: SectionIndex| facts.get(i.0 as usize).copied().unwrap_or(null);
-        let split = file_split::split_of(ff, view, &by_index, &relocs, &f.pool, Some(&delta))?;
+        let split = file_split::split_of(ff, view, &by_index, &relocs, &f.pool, Some(&delta))
+            .map_err(refused)?;
+        // FINDING M2b2b-1 (the record): `file_scan.rs:280-281` reads the
+        // front's `row.path`/`member_name` (the update's string space,
+        // M2b2a-1) from the state's `STRINGS` alone. Until it reads them
+        // through `ChangedFiles::string`, the scan is given the front with
+        // the stored row's two strings (`changed_files` checked them equal
+        // by bytes); a file without a stored row is refused by name.
+        let ff = &scan_front(view, cf, ff).map_err(refused)?;
         let d = file_scan::scan_of_why(
             f.arch.get(),
             opts,
@@ -521,7 +538,7 @@ fn placement(
     // R-4a: the facts of the keys the changed files define, into their
     // rows of the delta (the `facts: 0` of `defined_row` is never kept),
     // and judged against the front's capture (key by name).
-    facts_into(view, capture, &mut delta, &defined)?;
+    facts_into(view, capture, &mut delta, &defined).map_err(Why::Finding)?;
     let input = LayoutInput {
         changes: &inputs.changes,
         eh: &inputs.eh,
@@ -530,14 +547,83 @@ fn placement(
         debug: false,
     };
     let d = mortar_layout::delta::layout(stored, &input, &f.target).inspect_err(|e| {
-        changed::record(&format!("M2b-2b fallback: delta::layout: {}", e.report()));
-    })?;
+        // With the front's answer for each change it does not place (the
+        // other side of a refusal about a section the full link drops).
+        let mut unplaced = String::new();
+        for c in &inputs.changes {
+            let fid = f.resolution.section_id(c.file, SectionIndex(c.index));
+            let full = fid.and_then(|s| f.layout.placement.place.get(s)).and_then(|p| p.get());
+            if let Some((fc, fo)) = full {
+                use std::fmt::Write as _;
+                let out = f.layout.placement.chunks[fc].kind.out();
+                let name = out.map(|o| String::from_utf8_lossy(f.assignment.outsecs[o].name));
+                let _ = write!(
+                    unplaced,
+                    " (placed {} size {} at {name:?}+{fo:#x})",
+                    String::from_utf8_lossy(c.key.name),
+                    c.size
+                );
+            }
+            if full.is_none() && c.index != 0 {
+                use std::fmt::Write as _;
+                let _ = write!(
+                    unplaced,
+                    " [{} size {} kept {} old {:?}]",
+                    String::from_utf8_lossy(c.key.name),
+                    c.size,
+                    c.kept,
+                    c.old
+                );
+            }
+        }
+        changed::record(&format!(
+            "M2b-2b fallback: delta::layout: {}; not placed by the front:{unplaced}",
+            e.report()
+        ));
+    })
+    .map_err(|_| Why::Refused)?;
     judge(view, stored, f, &inputs, &d).map_err(|what| {
-        changed::finding_as(
+        Why::Finding(changed::finding_as(
             &format!("M2b-2b placement: {what}"),
             IncrReason::UpdateNotImplemented(Some(Unimplemented::Layout)),
-        )
+        ))
     })
+}
+
+/// Why [`placement`] gave no placement: a producer refused (recorded by
+/// name), or a FINDING (recorded with both answers).
+enum Why {
+    /// Its reason is in the findings file only (the identity check decides).
+    Refused,
+    Finding(IncrReason),
+}
+
+/// A producer's refusal, recorded.
+fn refused(e: IncrReason) -> Why {
+    changed::record(&format!("M2b-2b fallback: {}", e.report()));
+    Why::Refused
+}
+
+/// The front `ff` with its row's `path` and `member_name` the stored row's
+/// (finding M2b2b-1), checked equal by bytes to the update's strings.
+fn scan_front<'s>(
+    view: &StateView<'_>,
+    cf: &mortar_incr::update::view::ChangedFiles,
+    ff: &file_front::FileFront<'s>,
+) -> Result<file_front::FileFront<'s>, IncrReason> {
+    let layout = || IncrReason::UpdateNotImplemented(Some(Unimplemented::Layout));
+    if u64::from(ff.file.0) >= view.count(kind::FILES) {
+        return Err(layout());
+    }
+    let st = view.file(ff.file)?;
+    if view.string(st.path)? != cf.string(view, ff.row.path)?
+        || view.string(st.member_name)? != cf.string(view, ff.row.member_name)?
+    {
+        return Err(layout());
+    }
+    let mut x = ff.clone();
+    (x.row.path, x.row.member_name) = (st.path, st.member_name);
+    Ok(x)
 }
 
 fn layout_in_lost() -> IncrReason {
