@@ -59,7 +59,10 @@ pub const MAGIC: [u8; 8] = *b"MORTARSR";
 /// WP-261 (`FILES.round` written by the full link's capture: a version-6
 /// state holds round 0 for every extracted member, which IN-71b reads as
 /// a `--whole-archive` member; it is refused, `state-version`, never read).
-pub const VERSION: u32 = 7;
+/// 8 since WP-262 (`SYMTAB_KEYS` written by the full link's capture: a
+/// version-7 state holds `NONE` for every key, which IN-49a reads as a
+/// key without a global entry; it is refused, `state-version`).
+pub const VERSION: u32 = 8;
 /// The header's size.
 pub const HEADER: usize = 80;
 /// A directory entry's size.
