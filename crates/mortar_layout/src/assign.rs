@@ -96,15 +96,28 @@ pub fn output_name<'n>(h: &Header<'n>) -> &'n [u8] {
 
 /// What stage A does with one section (the table of §8.1, then L-44).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum Fate<'n> {
+pub enum Fate<'n> {
+    /// No output section (L-30..L-32: a kind without output, a section
+    /// resolution dropped).
     None,
+    /// Discarded by the script.
     Discard,
+    /// Consumed by synthesis (L-33..L-35).
     Consumed,
+    /// Assigned to the output section of this name.
     Out(&'n [u8]),
 }
 
-/// §8.1 for one section, then the name rule.
-fn fate<'n>(
+/// §8.1 for one section, then the name rule: the ONE producer of a
+/// section's output section name, the whole link's ([`assign`]) and an
+/// update's changed file's (WP-255d2c, ruling D2-8: the name's id is the
+/// state's `OUTSECS` row there). It reads the header's name, type, flags
+/// and size.
+///
+/// # Errors
+///
+/// The refusals of §8.1 for that section.
+pub fn fate<'n>(
     h: &Header<'n>,
     row: &mortar_core::resolution::SectionRow,
     machine: Machine,

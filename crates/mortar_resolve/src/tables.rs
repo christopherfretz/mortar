@@ -578,18 +578,7 @@ impl View for InputsView<'_, '_> {
 
     fn section(&self, file: FileId, index: SectionIndex) -> Option<SectionInfo<'_>> {
         let Reader::Object(obj) = self.inputs.files.get(file)?.reader else { return None };
-        let s = obj.section(index).ok()?;
-        let h = s.header();
-        Some(SectionInfo {
-            name: s.name().unwrap_or_default(),
-            sh_type: h.sh_type,
-            flags: h.sh_flags,
-            entsize: h.sh_entsize,
-            addralign: h.sh_addralign,
-            size: h.sh_size,
-            link: h.sh_link,
-            info: h.sh_info,
-        })
+        section_info(&obj, index)
     }
 
     fn key_name(&self, key: SymbolId) -> (&[u8], Option<&[u8]>) {
@@ -720,6 +709,34 @@ fn script_entry<'d, 's>(
     directives.iter().rev().find(|d| d.kind == DirectiveKind::Entry)
 }
 
+/// §10's two options of the line: `-S`/`-s` (`Options::strip_debug`) and
+/// `--gdb-index` without them (`Options::consume_gnu_pubnames`).
+pub(crate) fn section_flags(plan: &Plan) -> (bool, bool) {
+    let strip = matches!(plan.shaping.strip, Some(Strip::Debug | Strip::All));
+    (strip, plan.shaping.gdb_index == Some(true) && !strip)
+}
+
+/// Section `index` of `obj` as §10 classifies it ([`View::section`]'s
+/// answer for an object; WP-255d2c: also an update's changed file's).
+#[must_use]
+pub fn section_info<'o>(
+    obj: &mortar_elf::Object<'o>,
+    index: SectionIndex,
+) -> Option<SectionInfo<'o>> {
+    let s = obj.section(index).ok()?;
+    let h = s.header();
+    Some(SectionInfo {
+        name: s.name().unwrap_or_default(),
+        sh_type: h.sh_type,
+        flags: h.sh_flags,
+        entsize: h.sh_entsize,
+        addralign: h.sh_addralign,
+        size: h.sh_size,
+        link: h.sh_link,
+        info: h.sh_info,
+    })
+}
+
 /// The options resolution reads, from the `Plan` and the input scripts'
 /// `ENTRY` (`spec/resolve.md` §4.2, §5.2, §5.5): `-e` wins over `ENTRY`,
 /// the last `ENTRY` over earlier ones; `--wrap` (§7.1) by the rows the
@@ -780,9 +797,8 @@ pub fn options(plan: &Plan, inputs: &Inputs<'_>, view: &InputsView<'_, '_>) -> O
         allow_multiple_definition: d.allow_multiple_definition,
         warn_common: d.warn_common,
         warn_backrefs: d.warn_backrefs,
-        strip_debug: matches!(plan.shaping.strip, Some(Strip::Debug | Strip::All)),
-        consume_gnu_pubnames: plan.shaping.gdb_index == Some(true)
-            && !matches!(plan.shaping.strip, Some(Strip::Debug | Strip::All)),
+        strip_debug: section_flags(plan).0,
+        consume_gnu_pubnames: section_flags(plan).1,
         output: Output {
             pie: matches!(plan.kind, OutputKind::PieExecutable | OutputKind::StaticPie),
             // WP-117: a shared object is a dynamic link (`_DYNAMIC`; no

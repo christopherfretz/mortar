@@ -108,6 +108,33 @@ impl SectionMap {
     ) {
         self.groups.clear();
         view.groups(file, &mut self.groups);
+        self.fill_groups(file, sections, keeper, report, problems);
+    }
+
+    /// [`SectionMap::fill`] with the file's groups given (`groups`, their
+    /// signatures in `keeper`'s numbering): an update's changed file
+    /// (WP-255d2c, ruling D2-7), whose groups no `View` holds.
+    pub fn fill_from(
+        &mut self,
+        groups: &Groups,
+        file: FileId,
+        sections: u32,
+        keeper: &[OptId<FileId>],
+        problems: &mut Vec<Problem>,
+    ) {
+        self.groups.clone_from(groups);
+        self.fill_groups(file, sections, keeper, true, problems);
+    }
+
+    /// [`SectionMap::fill`]'s body over the groups in `self.groups`.
+    fn fill_groups(
+        &mut self,
+        file: FileId,
+        sections: u32,
+        keeper: &[OptId<FileId>],
+        report: bool,
+        problems: &mut Vec<Problem>,
+    ) {
         self.any = !self.groups.groups.is_empty();
         if !self.any {
             return;

@@ -34,7 +34,7 @@ use crate::options::{DefsymValue, Entry, Options};
 use crate::problem::{ComdatMismatch, DefPlace, DefsymWhy, DiagKey, Problem, What};
 use crate::sections::{self, Note, SectionRefusal};
 use crate::steps::Steps;
-use crate::view::{FileKind, Mention, SectionInfo, View, entry_word, word_entry};
+use crate::view::{FileKind, Groups, Mention, SectionInfo, View, entry_word, word_entry};
 
 /// The definition of a key (§3.2), stage A's form of `def`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -358,13 +358,7 @@ fn resolve_stage<V: View>(
             section_base.push(IdRange::new(start, SectionId(next)));
         }
         offsets.push(next as usize);
-        let blank = SectionRow {
-            kind: SectionKind::Null,
-            state: SectionState::Dropped(DropReason::Consumed),
-            reloc: SectionIndex(0),
-            comdat: OptId::NONE,
-        };
-        let mut sections = vec![blank; next as usize];
+        let mut sections = vec![BLANK; next as usize];
         steps.step("resolve.section_base");
 
         let again = AtomicBool::new(false);
@@ -892,6 +886,55 @@ fn row_state(
     state
 }
 
+/// A section row before §10 fills it (and the row of a file without
+/// sections).
+const BLANK: SectionRow = SectionRow {
+    kind: SectionKind::Null,
+    state: SectionState::Dropped(DropReason::Consumed),
+    reloc: SectionIndex(0),
+    comdat: OptId::NONE,
+};
+
+/// §10 for the `sections` sections of ONE live object outside a whole
+/// link: an update's changed file (WP-255d2c, ruling D2-7). `groups` are
+/// the file's groups with their signatures numbered as `keeper` is
+/// (`keeper[sig]`: the signature's keeper after the update, the update's
+/// resolution's); `section` gives each section as [`View::section`] does
+/// (`crate::tables::section_info`). The body is the whole link's
+/// (`object_rows`, after `SectionMap::fill`'s); its `-S`/`--gdb-index`
+/// options are the plan's.
+///
+/// `None` when the whole link would report a problem for the file's
+/// sections (a refusal, a group's flags, a section in two groups, a
+/// misnamed container, a `.gnu.warning` section) or note a
+/// `.gnu.warning.SYM` section: the update carries none of those, its
+/// caller falls back by name. The rows' `comdat` is in `keeper`'s
+/// numbering, not the whole link's `ComdatId`s.
+#[must_use]
+pub fn object_section_rows<'v, S>(
+    machine: Machine,
+    plan: &mortar_core::plan::Plan,
+    file: FileId,
+    groups: &Groups,
+    keeper: &[OptId<FileId>],
+    sections: u32,
+    section: S,
+) -> Option<Vec<SectionRow>>
+where
+    S: Fn(SectionIndex) -> Option<SectionInfo<'v>>,
+{
+    let (strip_debug, consume_gnu_pubnames) = crate::tables::section_flags(plan);
+    let opts = Options { strip_debug, consume_gnu_pubnames, ..Options::default() };
+    let mut out = Found::default();
+    let mut map = SectionMap::default();
+    map.fill_from(groups, file, sections, keeper, &mut out.problems);
+    let mut rows = vec![BLANK; sections as usize];
+    // Any key: a `.gnu.warning.SYM` section is then recorded, and refused.
+    let find_key = |_: &[u8]| Some(SymbolId(0));
+    object_rows(machine, &opts, &section, &find_key, file, &mut rows, &map, &mut out);
+    (out.problems.is_empty() && out.gnu_warning_syms.is_empty()).then_some(rows)
+}
+
 /// §10 for the sections of one live object (the whole link's caller of
 /// [`object_rows`]: its view's sections and keys, its keepers' map).
 fn section_rows<V: View>(
@@ -912,7 +955,7 @@ fn section_rows<V: View>(
 /// `SHF_LINK_ORDER`). `map` carries the COMDAT keeper's decision for the
 /// file's sections (`SectionMap::fill` from the keepers): the ONE body the
 /// whole link ([`section_rows`]) and an update's changed file
-/// run (WP-255d2c, ruling D2-7).
+/// ([`object_section_rows`]) run (WP-255d2c, ruling D2-7).
 #[allow(clippy::too_many_arguments, reason = "the object's inputs, one by one")]
 fn object_rows<'v, S, K>(
     machine: Machine,
