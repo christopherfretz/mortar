@@ -13,7 +13,7 @@ Done:
   when not identity; identity case requires the delta at the full link's
   offsets. Commit e69f7e96.
 
-Next: items 4-6 (C++ fixture with fewer FDEs, F-9 new-key test, e2e tests)
+Next: items 4-6 (C++ fixture with fewer FDEs, F-9 new-key test, e2e tests) NOT started; findings M2b2b-1..3 in the record. Gate run on f407cc47 (quick ok after fmt/clippy fixes; lane/census/static/incr on 02f5664c).
 not started; the full gate.
 
 Resume: scratch /Volumes/AgentWork/mortar-helper/.build/target-wp-145/scratch-m2b2b,
