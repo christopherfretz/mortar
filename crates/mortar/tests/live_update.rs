@@ -76,18 +76,17 @@ fn line(label: &str, cc: &str, flags: &[&str], sources: &[Source], extra: &[&str
     Some(Line { _scratch: s, label: label.to_owned(), dir: b.dir, args })
 }
 
-/// The state `l`'s incremental-mode link writes (decoded), its option
-/// keys, and S4's hash of the FULL mark over the decoded state (P0-3's
-/// capture side: the mark's live bits and `live_positions`), which the
-/// state is given as its `META.live_hash` (see
-/// [`the_written_live_hash_is_the_full_marks`]: on this base the capture
-/// writes zeros).
+/// The state `l`'s incremental-mode link writes (decoded) with the
+/// `META.live_hash` the capture wrote, and its option keys.
 fn capture(l: &Line) -> (MemoryState, OptionKeys) {
-    let (mut m, options, full) = capture_raw(l);
-    m.meta.live_hash = full;
+    let (m, options, _) = capture_raw(l);
     (m, options)
 }
 
+/// [`capture`], and S4's hash of the FULL mark over the decoded state
+/// (P0-3's capture side: the mark's live bits and `live_positions`, a link
+/// section mapped to its file's first `SECTIONS` row plus its `sh_index`,
+/// the reader's numbering), the value the written hash must have.
 fn capture_raw(l: &Line) -> (MemoryState, OptionKeys, [u8; 16]) {
     let inv = mortar::invoke_in("mortar", &l.args("out"), &l.dir);
     assert!(
@@ -224,6 +223,21 @@ fn scenarios() -> Vec<Scenario> {
                            .section .meta_d,\\\"ao\\\",%progbits,.text.dropf\\n.quad 2\\n.previous\");\n",
                 },
             ],
+            vec![],
+        ),
+        (
+            // WP-238 Part 3b (P3-5): `__start_`/`__stop_` of a C-identifier
+            // section named from an allocated one (`START_STOP` rows).
+            "startstop",
+            false,
+            vec!["-O1", "-ffunction-sections", "-fdata-sections"],
+            vec![Source {
+                name: "a.c",
+                text: "__attribute__((section(\"ssreg\"), used)) const int ss_a = 7;\n\
+                       __attribute__((section(\"ssreg\"), used)) const int ss_b = 8;\n\
+                       extern const int __start_ssreg[], __stop_ssreg[];\n\
+                       int main(void){ return (int)(__stop_ssreg - __start_ssreg); }\n",
+            }],
             vec![],
         ),
     ]
@@ -432,16 +446,33 @@ fn a_definition_moved_to_an_unread_file_is_refused() {
     assert!(tried > 0 || !tools_required(), "no input reached the reader's check");
 }
 
-/// A state without the rows' hash under `--gc-sections` is refused by name.
+/// A state made without the rows (an incremental-mode link without
+/// `--gc-sections`: no `EDGES`, `META.live_hash` zero) read by an update
+/// under `--gc-sections` is refused by name.
 #[test]
 fn a_state_without_the_live_hash_is_refused() {
-    for (label, mut m, o) in captured().into_iter().take(1) {
-        m.meta.live_hash = [0; 16];
+    let mut tried = 0;
+    for (arch, cc, _) in TARGETS {
+        let (label, _, flags, sources, extra) = scenarios().swap_remove(0);
+        let label = format!("{label} {arch} no-gc");
+        let Some(mut l) = line(&label, cc, &flags, &sources, &extra) else { continue };
+        // The `--gc-sections` link's option keys, then the state of the
+        // same inputs linked without it.
+        let (_, o) = capture(&l);
+        l.args.retain(|a| a != "--gc-sections");
+        let inv = mortar::invoke_in("mortar", &l.args("plain"), &l.dir);
+        assert!(matches!(inv.outcome, mortar::Outcome::Linked { .. }), "{label}: {inv:?}");
+        let bytes = std::fs::read(l.dir.join("plain.mortar-state")).expect("the state");
+        let m = mortar_incr::state5::read::decode(&bytes).expect("the state");
+        assert_eq!(m.meta.live_hash, [0; 16], "{label}");
+        assert!(m.edges.is_empty(), "{label}");
         let e = live_why(&m.view(), &ChangedFiles::default(), &ResolveDelta::default(), &o)
             .expect_err(&label);
         assert!(e.1.starts_with("no-live-hash:"), "{label}: {}", e.1);
         assert_eq!(e.0, IncrReason::UpdateNotImplemented(Some(Unimplemented::Live)));
+        tried += 1;
     }
+    assert!(tried > 0 || !tools_required(), "no state made");
 }
 
 /// The outcome of `live` on a mutated state: `state-corrupt` before any
@@ -577,24 +608,176 @@ fn a_gc_update_falls_back_end_to_end() {
     assert!(text.contains("update-not-implemented (live)"), "{text}");
 }
 
-/// FINDING (not this package's file): the capture's `META.live_hash` is
-/// S4's sum over a `MemoryState` whose `FILE_INDEX` ranges are not filled
-/// yet (`capture::state5_rows`' rows; the ranges are the encoder's), so
-/// every file's body is empty and the state carries zeros: the old walk's
-/// check (S4, F7) and the oracle's hash comparison are vacuous, and
-/// `live` refuses every real state as `no-live-hash`. This test is the
-/// check of the fix (the written hash equals the full mark's over the
-/// written rows); ignored until the capture is fixed.
+/// The capture's WRITTEN `META.live_hash` (WP-238 Part 3b) is S4's hash
+/// of the full mark over the written rows, non-zero, on every scenario
+/// and both targets. (Before Part 3b the capture hashed a `MemoryState`
+/// whose `FILE_INDEX` had no `SECTIONS` ranges, `compact::normalize`'s,
+/// and wrote zeros.)
 #[test]
-#[ignore = "fails on this base: the capture hashes before FILE_INDEX ranges exist"]
 fn the_written_live_hash_is_the_full_marks() {
+    let mut tried = 0;
+    for (arch, cc, cxx) in TARGETS {
+        for (label, cplus, flags, sources, extra) in scenarios() {
+            let label = format!("{label} {arch} written");
+            let driver = if cplus { cxx } else { cc };
+            let Some(l) = line(&label, driver, &flags, &sources, &extra) else { continue };
+            let (m, _, full) = capture_raw(&l);
+            assert_ne!(full, [0; 16], "{label}");
+            assert_eq!(m.meta.live_hash, full, "{label}: the written META.live_hash");
+            tried += 1;
+        }
+    }
+    assert!(tried > 0 || !tools_required(), "no scenario linked");
+}
+
+/// WP-238 Part 3b's timing of `live` on bench states (ignored; run by hand
+/// with `WP238_STATES` = `:`-separated state paths and `WP238_RUNS`): per
+/// state and run, interleaved, through the update's reader over the bytes
+/// in memory (`open_bytes`; the read of the file not timed): lap `old` =
+/// `walk_stored` + S4's `live_hash` (the old walk and the hash check);
+/// lap `live` = `live_why` with an empty change (the zero check, the old
+/// walk, the hash check, the overlay, the new walk, its hash and the
+/// delta). Prints one `WP238-LIVE` line per run.
+#[test]
+#[ignore = "a timing tool: WP238_STATES"]
+#[allow(
+    clippy::many_single_char_names,
+    reason = "o, p, w, h, d: the options, a path, the walk, its hash, the delta"
+)]
+fn bench_live_on_states() {
+    let Some(paths) = std::env::var_os("WP238_STATES") else { return };
+    let runs: usize = std::env::var("WP238_RUNS").ok().and_then(|v| v.parse().ok()).unwrap_or(5);
+    let o = OptionKeys {
+        entry: Some(mortar_core::incr::OptionKey { name: b"_start".to_vec().into(), arg: 0 }),
+        gc_sections: true,
+        ..OptionKeys::default()
+    };
+    let paths: Vec<PathBuf> = std::env::split_paths(&paths).collect();
+    for run in 1..=runs {
+        for p in &paths {
+            let bytes = std::fs::read(p).expect("the state");
+            if run == 1 && std::env::var_os("WP238_REFUSE").is_some_and(|v| v == "1") {
+                let m = mortar_incr::state5::read::decode(&bytes).expect("the state decodes");
+                let n = m.edges.iter().filter(|(_, e)| e.kind == edge_kind::REFUSE).count();
+                println!("WP238-REFUSE {} rows {n} edges {}", p.display(), m.edges.len());
+            }
+            let view = mortar_incr::state5::read::open_bytes(bytes).expect("the state opens");
+            let t0 = std::time::Instant::now();
+            let w = walk_stored(&view, &o).unwrap_or_else(|e| panic!("{}: {}", p.display(), e.1));
+            let h = live_hash(&view, &w.live, &w.pieces).expect("the hash");
+            let old = t0.elapsed();
+            let agree = h == view.meta().expect("META").live_hash;
+            let t1 = std::time::Instant::now();
+            let d = live_why(&view, &ChangedFiles::default(), &ResolveDelta::default(), &o);
+            let all = t1.elapsed();
+            let verdict = match &d {
+                Ok(d) => format!("ok now_live {} now_dead {}", d.now_live.len(), d.now_dead.len()),
+                Err(e) => format!("refused {}", e.1),
+            };
+            println!(
+                "WP238-LIVE {} run {run} old_ms {:.1} live_ms {:.1} hash_agree {agree} live {} {verdict}",
+                p.display(),
+                old.as_secs_f64() * 1e3,
+                all.as_secs_f64() * 1e3,
+                w.live.iter().filter(|b| **b).count(),
+            );
+        }
+    }
+}
+
+/// WP-238 Part 3b (P3-5): an `EDGES` row INTO a split section whose
+/// offset is moved to another piece (another marked offset of the same
+/// section, else the next byte) is caught by the hash (`state-corrupt`)
+/// or is redundant (the walk's set unchanged), per edge kind; the table
+/// is printed (`WP238_PIECE_TABLE`), and at least one is caught.
+#[test]
+fn an_offset_moved_to_another_piece_is_caught() {
+    const KINDS: usize = edge_kind::LAST as usize + 1;
+    let mut table = [(0usize, 0usize, 0usize); KINDS];
+    for (label, m, o) in captured() {
+        let before = stored(&m, &o);
+        for (i, &(_, e)) in m.edges.iter().enumerate() {
+            if edge_kind::target(e.kind) != Some(edge_kind::Target::Section)
+                || matches!(e.kind, edge_kind::LINK_ORDER | edge_kind::GROUP)
+                || e.offset == u32::MAX
+            {
+                continue;
+            }
+            let at = before.pieces.binary_search_by_key(&SectionId(e.target), |p| p.0);
+            let Ok(at) = at else { continue };
+            let list = &before.pieces[at].1;
+            let k = usize::from(e.kind);
+            table[k].0 += 1;
+            // At most 128 mutations per kind.
+            if table[k].1 + table[k].2 >= 8 * 16 {
+                continue;
+            }
+            let to = list.iter().copied().find(|&x| x != e.offset && x != u32::MAX);
+            let mut r = m.clone();
+            r.edges[i].1.offset = to.unwrap_or(e.offset + 1);
+            let l = format!("{label} kind {k} row {i} offset {} -> {:?}", e.offset, to);
+            if judged(&l, &r, &o, &before) {
+                table[k].1 += 1;
+            } else {
+                table[k].2 += 1;
+            }
+        }
+    }
+    let mut out = String::from("kind rows-into-split | moved: caught/redundant\n");
+    for (k, t) in table.iter().enumerate() {
+        if t.0 > 0 {
+            let _ = writeln!(out, "{k:>2} {:>6} | {}/{}", t.0, t.1, t.2);
+        }
+    }
+    eprintln!("{out}");
+    if let Ok(p) = std::env::var("WP238_PIECE_TABLE") {
+        std::fs::write(p, &out).expect("the table");
+    }
+    assert!(table.iter().any(|t| t.1 > 0) || !tools_required(), "nothing caught:\n{out}");
+}
+
+const LO_A: &str = "  .section .text.g,\"axG\",%progbits,grp,comdat\n  .globl gfun\n  .type gfun,%function\n\
+gfun:\n  ret\n  .section .meta,\"ao\",%progbits,gfun\n  .globl metasym\nmetasym:\n  .long 5\n";
+const LO_B_GROUP: &str = "  .section .text.g,\"axG\",%progbits,grp,comdat\n  .globl gfun\n  .type gfun,%function\ngfun:\n  ret\n";
+const LO_M: &str = "int gfun(void);\nint main(void){ return gfun(); }\n";
+
+/// WP-238 Part 3b (P3-5): a state with a `REFUSE` row (`live_rows.rs`'
+/// lo1: `-u metasym` defined in a dropped link-order section) is refused
+/// `def-dropped`; the row removed, or its code changed, the outcome is
+/// printed per target (`WP238_REFUSE_TABLE`).
+#[test]
+fn refuse_row_mutations() {
+    let mut out = String::new();
     for (arch, cc, _) in TARGETS {
-        let (label, _, flags, sources, extra) = scenarios().swap_remove(0);
-        let Some(l) = line(&format!("{label} {arch} written"), cc, &flags, &sources, &extra) else {
-            continue;
+        let src = [
+            Source { name: "m.c", text: LO_M },
+            Source { name: "b.s", text: LO_B_GROUP },
+            Source { name: "a.s", text: LO_A },
+        ];
+        let label = format!("refuse {arch}");
+        let Some(l) = line(&label, cc, &["-O1"], &src, &["-u", "metasym"]) else { continue };
+        let (m, o) = capture(&l);
+        let refuse: Vec<usize> =
+            (0..m.edges.len()).filter(|&i| m.edges[i].1.kind == edge_kind::REFUSE).collect();
+        assert!(!refuse.is_empty(), "{label}: no REFUSE row");
+        let verdict = |x: &MemoryState| -> String {
+            match live_why(&x.view(), &ChangedFiles::default(), &ResolveDelta::default(), &o) {
+                Ok(_) => "ACCEPTED".into(),
+                Err(e) => e.1.split(':').next().unwrap_or_default().to_owned(),
+            }
         };
-        let (m, _, full) = capture_raw(&l);
-        assert_ne!(full, [0; 16]);
-        assert_eq!(m.meta.live_hash, full, "{arch}: the written META.live_hash");
+        let _ = writeln!(out, "{label}: rows {} as written: {}", refuse.len(), verdict(&m));
+        let mut cut = m.clone();
+        cut.edges.retain(|(_, e)| e.kind != edge_kind::REFUSE);
+        let _ = writeln!(out, "{label}: REFUSE rows removed: {}", verdict(&cut));
+        let mut code = m.clone();
+        for &i in &refuse {
+            code.edges[i].1.target = 1;
+        }
+        let _ = writeln!(out, "{label}: code -> 1: {}", verdict(&code));
+    }
+    eprintln!("{out}");
+    if let Ok(p) = std::env::var("WP238_REFUSE_TABLE") {
+        std::fs::write(p, &out).expect("the table");
     }
 }
