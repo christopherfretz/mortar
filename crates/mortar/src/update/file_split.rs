@@ -283,8 +283,10 @@ where
 /// not name, a group or section the whole link would report or refuse
 /// (resolve's problems; the update carries no diagnostic); `(layout)` for
 /// a section `fate` refuses or whose output section the state has no
-/// `OUTSECS` row of (an orphan placement: U-4's); `state-corrupt` from the
-/// rows.
+/// `OUTSECS` row of (an orphan placement: U-4's) or more than one
+/// (ruling D2-9: two output sections share the name, IN-18e's ordinal;
+/// which one the section joins is the layout's, never a guess);
+/// `state-corrupt` from the rows.
 pub fn changed_facts(
     front: &FileFront<'_>,
     view: &StateView<'_>,
@@ -336,7 +338,7 @@ pub fn changed_facts(
     let range = front.sections.first().map_or(IdRange::new(SectionId(0), SectionId(0)), |s| {
         IdRange::new(s.id, SectionId(s.id.0.saturating_add(count)))
     });
-    let mut outsecs: Option<BTreeMap<Vec<u8>, OutSecId>> = None;
+    let mut outsecs: Option<BTreeMap<Vec<u8>, Option<OutSecId>>> = None;
     let mut facts = Vec::with_capacity(rows.len());
     for (i, row) in rows.iter().enumerate() {
         let header = if i == 0 {
@@ -347,15 +349,13 @@ pub fn changed_facts(
         let out = match fate(&header, row, machine).map_err(|_| layout())? {
             Fate::Out(name) => {
                 if outsecs.is_none() {
-                    let mut by_name = BTreeMap::new();
-                    for (k, r) in view.outsecs()?.iter().enumerate() {
-                        if r.ordinal == 0 {
-                            by_name.insert(view.string(r.name)?, OutSecId(k as u32));
-                        }
+                    let mut rows = Vec::new();
+                    for r in &view.outsecs()? {
+                        rows.push((view.string(r.name)?, r.ordinal));
                     }
-                    outsecs = Some(by_name);
+                    outsecs = Some(out_ids(rows));
                 }
-                let id = outsecs.as_ref().and_then(|m| m.get(name).copied());
+                let id = outsecs.as_ref().and_then(|m| m.get(name).copied().flatten());
                 Some(id.ok_or_else(layout)?)
             }
             Fate::None | Fate::Discard | Fate::Consumed => None,
@@ -363,4 +363,53 @@ pub fn changed_facts(
         facts.push(SectionFact { kind: row.kind, kept: row.is_kept(), out });
     }
     Ok(facts)
+}
+
+/// The state's output section of each name, from the `OUTSECS` rows
+/// `(name, ordinal)` in row order (row `k` is `OutSecId(k)`): `Some` for a
+/// name with ONE row, of ordinal 0; `None` for a name with a row of
+/// ordinal > 0 or two rows (ruling D2-9: `update-not-implemented
+/// (layout)` for a section sent there).
+fn out_ids(rows: Vec<(Vec<u8>, u32)>) -> BTreeMap<Vec<u8>, Option<OutSecId>> {
+    let mut by_name = BTreeMap::new();
+    for (k, (name, ordinal)) in rows.into_iter().enumerate() {
+        let id = (ordinal == 0).then_some(OutSecId(k as u32));
+        by_name.entry(name).and_modify(|e| *e = None).or_insert(id);
+    }
+    by_name
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn rows(r: &[(&str, u32)]) -> BTreeMap<Vec<u8>, Option<OutSecId>> {
+        out_ids(r.iter().map(|&(n, o)| (n.as_bytes().to_vec(), o)).collect())
+    }
+
+    /// D2-9: a name with one row maps to it; a name two output sections
+    /// share (ordinals 0 and 1, in either row order) maps to none, and so
+    /// does a lone row of ordinal > 0 or a repeated ordinal 0.
+    #[test]
+    fn a_shared_output_name_has_no_id() {
+        let m = rows(&[
+            (".text", 0),
+            (".data", 0),
+            (".rodata", 1),
+            (".bss", 0),
+            (".rodata", 0),
+            (".tdata", 1),
+            (".init", 0),
+            (".init", 0),
+        ]);
+        assert_eq!(m.get(&b".text"[..]), Some(&Some(OutSecId(0))));
+        assert_eq!(m.get(&b".data"[..]), Some(&Some(OutSecId(1))));
+        assert_eq!(m.get(&b".bss"[..]), Some(&Some(OutSecId(3))));
+        assert_eq!(m.get(&b".rodata"[..]), Some(&None));
+        assert_eq!(m.get(&b".tdata"[..]), Some(&None));
+        assert_eq!(m.get(&b".init"[..]), Some(&None));
+        assert_eq!(m.get(&b".got"[..]), None);
+        let m = rows(&[(".rodata", 0), (".rodata", 1)]);
+        assert_eq!(m.get(&b".rodata"[..]), Some(&None));
+    }
 }
