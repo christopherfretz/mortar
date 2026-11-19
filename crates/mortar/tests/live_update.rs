@@ -225,6 +225,21 @@ fn scenarios() -> Vec<Scenario> {
             ],
             vec![],
         ),
+        (
+            // WP-238 Part 3b (P3-5): `__start_`/`__stop_` of a C-identifier
+            // section named from an allocated one (`START_STOP` rows).
+            "startstop",
+            false,
+            vec!["-O1", "-ffunction-sections", "-fdata-sections"],
+            vec![Source {
+                name: "a.c",
+                text: "__attribute__((section(\"ssreg\"), used)) const int ss_a = 7;\n\
+                       __attribute__((section(\"ssreg\"), used)) const int ss_b = 8;\n\
+                       extern const int __start_ssreg[], __stop_ssreg[];\n\
+                       int main(void){ return (int)(__stop_ssreg - __start_ssreg); }\n",
+            }],
+            vec![],
+        ),
     ]
 }
 
@@ -613,4 +628,152 @@ fn the_written_live_hash_is_the_full_marks() {
         }
     }
     assert!(tried > 0 || !tools_required(), "no scenario linked");
+}
+
+/// WP-238 Part 3b's timing of `live` on bench states (ignored; run by hand
+/// with `WP238_STATES` = `:`-separated state paths and `WP238_RUNS`): per
+/// state and run, interleaved, through the update's reader over the bytes
+/// in memory (`open_bytes`; the read of the file not timed): lap `old` =
+/// `walk_stored` + S4's `live_hash` (the old walk and the hash check);
+/// lap `live` = `live_why` with an empty change (the zero check, the old
+/// walk, the hash check, the overlay, the new walk, its hash and the
+/// delta). Prints one `WP238-LIVE` line per run.
+#[test]
+#[ignore = "a timing tool: WP238_STATES"]
+fn bench_live_on_states() {
+    let Some(paths) = std::env::var_os("WP238_STATES") else { return };
+    let runs: usize = std::env::var("WP238_RUNS").ok().and_then(|v| v.parse().ok()).unwrap_or(5);
+    let o = OptionKeys {
+        entry: Some(mortar_core::incr::OptionKey { name: b"_start".to_vec().into(), arg: 0 }),
+        gc_sections: true,
+        ..OptionKeys::default()
+    };
+    let paths: Vec<PathBuf> = std::env::split_paths(&paths).collect();
+    for run in 1..=runs {
+        for p in &paths {
+            let bytes = std::fs::read(p).expect("the state");
+            if run == 1 && std::env::var_os("WP238_REFUSE").is_some_and(|v| v == "1") {
+                let m = mortar_incr::state5::read::decode(&bytes).expect("the state decodes");
+                let n = m.edges.iter().filter(|(_, e)| e.kind == edge_kind::REFUSE).count();
+                println!("WP238-REFUSE {} rows {n} edges {}", p.display(), m.edges.len());
+            }
+            let view = mortar_incr::state5::read::open_bytes(bytes).expect("the state opens");
+            let t0 = std::time::Instant::now();
+            let w = walk_stored(&view, &o).unwrap_or_else(|e| panic!("{}: {}", p.display(), e.1));
+            let h = live_hash(&view, &w.live, &w.pieces).expect("the hash");
+            let old = t0.elapsed();
+            let agree = h == view.meta().expect("META").live_hash;
+            let t1 = std::time::Instant::now();
+            let d = live_why(&view, &ChangedFiles::default(), &ResolveDelta::default(), &o);
+            let all = t1.elapsed();
+            let verdict = match &d {
+                Ok(d) => format!("ok now_live {} now_dead {}", d.now_live.len(), d.now_dead.len()),
+                Err(e) => format!("refused {}", e.1),
+            };
+            println!(
+                "WP238-LIVE {} run {run} old_ms {:.1} live_ms {:.1} hash_agree {agree} live {} {verdict}",
+                p.display(),
+                old.as_secs_f64() * 1e3,
+                all.as_secs_f64() * 1e3,
+                w.live.iter().filter(|b| **b).count(),
+            );
+        }
+    }
+}
+
+/// WP-238 Part 3b (P3-5): an `EDGES` row INTO a split section whose
+/// offset is moved to another piece (another marked offset of the same
+/// section, else the next byte) is caught by the hash (`state-corrupt`)
+/// or is redundant (the walk's set unchanged), per edge kind; the table
+/// is printed (`WP238_PIECE_TABLE`), and at least one is caught.
+#[test]
+fn an_offset_moved_to_another_piece_is_caught() {
+    const KINDS: usize = edge_kind::LAST as usize + 1;
+    let mut table = [(0usize, 0usize, 0usize); KINDS];
+    for (label, m, o) in captured() {
+        let before = stored(&m, &o);
+        for (i, &(_, e)) in m.edges.iter().enumerate() {
+            if edge_kind::target(e.kind) != Some(edge_kind::Target::Section)
+                || matches!(e.kind, edge_kind::LINK_ORDER | edge_kind::GROUP)
+                || e.offset == u32::MAX
+            {
+                continue;
+            }
+            let at = before.pieces.binary_search_by_key(&SectionId(e.target), |p| p.0);
+            let Ok(at) = at else { continue };
+            let list = &before.pieces[at].1;
+            let k = usize::from(e.kind);
+            table[k].0 += 1;
+            // At most 128 mutations per kind.
+            if table[k].1 + table[k].2 >= 8 * 16 {
+                continue;
+            }
+            let to = list.iter().copied().find(|&x| x != e.offset && x != u32::MAX);
+            let mut r = m.clone();
+            r.edges[i].1.offset = to.unwrap_or(e.offset + 1);
+            let l = format!("{label} kind {k} row {i} offset {} -> {:?}", e.offset, to);
+            if judged(&l, &r, &o, &before) {
+                table[k].1 += 1;
+            } else {
+                table[k].2 += 1;
+            }
+        }
+    }
+    let mut out = String::from("kind rows-into-split | moved: caught/redundant\n");
+    for (k, t) in table.iter().enumerate() {
+        if t.0 > 0 {
+            let _ = writeln!(out, "{k:>2} {:>6} | {}/{}", t.0, t.1, t.2);
+        }
+    }
+    eprintln!("{out}");
+    if let Ok(p) = std::env::var("WP238_PIECE_TABLE") {
+        std::fs::write(p, &out).expect("the table");
+    }
+    assert!(table.iter().any(|t| t.1 > 0) || !tools_required(), "nothing caught:\n{out}");
+}
+
+const LO_A: &str = "  .section .text.g,\"axG\",%progbits,grp,comdat\n  .globl gfun\n  .type gfun,%function\n\
+gfun:\n  ret\n  .section .meta,\"ao\",%progbits,gfun\n  .globl metasym\nmetasym:\n  .long 5\n";
+const LO_B_GROUP: &str = "  .section .text.g,\"axG\",%progbits,grp,comdat\n  .globl gfun\n  .type gfun,%function\ngfun:\n  ret\n";
+const LO_M: &str = "int gfun(void);\nint main(void){ return gfun(); }\n";
+
+/// WP-238 Part 3b (P3-5): a state with a `REFUSE` row (`live_rows.rs`'
+/// lo1: `-u metasym` defined in a dropped link-order section) is refused
+/// `def-dropped`; the row removed, or its code changed, the outcome is
+/// printed per target (`WP238_REFUSE_TABLE`).
+#[test]
+fn refuse_row_mutations() {
+    let mut out = String::new();
+    for (arch, cc, _) in TARGETS {
+        let src = [
+            Source { name: "m.c", text: LO_M },
+            Source { name: "b.s", text: LO_B_GROUP },
+            Source { name: "a.s", text: LO_A },
+        ];
+        let label = format!("refuse {arch}");
+        let Some(l) = line(&label, cc, &["-O1"], &src, &["-u", "metasym"]) else { continue };
+        let (m, o) = capture(&l);
+        let refuse: Vec<usize> =
+            (0..m.edges.len()).filter(|&i| m.edges[i].1.kind == edge_kind::REFUSE).collect();
+        assert!(!refuse.is_empty(), "{label}: no REFUSE row");
+        let verdict = |x: &MemoryState| -> String {
+            match live_why(&x.view(), &ChangedFiles::default(), &ResolveDelta::default(), &o) {
+                Ok(_) => "ACCEPTED".into(),
+                Err(e) => e.1.split(':').next().unwrap_or_default().to_owned(),
+            }
+        };
+        let _ = writeln!(out, "{label}: rows {} as written: {}", refuse.len(), verdict(&m));
+        let mut cut = m.clone();
+        cut.edges.retain(|(_, e)| e.kind != edge_kind::REFUSE);
+        let _ = writeln!(out, "{label}: REFUSE rows removed: {}", verdict(&cut));
+        let mut code = m.clone();
+        for &i in &refuse {
+            code.edges[i].1.target = 1;
+        }
+        let _ = writeln!(out, "{label}: code -> 1: {}", verdict(&code));
+    }
+    eprintln!("{out}");
+    if let Ok(p) = std::env::var("WP238_REFUSE_TABLE") {
+        std::fs::write(p, &out).expect("the table");
+    }
 }
