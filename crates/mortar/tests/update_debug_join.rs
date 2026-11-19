@@ -168,9 +168,13 @@ impl Prog {
         if self.arch.is_host() {
             ex.push("run > /dev/null 2>&1".into());
         } else {
-            let port = 20000
-                + (std::process::id() % 20000) as u16
-                + u16::from(self.arch.name().len() as u8);
+            // A port the kernel hands out free (the tests of this binary
+            // run in parallel: a port derived from the pid alone was shared,
+            // and gdb attached to another test's qemu).
+            let port = std::net::TcpListener::bind("127.0.0.1:0")
+                .and_then(|l| l.local_addr())
+                .expect("a free port")
+                .port();
             let mut q = Command::new(tool(self.arch.qemu()).expect("qemu"));
             q.arg("-L")
                 .arg(self.arch.sysroot())
@@ -329,32 +333,20 @@ fn identity_edit_with_debug_is_taken() {
     assert!(ran == 2 || !tools_required(), "{ran} of the 2 targets");
 }
 
-// spec: incr.md IN-70, IN-71a (WP-230; the operator's configuration):
-// static, -g, -ffunction-sections -fdata-sections, --gc-sections. The
-// delta's inputs refuse `--gc-sections` (`layout_in::layout_inputs`,
-// `(live)`, recorded), so G-1 never runs and the identity edit falls back
-// `(debug)` by name ("G-1 did not run"), the update writing nothing.
-// When the delta's inputs take `--gc-sections` this case is
-// `identity_case` (as `identity_edit_with_debug_is_taken`).
+// spec: incr.md IN-70, IN-71a, IN-50 step 1, IN-54, IN-56 (WP-230 G-3b;
+// the operator's configuration): static, -g, -ffunction-sections
+// -fdata-sections, --gc-sections. Since M2b-2d the delta's inputs take
+// `--gc-sections` (`layout_in::layout_inputs_live`), so G-1 runs on the
+// edit that flips no liveness and is judged as without gc: the identity
+// case, taken, byte-equal to the full link, the debuggers' answers equal.
 #[test]
-fn gc_identity_edit_with_debug_falls_back_until_g1_runs() {
+fn gc_identity_edit_with_debug_is_taken() {
     let mut ran = 0;
     for arch in targets() {
         let fs = ["-ffunction-sections", "-fdata-sections"];
-        let Some(p) = Prog::new(arch, "gc", &fs, true) else { continue };
+        let Some(mut p) = Prog::new(arch, "gc", &fs, true) else { continue };
         ran += 1;
-        let label = format!("gc {}", arch.name());
-        let (ok, err) = p.link("o", &["--incremental"]);
-        assert!(ok, "{label}: the first link: {err}");
-        let before = p.bytes("o");
-        let _ = std::fs::remove_file(&p.findings);
-        p.rebuild_c(&c_cc(9, "scaled"), &[]);
-        let (ok, err) = p.link("o", &["--incremental=update", "--incremental-report"]);
-        assert!(!ok, "{label}: updated: {err}");
-        assert!(err.contains("cannot update: update-not-implemented (debug)"), "{label}: {err}");
-        let text = no_finding(&p, &label);
-        assert!(text.contains("G-1 did not run"), "{label}:\n{text}");
-        assert_eq!(before, p.bytes("o"), "{label}: a fall-back wrote the output");
+        identity_case(&mut p, &format!("gc {}", arch.name()));
     }
     assert!(ran == 2 || !tools_required(), "{ran} of the 2 targets");
 }
@@ -409,15 +401,15 @@ fn type_units_are_debug_unit_kind() {
 }
 
 // spec: incr.md IN-70, IN-56 (WP-230): a renamed local appends a string:
-// not the identity case, `update-not-implemented (layout)` by name (G-1's
-// tail and dead ranges are written with the delta's placement, M2b-3's
-// wiring), and no FINDING.
+// not the identity case; since M2b-3 Part 3 a non-identity hop with debug
+// sections falls back by G-3's name, `update-not-implemented (debug)`
+// (G-1 in the non-identity case is G-4's), and no FINDING.
 #[test]
 fn renamed_local_is_not_the_identity_case() {
     for arch in targets() {
         let Some(l) = refused(arch, "rename", &[], &[], "renamed_local_wp230") else { continue };
         assert!(
-            l.contains("cannot update: update-not-implemented (layout)"),
+            l.contains("cannot update: update-not-implemented (debug)"),
             "{}: {l}",
             arch.name()
         );
