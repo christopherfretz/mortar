@@ -114,9 +114,10 @@ pub fn layout_inputs<'s>(
 ///   liveness is the whole link's (any file's mark, `mortar_live` gc's
 ///   `frag`), which no file's pieces give, and `FRAG_USE` holds the live
 ///   fragments only;
-/// - `(layout)` for a file that is not `Change::Changed` (a drawn-in
-///   file's ids are fresh in `cf` but stored in `layout`'s contract: the
-///   record's question; `changed_files` makes no other kind yet), an
+/// - `(layout)` for a file that is neither `Change::Changed` nor
+///   `Change::DrawnIn` (a drawn-in file's sections take fresh ids, as a
+///   changed file's: D3-1, ruling "After M2b-2b's hand-back" 3;
+///   `changed_files` makes no other kind yet), an
 ///   `SHF_COMPRESSED` section (the stored size and `header_of`'s
 ///   differ), a section whose alignment is not read, and a section whose
 ///   identity the front and the capture's row do not agree on (a FINDING
@@ -151,7 +152,10 @@ pub fn layout_inputs_live<'s>(
     let is_live = |id: SectionId| gc.is_none_or(|l| l.now_live.binary_search(&id).is_ok());
     let mut out = LayoutInputs::default();
     for c in &cf.files {
-        if !matches!(c.change, Change::Changed) {
+        // A drawn-in file (IN-72 item 2a; M2b-4 item 5) takes fresh ids
+        // as a changed one does (D3-1), its bytes the stored ones: one
+        // path for both.
+        if !matches!(c.change, Change::Changed | Change::DrawnIn) {
             return Err(layout());
         }
         // D2-1's row is `c.row`, its strings in the update's space, read

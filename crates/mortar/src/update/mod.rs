@@ -355,10 +355,13 @@ fn reference_of(
     // against the front's (a disagreement is a FINDING, by name), and in
     // the non-identity case materialized (M2b-3 Part 3).
     let placed = match u5 {
-        Some((cf, delta)) => {
+        Some((mut cf, mut delta)) => {
             let mut live = mortar_incr::update::live::LiveDelta::default();
             if f.plan.shaping.gc_sections {
                 (live, flips) = live_judged(view, f, &cf, &delta)?;
+                if !live.drawn_in.is_empty() {
+                    (cf, delta, live) = drawn_in(view, f, &detected.positional, &state, cf, &live)?;
+                }
                 steps.mark("u6");
             }
             // R-2 (a) (WP-264's `REGIONS` producer is in): a producer's
@@ -690,6 +693,73 @@ fn live_judged(
     Ok((d, flips))
 }
 
+/// WP-225 M2b-4 item 5 (IN-72 item 2a; D3-1, ruling "After M2b-2b's
+/// hand-back" 3): the unchanged files whose liveness the update flips
+/// (`live.drawn_in`) are read as `Change::DrawnIn` with FRESH ids, as a
+/// changed file is (`changed_files`; `old` is matched by identity in
+/// `layout_inputs_live`), and U5-U6 run again over the larger set:
+/// `extract` (it must flip no member, as the first call did not),
+/// `resolve` (once: a further draw-in is refused by name) and the live
+/// walk judged against the front's mark ([`live_judged`]), which must draw
+/// in nothing more. The placement of the drawn-in files is then
+/// `delta::layout`'s, judged by front 2 as every placement is.
+///
+/// # Errors
+/// `(layout)` by name for the refusals above; the producers' own.
+fn drawn_in(
+    view: &StateView<'_>,
+    f: &crate::front::Front<'_>,
+    positional: &[FileId],
+    capture: &mortar_incr::update::testing::MemoryState,
+    cf: mortar_incr::update::view::ChangedFiles,
+    live: &mortar_incr::update::live::LiveDelta,
+) -> Result<
+    (
+        mortar_incr::update::view::ChangedFiles,
+        mortar_incr::update::resolve::ResolveDelta,
+        mortar_incr::update::live::LiveDelta,
+    ),
+    IncrReason,
+> {
+    use mortar_incr::update::view::Change;
+    use mortar_incr::update::{extract, resolve as res};
+    let refuse = |what: String| {
+        changed::record(&format!(
+            "M2b-4: placement: live draws in {} unchanged files {:?}: {what}: (layout)",
+            live.drawn_in.len(),
+            live.drawn_in
+        ));
+        IncrReason::UpdateNotImplemented(Some(Unimplemented::Layout))
+    };
+    let mut files: Vec<(FileId, Change)> = cf.files.iter().map(|c| (c.file, c.change)).collect();
+    files.extend(live.drawn_in.iter().map(|&d| (d, Change::DrawnIn)));
+    let cf = changed::changed_files(f, view, &files, positional, capture)?;
+    let options = mortar_resolve::tables::option_keys(&f.plan, &f.inputs.link.directives);
+    let ex = extract::extract(view, &cf, &options)?;
+    if !(ex.extracted.is_empty() && ex.unextracted.is_empty()) {
+        return Err(refuse(format!("with them the extraction flips members ({ex:?})")));
+    }
+    let delta = match res::resolve(view, &cf, &ex, &options)? {
+        res::Resolution::Delta(d) => *d,
+        res::Resolution::DrawIn(more) => {
+            return Err(refuse(format!("with them resolve draws in {more:?} too")));
+        }
+    };
+    let (again, _) = live_judged(view, f, &cf, &delta)?;
+    if !again.drawn_in.is_empty() {
+        return Err(refuse(format!("with them the walk draws in {:?} too", again.drawn_in)));
+    }
+    changed::record(&format!(
+        "M2b-4: placement: live draws in {} unchanged files {:?}: read with fresh ids (now_live {} \
+         now_dead {})",
+        live.drawn_in.len(),
+        live.drawn_in,
+        again.now_live.len(),
+        again.now_dead.len()
+    ));
+    Ok((cf, delta, again))
+}
+
 /// The delta's placement of the changed files, judged ([`placement`]).
 struct Placed {
     /// The changed sections the delta placed at another offset (or chunk)
@@ -718,13 +788,12 @@ struct Placed {
 /// judged against the front's mark; the empty delta without
 /// `--gc-sections`). Under `--gc-sections` it gives each changed section's
 /// `live` to `layout_inputs_live` and `scan_of` (F-8: the new side is the
-/// walk's, never a stored bit). A delta that draws in an unchanged file
-/// (a section of it flips, or its marked pieces change) is refused
-/// `(layout)` by name: a drawn-in file's layout inputs (IN-72 item 2a; its
-/// sections that die become holes, and its `.eh_frame` range loses the
-/// dead FDEs) are not produced here (`layout_inputs` takes the files of
-/// `cf` only), so the delta would keep its dead sections placed and its
-/// stale records (WP-225 gc-3).
+/// walk's, never a stored bit). An unchanged file the walk draws in (a
+/// section of it flips, or its marked pieces change) is in `cf` by then,
+/// as `Change::DrawnIn` with fresh ids ([`drawn_in`], M2b-4 item 5), so its
+/// layout inputs are produced as a changed file's (its sections that die
+/// become holes, and its `.eh_frame` range loses the dead FDEs: WP-225
+/// gc-3); a `live` that still draws one in is refused `(layout)` by name.
 #[allow(clippy::too_many_arguments, reason = "the update's inputs, each read once")]
 #[allow(clippy::too_many_lines, reason = "U6-U7's producers in order, then the judgement")]
 fn placement(
@@ -746,14 +815,14 @@ fn placement(
     use mortar_merge::phase::ArchRelocs;
     use mortar_scan::ScanOptions;
     let options = mortar_resolve::tables::option_keys(&f.plan, &f.inputs.link.directives);
+    // `reference_of` reads the drawn-in files into `cf` first (item 5,
+    // [`drawn_in`]): a delta that still draws in a file is refused.
     if !live.drawn_in.is_empty() {
         changed::record(&format!(
-            "M2b-2d: placement: live draws in {} unchanged files {:?} (now_live {} now_dead {}), \
-             whose layout inputs are not produced: (layout)",
+            "M2b-4: placement: live draws in {} unchanged files {:?} not read into the update: \
+             (layout)",
             live.drawn_in.len(),
-            live.drawn_in,
-            live.now_live.len(),
-            live.now_dead.len()
+            live.drawn_in
         ));
         return Err(Why::Refused(IncrReason::UpdateNotImplemented(Some(Unimplemented::Layout))));
     }
