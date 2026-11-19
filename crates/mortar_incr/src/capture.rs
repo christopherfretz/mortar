@@ -902,6 +902,11 @@ pub struct Link5<'a> {
     /// zero). WP-238 seam 9: the field only; Part 2 writes the rows and
     /// the hash.
     pub edges: Option<&'a [mortar_core::incr::LiveEdge]>,
+    /// `SYMTAB_KEYS` (IN-18e, IN-49a; WP-262): the output's global area
+    /// (`SymtabPlan::incr_global_area`) and per `SymbolId` its entry and
+    /// `st_name` (`SymtabPlan::incr_global_keys`, `(NONE, 0)`: no global
+    /// entry); `None` with no `.symtab` (`-s`), every row `NONE`.
+    pub symtab: Option<(mortar_core::incr::SymtabBlock, &'a [(u32, u32)])>,
 }
 
 impl std::fmt::Debug for Link5<'_> {
@@ -956,6 +961,11 @@ pub struct Rows5 {
     iterations: u32,
     /// `DEBUG_STRS` (WP-247, [`debug_str_rows`]).
     debug_strs: Vec<crate::update::rows::DebugStrRow>,
+    /// `SYMTAB_KEYS` (WP-262): per `SYMBOLS` row, its key's global entry
+    /// (`NONE`: none), and the global area it is checked against
+    /// ([`symtab_keys_check`]).
+    symtab_keys: Vec<crate::update::rows::SymtabKeyRow>,
+    symtab_area: Option<mortar_core::incr::SymtabBlock>,
     /// Counts for the experiments (`incremental: state5 ...` lines).
     pub notes: Vec<String>,
     /// WP-257a: per `SECTIONS` row, what the section IS.
@@ -1197,6 +1207,83 @@ fn file_round(res: &Resolution, file: FileId) -> Result<u32, String> {
         ));
     }
     Ok(round)
+}
+
+/// `SYMTAB_KEYS`' write-time check (IN-18e, IN-49a; WP-262), on every
+/// capture: with the output's global area `[first, first + count)`, every
+/// entry of it is named by exactly one row, every row not `NONE` names an
+/// entry of it, and its `strtab` is the entry's `st_name` as S-86 lays
+/// the area's names (in entry order from the area's first byte, each
+/// name and its zero; the fixed table's names at their own offsets),
+/// ending at the area's last byte. Without a `.symtab` (`-s`) every row
+/// is `NONE`. A row that breaks this is the producer's defect: no state
+/// is written.
+fn symtab_keys_check(
+    m: &crate::update::testing::MemoryState,
+    area: Option<mortar_core::incr::SymtabBlock>,
+) -> Result<(), String> {
+    let err = |what: String| Err(format!("SYMTAB_KEYS: {what} (IN-49a)"));
+    let Some(area) = area else {
+        return match m.symtab_keys.iter().position(|r| r.index != NONE) {
+            None => Ok(()),
+            Some(r) => err(format!("row {r} has an entry and the output has no .symtab")),
+        };
+    };
+    // Per entry of the area, the row that names it.
+    let mut by_entry = vec![NONE; area.count as usize];
+    for (r, k) in m.symtab_keys.iter().enumerate() {
+        if k.index == NONE {
+            continue;
+        }
+        let Some(slot) = k.index.checked_sub(area.first).and_then(|i| by_entry.get_mut(i as usize))
+        else {
+            return err(format!(
+                "row {r}'s index {} is outside the global area [{}, {})",
+                k.index,
+                area.first,
+                u64::from(area.first) + u64::from(area.count)
+            ));
+        };
+        if *slot != NONE {
+            return err(format!("rows {} and {r} have one index {}", *slot, k.index));
+        }
+        *slot = r as u32;
+    }
+    let mut at = area.strtab_offset;
+    for (i, &r) in by_entry.iter().enumerate() {
+        let entry = u64::from(area.first) + i as u64;
+        if r == NONE {
+            return err(format!("entry {entry} of the global area is named by no row"));
+        }
+        let (k, sym) = (m.symtab_keys[r as usize], &m.symbols[r as usize]);
+        let name = m.strings.get(sym.name.off as usize..(sym.name.off + sym.name.len) as usize);
+        let Some(name) = name else { return err(format!("row {r}'s name is outside STRINGS")) };
+        // S-86's fixed table: `$x`, `$d`, `__erratum_843419_veneer`.
+        let fixed = match name {
+            b"" => Some(0),
+            b"$x" => Some(1),
+            b"$d" => Some(4),
+            b"__erratum_843419_veneer" => Some(7),
+            _ => None,
+        };
+        let want = fixed.unwrap_or(at);
+        if u64::from(k.strtab) != want {
+            return err(format!(
+                "row {r} (entry {entry}): strtab {} where the area's names put {want}",
+                k.strtab
+            ));
+        }
+        if fixed.is_none() {
+            at += name.len() as u64 + 1;
+        }
+    }
+    if at != area.strtab_offset + area.strtab_len {
+        return err(format!(
+            "the global area's names end at {at}, its bytes at {}",
+            area.strtab_offset + area.strtab_len
+        ));
+    }
+    Ok(())
 }
 
 /// One file's part of [`rows5`], with keys as `SymbolId`s.
@@ -1516,12 +1603,28 @@ fn rows5(
     out.edges.dedup();
     let n_rows = syms.rows.len();
     out.symbols = vec![None; n_rows];
+    // SYMTAB_KEYS (WP-262): the symbol table plan's own walk, by row.
+    let none = crate::update::rows::SymtabKeyRow { index: NONE, strtab: 0 };
+    out.symtab_keys = vec![none; n_rows];
+    let entries = extra.symtab.map(|(area, entries)| {
+        out.symtab_area = Some(area);
+        entries
+    });
+    if entries.is_some_and(|e| e.len() != first.len()) {
+        return Err("SYMTAB_KEYS: the symbol table's keys are not this link's".into());
+    }
     for (i, &(at_file, at_index)) in first.iter().enumerate() {
         let id = SymbolId(i as u32);
         let row = syms.row(strings, SymKey::global(id))? as usize;
         let facts = extra.facts.get(i).copied().ok_or("RESOLVED.facts: a key without facts")?;
         if let Some(x) = out.symbols.get_mut(row) {
             *x = Some((at_file, at_index, facts));
+        }
+        if let Some(&(index, strtab)) = entries.and_then(|e| e.get(i))
+            && index != NONE
+            && let Some(x) = out.symtab_keys.get_mut(row)
+        {
+            *x = crate::update::rows::SymtabKeyRow { index, strtab };
         }
     }
     if syms.rows.len() != n_rows {
@@ -1842,6 +1945,11 @@ pub fn state5_rows(
     m.meta.versioned = rows.versioned;
     m.meta.iterations = rows.iterations;
     m.debug_strs = rows.debug_strs;
+    if rows.symtab_keys.len() != m.symbols.len() {
+        return Err("SYMTAB_KEYS: the rows are not this state's".into());
+    }
+    m.symtab_keys = rows.symtab_keys;
+    symtab_keys_check(&m, rows.symtab_area)?;
     if rows.slot_refs.len() != m.slots.len() {
         return Err("SLOTS: the rows are not this state's".into());
     }
@@ -1913,6 +2021,10 @@ pub fn state5_rows(
             });
         }
     }
+    // The rows added for the options' names are no key of the link: none
+    // has a `.symtab` entry.
+    m.symtab_keys
+        .resize(m.symbols.len(), crate::update::rows::SymtabKeyRow { index: NONE, strtab: 0 });
     if collide && let Some(&r) = m.frags.first() {
         m.frags.push(crate::update::rows::FragRow { offset: r.offset + 1, ..r });
     }
