@@ -6,6 +6,8 @@
 //! state's datum, or a capture's defect), and `extract` answers
 //! `state-corrupt` before any removal cone is built from it.
 
+#![allow(clippy::many_single_char_names, clippy::too_many_lines)]
+
 #[allow(dead_code, clippy::all)]
 mod model {
     include!("support/resolve_model.rs");

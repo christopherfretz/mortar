@@ -107,7 +107,7 @@ pub fn lines(extra: &[(&str, &str, &str)]) -> Vec<Line> {
     let mut v = Vec::new();
     for (label, cc, a64) in [
         ("aarch64 g++", Driver::Gxx.tool(), true),
-        ("x86-64 g++", "x86_64-linux-gnu-g++".into(), false),
+        ("x86-64 g++", mortar_testutil::target::Arch::X86_64.gnu("g++"), false),
     ] {
         let s = Scratch::new(if a64 { "wp255d2-a64" } else { "wp255d2-x64" });
         let built = if a64 {
