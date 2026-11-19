@@ -198,6 +198,34 @@ fn unsupported(parsed: &Parsed) -> Option<String> {
     None
 }
 
+/// IN-77c's full-link side: `META.boot_id` from `boot` (the boot id this
+/// link read, `update::write::boot_id`), `output-synced` 0 (form (b): an
+/// update after a reboot compares the leaves). Where the boot id cannot be
+/// read, form (a) (WP-265, WP-264 F-3): the output `P` (renamed unsynced,
+/// image.md I-61) is `fdatasync`ed before the state is written, and the
+/// bit is 1; the boot id stays zero, which no boot matches.
+///
+/// # Errors
+/// The sync's (no state is written: a state with the bit 1 would trust an
+/// output whose data may not be on the disk).
+fn boot_stamp(
+    meta: &mut mortar_incr::update::rows::MetaRow,
+    boot: Option<[u8; 16]>,
+    out_path: &Path,
+) -> Result<(), String> {
+    if let Some(id) = boot {
+        meta.boot_id = id;
+        meta.output_synced = false;
+        return Ok(());
+    }
+    std::fs::File::open(out_path)
+        .and_then(|f| f.sync_data())
+        .map_err(|e| format!("IN-77c: cannot sync {} (no boot id): {e}", out_path.display()))?;
+    meta.boot_id = [0; 16];
+    meta.output_synced = true;
+    Ok(())
+}
+
 /// The normalized plan's hash (IN-18b).
 #[must_use]
 pub fn plan_hash(parsed: &Parsed, cwd: &Path) -> [u8; 16] {
@@ -1195,8 +1223,8 @@ impl Session {
                     let mut failed = None;
                     let r = self.write_state(
                         f,
-                        state,
-                        rows5,
+                        (state, rows5),
+                        diagnostics,
                         out_path,
                         written,
                         &mut stderr,
@@ -1250,8 +1278,8 @@ impl Session {
     fn write_state(
         &self,
         f: &Front<'_>,
-        state: State,
-        rows5: Option<mortar_incr::capture::Rows5>,
+        (state, rows5): (State, Option<mortar_incr::capture::Rows5>),
+        diagnostics: &Collector,
         out_path: &Path,
         written: &Written,
         stderr: &mut String,
@@ -1266,7 +1294,15 @@ impl Session {
                     .map(|()| true)
                     .map_err(|e| format!("cannot write {}: {e}", p.display()));
             }
-            let bytes = self.state5_bytes(f, &state, rows5, &mut t, stderr, failed)?;
+            let bytes = self.state5_bytes(
+                f,
+                (&state, rows5),
+                diagnostics,
+                out_path,
+                &mut t,
+                stderr,
+                failed,
+            )?;
             if let Some(p) = &self.state4_path {
                 // The side state of a testhooks build (the floor, the dry
                 // run): best effort, removed when it cannot be written.
@@ -1323,14 +1359,29 @@ impl Session {
     fn state5_bytes(
         &self,
         f: &Front<'_>,
-        state: &State,
-        rows5: Option<mortar_incr::capture::Rows5>,
+        (state, rows5): (&State, Option<mortar_incr::capture::Rows5>),
+        diagnostics: &Collector,
+        out_path: &Path,
         t: &mut Instant,
         stderr: &mut String,
         failed: &mut Option<String>,
     ) -> Result<Vec<u8>, String> {
         let s5 = self.state5.as_ref();
-        let rows = rows5.ok_or_else(|| "the link computed no format-5 data".to_owned())?;
+        let mut rows = rows5.ok_or_else(|| "the link computed no format-5 data".to_owned())?;
+        // DIAGS (IN-75a, WP-265): the link's warnings, read before its
+        // report is finished, each with its subjects; a warning whose
+        // subjects are not known: no state (named).
+        // (The dormant rows alone are `state`'s, which an update's state
+        // shares.)
+        let warnings = diagnostics.warnings();
+        let gnu_warnings = &f.gnu_warnings;
+        if !warnings.is_empty() {
+            let start = Instant::now();
+            rows.capture_diags(&f.inputs, gnu_warnings, &warnings)?;
+            let mut th = start;
+            lap(&self.times, &mut th, "format 5: DIAGS");
+            *t += start.elapsed();
+        }
         if s5.is_some() {
             for n in &rows.notes {
                 let _ = writeln!(stderr, "incremental: state5 {n}");
@@ -1340,8 +1391,8 @@ impl Session {
         let made = mortar_incr::capture::state5_rows(state, rows, collide).and_then(|mut m| {
             // IN-77c (WP-264): the boot this link wrote the output on; an
             // update on the same boot trusts `P` without re-hashing it.
-            // Unreadable: zero, which no boot id matches (re-hash).
-            m.meta.boot_id = crate::update::write::boot_id().unwrap_or_default();
+            // Unreadable: form (a) (WP-265), `P` synced and the bit 1.
+            boot_stamp(&mut m.meta, crate::update::write::boot_id(), out_path)?;
             // WP-238 S4: the capture's live-set hash, from the full mark's
             // sets (P0-3), over the rows as the encoder numbers them (Part
             // 3b: `normalize` leaves the `SECTIONS` ranges to the encoder;
@@ -1637,6 +1688,16 @@ impl Session {
             state.leaves.push(row);
         }
         state.strings = strings.into_bytes();
+        // DIAGS (IN-75a, WP-265): the dormant rows of the warned keys no
+        // reference reaches, from the front alone (an update's state, whose
+        // front is quiet, holds what the full link of its inputs holds);
+        // `state5_bytes` adds the full link's warnings.
+        let mut rows5 = rows5;
+        if let Some(r) = &mut rows5
+            && !f.gnu_warnings.is_empty()
+        {
+            r.capture_diags(&f.inputs, &f.gnu_warnings, &[])?;
+        }
         Ok((state, rows5))
     }
 }
@@ -1726,5 +1787,32 @@ pub(crate) fn write_atomically(path: &Path, bytes: &[u8]) -> std::io::Result<()>
         Ok(())
     } else {
         Err(std::io::Error::other("state-busy (its temporary is another link's)"))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // spec: incr.md IN-77c (WP-265: a full link that cannot read the boot
+    // id syncs `P` and writes `output-synced` 1, form (a); one that can
+    // writes the id and the bit 0, form (b); a sync that fails: no state)
+    #[test]
+    fn boot_stamp_forms() {
+        let dir = std::env::temp_dir().join(format!("mortar-wp265-boot-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).expect("the directory");
+        let out = dir.join("out");
+        std::fs::write(&out, b"P").expect("the output");
+        let mut meta = mortar_incr::update::testing::MemoryState::default().meta;
+        boot_stamp(&mut meta, Some([7; 16]), &out).expect("form (b)");
+        assert_eq!((meta.boot_id, meta.output_synced), ([7; 16], false));
+        boot_stamp(&mut meta, None, &out).expect("form (a)");
+        assert_eq!((meta.boot_id, meta.output_synced), ([0; 16], true));
+        let gone = dir.join("missing");
+        let mut m2 = mortar_incr::update::testing::MemoryState::default().meta;
+        assert!(boot_stamp(&mut m2, None, &gone).is_err());
+        assert!(!m2.output_synced);
+        std::fs::remove_file(&out).expect("cleanup");
+        std::fs::remove_dir(&dir).expect("cleanup");
     }
 }

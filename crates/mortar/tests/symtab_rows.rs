@@ -28,9 +28,9 @@
 //! holding `.gnu.warning.nosuchkey` (no file mentions `nosuchkey`):
 //! `META.gnu_warning_orphans` 1 and 0.
 //!
-//! `version_9_state_is_refused`: the header with version 9 (WP-263's
-//! format: no `REGIONS` rows, file 0's `SYMTAB` range without the
-//! internal block, a 228-byte `META`; WP-264 made it 10) is refused
+//! `version_10_state_is_refused`: the header with version 10 (WP-264's
+//! format: no `DIAGS` row for a link that warned; WP-265 made it 11) is
+//! refused
 //! `state-version`, by the reader and end to end.
 
 mod support;
@@ -470,30 +470,30 @@ fn orphan_gnu_warning_is_counted() {
 }
 
 #[test]
-fn version_9_state_is_refused() {
+fn version_10_state_is_refused() {
     let mut ran = 0;
     for line in lines(false) {
         let label = line.label;
         let (_, mut bytes) = state(&line);
         assert_eq!(&bytes[..8], b"MORTARSR", "{label}: format 5's magic");
-        assert_eq!(bytes[8..12], 10u32.to_le_bytes(), "{label}: the state's version");
-        bytes[8..12].copy_from_slice(&9u32.to_le_bytes());
-        let e = mortar_incr::state5::read::decode(&bytes).expect_err("a version-9 state decodes");
+        assert_eq!(bytes[8..12], 11u32.to_le_bytes(), "{label}: the state's version");
+        bytes[8..12].copy_from_slice(&10u32.to_le_bytes());
+        let e = mortar_incr::state5::read::decode(&bytes).expect_err("a version-10 state decodes");
         let shown = format!("{e:?}");
         assert!(
-            shown.contains("Version") && shown.contains("format version 9"),
+            shown.contains("Version") && shown.contains("format version 10"),
             "{label}: {shown}"
         );
         let at = line.dir.join("out.mortar-state");
         let mut disk = std::fs::read(&at).expect("the state");
         assert_eq!(&disk[..8], b"MORTARSR", "{label}: the written state's magic");
-        disk[8..12].copy_from_slice(&9u32.to_le_bytes());
+        disk[8..12].copy_from_slice(&10u32.to_le_bytes());
         std::fs::write(&at, disk).expect("the state");
         let args = incremental_args(&line, "--incremental=update");
         let second = mortar::invoke_in("mortar", &args, &line.dir);
         let report = format!("{:?}\n{}", second.outcome, second.incremental);
         assert!(report.contains("state-version"), "{label}: {report}");
-        eprintln!("[wp263] {label}: a version-9 state: state-version");
+        eprintln!("[wp263] {label}: a version-10 state: state-version");
         ran += 1;
     }
     assert!(ran == 2 || !tools_required(), "{ran} of 2 links");

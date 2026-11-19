@@ -137,6 +137,9 @@ struct Full {
     failed: bool,
     warnings: Vec<Captured>,
     state: MemoryState,
+    /// Its `DIAGS` rows as the capture makes them
+    /// (`mortar_incr::capture::diag_rows`, WP-265), in the state's ids.
+    rows: Vec<DiagRow>,
 }
 
 const PROG: &str = "mortar";
@@ -212,6 +215,7 @@ fn link(fx: &Fixture<'_>, inputs: &[&str], extra: &[&str]) -> Full {
     };
     let files = display_index(&f);
     let mut warnings = Vec::new();
+    let collected: Vec<(Key, Diagnostic)> = plain.warnings().map(|(k, d)| (k, d.clone())).collect();
     for (key, d) in plain.warnings() {
         let mut c = Captured {
             key,
@@ -294,6 +298,11 @@ fn link(fx: &Fixture<'_>, inputs: &[&str], extra: &[&str]) -> Full {
         capture(&link, &keys, &f.layout, &mut strings, &|_| Some([0; 16]), f.arch.get())
             .expect("capture");
     state.strings = strings.into_bytes();
+    let rows = mortar_incr::capture::diag_rows(&f.inputs, &f.gnu_warnings, &state, &collected)
+        .expect("the capture's DIAGS rows");
+    if extra.is_empty() {
+        written_rows_are_the_captures(fx, inputs, &state, &rows);
+    }
     // FILES.hash: the input file's bytes hashed, with a member's span (capture is
     // given the content hash; a rewritten archive changes all its members here).
     for (n, r) in state.files.iter_mut().enumerate() {
@@ -317,7 +326,88 @@ fn link(fx: &Fixture<'_>, inputs: &[&str], extra: &[&str]) -> Full {
             r.flags |= file_flags::LAZY;
         }
     }
-    Full { stderr, failed, warnings, state }
+    Full { stderr, failed, warnings, state, rows }
+}
+
+/// WP-265: the same link with `--incremental=full` writes a state whose
+/// `DIAGS` (decoded from the bytes on disk, normalized ids mapped back by
+/// path and by key name) are `rows`, the in-process producer's: the
+/// collector's warnings reach the state through the driver.
+fn written_rows_are_the_captures(
+    fx: &Fixture<'_>,
+    inputs: &[&str],
+    four: &mortar_incr::format::State,
+    rows: &[DiagRow],
+) {
+    let state_path = fx.scratch.join("full.mortar-state");
+    let _ = std::fs::remove_file(&state_path);
+    let mut args = fx.line(inputs, &["--incremental=full"]);
+    args.extend(["--incremental-state".into(), state_path.clone().into_os_string()]);
+    let inv = link_run(PROG, &args);
+    assert!(matches!(inv.outcome, Outcome::Linked { .. }), "{:?}", inv.outcome);
+    let bytes = std::fs::read(&state_path).expect("the state");
+    let m = mortar_incr::state5::read::decode(&bytes).expect("the state decodes");
+    let str_of = |x: Str| m.strings[x.off as usize..(x.off + x.len) as usize].to_vec();
+    let four_str = |x: Str| four.str(x).to_vec();
+    let file = |f: FileId| -> FileId {
+        let r = &m.files[f.0 as usize];
+        let at = four
+            .files
+            .iter()
+            .position(|x| {
+                four_str(x.path) == str_of(r.path)
+                    && four_str(x.member_name) == str_of(r.member_name)
+                    && x.member_ordinal == r.member_ordinal
+            })
+            .expect("the file in the capture");
+        FileId(at as u32)
+    };
+    let key = |k: SymbolId| -> SymbolId {
+        let r = &m.symbols[k.0 as usize];
+        let (n, v) = (str_of(r.name), str_of(r.version));
+        let at = four
+            .symbols
+            .iter()
+            .position(|x| {
+                matches!(
+                    x.kind,
+                    mortar_incr::format::sym_kind::GLOBAL
+                        | mortar_incr::format::sym_kind::VERSIONED
+                ) && four_str(x.name) == n
+                    && four_str(x.version) == v
+            })
+            .expect("the key in the capture");
+        SymbolId(at as u32)
+    };
+    let mut have: Vec<DiagRow> = m
+        .diags
+        .iter()
+        .filter(|d| !d.code.starts_with("incremental-"))
+        .map(|d| {
+            let mut d = d.clone();
+            for x in &mut d.subjects {
+                *x = match *x {
+                    Subject::File(f) => Subject::File(file(f)),
+                    Subject::Key(k) => Subject::Key(key(k)),
+                    other => other,
+                };
+            }
+            d.subjects.sort_unstable();
+            for r in &mut d.refs {
+                r.file = file(r.file);
+            }
+            if [30, 40, 45, 50, 60, 70, 100].contains(&d.key.phase) {
+                d.key.unit = file(FileId(d.key.unit)).0;
+            }
+            d
+        })
+        .collect();
+    let mut want = rows.to_vec();
+    let order = |v: &mut Vec<DiagRow>| v.sort_by(|x, y| (x.key, &x.text).cmp(&(y.key, &y.text)));
+    order(&mut have);
+    order(&mut want);
+    assert_eq!(have, want, "the written state's DIAGS are the capture's");
+    let _ = std::fs::remove_file(&state_path);
 }
 
 /// The file an input was read from (its archive for a member).
@@ -561,11 +651,12 @@ fn row_of(
     row(key, &d, subjects, refs)
 }
 
-/// A's stored `DIAGS`.
+/// A's stored `DIAGS`: the capture's rows (`capture::diag_rows`, WP-265),
+/// which equal the rows this test's own `row_of` makes of A's warnings.
 fn stored(a: &Full) -> MemoryState {
     let mut m = a.state.clone();
     let rank = |f: FileId| a.state.files[f.0 as usize].rank;
-    m.diags = a
+    let mut want: Vec<DiagRow> = a
         .warnings
         .iter()
         .map(|c| {
@@ -573,6 +664,12 @@ fn stored(a: &Full) -> MemoryState {
             row_of(c, &keyed, &|f| f, &rank, &|_| true, true).expect("a row")
         })
         .collect();
+    let mut have = a.rows.clone();
+    let order = |v: &mut Vec<DiagRow>| v.sort_by(|x, y| (x.key, &x.text).cmp(&(y.key, &y.text)));
+    order(&mut want);
+    order(&mut have);
+    assert_eq!(have, want, "the capture's DIAGS rows");
+    m.diags.clone_from(&a.rows);
     m
 }
 
@@ -829,5 +926,98 @@ fn fatal_warnings_update_fails_like_full_link() {
         assert!(b.failed, "the full link fails: {}", b.stderr);
         let policy = Policy { fatal_warnings: true, ..Policy::default() };
         hop(&a, &b, policy);
+    });
+}
+
+/// glibc's `.gnu.warning.mktemp` and `.gnu.warning.tmpnam` texts (the
+/// warnings a real C++ build's `mktemp`/`tmpnam` references draw).
+const MKTEMP: &str = "the use of `mktemp' is dangerous, better use `mkstemp' or `mkdtemp'";
+const TMPNAM: &str = "the use of `tmpnam' is dangerous, better use `mkstemp'";
+
+/// WP-265's series: `lib.a` holds `mktemp` and `tmpnam` with glibc's
+/// warning sections; `c.o` calls `calls`; `x.o` is the unrelated file.
+fn mktemp_link(fx: &Fixture<'_>, calls: &[&str], x: u32) -> Full {
+    fx.object("main", MAIN);
+    fx.object("mk", &warned("mktemp", MKTEMP));
+    fx.object("tn", &warned("tmpnam", TMPNAM));
+    fx.archive("lib.a", &["mk.o", "tn.o"]);
+    fx.object("c", &caller("c", calls));
+    fx.object("x", &format!("int x(void) {{ return {x}; }}\n"));
+    link(fx, &["main.o", "c.o", "x.o", "lib.a"], &[])
+}
+
+// spec: incr.md IN-75a (WP-265: the capture's rows of a real
+// `--incremental=full` link; an update with an UNCHANGED warned file
+// replays the warning: the same text, in the full link's order)
+#[test]
+fn mktemp_warning_replayed_when_another_file_changes() {
+    each("mk-same", &|fx| {
+        let a = mktemp_link(fx, &["mktemp"], 1);
+        assert_eq!(a.warnings.iter().filter(|c| c.refs.len() == 1).count(), 1, "{}", a.stderr);
+        assert!(a.stderr.contains("mkstemp") && a.stderr.contains("c.o:(.text"), "{}", a.stderr);
+        replay(&a);
+        let b = mktemp_link(fx, &["mktemp"], 2);
+        let u = Update::new(&a, &b);
+        assert_eq!(u.changed.files.len(), 1, "x.o alone changed");
+        assert!(fresh(&a, &b, &u).is_empty(), "nothing recomputed");
+        let rows = hop(&a, &b, Policy::default());
+        assert_eq!(rows.iter().filter(|r| r.ref_count == 1).count(), 1, "the warning kept");
+    });
+}
+
+// spec: incr.md IN-75a (WP-265: an edit that removes the reference: the
+// warning goes; its key's row stays dormant)
+#[test]
+fn mktemp_warning_goes_with_its_reference() {
+    each("mk-gone", &|fx| {
+        let a = mktemp_link(fx, &["mktemp"], 1);
+        let b = mktemp_link(fx, &[], 1);
+        assert_eq!(b.stderr, "", "no warning");
+        let rows = hop(&a, &b, Policy::default());
+        assert!(rows.iter().all(|r| r.ref_count == 0), "{rows:?}");
+        replay(&b);
+    });
+}
+
+// spec: incr.md IN-75a (WP-265: an edit that adds a second warned
+// reference: both warnings, in the full link's order)
+#[test]
+fn mktemp_edit_adds_a_second_warning() {
+    each("mk-two", &|fx| {
+        let a = mktemp_link(fx, &["mktemp"], 1);
+        let b = mktemp_link(fx, &["mktemp", "tmpnam"], 1);
+        assert!(b.stderr.contains("mktemp") && b.stderr.contains("tmpnam"), "{}", b.stderr);
+        let rows = hop(&a, &b, Policy::default());
+        assert_eq!(rows.iter().filter(|r| r.ref_count == 1).count(), 2, "{rows:?}");
+        replay(&b);
+        // And back: the second goes, the first stays.
+        let c = mktemp_link(fx, &["mktemp"], 1);
+        hop(&b, &c, Policy::default());
+    });
+}
+
+// spec: incr.md IN-75a (WP-265: a warning with more references than it
+// lists (five; three listed, "referenced 2 more times") is stored capped:
+// its three references and the count; an update that touches it falls
+// back, `diags::Site::unchanged`)
+#[test]
+fn many_references_store_a_capped_row() {
+    each("mk-many", &|fx| {
+        fx.object("main", MAIN);
+        fx.object("mk", &warned("mktemp", MKTEMP));
+        fx.archive("lib.a", &["mk.o"]);
+        fx.object("c", &caller("c", &["mktemp"; 5]));
+        let state_path = fx.scratch.join("many.mortar-state");
+        let mut args = fx.line(&["main.o", "c.o", "lib.a"], &["--incremental=full"]);
+        args.extend(["--incremental-state".into(), state_path.clone().into_os_string()]);
+        let inv = link_run(PROG, &args);
+        let Outcome::Linked { report, .. } = &inv.outcome else { panic!("{:?}", inv.outcome) };
+        assert!(report.render(&Style::plain(PROG)).contains("referenced 2 more times"));
+        let m = mortar_incr::state5::read::decode(&std::fs::read(&state_path).expect("state"))
+            .expect("the state decodes");
+        let site: Vec<&DiagRow> = m.diags.iter().filter(|d| d.ref_count != 0).collect();
+        assert_eq!(site.len(), 1, "{:?}", m.diags);
+        assert_eq!((site[0].refs.len(), site[0].ref_count), (3, 5), "{:?}", site[0]);
+        let _ = std::fs::remove_file(&state_path);
     });
 }

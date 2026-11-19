@@ -987,6 +987,28 @@ pub struct Rows5 {
     pub notes: Vec<String>,
     /// WP-257a: per `SECTIONS` row, what the section IS.
     sections: Vec<SectionFacts>,
+    /// `DIAGS` (WP-265, [`diag_rows`]), in the capture's ids, their keys
+    /// by name until [`state5_rows`] resolves them.
+    diags: Vec<NamedDiag>,
+}
+
+impl Rows5 {
+    /// `DIAGS`' rows of the link's `warnings` (the collector's, read before
+    /// its report is finished) and of `gnu_warnings`, as [`diag_rows`]
+    /// makes them; [`state5_rows`] stores them, their keys the rows of the
+    /// state it makes (the options' rows included).
+    ///
+    /// # Errors
+    /// [`diag_rows`]'.
+    pub fn capture_diags(
+        &mut self,
+        inputs: &Inputs<'_>,
+        gnu_warnings: &[(SymbolId, FileId, SectionIndex)],
+        warnings: &[(mortar_diag::Key, mortar_diag::Diagnostic)],
+    ) -> Result<(), String> {
+        self.diags = diag_rows_named(inputs, gnu_warnings, warnings)?;
+        Ok(())
+    }
 }
 
 /// WP-257a: what section `id` IS, from resolve's row, `liveness` and the
@@ -2512,6 +2534,16 @@ pub fn state5_rows(
             });
         }
     }
+    // DIAGS (WP-265): the link's warnings, checked by `diag_rows`; their
+    // keys are rows of this state, the options' rows included.
+    if !rows.diags.is_empty() {
+        let text = |x: Str| m.strings.get(x.off as usize..(x.off + x.len) as usize).unwrap_or(&[]);
+        let resolved = resolve_diag_keys(
+            rows.diags,
+            m.symbols.iter().map(|r| (r.kind, text(r.name), text(r.version))),
+        )?;
+        m.diags = resolved;
+    }
     // The rows added for the options' names are no key of the link: none
     // has a `.symtab` entry.
     m.symtab_keys
@@ -2560,6 +2592,376 @@ pub fn option_names(plan_keys: Vec<Vec<u8>>, keys: &mortar_core::incr::OptionKey
 /// The encoding's (a table past its limits).
 pub fn state5_encode(m: &crate::update::testing::MemoryState) -> Result<Vec<u8>, String> {
     crate::state5::write::encode(m).map_err(|e| e.to_string())
+}
+
+// ---- DIAGS (IN-75a; WP-265) ----------------------------------------------------
+
+/// One warning's row before its key is a `SYMBOLS` row: the name it is
+/// looked up by, and the rest of [`crate::update::diags::row`]'s inputs.
+struct PendingDiag {
+    key: mortar_diag::Key,
+    d: mortar_diag::Diagnostic,
+    /// The key subject by (name, version), when the code has one.
+    name: Option<(Vec<u8>, Vec<u8>)>,
+    /// Subjects other than the key (files, the link).
+    subjects: Vec<crate::update::diags::Subject>,
+    refs: Vec<crate::update::diags::DiagRef>,
+    /// A dormant row (WP-221 §2.4): made by `diags::dormant`.
+    dormant: Option<FileId>,
+}
+
+/// `DIAGS`' rows of a full link (IN-75a; WP-265): one per warning of
+/// `warnings` (the collector's, `mortar_diag::Collector::warnings`, in
+/// report order), then one dormant row per warned key of `gnu_warnings`
+/// (`Front::gnu_warnings`: (key, holder, section), by key) that no warning
+/// names, in the capture's ids (a `FILES` row is its `FileId`, a key its
+/// format-4 `SYMBOLS` row in `four`; `compact::normalize` maps both).
+///
+/// Subjects (diag.md's subjects column, `mortar_diag::subject::subjects`):
+/// - a reference-site warning (`gnu-warning` of a key, `undefined-symbol`;
+///   phase 70): its key; for `gnu-warning` also the holder of the key's
+///   first `.gnu.warning.<key>` section (the one the scan's text is
+///   from); its references the listed `referenced by` places, each the
+///   relocation the scan numbers (section index × 2^32 + record), its
+///   count the diagnostic's own (more than three: a capped row, which an
+///   update that touches it falls back on, `diags::Site::unchanged`);
+/// - any other warning: every file its place and context lines name, its
+///   key (the kind's symbol) when the code's column has one, the link when
+///   the column has it.
+///
+/// The check (write time): every row reads back (`diags::diagnostic`) to
+/// its warning's model, and renders to its bytes; no two rows share
+/// `DIAGS`' key (phase, unit, seq, code, text).
+///
+/// # Errors
+/// A warning whose subjects are not known here, named (its code and why):
+/// the link writes no state (the next link is a full one, `no-state`).
+pub fn diag_rows(
+    inputs: &Inputs<'_>,
+    gnu_warnings: &[(SymbolId, FileId, SectionIndex)],
+    four: &State,
+    warnings: &[(mortar_diag::Key, mortar_diag::Diagnostic)],
+) -> Result<Vec<crate::update::diags::DiagRow>, String> {
+    let named = diag_rows_named(inputs, gnu_warnings, warnings)?;
+    resolve_diag_keys(
+        named,
+        four.symbols.iter().map(|r| (r.kind, four.str(r.name), four.str(r.version))),
+    )
+}
+
+/// A `DIAGS` row whose key subject is still a name ([`diag_rows_named`]):
+/// the row holds `Subject::Key(SymbolId(NONE))` for it until
+/// [`resolve_diag_keys`] puts the key's `SYMBOLS` row.
+type NamedDiag = (crate::update::diags::DiagRow, Option<(Vec<u8>, Vec<u8>)>);
+
+/// [`diag_rows`]' rows, each key by its name (`state5_rows` resolves them
+/// after it adds the rows of the options' unmentioned names: an
+/// `entry-not-found` warning's key is one).
+#[allow(clippy::too_many_lines, reason = "each code's subjects, in one place")]
+fn diag_rows_named(
+    inputs: &Inputs<'_>,
+    gnu_warnings: &[(SymbolId, FileId, SectionIndex)],
+    warnings: &[(mortar_diag::Key, mortar_diag::Diagnostic)],
+) -> Result<Vec<NamedDiag>, String> {
+    use crate::update::diags::{DiagRef, Subject, reference_site};
+    use mortar_diag::subject::{SubjectKind, subjects};
+    use mortar_diag::{Context, Diagnostic, FileRef, Kind, Place, Relation, Style};
+    // The scan's key of a warned key is its FIRST `.gnu.warning.<key>`
+    // section of a live file (`mortar_scan::report::gnu_warning`).
+    let mut holders: Vec<(SymbolId, FileId, SectionIndex)> = Vec::new();
+    for &w in gnu_warnings {
+        if holders.last().is_none_or(|h| h.0 != w.0) {
+            holders.push(w);
+        }
+    }
+    if warnings.is_empty() && holders.is_empty() {
+        return Ok(Vec::new());
+    }
+    let refuse = |code: &str, why: &str| format!("DIAGS: a warning {code}: {why} (IN-75a)");
+    let object = |f: FileId| match inputs.files.get(f).map(|x| &x.reader) {
+        Some(Reader::Object(o)) => Some(*o),
+        _ => None,
+    };
+    let text_of = |w: &(SymbolId, FileId, SectionIndex)| -> Option<String> {
+        let data = object(w.1)?.section(w.2).and_then(|s| s.data()).ok()?;
+        let end = data.iter().position(|&b| b == 0).unwrap_or(data.len());
+        Some(String::from_utf8_lossy(&data[..end]).into_owned())
+    };
+    // Each display a file of the link has, once (two files of one display:
+    // `None`, refused when a warning names it).
+    let mut displays: std::collections::BTreeMap<FileRef, Option<FileId>> =
+        std::collections::BTreeMap::new();
+    for (id, f) in inputs.files.iter() {
+        displays.entry(f.display()).and_modify(|e| *e = None).or_insert(Some(id));
+    }
+    let file_of = |code: &str, r: &FileRef| -> Result<FileId, String> {
+        displays.get(r).copied().flatten().ok_or_else(|| {
+            refuse(code, &format!("it names {r:?}, which is not one file of the link"))
+        })
+    };
+    // The relocations of section `index` of `file` (`SHT_RELA` or `SHT_REL`
+    // whose `sh_info` names it): each record's (r_offset, symbol name).
+    let relocs = |file: FileId, index: u32| -> Option<Vec<(u64, Vec<u8>)>> {
+        let o = object(file)?;
+        let symtab = o.symbols().ok()??;
+        let mut out = None;
+        for s in o.sections() {
+            let t = s.sh_type();
+            if !matches!(t, mortar_elf::consts::SHT_RELA | mortar_elf::consts::SHT_REL)
+                || s.info_section().ok()?.0 != index
+            {
+                continue;
+            }
+            if out.is_some() {
+                return None;
+            }
+            let name = |r_sym: u32| -> Option<Vec<u8>> {
+                let sym = symtab.get(mortar_elf::SymbolIndex(r_sym)).ok()?;
+                Some(symtab.name(&sym).ok()?.to_vec())
+            };
+            let mut v = Vec::new();
+            if t == mortar_elf::consts::SHT_RELA {
+                for r in &s.rela().ok()? {
+                    v.push((r.r_offset, name(r.r_sym)?));
+                }
+            } else {
+                for r in &s.rel().ok()? {
+                    v.push((r.r_offset, name(r.r_sym)?));
+                }
+            }
+            out = Some(v);
+        }
+        out
+    };
+    let mut pending: Vec<PendingDiag> = Vec::with_capacity(warnings.len() + holders.len());
+    let mut warned: Vec<SymbolId> = Vec::new();
+    for (key, d) in warnings {
+        let code = d.id();
+        let column = subjects(code);
+        if column.is_empty() {
+            return Err(refuse(code, "its code has no subjects in diag.md's table"));
+        }
+        let site = reference_site(code) && key.phase == 70;
+        let mut p = PendingDiag {
+            key: *key,
+            d: d.clone(),
+            name: None,
+            subjects: Vec::new(),
+            refs: Vec::new(),
+            dormant: None,
+        };
+        if site {
+            // The first reference is the key's (`undefined_key`).
+            let first_file = FileId(key.unit);
+            let (first_index, first_record) = ((key.seq >> 32) as u32, key.seq as u32);
+            let first = relocs(first_file, first_index)
+                .and_then(|v| v.get(first_record as usize).cloned())
+                .ok_or_else(|| refuse(code, "its first reference is not a relocation"))?;
+            let name: Vec<u8> = if code == "gnu-warning" {
+                let Kind::GnuWarning { text } = d.kind() else {
+                    return Err(refuse(code, "not a gnu-warning kind"));
+                };
+                let hit: Vec<&(SymbolId, FileId, SectionIndex)> = holders
+                    .iter()
+                    .filter(|h| inputs.symbols.get(h.0).is_some_and(|s| s.name == &first.1[..]))
+                    .collect();
+                let [h] = hit[..] else {
+                    return Err(refuse(code, "its key is not one warned key"));
+                };
+                if text_of(h).as_deref() != Some(text.as_str()) {
+                    return Err(refuse(code, "its text is not its holder's"));
+                }
+                let k = inputs.symbols.get(h.0).ok_or_else(|| refuse(code, "a key"))?;
+                if k.version.is_some() {
+                    return Err(refuse(code, "a versioned key"));
+                }
+                warned.push(h.0);
+                p.subjects.push(Subject::File(h.1));
+                first.1.clone()
+            } else {
+                let n = d.kind().symbol().ok_or_else(|| refuse(code, "no symbol"))?;
+                if n.as_bytes() != &first.1[..] {
+                    return Err(refuse(code, "its first reference is not to its key"));
+                }
+                n.as_bytes().to_vec()
+            };
+            if d.place().is_some() {
+                return Err(refuse(code, "a reference-site warning with a place"));
+            }
+            for c in d.context() {
+                let (file, section, offset) = match c {
+                    Context::At(
+                        Relation::ReferencedBy,
+                        Place::Section { file, section, offset },
+                    ) => (file, section, *offset),
+                    Context::Note(_) => continue,
+                    Context::At(..) => {
+                        return Err(refuse(code, "a context line not a reference"));
+                    }
+                };
+                let f = file_of(code, file)?;
+                let o = object(f).ok_or_else(|| refuse(code, "a reference not in an object"))?;
+                let mut found: Vec<DiagRef> = Vec::new();
+                for s in o.sections() {
+                    if s.name().ok() != Some(section.as_bytes()) {
+                        continue;
+                    }
+                    let index = s.index().0;
+                    for (n, r) in relocs(f, index).unwrap_or_default().iter().enumerate() {
+                        if r.0 == offset && r.1 == name {
+                            found.push(DiagRef {
+                                file: f,
+                                seq: (u64::from(index) << 32) + n as u64,
+                                offset,
+                            });
+                        }
+                    }
+                }
+                let [r] = found[..] else {
+                    return Err(refuse(code, "a reference that is not one relocation"));
+                };
+                p.refs.push(r);
+            }
+            if p.refs.first().map(|r| (r.file.0, r.seq)) != Some((key.unit, key.seq)) {
+                return Err(refuse(code, "its first listed reference is not its key's"));
+            }
+            p.name = Some((name, Vec::new()));
+        } else {
+            let places = d.place().into_iter().chain(d.context().iter().filter_map(|c| match c {
+                Context::At(_, p) => Some(p),
+                Context::Note(_) => None,
+            }));
+            for place in places {
+                let (Place::File(file)
+                | Place::Section { file, .. }
+                | Place::Symbol { file, .. }
+                | Place::Record { file, .. }) = place
+                else {
+                    continue;
+                };
+                p.subjects.push(Subject::File(file_of(code, file)?));
+            }
+            if column.contains(&SubjectKind::Key) {
+                // An ODR record finding (odr.md §9.1; `mortar_odr::records`,
+                // its seq tagged): its key is an ODR key (`Subject::OdrKey`,
+                // PROVISIONAL until U-8 numbers them): not stored here.
+                if code.starts_with("odr-") && key.seq >> 44 != 0 {
+                    return Err(refuse(code, "an ODR record finding (its ODR key: U-8)"));
+                }
+                match d.kind().symbol() {
+                    Some(n) => p.name = Some((n.as_bytes().to_vec(), Vec::new())),
+                    // `gnu-warning` of a file (`.gnu.warning`, no key).
+                    None if code == "gnu-warning" => {}
+                    None => return Err(refuse(code, "its key is not in its kind")),
+                }
+            }
+            if column.contains(&SubjectKind::Link) {
+                p.subjects.push(Subject::Link);
+            }
+        }
+        pending.push(p);
+    }
+    for h in &holders {
+        if warned.contains(&h.0) {
+            continue;
+        }
+        let k = inputs.symbols.get(h.0).ok_or("DIAGS: a warned key out of range")?;
+        let text = text_of(h).ok_or("DIAGS: a .gnu.warning section that does not read")?;
+        if k.version.is_some() {
+            return Err("DIAGS: a versioned warned key (IN-75a)".into());
+        }
+        pending.push(PendingDiag {
+            key: mortar_diag::Key { phase: 70, unit: h.1.0, seq: u64::MAX },
+            d: Diagnostic::warning(Kind::GnuWarning { text }),
+            name: Some((k.name.to_vec(), Vec::new())),
+            subjects: Vec::new(),
+            refs: Vec::new(),
+            dormant: Some(h.1),
+        });
+    }
+    let plain = Style::plain("");
+    let mut out = Vec::with_capacity(pending.len());
+    for p in pending {
+        let code = p.d.id();
+        let key = p.name.as_ref().map(|_| SymbolId(NONE));
+        let row = if let (Some(holder), Some(k)) = (p.dormant, key) {
+            crate::update::diags::dormant(&p.d, k, holder)
+        } else {
+            let mut subjects = p.subjects;
+            subjects.extend(key.map(Subject::Key));
+            crate::update::diags::row(p.key, &p.d, subjects, p.refs)
+        }
+        .ok_or_else(|| refuse(code, "it has no row (diags::row)"))?;
+        // The check: the row reads back to the warning, by bytes.
+        let back = crate::update::diags::diagnostic(&row)
+            .ok_or_else(|| refuse(code, "its row does not read back"))?;
+        if back != p.d || back.render(&plain) != p.d.render(&plain) {
+            return Err(refuse(code, "its row reads back to another warning"));
+        }
+        out.push((row, p.name));
+    }
+    let mut seen: Vec<(u16, u32, u64, &str, &str)> = out
+        .iter()
+        .map(|(r, _)| (r.key.phase, r.key.unit, r.key.seq, &r.code[..], &r.text[..]))
+        .collect();
+    seen.sort_unstable();
+    if seen.windows(2).any(|w| w[0] == w[1]) {
+        return Err("DIAGS: two warnings of one key, code and text (IN-75a)".into());
+    }
+    Ok(out)
+}
+
+/// [`diag_rows_named`]' rows with each key subject its `SYMBOLS` row:
+/// `symbols` gives each row's (kind, name, version); one pass for every
+/// name wanted.
+///
+/// # Errors
+/// A name with no global row, or with two (named).
+fn resolve_diag_keys<'b>(
+    named: Vec<NamedDiag>,
+    symbols: impl Iterator<Item = (u8, &'b [u8], &'b [u8])>,
+) -> Result<Vec<crate::update::diags::DiagRow>, String> {
+    use crate::update::diags::Subject;
+    let mut rows_of: HashMap<(Vec<u8>, Vec<u8>), Option<u32>> = HashMap::default();
+    for (_, n) in &named {
+        if let Some(n) = n {
+            rows_of.insert(n.clone(), None);
+        }
+    }
+    if !rows_of.is_empty() {
+        for (i, (kind, name, version)) in symbols.enumerate() {
+            if !matches!(kind, sym_kind::GLOBAL | sym_kind::VERSIONED) {
+                continue;
+            }
+            if let Some(slot) = rows_of.get_mut(&(name.to_vec(), version.to_vec())) {
+                if slot.is_some() {
+                    return Err("DIAGS: two SYMBOLS rows of one key".into());
+                }
+                *slot = Some(i as u32);
+            }
+        }
+    }
+    let mut out = Vec::with_capacity(named.len());
+    for (mut row, name) in named {
+        if let Some(n) = name {
+            let k = rows_of.get(&n).copied().flatten().ok_or_else(|| {
+                format!(
+                    "DIAGS: a warning {}: its key {:?} has no SYMBOLS row (IN-75a)",
+                    row.code,
+                    String::from_utf8_lossy(&n.0)
+                )
+            })?;
+            for x in &mut row.subjects {
+                if *x == Subject::Key(SymbolId(NONE)) {
+                    *x = Subject::Key(SymbolId(k));
+                }
+            }
+            row.subjects.sort_unstable();
+            row.subjects.dedup();
+        }
+        out.push(row);
+    }
+    Ok(out)
 }
 
 // ---- replay (IN-61) ------------------------------------------------------------
