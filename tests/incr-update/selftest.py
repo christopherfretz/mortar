@@ -261,6 +261,21 @@ def units(log=print):
         case('report-detail-none', detail('incremental: full (small-output)'), ('small-output', None))
         case('report-detail-update', detail('incremental: update'), ('update', None))
 
+        # (c) after an update (ruling M2a2-1): `n/a base-was-update` exactly
+        # when the previous successful hop's link was an update; a fall-back
+        # whose base was a FULL link and whose report has no `delta end`
+        # still FAILS.
+        def oracle_c(base_was_update):
+            with open(rp, 'w') as fh:
+                fh.write('incremental: full (update-not-implemented (layout))\n')
+            v = _verdict('update-not-implemented')
+            xr = judge.Link(d, 'x', 'x.map', 0, [], rp)
+            base = judge.Link(d, 'prog', 'prog.map', 0, [])
+            judge._oracle(v, xr, base, base, judge.Hop(base_was_update=base_was_update))
+            return v.checks[0][1]
+        case('oracle-base-was-update', oracle_c(True), 'n/a base-was-update')
+        case('oracle-base-full-no-delta-end-fails', oracle_c(False), 'FAIL the report has no `delta end`')
+
     def expect(reason, det):
         v = _verdict(reason)
         judge.expect_full(v, ('update-not-implemented', 'live'), det)

@@ -257,6 +257,7 @@ class Run:
             env['INCR_WRONG_AT'] = str(self.wrong_at)
         prev = None             # the previous successful hop's G (the oracle's base)
         prev_h = None
+        prev_update = False     # ruling M2a2-1: the previous successful hop's subject link was an update
         for i, macros in enumerate(self.sc.hops):
             objs = self.objects(macros)
             names = self.install(W, objs)
@@ -296,8 +297,10 @@ class Run:
             f = judge.Link(Hf, 'prog', 'prog.map', fs, [], stderr=ferr)
             new = judge.Link(H, 'prog', 'prog.map', gs, []) if gs == 0 and fs == 0 else None
             hop = judge.Hop(prev=prev_out, ranges=os.path.join(H, 'dirty.txt'), state=state,
-                            state_before=state_before, scratch=H)
+                            state_before=state_before, scratch=H, base_was_update=prev_update)
             v = judge.judge_step(tools, x, f, prev, new, hop)
+            if ('oracle', 'n/a base-was-update') in v.checks:
+                res['base_was_update'] = res.get('base_was_update', 0) + 1
             if self.sc.expect_full and i > 0:
                 judge.expect_full(v, self.sc.expect_full, judge.report_detail(x.report))
             reason = v.reason or ('link-failed' if xs != 0 else 'no-report')
@@ -317,6 +320,7 @@ class Run:
                 if prev_h is not None and not self.opts.get('keep'):
                     shutil.rmtree(prev_h)
                 prev, prev_h = new, H
+                prev_update = xs == 0 and v.reason == 'update'
             elif not self.opts.get('keep'):
                 shutil.rmtree(H)
         res['wall'] = time.time() - t0
@@ -532,6 +536,7 @@ def main(argv):
     results = pool(o['jobs'], work)
     hops = npass = nfail = 0
     na = {}
+    base_upd = sum(r.get('base_was_update', 0) for r in results)
     for r in results:
         for l in r['hops']:
             log('  %s %s' % (r['label'], l))
@@ -552,10 +557,10 @@ def main(argv):
     log('incr-update: live-check (WP-238 P0-7): %d links: %s' % (
         sum(live.values()), ' '.join('%s:%d' % kv for kv in sorted(live.items())) or '-'))
     names = {s.name for s, _c, _t in runs}
-    log('incr-update: %d scenarios, %d hops: %d PASS, %d FAIL, %d n/a (%s); %d runs, %d not here '
-        '(scenario: %d, tools: %d); %.0fs' % (
+    log('incr-update: %d scenarios, %d hops: %d PASS, %d FAIL, %d n/a (%s), %d base-was-update; %d runs, '
+        '%d not here (scenario: %d, tools: %d); %.0fs' % (
             len(names), hops, npass, nfail, sum(na.values()),
-            ' '.join('%s:%d' % kv for kv in sorted(na.items())) or '-', len(runs), len(skips),
+            ' '.join('%s:%d' % kv for kv in sorted(na.items())) or '-', base_upd, len(runs), len(skips),
             sum(1 for _l, w in skips if not w.startswith('TOOL ')),
             sum(1 for _l, w in skips if w.startswith('TOOL ')), time.time() - t0))
     return 1 if nfail else 0

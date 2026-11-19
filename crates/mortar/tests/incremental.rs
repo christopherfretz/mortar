@@ -2785,17 +2785,50 @@ fn identity_check_refuses_a_new_relocation() {
     );
 }
 
-/// M2a-2: a merged string of the same size changes (`world` -> `wurld`):
-/// the ruling wants an update that equals the full link. FINDING (M2a2):
-/// the fragment's identity IS state rows (`FRAGS`, kind 11, keyed by the
-/// content hash, and the file's `FRAG_USE`, kind 56): the capture differs
-/// there (the same offsets, the hash of the string at offset 9 changed),
-/// so the identity check refuses it `(layout)`. Ignored until ruled.
+/// Ruling M2a2-3: a merged string of the same size changes (`world` ->
+/// `wurld`). The fragment's identity IS state rows (`FRAGS`, kind 11,
+/// keyed by the content hash, and the file's `FRAG_USE`, kind 56): the
+/// capture differs there, so the identity check refuses it by name,
+/// `update-not-implemented (layout)` (`--incremental=update`'s error,
+/// before the first write), and the link that falls back (plain
+/// `--incremental`) is a full link whose output equals `--incremental=full`'s.
+/// When the delta layout runs (U-4 item 6, M2b/M3) this test flips to an
+/// update.
 #[test]
-#[ignore = "M2a2 finding: FRAGS/FRAG_USE are keyed by the content hash; ruling asked"]
-fn identity_check_updates_a_merged_string_change() {
-    let r = ("\"world\"", "\"wurld\"");
-    identity_case("merged string", r, r, true);
+fn identity_check_falls_back_by_name_on_a_merged_string_change() {
+    let programs = same_size_programs();
+    assert!(programs.len() == 2 || !tools_required(), "{} of the 2 programs built", programs.len());
+    for (prog, text, _) in programs {
+        let arch = prog.arch;
+        let (from, to) = ("\"world\"", "\"wurld\"");
+        assert!(text.contains(from), "{from:?} is not in the source");
+        let o = prog.mortar_env("o", &["--incremental"], &[]);
+        assert!(o.success(), "{arch:?}: {}", o.stderr_text());
+        let before = prog.bytes("o");
+        recompile(&prog, &text.replace(from, to));
+        // `--incremental=update` (it ignores `small-output`): the fall-back
+        // is its error, by name, before the first write.
+        let o = prog.mortar_env("o", &["--incremental=update", "--incremental-report"], &[]);
+        let err = o.stderr_text();
+        assert!(!o.success(), "{arch:?}: updated: {err}");
+        assert!(
+            err.contains("cannot update: update-not-implemented (layout)"),
+            "{arch:?}: not the named fall-back: {err}"
+        );
+        assert!(prog.bytes("o") == before, "{arch:?}: the refused update wrote the output");
+        // The link that falls back (plain `--incremental`) is a full link.
+        let o = prog.mortar_env("o", &["--incremental", "--incremental-report"], &[]);
+        let err = o.stderr_text();
+        assert!(o.success(), "{arch:?}: {err}");
+        assert!(err.contains("incremental: full ("), "{arch:?}: {err}");
+        let o = prog.mortar_env("full", &["--incremental=full"], &[]);
+        assert!(o.success(), "{arch:?}: {}", o.stderr_text());
+        let (got, want) = (prog.bytes("o"), prog.bytes("full"));
+        if let Some(i) = got.iter().zip(&want).position(|(a, b)| a != b) {
+            panic!("{arch:?}: the output differs from the full link at {i:#x}");
+        }
+        assert_eq!(got.len(), want.len(), "{arch:?}: sizes");
+    }
 }
 
 /// Ruling M2a-4 (IN-77e): a write step of an update that fails FAILS the

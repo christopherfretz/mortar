@@ -398,6 +398,16 @@ fn write_identity(
             Err(error) => Err(WriteFailure::Failed { step: "W5", error }),
         }
     };
+    // Ruling M2a2-1: an update writes no format-4 side state (format 5
+    // only; the side state and the dry run go at M6) and removes a stale
+    // one, before the first write: it describes an output that is about
+    // to stop existing.
+    let side = crate::incremental::format4_path(session.state_path());
+    match std::fs::remove_file(&side) {
+        Ok(()) => {}
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+        Err(error) => return Err(UpdateError::Failed { step: "format4", error }),
+    }
     let w = write::write_with(
         &pair,
         view,
