@@ -28,20 +28,28 @@
 //! `FRAG_USE` rows are the live ones). A plain link never calls this.
 
 use mortar_core::OutSecId;
-use mortar_core::id::{FileId, SectionId, SymbolId};
-use mortar_core::incr::{IncrReason, MergeClass, MergedPiece};
+use mortar_core::id::{ComdatId, FileId, OptId, SectionId, SymbolId};
+use mortar_core::incr::{IncrReason, MergeClass, MergedPiece, Unimplemented};
 use mortar_core::inputs::{LinkTarget, RelocForm};
 use mortar_core::par::Pool;
+use mortar_core::plan::Plan;
 use mortar_core::resolution::SectionKind;
-use mortar_elf::consts::{SHT_REL, SHT_RELA, STB_WEAK};
+use mortar_elf::consts::{GRP_COMDAT, SHF_COMPRESSED, SHT_GROUP, SHT_REL, SHT_RELA, STB_WEAK};
 use mortar_elf::{Class, Object, Section, SectionIndex, SymbolIndex};
 use mortar_incr::format::{NONE, def_kind};
 use mortar_incr::update::view::StateView;
+use mortar_input::facts::effective_signature;
+use mortar_layout::Header;
+use mortar_layout::assign::{Fate, fate};
+use mortar_merge::What;
 use mortar_merge::cut::{self, Whole};
 use mortar_merge::eh::{self, EhFrames, EhIn, EhReloc, Target};
 use mortar_merge::phase::{self, LinkSection, Relocs, Unit};
-use mortar_merge::{Problem, What};
+use mortar_resolve::resolve::object_section_rows;
+use mortar_resolve::tables::section_info;
+use mortar_resolve::view::Groups;
 use std::borrow::Cow;
+use std::collections::BTreeMap;
 
 use super::file_front::FileFront;
 
@@ -178,12 +186,11 @@ fn target_of(id: SymbolId, kind: u8, bind: u8, section: u32, value: u64) -> Targ
 }
 
 /// The reason of a problem the split of an opened file meets: the full
-/// link diagnoses it, the update falls back.
-fn reason(front: &FileFront<'_>, p: &Problem) -> IncrReason {
-    IncrReason::InputChanged(format!(
-        "file {}: the split of section {} meets {:?} (the full link reports it)",
-        front.file.0, p.section, p.what
-    ))
+/// link diagnoses it, the update falls back (`update-not-implemented
+/// (split)`, ruling D2-2: the file was opened and its hash checked, so its
+/// input did not change).
+fn reason() -> IncrReason {
+    IncrReason::UpdateNotImplemented(Some(Unimplemented::Split))
 }
 
 /// The split of the file of `front`, with `facts` answering each section
@@ -191,8 +198,8 @@ fn reason(front: &FileFront<'_>, p: &Problem) -> IncrReason {
 /// relocation classification (`phase::ArchRelocs` of the link's `Arch`).
 ///
 /// # Errors
-/// `input-changed` for a section the split refuses or finds malformed
-/// (the full link reports it); `state-corrupt` never from here (the
+/// `update-not-implemented (split)` for a section the split refuses or
+/// finds malformed (the full link reports it); `state-corrupt` never from here (the
 /// rows `global` reads give theirs as a problem).
 pub fn split_of<F>(
     front: &FileFront<'_>,
@@ -206,7 +213,7 @@ where
 {
     let target = LinkTarget::of(front.object.machine());
     let link = FileLink { front, view, facts, target };
-    let units = phase::units(&link, front.file, relocs).map_err(|p| reason(front, &p))?;
+    let units = phase::units(&link, front.file, relocs).map_err(|_| reason())?;
     let mut pieces = Vec::new();
     let mut whole = Vec::new();
     let mut eh_units = Vec::new();
@@ -215,12 +222,7 @@ where
         match u {
             Unit::Merge(m, bytes) => {
                 offs.clear();
-                cut::cut(&bytes, m.strings, m.entsize as usize, &mut offs).map_err(
-                    |(what, offset)| {
-                        let p = Problem { file: m.file, section: m.index, piece: 0, offset, what };
-                        reason(front, &p)
-                    },
-                )?;
+                cut::cut(&bytes, m.strings, m.entsize as usize, &mut offs).map_err(|_| reason())?;
                 let class = MergeClass { strings: m.strings, entsize: m.entsize, align: m.align };
                 for (j, &o) in offs.iter().enumerate() {
                     let end = offs.get(j + 1).map_or(bytes.len(), |&e| e as usize);
@@ -255,14 +257,123 @@ where
             relocs,
         })
         .collect();
-    let eh = eh::parse(pool, word, &eh_in).map_err(|ps| {
-        let first = ps.into_iter().next();
-        first.map_or_else(
-            || IncrReason::InputChanged(format!("file {}: .eh_frame", front.file.0)),
-            |p| reason(front, &p),
-        )
-    })?;
+    let eh = eh::parse(pool, word, &eh_in).map_err(|_| reason())?;
     drop(eh_in);
     let eh_relocs = eh_units.into_iter().map(|u| u.3).collect();
     Ok(FileSplit { file: front.file, pieces, whole, eh, eh_relocs })
+}
+
+/// The section facts of a CHANGED file (`front`, opened with
+/// `Ids::Update`), one per section index (index 0 included), from their
+/// ONE producers (WP-255d2c; rulings D2-5..D2-8):
+/// - `kept` and `kind`: resolve's per-object body
+///   (`mortar_resolve::resolve::object_section_rows`, the whole link's
+///   `section_rows`) over the file's groups, with each COMDAT signature's
+///   keeper from the update's resolution (`keepers`:
+///   `ResolveDelta::keepers`, the update's election);
+/// - `out`: layout's `assign::fate` (the whole link's) and the state's
+///   `OUTSECS` row of the name (the layout is the stored one).
+///
+/// `plan`: the update's line (its `-S`/`--gdb-index`). A plain link never
+/// calls this.
+///
+/// # Errors
+/// `update-not-implemented (resolve)` for a group signature `keepers` does
+/// not name, a group or section the whole link would report or refuse
+/// (resolve's problems; the update carries no diagnostic); `(layout)` for
+/// a section `fate` refuses or whose output section the state has no
+/// `OUTSECS` row of (an orphan placement: U-4's); `state-corrupt` from the
+/// rows.
+pub fn changed_facts(
+    front: &FileFront<'_>,
+    view: &StateView<'_>,
+    plan: &Plan,
+    keepers: &[(Vec<u8>, Option<FileId>)],
+) -> Result<Vec<SectionFact>, IncrReason> {
+    let resolve = || IncrReason::UpdateNotImplemented(Some(Unimplemented::Resolve));
+    let layout = || IncrReason::UpdateNotImplemented(Some(Unimplemented::Layout));
+    let object = &front.object;
+    let machine = object.machine();
+    let count = object.section_count();
+    // The file's groups as a `View` gives them, the signatures numbered
+    // in the file (`ComdatId(k)`: the k-th distinct name), their keepers
+    // in that numbering.
+    let table = object.symbols().map_err(|_| resolve())?;
+    let mut groups = Groups::default();
+    let mut sig_ids: BTreeMap<&[u8], u32> = BTreeMap::new();
+    let mut keeper: Vec<OptId<FileId>> = Vec::new();
+    let mut members = Vec::new();
+    for i in 1..count {
+        let s = object.section(SectionIndex(i)).map_err(|_| resolve())?;
+        if s.sh_type() != SHT_GROUP {
+            continue;
+        }
+        let g = s.group().map_err(|_| resolve())?;
+        let name = effective_signature(object, table.as_ref(), &s).map_err(|_| resolve())?;
+        members.clear();
+        for m in g.members() {
+            members.push(m.map_err(|_| resolve())?.0);
+        }
+        let next = sig_ids.len() as u32;
+        let sig = *sig_ids.entry(name).or_insert(next);
+        if sig == next {
+            keeper.push(OptId::NONE);
+        }
+        if g.flags() == GRP_COMDAT && !members.is_empty() {
+            let at =
+                keepers.binary_search_by(|k| k.0.as_slice().cmp(name)).map_err(|_| resolve())?;
+            keeper[sig as usize] = keepers[at].1.map_or(OptId::NONE, OptId::some);
+        }
+        groups.push(SectionIndex(i), g.flags(), ComdatId(sig), &members);
+    }
+    let rows = object_section_rows(machine, plan, front.file, &groups, &keeper, count, |i| {
+        section_info(object, i)
+    })
+    .ok_or_else(resolve)?;
+    let mut outsecs: Option<BTreeMap<Vec<u8>, OutSecId>> = None;
+    let mut facts = Vec::with_capacity(rows.len());
+    for (i, row) in rows.iter().enumerate() {
+        let header = if i == 0 {
+            Header::EMPTY
+        } else {
+            let s = object.section(SectionIndex(i as u32)).map_err(|_| resolve())?;
+            // `gather`'s size: the decompressed one of a compressed input.
+            let mut size = s.size();
+            if s.flags() & SHF_COMPRESSED != 0
+                && let Ok(Some(c)) = s.compression()
+            {
+                size = c.header.ch_size;
+            }
+            let name = s.name().map_err(|_| resolve())?;
+            let h = s.header();
+            // `fate` reads the name, type, flags and size only.
+            Header {
+                name,
+                sh_type: h.sh_type,
+                flags: h.sh_flags,
+                size,
+                align: 0,
+                link: None,
+                entsize: 0,
+            }
+        };
+        let out = match fate(&header, row, machine).map_err(|_| layout())? {
+            Fate::Out(name) => {
+                if outsecs.is_none() {
+                    let mut by_name = BTreeMap::new();
+                    for (k, r) in view.outsecs()?.iter().enumerate() {
+                        if r.ordinal == 0 {
+                            by_name.insert(view.string(r.name)?, OutSecId(k as u32));
+                        }
+                    }
+                    outsecs = Some(by_name);
+                }
+                let id = outsecs.as_ref().and_then(|m| m.get(name).copied());
+                Some(id.ok_or_else(layout)?)
+            }
+            Fate::None | Fate::Discard | Fate::Consumed => None,
+        };
+        facts.push(SectionFact { kind: row.kind, kept: row.is_kept(), out });
+    }
+    Ok(facts)
 }

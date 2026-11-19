@@ -110,11 +110,16 @@ pub enum Unimplemented {
     /// WP-239 R-4). Decided by the join, comparing the value before and
     /// after.
     Slots,
+    /// The split of an opened, hash-checked file (its merge sections'
+    /// pieces, its `.eh_frame` records) meets a problem the full link
+    /// reports (WP-255d3 D3-3 as ruled by WP-255d2 D2-2): the input did
+    /// not change, the update falls back and the full link diagnoses it.
+    Split,
 }
 
 impl Unimplemented {
     /// Every word, in `spec/incr.md` §7's order.
-    pub const ALL: [Self; 15] = [
+    pub const ALL: [Self; 16] = [
         Self::State5,
         Self::Resolve,
         Self::Refill,
@@ -130,6 +135,7 @@ impl Unimplemented {
         Self::Common,
         Self::Eh,
         Self::Slots,
+        Self::Split,
     ];
 
     /// The word (`spec/incr.md` §7).
@@ -151,6 +157,7 @@ impl Unimplemented {
             Self::Common => "common",
             Self::Eh => "eh",
             Self::Slots => "slots",
+            Self::Split => "split",
         }
     }
 }

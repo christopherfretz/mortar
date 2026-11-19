@@ -21,7 +21,7 @@ use mortar_core::resolution::{
 };
 use mortar_core::{ComdatId, FileId, IdRange, OptId, SectionId, SymEntry, SymbolId};
 use mortar_elf::consts::{STB_WEAK, STT_TLS};
-use mortar_elf::{SectionIndex, SymbolSection};
+use mortar_elf::{Machine, SectionIndex, SymbolSection};
 
 use crate::comdat::{Keepers, SectionMap, keepers};
 use crate::linker::{self, Provided};
@@ -34,7 +34,7 @@ use crate::options::{DefsymValue, Entry, Options};
 use crate::problem::{ComdatMismatch, DefPlace, DefsymWhy, DiagKey, Problem, What};
 use crate::sections::{self, Note, SectionRefusal};
 use crate::steps::Steps;
-use crate::view::{FileKind, Mention, View, entry_word, word_entry};
+use crate::view::{FileKind, Groups, Mention, SectionInfo, View, entry_word, word_entry};
 
 /// The definition of a key (§3.2), stage A's form of `def`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -358,13 +358,7 @@ fn resolve_stage<V: View>(
             section_base.push(IdRange::new(start, SectionId(next)));
         }
         offsets.push(next as usize);
-        let blank = SectionRow {
-            kind: SectionKind::Null,
-            state: SectionState::Dropped(DropReason::Consumed),
-            reloc: SectionIndex(0),
-            comdat: OptId::NONE,
-        };
-        let mut sections = vec![blank; next as usize];
+        let mut sections = vec![BLANK; next as usize];
         steps.step("resolve.section_base");
 
         let again = AtomicBool::new(false);
@@ -772,27 +766,31 @@ fn d1_file<V: View>(
 /// something MT-2 forbids); it takes the `SHF_EXCLUDE` row, its
 /// relocations are dropped with it, and the file is warned once
 /// (`misnamed`: it was already).
-fn relocated_containers<V: View>(
-    ctx: &Ctx<'_, V>,
+#[allow(clippy::too_many_arguments, reason = "the object's inputs, as section_rows passes them")]
+fn relocated_containers<'v, S>(
+    opts: &Options,
+    section: &S,
     file: FileId,
     n: u32,
     rows: &mut [SectionRow],
     map: &SectionMap,
     mut misnamed: bool,
     out: &mut Found,
-) {
+) where
+    S: Fn(SectionIndex) -> Option<SectionInfo<'v>>,
+{
     for i in 1..n {
         let row = &mut rows[i as usize];
         if row.kind != SectionKind::Meta || row.reloc.0 == 0 {
             continue;
         }
-        let Some(s) = ctx.view.section(file, SectionIndex(i)) else { continue };
+        let Some(s) = section(SectionIndex(i)) else { continue };
         row.kind = SectionKind::Excluded;
         // An `Excluded` target's records are nothing (§10, WP-194), of
         // either form: no phase may read them.
         row.reloc = SectionIndex(0);
         let excluded = sections::excluded_reason(&s, Note::None);
-        let strip = ctx.opts.strip_debug && sections::is_debug(&s);
+        let strip = opts.strip_debug && sections::is_debug(&s);
         row.state = sections::state(SectionKind::Excluded, excluded, map.is_dropped(i), strip);
         out.meta.retain(|&m| m != (file, SectionIndex(i)));
         if !misnamed {
@@ -807,14 +805,16 @@ fn relocated_containers<V: View>(
 
 /// §10: each relocation section of one live object to its target, by
 /// `sections::reloc_fate` (WP-194).
-fn reloc_targets<V: View>(
-    ctx: &Ctx<'_, V>,
+fn reloc_targets<'v, S>(
+    machine: Machine,
+    section: &S,
     file: FileId,
     n: u32,
     rows: &mut [SectionRow],
     out: &mut Found,
-) {
-    let machine = ctx.view.machine();
+) where
+    S: Fn(SectionIndex) -> Option<SectionInfo<'v>>,
+{
     // A relocation section applies to its target (§6.5: one applying to a
     // dropped section is dropped with it, as every `Reloc` row is). One
     // whose target has no place is dropped with it whatever its form, and
@@ -823,7 +823,7 @@ fn reloc_targets<V: View>(
         if rows[i as usize].kind != SectionKind::Reloc {
             continue;
         }
-        let Some(s) = ctx.view.section(file, SectionIndex(i)) else { continue };
+        let Some(s) = section(SectionIndex(i)) else { continue };
         let other_form = sections::other_rel_form(machine, s.sh_type);
         let refuse_form = |out: &mut Found| {
             out.problems.push(Problem {
@@ -870,7 +870,7 @@ fn reloc_targets<V: View>(
 /// index consumes the GNU name sets (spec/synth.md S-G6).
 fn row_state(
     opts: &Options,
-    s: &crate::view::SectionInfo<'_>,
+    s: &SectionInfo<'_>,
     kind: SectionKind,
     excluded: DropReason,
     dropped: bool,
@@ -886,7 +886,57 @@ fn row_state(
     state
 }
 
-/// §10 for the sections of one live object.
+/// A section row before §10 fills it (and the row of a file without
+/// sections).
+const BLANK: SectionRow = SectionRow {
+    kind: SectionKind::Null,
+    state: SectionState::Dropped(DropReason::Consumed),
+    reloc: SectionIndex(0),
+    comdat: OptId::NONE,
+};
+
+/// §10 for the `sections` sections of ONE live object outside a whole
+/// link: an update's changed file (WP-255d2c, ruling D2-7). `groups` are
+/// the file's groups with their signatures numbered as `keeper` is
+/// (`keeper[sig]`: the signature's keeper after the update, the update's
+/// resolution's); `section` gives each section as [`View::section`] does
+/// (`crate::tables::section_info`). The body is the whole link's
+/// (`object_rows`, after `SectionMap::fill`'s); its `-S`/`--gdb-index`
+/// options are the plan's.
+///
+/// `None` when the whole link would report a problem for the file's
+/// sections (a refusal, a group's flags, a section in two groups, a
+/// misnamed container, a `.gnu.warning` section) or note a
+/// `.gnu.warning.SYM` section: the update carries none of those, its
+/// caller falls back by name. The rows' `comdat` is in `keeper`'s
+/// numbering, not the whole link's `ComdatId`s.
+#[must_use]
+pub fn object_section_rows<'v, S>(
+    machine: Machine,
+    plan: &mortar_core::plan::Plan,
+    file: FileId,
+    groups: &Groups,
+    keeper: &[OptId<FileId>],
+    sections: u32,
+    section: S,
+) -> Option<Vec<SectionRow>>
+where
+    S: Fn(SectionIndex) -> Option<SectionInfo<'v>>,
+{
+    let (strip_debug, consume_gnu_pubnames) = crate::tables::section_flags(plan);
+    let opts = Options { strip_debug, consume_gnu_pubnames, ..Options::default() };
+    let mut out = Found::default();
+    let mut map = SectionMap::default();
+    map.fill_from(groups, file, sections, keeper, &mut out.problems);
+    let mut rows = vec![BLANK; sections as usize];
+    // Any key: a `.gnu.warning.SYM` section is then recorded, and refused.
+    let find_key = |_: &[u8]| Some(SymbolId(0));
+    object_rows(machine, &opts, &section, &find_key, file, &mut rows, &map, &mut out);
+    (out.problems.is_empty() && out.gnu_warning_syms.is_empty()).then_some(rows)
+}
+
+/// §10 for the sections of one live object (the whole link's caller of
+/// [`object_rows`]: its view's sections and keys, its keepers' map).
 fn section_rows<V: View>(
     ctx: &Ctx<'_, V>,
     file: FileId,
@@ -894,11 +944,36 @@ fn section_rows<V: View>(
     map: &SectionMap,
     out: &mut Found,
 ) {
-    let machine = ctx.view.machine();
+    let section = |i: SectionIndex| ctx.view.section(file, i);
+    let find_key = |name: &[u8]| ctx.view.find_key(name);
+    object_rows(ctx.view.machine(), ctx.opts, &section, &find_key, file, rows, map, out);
+}
+
+/// §10 for the sections of one live object: `classify`, then the
+/// amendments (a dropped copy's refusal, `-S`, the relocation targets, a
+/// relocated container, S-6's merge section placed whole, §6.5's
+/// `SHF_LINK_ORDER`). `map` carries the COMDAT keeper's decision for the
+/// file's sections (`SectionMap::fill` from the keepers): the ONE body the
+/// whole link ([`section_rows`]) and an update's changed file
+/// ([`object_section_rows`]) run (WP-255d2c, ruling D2-7).
+#[allow(clippy::too_many_arguments, reason = "the object's inputs, one by one")]
+fn object_rows<'v, S, K>(
+    machine: Machine,
+    opts: &Options,
+    section: &S,
+    find_key: &K,
+    file: FileId,
+    rows: &mut [SectionRow],
+    map: &SectionMap,
+    out: &mut Found,
+) where
+    S: Fn(SectionIndex) -> Option<SectionInfo<'v>>,
+    K: Fn(&[u8]) -> Option<SymbolId>,
+{
     let n = rows.len() as u32;
     let mut misnamed = false;
     for i in 0..n {
-        let Some(s) = ctx.view.section(file, SectionIndex(i)) else { continue };
+        let Some(s) = section(SectionIndex(i)) else { continue };
         let group = map.group_of(i);
         let dropped = map.is_dropped(i);
         let row = &mut rows[i as usize];
@@ -912,7 +987,7 @@ fn section_rows<V: View>(
                     out.meta.push((file, SectionIndex(i)));
                 }
                 let excluded = sections::excluded_reason(&s, note);
-                row.state = row_state(ctx.opts, &s, kind, excluded, dropped);
+                row.state = row_state(opts, &s, kind, excluded, dropped);
                 match note {
                     Note::Retain if row.is_kept() => out.retained.push((file, SectionIndex(i))),
                     Note::GnuWarning if !dropped => out.problems.push(Problem {
@@ -920,7 +995,7 @@ fn section_rows<V: View>(
                         what: What::GnuWarning { file, section: SectionIndex(i) },
                     }),
                     Note::GnuWarningSym if !dropped => {
-                        if let Some(key) = ctx.view.find_key(&s.name[b".gnu.warning.".len()..]) {
+                        if let Some(key) = find_key(&s.name[b".gnu.warning.".len()..]) {
                             out.gnu_warning_syms.push((key, file, SectionIndex(i)));
                         }
                     }
@@ -934,11 +1009,11 @@ fn section_rows<V: View>(
                 row.kind = SectionKind::Regular;
                 row.state = SectionState::Dropped(DropReason::Comdat);
             }
-            Err(SectionRefusal::Zdebug) if ctx.opts.strip_debug => {
+            Err(SectionRefusal::Zdebug) if opts.strip_debug => {
                 row.kind = SectionKind::Debug;
                 row.state = SectionState::Dropped(DropReason::Stripped);
             }
-            Err(SectionRefusal::Compressed) if ctx.opts.strip_debug && sections::is_debug(&s) => {
+            Err(SectionRefusal::Compressed) if opts.strip_debug && sections::is_debug(&s) => {
                 row.kind = SectionKind::Debug;
                 row.state = SectionState::Dropped(DropReason::Stripped);
             }
@@ -951,8 +1026,8 @@ fn section_rows<V: View>(
             }
         }
     }
-    reloc_targets(ctx, file, n, rows, out);
-    relocated_containers(ctx, file, n, rows, map, misnamed, out);
+    reloc_targets(machine, section, file, n, rows, out);
+    relocated_containers(opts, section, file, n, rows, map, misnamed, out);
     // synth.md S-6: a `Merge` section that is not certain to merge safely
     // is placed whole, as `Regular` (§10), so every later phase (layout's
     // `place`, `addr_in`, the symbol stage) treats it as one piece.
@@ -960,7 +1035,7 @@ fn section_rows<V: View>(
         if rows[i as usize].kind != SectionKind::Merge {
             continue;
         }
-        let Some(s) = ctx.view.section(file, SectionIndex(i)) else { continue };
+        let Some(s) = section(SectionIndex(i)) else { continue };
         if sections::placed_whole(&s, rows[i as usize].reloc.0 != 0) {
             rows[i as usize].kind = SectionKind::Regular;
         }
@@ -969,7 +1044,7 @@ fn section_rows<V: View>(
     // is dropped is dropped too (§6.5).
     if map.any {
         for i in 1..n {
-            let Some(s) = ctx.view.section(file, SectionIndex(i)) else { continue };
+            let Some(s) = section(SectionIndex(i)) else { continue };
             if s.flags & mortar_elf::consts::SHF_LINK_ORDER != 0
                 && map.group_of(i).is_none()
                 && map.is_dropped(s.link)

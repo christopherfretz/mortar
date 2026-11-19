@@ -35,29 +35,35 @@ use std::path::{Path, PathBuf};
 
 use mortar_core::id::{ChunkId, FileId, SectionId, SymbolId};
 use mortar_core::identity::Anchor;
-use mortar_core::incr::IncrReason;
+use mortar_core::incr::{IncrReason, Unimplemented};
 use mortar_core::intern::SymName;
 use mortar_core::par::Pool;
-use mortar_elf::consts::{
-    GRP_COMDAT, SHF_LINK_ORDER, SHT_GROUP, SHT_REL, SHT_RELA, STT_FILE, STT_SECTION,
-};
-use mortar_elf::{Object, SectionIndex, SymbolSection};
+use mortar_elf::consts::{GRP_COMDAT, SHF_LINK_ORDER, SHT_GROUP, SHT_REL, SHT_RELA};
+use mortar_elf::{Object, SectionIndex};
 use mortar_image::plan::RelaTable;
 use mortar_image::rows::SectionFront;
+use mortar_incr::capture;
 use mortar_incr::format::NONE;
 use mortar_incr::update::rows::{FileRow, FileTable, file_flags};
 use mortar_incr::update::view::StateView;
 use mortar_input::facts::{Kind, analyse, effective_signature};
 use mortar_input::store::{ReadJob, Store, content_hash};
 
-/// Which id space the file's rows take.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+/// Which id space the file's rows take, and which `FILES` row names its
+/// bytes.
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Ids {
-    /// An unchanged file: every id is the state's.
+    /// An unchanged file: every id is the state's, and its bytes are the
+    /// ones its stored `FILES` row names.
     Stored,
     /// A changed file: its sections are `first_section + k` (the join's
-    /// allocation, `ChangedFile::first_section`).
-    Update { first_section: SectionId },
+    /// allocation, `ChangedFile::first_section`), and its bytes are the
+    /// ones `row` names (ruling D2-1: the changed file's NEW `FILES` row,
+    /// `ChangedFile::row`, the join's; never the stored row's hash). The
+    /// row's `path` is read from the state's `STRINGS`: a path the state
+    /// does not hold (an appeared file's new string) is
+    /// `update-not-implemented (resolve)`.
+    Update { first_section: SectionId, row: FileRow },
 }
 
 /// One section of a [`FileFront`] (section index `k` of its file).
@@ -100,7 +106,9 @@ pub struct FrontKey<'s> {
 #[derive(Debug, Clone)]
 pub struct FileFront<'s> {
     pub file: FileId,
-    /// Its stored `FILES` row (path, member, `base`, `len`, `hash`).
+    /// The `FILES` row its bytes were read and checked against (path,
+    /// member, `base`, `len`, `hash`): the stored one (`Ids::Stored`) or
+    /// the join's new one (`Ids::Update`).
     pub row: FileRow,
     pub object: Object<'s>,
     /// Its bytes (`base .. base + len` of the file it was read from).
@@ -174,10 +182,19 @@ fn changed(path: &[u8], what: &str) -> IncrReason {
 
 /// The front of `file` (opened once; later calls take the cache's).
 ///
+/// `Ids::Update` takes the file as LIVE (its COMDAT groups count, whatever
+/// the stored row's `LAZY`): the caller (the join) calls it only for a
+/// file the update's link keeps, a changed file or a member the update's
+/// extraction extracts (`mortar_incr::update::extract::Extraction`), never
+/// for a member that stays or becomes unextracted (ruling D2-4).
+///
 /// # Errors
-/// `input-changed` when the bytes read are not the ones `FILES.hash`
-/// names (or no longer an object), `state-corrupt` for rows that do not
-/// fit the file, `update-not-implemented` never.
+/// `input-changed` when the bytes read are not the ones the row's hash
+/// names (`FILES.hash`, or the new row's for `Ids::Update`; or no longer an
+/// object), `state-corrupt` for rows that do not
+/// fit the file; `update-not-implemented (resolve)` for a changed file
+/// (`Ids::Update`) with an `SHF_LINK_ORDER` section outside the groups
+/// linked to a COMDAT member (resolve.md §6.5: the keeper decides).
 pub fn front_of<'c, 's>(
     cache: &'c mut FrontCache<'s>,
     view: &StateView<'_>,
@@ -227,7 +244,18 @@ fn open<'s>(
     file: FileId,
     ids: Ids,
 ) -> Result<FileFront<'s>, IncrReason> {
-    let row = view.file(file)?;
+    // The row its bytes are checked against, and the update's first id
+    // (`None`: an unchanged file, `Ids::Stored`).
+    let (row, update) = match ids {
+        Ids::Stored => (view.file(file)?, None),
+        Ids::Update { first_section, row } => {
+            let strings = view.count(mortar_incr::format::kind::STRINGS);
+            if u64::from(row.path.off) + u64::from(row.path.len) > strings {
+                return Err(IncrReason::UpdateNotImplemented(Some(Unimplemented::Resolve)));
+            }
+            (row, Some(first_section))
+        }
+    };
     let path = view.string(row.path)?;
     if row.flags & file_flags::GONE != 0 {
         return Err(corrupt(format!("file {} is gone", file.0)));
@@ -247,8 +275,8 @@ fn open<'s>(
     let table = object.symbols().map_err(|_| bad("symbol table"))?;
 
     // The ids and the stored rows (an unchanged file).
-    let (first_section, stored) = match ids {
-        Ids::Stored => {
+    let (first_section, stored) = match update {
+        None => {
             let index = view.file_index(file)?;
             let range = index.ranges[FileTable::Sections as usize];
             let stored = view.sections_of(file)?;
@@ -268,14 +296,11 @@ fn open<'s>(
                 (SectionId(range.first), Some(stored))
             }
         }
-        Ids::Update { first_section } => (first_section, None),
+        Some(first_section) => (first_section, None),
     };
 
-    // §7.1: the first named non-local / local symbol defined at offset 0
-    // of each section (`capture::Keys::file_keys`' reading).
+    // The non-local entries and their keys.
     let len = count as usize;
-    let mut global: Vec<Option<&'s [u8]>> = vec![None; len];
-    let mut local: Vec<Option<&'s [u8]>> = vec![None; len];
     let mut keys = Vec::new();
     let mut first_global = 0;
     let mut versioned = 0;
@@ -297,22 +322,15 @@ fn open<'s>(
                     st_size: sym.st_size,
                 });
             }
-            let kind = sym.st_info & 0xf;
-            if name.is_empty() || kind == STT_SECTION || kind == STT_FILE || sym.st_value != 0 {
-                continue;
-            }
-            let Ok(SymbolSection::Section(at)) = symtab.section_of(index, &sym) else { continue };
-            let slot = if index.0 < first_global { &mut local } else { &mut global };
-            if let Some(s @ None) = slot.get_mut(at.0 as usize) {
-                *s = Some(name);
-            }
         }
     }
 
     // Each section's COMDAT group (resolve.md §6: a member of a group whose
     // flags are exactly `GRP_COMDAT`; only for a live file, as resolve
     // fills `SectionRow::comdat` for live objects alone).
-    let live = row.flags & file_flags::LAZY == 0;
+    // A changed or newly extracted file (`Ids::Update`) is live in the
+    // link the update makes, whatever its old row's `LAZY`.
+    let live = update.is_some() || row.flags & file_flags::LAZY == 0;
     let mut comdat: Vec<Option<&'s [u8]>> = vec![None; len];
     let mut rela: Vec<Option<SectionIndex>> = vec![None; len];
     for i in 1..count {
@@ -342,6 +360,38 @@ fn open<'s>(
         }
     }
 
+    // Each section's COMDAT signature as resolve's row gives it.
+    // resolve.md §6.5: an `SHF_LINK_ORDER` section outside the groups
+    // whose linked section is dropped takes that section's group. Whether
+    // it is dropped is the keeper's (whole-program): an unchanged file's
+    // stored row says.
+    // A changed file has no stored row: the keeper decides (whole-link,
+    // U-3's), so such a section is a named fall-back, never a guessed anchor.
+    let mut sig = comdat.clone();
+    for i in 1..count {
+        let s = object.section(SectionIndex(i)).map_err(|_| bad("section header"))?;
+        let link_order = s.flags() & SHF_LINK_ORDER != 0 && comdat[i as usize].is_none();
+        let linked = if link_order {
+            s.link().ok().and_then(|l| comdat.get(l.0 as usize).copied().flatten())
+        } else {
+            None
+        };
+        if linked.is_some() && stored.is_none() {
+            return Err(IncrReason::UpdateNotImplemented(Some(Unimplemented::Resolve)));
+        }
+        if let (Some(l), Some(st)) = (linked, &stored)
+            && let Some(r) = st.get(i as usize)
+            && r.anchor_kind == 1
+            && view.string(r.anchor)? == l
+        {
+            sig[i as usize] = Some(l);
+        }
+    }
+    // §7.1: the anchor, by the capture's own producer.
+    let (section_keys, _) =
+        capture::section_keys(&object, &|i| sig.get(i.0 as usize).copied().flatten())
+            .map_err(bad)?;
+
     let mut sections = Vec::with_capacity(len);
     let mut seen: BTreeMap<(Anchor<'s>, &'s [u8]), u32> = BTreeMap::new();
     let with_ids = if stored.as_ref().is_some_and(Vec::is_empty) { 0 } else { count };
@@ -349,21 +399,7 @@ fn open<'s>(
         let s = object.section(SectionIndex(i)).map_err(|_| bad("section header"))?;
         let name = if i > 0 { s.name().map_err(|_| bad("section name"))? } else { &[][..] };
         let id = SectionId(first_section.0 + i);
-        let mut sig = comdat[i as usize];
-        // resolve.md §6.5: an `SHF_LINK_ORDER` section outside the groups
-        // whose linked section is dropped takes that section's group.
-        // Whether it is dropped is the keeper's (whole-program): an
-        // unchanged file's stored row says.
-        let link_order = i > 0 && s.flags() & SHF_LINK_ORDER != 0 && sig.is_none();
-        let linked =
-            if link_order { s.link().ok().and_then(|l| comdat[l.0 as usize]) } else { None };
-        if let (Some(l), Some(st)) = (linked, &stored) {
-            let r = &st[i as usize];
-            if r.anchor_kind == 1 && view.string(r.anchor)? == l {
-                sig = Some(l);
-            }
-        }
-        let anchor = Anchor::choose(sig, global[i as usize], local[i as usize]);
+        let anchor = section_keys[i as usize].anchor;
         let ordinal = seen.entry((anchor, name)).or_insert(0);
         let this = *ordinal;
         *ordinal += 1;

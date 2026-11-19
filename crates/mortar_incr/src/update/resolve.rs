@@ -70,6 +70,14 @@ pub struct ResolveDelta {
     /// Groups whose keeper changed: `(signature, old keeper, new keeper)`
     /// (`FILES` rows; IN-72 item 2a's drawn-in files, O-21).
     pub reelected: Vec<(Vec<u8>, FileId, FileId)>,
+    /// Every COMDAT signature a changed, appeared, extracted or drawn-in
+    /// file's sections name (`ChangedFile::sections` of a file that is not
+    /// gone or no longer extracted), sorted by signature, with its keeper
+    /// after the update (`None`: no live copy). Its producer is the
+    /// update's own election (`keeper_new`), the one the delta's demotions
+    /// use (ruling D2-6): a changed file's section facts (`kept`) read it,
+    /// never a second election.
+    pub keepers: Vec<(Vec<u8>, Option<FileId>)>,
 }
 
 /// `resolve`'s result (WP-215 seam 3, G1): the complete delta, or the
@@ -350,6 +358,31 @@ impl<'c, 'a, 's> Res<'c, 'a, 's> {
         Ok(k)
     }
 
+    /// `ResolveDelta::keepers` (ruling D2-6): each signature of a
+    /// section of a changed file that stays in the link, by `keeper_new`.
+    fn keepers(&mut self) -> Result<(), IncrReason> {
+        let view = self.view();
+        let changed = self.cx.changed;
+        let mut sigs: BTreeSet<Vec<u8>> = BTreeSet::new();
+        for c in &changed.files {
+            if self.fresh(c.file.0).is_none() {
+                continue;
+            }
+            for s in &c.sections {
+                if s.anchor_kind == COMDAT_ANCHOR {
+                    sigs.insert(changed.string(view, s.anchor)?);
+                }
+            }
+        }
+        let mut keepers = Vec::with_capacity(sigs.len());
+        for sig in sigs {
+            let k = self.keeper_new(&sig)?.map(FileId);
+            keepers.push((sig, k));
+        }
+        self.out.keepers = keepers;
+        Ok(())
+    }
+
     /// A live object's definition of `key` dropped with its COMDAT copy
     /// (resolve.md §6.2: a reference from then on).
     fn demoted(&self, key: u32, m: &Ment) -> Result<bool, IncrReason> {
@@ -387,6 +420,7 @@ impl<'c, 'a, 's> Res<'c, 'a, 's> {
         self.out.affected = affected.iter().map(|&k| SymbolId(k)).collect();
         self.key_refs()?;
         self.new_keys();
+        self.keepers()?;
         self.out.key_ids = self
             .cx
             .changed

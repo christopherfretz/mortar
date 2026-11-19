@@ -859,6 +859,50 @@ fn comdat_keeper_flips_twice() {
     assert_eq!((d.reelected[0].1, d.reelected[0].2), (FileId(f3), FileId(f2)));
 }
 
+// spec: incr.md IN-71 (ruling D2-6, `ResolveDelta::keepers`): a changed
+// file that ADDS a COMDAT group (a new signature: no `reelected` row, no
+// old keeper) and one whose group's keeper MOVES (the copy goes from the
+// first file, the second keeps it): `keepers` names each signature of the
+// changed file's sections with the full link's keeper (`same_as_full`
+// checks every hop of every series against the model's full link).
+#[test]
+fn keepers_of_an_added_group_and_a_moved_keeper() {
+    let mut a = Link::new();
+    let f1 = a.add(R, false, vec![def("main"), undef("h")]);
+    let f2 = a.add(2 * R, false, vec![weak_def("h").func().group("H").val(8, 4)]);
+    // f1 gains a copy of `H` (it becomes the keeper: lower rank) and a new
+    // group `N` no file had.
+    let mut b = a.clone();
+    b.files[f1 as usize].as_mut().unwrap().ments = vec![
+        def("main"),
+        weak_def("h").func().group("H").val(4, 4),
+        weak_def("n").func().group("N").val(12, 4),
+    ];
+    let (d, _) = hop_ok(&a, &b);
+    let keepers: Vec<(&[u8], Option<FileId>)> =
+        d.keepers.iter().map(|(s, k)| (s.as_slice(), *k)).collect();
+    assert_eq!(keepers, vec![(&b"H"[..], Some(FileId(f1))), (&b"N"[..], Some(FileId(f1)))]);
+    assert!(d.reelected.iter().all(|r| r.0 != b"N"), "a new signature is not re-elected");
+    // f1 drops both copies: `H` moves back to f2, which is drawn in (its
+    // sections take new ids) and names it: `keepers` has f2's `H` only.
+    let mut c = b.clone();
+    c.files[f1 as usize].as_mut().unwrap().ments = vec![def("main"), undef("h")];
+    let (d, drawn) = hop_ok(&b, &c);
+    assert_eq!(drawn, vec![f2], "the new keeper is drawn in");
+    let keepers: Vec<(&[u8], Option<FileId>)> =
+        d.keepers.iter().map(|(s, k)| (s.as_slice(), *k)).collect();
+    assert_eq!(keepers, vec![(&b"H"[..], Some(FileId(f2)))]);
+    assert_eq!((d.reelected[0].1, d.reelected[0].2), (FileId(f1), FileId(f2)));
+    // f2 (the keeper) edited, keeping its copy: H's keeper is f2.
+    let mut e = c.clone();
+    e.files[f2 as usize].as_mut().unwrap().ments =
+        vec![weak_def("h").func().group("H").val(8, 8), def("x")];
+    let (d, _) = hop_ok(&c, &e);
+    let keepers: Vec<(&[u8], Option<FileId>)> =
+        d.keepers.iter().map(|(s, k)| (s.as_slice(), *k)).collect();
+    assert_eq!(keepers, vec![(&b"H"[..], Some(FileId(f2)))]);
+}
+
 // spec: incr.md IN-71 (`common_first_referenced_by_changed_file`,
 // review-in77 B-4): a changed file before the winning common's file
 // gains a common of the key (it wins: the first by rank, the largest
