@@ -186,6 +186,11 @@ class Cache:
             with open(os.path.join(d, n), 'w') as f:
                 f.write(t)
         argv, env = cfg.compiler_for(lang)
+        # `@SRC@` in a unit's flags is its compile directory (WP-230: a
+        # scenario's `-fdebug-prefix-map=@SRC@=<dir>` gives every version
+        # of a unit one DW_AT_comp_dir, as a build in one directory does;
+        # the key hashes the flags with the token)
+        extra = [a.replace('@SRC@', d) for a in extra]
         tmp = os.path.join(d, unit + '.o')
         sh(argv + cfg.flags(lang) + list(extra) + ['-c', fname, '-o', tmp], d, env)
         os.makedirs(os.path.dirname(out), exist_ok=True)

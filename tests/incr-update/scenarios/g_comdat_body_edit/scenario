@@ -1,0 +1,13 @@
+# WP-230 G-3: C++ with -g and a COMDAT. main.o and c.o both instantiate
+# twice<int> and the inline scale(); main.o (first) keeps both groups, c.o's
+# copies are dropped. c.o's own body changes one immediate (the same size,
+# the same lines): the dropped copies' debug words keep I-47's tombstones.
+# -fdebug-prefix-map=@SRC@ (tests/l10/build.py): one DW_AT_comp_dir in every
+# version, as a real build compiles in one directory (else DEBUG_STRS differs).
+proves: an update of a same-size body edit in a file whose COMDAT copies are dropped, with -g, equals the full link (a), its debug sections included
+source: WP-230 G-3 (spec/landed/incr/WP-230.md "G-3"), WP-228 B4 "For G-3"
+edit: c.cc
+link: main.o c.o
+cflags: -g -fdebug-prefix-map=@SRC@=/incr-src
+options: --build-id
+compilers: gcc kiln
