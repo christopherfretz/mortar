@@ -13,12 +13,14 @@
 //! | `diags.rs` | U-9 | `diags` |
 //! | `debug.rs` | G-1 | (none yet) |
 //! | `split.rs` | G-2 | (none yet) |
+//! | `materialize.rs` | WP-225 M2b-3 | `materialize` |
 
 pub mod debug;
 pub mod defined;
 pub mod diags;
 pub mod extract;
 pub mod live;
+pub mod materialize;
 pub mod odr;
 pub mod refill;
 pub mod resolve;
