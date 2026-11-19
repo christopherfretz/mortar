@@ -342,8 +342,7 @@ mod tests {
         collector.emit(Key::new(70, 3, 0), warn("d"));
         assert_eq!(collector.warnings().len(), 4);
         let report = collector.finish();
-        let late: Vec<(Key, Diagnostic)> =
-            report.warnings().map(|(k, d)| (k, d.clone())).collect();
+        let late: Vec<(Key, Diagnostic)> = report.warnings().map(|(k, d)| (k, d.clone())).collect();
         assert_eq!(late[..3], early[..]);
         assert_eq!(late.len(), 4);
         for policy in [

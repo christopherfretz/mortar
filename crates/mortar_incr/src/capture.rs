@@ -2750,9 +2750,10 @@ pub fn diag_rows(
             }
             for c in d.context() {
                 let (file, section, offset) = match c {
-                    Context::At(Relation::ReferencedBy, Place::Section { file, section, offset }) => {
-                        (file, section, *offset)
-                    }
+                    Context::At(
+                        Relation::ReferencedBy,
+                        Place::Section { file, section, offset },
+                    ) => (file, section, *offset),
                     Context::Note(_) => continue,
                     Context::At(..) => {
                         return Err(refuse(code, "a context line not a reference"));
@@ -2865,7 +2866,10 @@ pub fn diag_rows(
         let code = p.d.id();
         let key = match &p.name {
             Some(n) => Some(SymbolId(rows_of.get(n).copied().flatten().ok_or_else(|| {
-                refuse(code, &format!("its key {:?} has no SYMBOLS row", String::from_utf8_lossy(&n.0)))
+                refuse(
+                    code,
+                    &format!("its key {:?} has no SYMBOLS row", String::from_utf8_lossy(&n.0)),
+                )
             })?)),
             None => None,
         };
@@ -2885,8 +2889,10 @@ pub fn diag_rows(
         }
         out.push(row);
     }
-    let mut seen: Vec<(u16, u32, u64, &str, &str)> =
-        out.iter().map(|r| (r.key.phase, r.key.unit, r.key.seq, &r.code[..], &r.text[..])).collect();
+    let mut seen: Vec<(u16, u32, u64, &str, &str)> = out
+        .iter()
+        .map(|r| (r.key.phase, r.key.unit, r.key.seq, &r.code[..], &r.text[..]))
+        .collect();
     seen.sort_unstable();
     if seen.windows(2).any(|w| w[0] == w[1]) {
         return Err("DIAGS: two warnings of one key, code and text (IN-75a)".into());

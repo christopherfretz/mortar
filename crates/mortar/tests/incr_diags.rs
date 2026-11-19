@@ -371,7 +371,8 @@ fn written_rows_are_the_captures(
             .position(|x| {
                 matches!(
                     x.kind,
-                    mortar_incr::format::sym_kind::GLOBAL | mortar_incr::format::sym_kind::VERSIONED
+                    mortar_incr::format::sym_kind::GLOBAL
+                        | mortar_incr::format::sym_kind::VERSIONED
                 ) && four_str(x.name) == n
                     && four_str(x.version) == v
             })
