@@ -33,8 +33,8 @@ use mortar_elf::{SectionIndex, SymbolSection};
 
 use crate::format::{
     ChunkRow, DefinedRow, EhRow, FileRow, FragRow, HoleRow, NONE, OutSecRow, PatchRow, ProbeRow,
-    RedirectRow, SectionRow, SegmentRow, SizeRow, SlotRow, SpanRow, State, Str, Strings,
-    SymPlaceRow, SymbolRow, chunk_bits, hole_kind, layout_bits, patch_kind, sym_kind,
+    RedirectRow, SectionFacts, SectionRow, SegmentRow, SizeRow, SlotRow, SpanRow, State, Str,
+    Strings, SymPlaceRow, SymbolRow, chunk_bits, hole_kind, layout_bits, patch_kind, sym_kind,
 };
 
 /// The tables of one link that identities are computed from.
@@ -558,6 +558,9 @@ fn capture_in(
     }
     let chunk_ord = chunk_ordinals(p, link.assignment);
     clock.lap("capture probes, outsecs");
+    // WP-257a: format 5's section facts (they need `Liveness`, which only
+    // `Link5` carries; format 4's rows keep those bytes 0).
+    let mut sec_facts = Vec::with_capacity(if extra.is_some() { s.sections.capacity() } else { 0 });
     for (id, row) in link.resolution.sections.iter() {
         let _ = row;
         let si =
@@ -578,6 +581,9 @@ fn capture_in(
         if let Some((chunk, offset)) = p.place.get(id).and_then(|pl| pl.get()) {
             row.place_chunk = chunk.0;
             row.place_offset = offset;
+        }
+        if let Some(x) = extra {
+            sec_facts.push(section_facts_of(link, x.liveness, id)?);
         }
         s.sections.push(row);
     }
@@ -805,7 +811,9 @@ fn capture_in(
     clock.laps.extend(sub);
     let rows5 = match extra {
         Some(extra) => {
-            let r = rows5(link, keys, &mut syms, strings, &s, layout, extra, &live_frags, pool)?;
+            let mut r =
+                rows5(link, keys, &mut syms, strings, &s, layout, extra, &live_frags, pool)?;
+            r.sections = sec_facts;
             clock.lap("capture format 5");
             Some(r)
         }
@@ -925,6 +933,47 @@ pub struct Rows5 {
     debug_strs: Vec<crate::update::rows::DebugStrRow>,
     /// Counts for the experiments (`incremental: state5 ...` lines).
     pub notes: Vec<String>,
+    /// WP-257a: per `SECTIONS` row, what the section IS.
+    sections: Vec<SectionFacts>,
+}
+
+/// WP-257a: what section `id` IS, from resolve's row, `liveness` and the
+/// assignment: the producers' own data (`Assignment::out` for every
+/// section, kept or not: not its chunk's output section, which differs,
+/// e.g. `.tm_clone_table` placed in a `.data` chunk).
+///
+/// # Errors
+/// A section without a resolve row.
+pub fn section_facts_of(
+    link: &Link<'_, '_>,
+    liveness: &mortar_core::Liveness,
+    id: SectionId,
+) -> Result<SectionFacts, String> {
+    let row = link.resolution.sections.get(id).ok_or("a section without a resolve row")?;
+    let kept = row.is_kept();
+    Ok(SectionFacts {
+        kind: row.kind,
+        kept,
+        collected: kept && !liveness.is_live(id),
+        out: link.assignment.out(id).map(|o| o.0),
+    })
+}
+
+/// `row` with `facts` written into it (WP-257a's encoding:
+/// [`crate::format::section_facts`]).
+///
+/// # Errors
+/// `state-limit`: an output section's `OUTSECS` row past the 16-bit field.
+pub fn put_section_facts(row: &mut SectionRow, facts: &SectionFacts) -> Result<(), String> {
+    let (kind, bits, out) = facts.encode().ok_or_else(|| {
+        mortar_core::incr::IncrReason::StateLimit(format!(
+            "output section {:?} is past SECTIONS' 16-bit output section column",
+            facts.out
+        ))
+        .report()
+    })?;
+    (row.kind, row.bits, row.out) = (kind, bits, out);
+    Ok(())
 }
 
 /// `FILES.flags`' bit for a file whose `.eh_frame` range holds a CIE
@@ -1691,8 +1740,14 @@ pub fn state5_rows(
     use crate::update::rows::sym_kind;
     use crate::update::testing::MemoryState;
     let mut m = MemoryState::from_format4(state);
-    if rows.files.len() != m.files.len() || rows.symbols.len() != m.symbols.len() {
+    if rows.files.len() != m.files.len()
+        || rows.symbols.len() != m.symbols.len()
+        || rows.sections.len() != m.sections.len()
+    {
         return Err("the format-5 rows are not this state's".into());
+    }
+    for (row, facts) in m.sections.iter_mut().zip(&rows.sections) {
+        put_section_facts(row, facts)?;
     }
     // FILES.properties: each distinct value interned once.
     let mut interned: HashMap<Vec<u8>, Str> = HashMap::default();
@@ -2781,6 +2836,7 @@ pub struct FileRows {
 /// the one the input phase read.
 pub fn file_rows(
     link: &Link<'_, '_>,
+    liveness: &mortar_core::Liveness,
     keys: &Keys<'_>,
     layout: &Layout,
     strings: &mut Strings,
@@ -2836,6 +2892,7 @@ pub fn file_rows(
                 row.place_chunk = chunk.0;
                 row.place_offset = offset;
             }
+            put_section_facts(&mut row, &section_facts_of(link, liveness, id)?)?;
             rows.sections.push(row);
         }
         // MENTIONS, their values, `first_global`, `versioned`: the format-5

@@ -1922,3 +1922,96 @@ fn real_states_round_trip_byte_equal() {
         eprintln!("{}: {} bytes, byte-equal", path.display(), bytes.len());
     }
 }
+
+// ---- WP-257a: SECTIONS' kind, bits and output section --------------------------
+
+/// `m`'s `SECTIONS` rows with WP-257a's facts, a different value per row
+/// (kinds 0..14, every bit pattern, output sections in range).
+fn with_facts(mut m: MemoryState) -> MemoryState {
+    use mortar_incr::format::{OutSecRow, section_bits};
+    if m.outsecs.is_empty() {
+        m.outsecs.push(OutSecRow::default());
+        m.outsecs.push(OutSecRow { ordinal: 1, ..OutSecRow::default() });
+    }
+    let n = u16::try_from(m.outsecs.len()).expect("small");
+    for (i, r) in m.sections.iter_mut().enumerate() {
+        let i = u16::try_from(i).expect("small");
+        r.kind = (i % 6) as u8; // kinds that carry output
+        r.bits = [section_bits::KEPT, 0, section_bits::KEPT | section_bits::COLLECTED]
+            [usize::from(i % 3)];
+        r.out = i % (n + 1);
+    }
+    m
+}
+
+// spec: WP-257a (round trip, canon, patch, compaction keep the new fields)
+#[test]
+fn section_facts_round_trip_patch_and_compaction() {
+    let facts = |m: &MemoryState, keep: &[u32]| -> Vec<(Vec<u8>, u8, u8, u16)> {
+        let mut v: Vec<_> = m
+            .sections
+            .iter()
+            .filter(|r| keep.contains(&r.file))
+            .map(|r| (s(m, r.name), r.kind, r.bits, r.out))
+            .collect();
+        v.sort();
+        v
+    };
+    let m = with_facts(sample(&[0, 1, 2], 3));
+    assert!(m.sections.iter().any(|r| r.out != 0 && r.bits != 0 && r.kind != 0));
+    let bytes = full(&m);
+    let back = read::decode(&bytes).expect("decode");
+    assert_eq!(facts(&back, &[0, 1, 2]), facts(&m, &[0, 1, 2]), "round trip");
+    assert_eq!(full(&back), bytes);
+    // canon sees each field
+    for f in 0..3 {
+        let mut x = back.clone();
+        let r = &mut x.sections[1];
+        match f {
+            0 => r.kind ^= 1,
+            1 => r.bits ^= mortar_incr::format::section_bits::KEPT,
+            _ => r.out = (r.out + 1) % 3,
+        }
+        assert_ne!(state5::canon(&full(&x)).expect("c"), state5::canon(&bytes).expect("c"), "{f}");
+    }
+    // the patch writes a file's rewritten rows with their facts
+    let view = read::open_bytes(bytes.clone()).expect("open");
+    let first_global = view.file_index(FileId(0)).expect("index").first_global;
+    let mut rows: Vec<SectionRow> = back.sections.iter().filter(|r| r.file == 0).cloned().collect();
+    for r in &mut rows {
+        r.bits ^= mortar_incr::format::section_bits::KEPT;
+        r.bits &= !mortar_incr::format::section_bits::COLLECTED;
+        r.out = (r.out + 1) % 3;
+    }
+    let mut p = StatePatch::default();
+    p.ranges.push(FileRanges {
+        file: FileId(0),
+        first_global,
+        locals: None,
+        sections: Some(rows.clone()),
+        mentions: None,
+        index: None,
+        edges: None,
+        frag_uses: None,
+        symtab: None,
+        regions: None,
+        gone: false,
+    });
+    let plan = state5::plan_patch(&view, &p).expect("plan");
+    assert!(!plan.compacts(), "{}", plan.reason());
+    let patched = write::patched_bytes(&bytes, &plan, &output_of(&bytes)).expect("in place");
+    let after = read::decode(&patched).expect("decode");
+    let mut want = back.clone();
+    want.sections.retain(|r| r.file != 0);
+    want.sections.extend(rows);
+    assert_eq!(facts(&after, &[0]), facts(&want, &[0]), "patched rows");
+    assert_eq!(facts(&after, &[1, 2]), facts(&back, &[1, 2]), "other files' rows");
+    // the compaction keeps the facts of the files that stay
+    let view = read::open_bytes(patched.clone()).expect("open");
+    let plan = state5::plan_patch(&view, &remove_file_1(&after)).expect("plan");
+    assert!(plan.compacts(), "{}", plan.reason());
+    let compacted = compact::plan_bytes(&plan, &output_of(&patched)).expect("compacted");
+    let c = read::decode(&compacted).expect("decode");
+    // file 2 is renumbered 1 by the compaction
+    assert_eq!(facts(&c, &[0, 1]), facts(&after, &[0, 2]), "compacted rows");
+}

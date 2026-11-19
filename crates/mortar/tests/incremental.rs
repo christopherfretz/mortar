@@ -2546,14 +2546,22 @@ fn file_rows_are_the_whole_capture_s() {
                 .unwrap();
         let all: Vec<mortar_core::FileId> =
             (0..f.inputs.files.len()).map(mortar_core::FileId).collect();
-        let rows = file_rows(&link, &keys, &f.layout, &mut strings, &all, true).unwrap();
+        let rows =
+            file_rows(&link, &f.liveness, &keys, &f.layout, &mut strings, &all, true).unwrap();
         // G-2b: the capture's per-file task's rows come with them.
         assert!(rows.iter().any(|r| !r.refs.is_empty()), "no KEY_REFS rows");
         assert_eq!(rows.len(), all.len());
         let (mut sections, mut mentions) = (0usize, 0usize);
         for r in &rows {
             let at = r.first_section as usize;
-            assert_eq!(whole.sections[at..at + r.sections.len()], r.sections[..], "{:?}", r.file);
+            // WP-257a: format 4 does not hold the section facts (their
+            // equality to the front is `rows_stored`' test).
+            let format4: Vec<format::SectionRow> = r
+                .sections
+                .iter()
+                .map(|x| format::SectionRow { kind: 0, bits: 0, out: 0, ..x.clone() })
+                .collect();
+            assert_eq!(whole.sections[at..at + r.sections.len()], format4[..], "{:?}", r.file);
             sections += r.sections.len();
             assert_eq!(r.values.len(), r.mentions.len());
             let shape = |m: &format::MentionRow| (m.kind, m.bind, m.typ, m.other, m.section);

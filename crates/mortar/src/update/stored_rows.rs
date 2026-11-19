@@ -25,13 +25,13 @@ use mortar_core::incr::{IncrReason, StoredLayout, Unimplemented};
 use mortar_core::layout::{AllocKey, Chunk, ChunkKind, Placement, Slots};
 use mortar_core::resolution::SectionKind;
 use mortar_core::{
-    ChunkId, Column, FileId, FragId, SectionId, SymEntry, SymKey, SymKind, SymbolId,
+    ChunkId, Column, FileId, FragId, OutSecId, SectionId, SymEntry, SymKey, SymKind, SymbolId,
 };
 use mortar_diag::{Collector, Diagnostic, Policy};
 use mortar_elf::SymbolIndex;
-use mortar_elf::consts::{SHF_ALLOC, SHF_MERGE, SHT_NOBITS, SHT_NOTE, STB_WEAK};
+use mortar_elf::consts::STB_WEAK;
 use mortar_image::rows::{EntryDef, OutSection, RowDef, Rows, Valued, out_sections};
-use mortar_incr::format::{NONE, SectionRow, def_kind};
+use mortar_incr::format::{NONE, SectionFacts, SectionRow, def_kind, kind as table, section_facts};
 use mortar_incr::update::rows::MentionRow;
 use mortar_incr::update::view::StateView;
 use mortar_merge::What;
@@ -242,6 +242,31 @@ impl<'a, 's> StoredRows<'a, 's> {
         self.ok(self.view.section(s))
     }
 
+    /// What section `s` IS (WP-257a), every rule of the row checked: a
+    /// row that breaks one is `state-corrupt`, recorded.
+    fn stored_facts(&self, s: SectionId) -> Option<SectionFacts> {
+        let row = self.section_row(s)?;
+        match section_facts(&row, self.view.count(table::OUTSECS)) {
+            Ok(f) => Some(f),
+            Err(why) => {
+                self.fail(corrupt(&format!("SECTIONS row {}: {why}", s.0)));
+                None
+            }
+        }
+    }
+
+    /// The split's facts of section `s` of an unchanged file (WP-257a;
+    /// ruling "After 255d3's M1" item 2, `SectionFact`): resolve's kind,
+    /// whether resolve kept it, and the assignment's output section (kept
+    /// or not). `phase::Link::section` is `Some` exactly when it is kept
+    /// and has one. `None` when the row fails to read (the failure
+    /// recorded).
+    #[must_use]
+    pub fn section_fact(&self, s: SectionId) -> Option<(SectionKind, bool, Option<OutSecId>)> {
+        let f = self.stored_facts(s)?;
+        Some((f.kind, f.kept, f.out.map(OutSecId)))
+    }
+
     fn mentions(&self, file: FileId) -> Option<Mentions> {
         if let Some(m) = self.mentions.lock().unwrap_or_else(PoisonError::into_inner).get(&file) {
             return Some(m.clone());
@@ -326,31 +351,15 @@ impl Rows for StoredRows<'_, '_> {
     }
 
     fn section_kind(&self, s: SectionId) -> Option<SectionKind> {
-        let row = self.section_row(s)?;
-        let name = self.ok(self.view.string(row.name))?;
-        Some(if name == b".eh_frame" {
-            SectionKind::EhFrame
-        } else if row.sh_flags & SHF_MERGE != 0 && row.place_chunk == NONE {
-            // §9.3: a split section has no place (a dead one neither: the
-            // row cannot tell them apart; both fall back in `named_piece`).
-            SectionKind::Merge
-        } else if row.sh_type == SHT_NOBITS {
-            SectionKind::Nobits
-        } else if row.sh_type == SHT_NOTE {
-            SectionKind::Note
-        } else if row.sh_flags & SHF_ALLOC == 0 && name.starts_with(b".debug") {
-            SectionKind::Debug
-        } else {
-            SectionKind::Regular
-        })
+        // WP-257a: resolve's kind, as the capture stored it.
+        Some(self.stored_facts(s)?.kind)
     }
 
     fn section_place(&self, s: SectionId) -> bool {
-        // The state stores a place for a kept, assigned, live section
-        // only; which P-1 rule took a placeless one's is not stored, and
-        // the trait does not ask it (WP-255c3). A row that fails to read
-        // answers "no place" with the failure recorded.
-        self.section_row(s).is_some_and(|r| r.place_chunk != NONE)
+        // P-1 from the three stored facts (WP-257a): kept, assigned, live.
+        // A row that fails to read answers "no place" with the failure
+        // recorded.
+        self.stored_facts(s).is_some_and(|f| f.has_place())
     }
 
     fn out_flags(&self, s: SectionId) -> Option<u64> {

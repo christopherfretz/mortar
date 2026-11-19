@@ -374,6 +374,15 @@ pub struct FragAtRow {
 pub struct SectionRow {
     pub file: u32,
     pub anchor_kind: u8,
+    /// WP-257a (format 5, version 6): resolve's `SectionKind`, its
+    /// `repr(u8)` code ([`section_facts`]); byte 5's low four bits. 0 in
+    /// format 4.
+    pub kind: u8,
+    /// WP-257a: [`section_bits`]; byte 5's high four bits. 0 in format 4.
+    pub bits: u8,
+    /// WP-257a: `Assignment::out` (kept or not) as its `OUTSECS` row + 1,
+    /// 0 for none; bytes 6 and 7. 0 in format 4.
+    pub out: u16,
     pub anchor: Str,
     pub name: Str,
     pub ordinal: u32,
@@ -384,6 +393,115 @@ pub struct SectionRow {
     pub offset: u64,
     pub place_chunk: u32,
     pub place_offset: u64,
+}
+
+/// `SECTIONS.bits` (WP-257a).
+pub mod section_bits {
+    /// Resolve's `state == Kept`.
+    pub const KEPT: u8 = 1;
+    /// Kept, and not live (`--gc-sections`).
+    pub const COLLECTED: u8 = 2;
+    pub const ALL: u8 = 3;
+}
+
+/// Resolve's kinds by their `SECTIONS.kind` code (`SectionKind`'s
+/// `repr(u8)`).
+pub const SECTION_KINDS: [mortar_core::resolution::SectionKind; 14] = {
+    use mortar_core::resolution::SectionKind as K;
+    [
+        K::Regular,
+        K::Nobits,
+        K::Merge,
+        K::EhFrame,
+        K::Note,
+        K::Debug,
+        K::Null,
+        K::Symtab,
+        K::Strtab,
+        K::Reloc,
+        K::Group,
+        K::Stack,
+        K::Excluded,
+        K::Meta,
+    ]
+};
+
+/// What a `SECTIONS` row says the section IS (WP-257a): resolve's kind,
+/// whether resolve kept it, whether `--gc-sections` collected it (kept
+/// only), and the assignment's output section (an `OUTSECS` row).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct SectionFacts {
+    pub kind: mortar_core::resolution::SectionKind,
+    pub kept: bool,
+    pub collected: bool,
+    pub out: Option<u32>,
+}
+
+impl SectionFacts {
+    /// P-1 (`mortar_core::place::section_place`): kept, assigned, live.
+    #[must_use]
+    pub const fn has_place(&self) -> bool {
+        self.kept && !self.collected && self.out.is_some()
+    }
+
+    /// The row's three fields `(kind, bits, out)`; `None` when the output
+    /// section's row does not fit the 16-bit field (the capture's
+    /// `state-limit`).
+    #[must_use]
+    pub fn encode(&self) -> Option<(u8, u8, u16)> {
+        let mut bits = 0;
+        if self.kept {
+            bits |= section_bits::KEPT;
+        }
+        if self.collected {
+            bits |= section_bits::COLLECTED;
+        }
+        let out = match self.out {
+            None => 0,
+            Some(o) => u16::try_from(o).ok()?.checked_add(1)?,
+        };
+        Some((self.kind as u8, bits, out))
+    }
+}
+
+/// The codes of row `x` a format-5 decoder refuses (WP-257a): an unknown
+/// kind, an unknown bit, `COLLECTED` without `KEPT`. The rules that tie
+/// the facts to the place and to `OUTSECS` are [`section_facts`]' (a
+/// reader's).
+#[must_use]
+pub fn section_codes_ok(x: &SectionRow) -> bool {
+    (x.kind as usize) < SECTION_KINDS.len()
+        && x.bits & !section_bits::ALL == 0
+        && (x.bits & section_bits::COLLECTED == 0 || x.bits & section_bits::KEPT != 0)
+}
+
+/// The facts of row `x` of a format-5 state with `outsecs` `OUTSECS` rows,
+/// every rule of the row checked: the codes, the output section in range
+/// and of a kind that carries output, and a placed row kept, live and
+/// assigned (P-1).
+///
+/// # Errors
+/// What is wrong with the row (the caller's `state-corrupt`).
+pub fn section_facts(x: &SectionRow, outsecs: u64) -> Result<SectionFacts, &'static str> {
+    if !section_codes_ok(x) {
+        return Err("an unknown section kind or bit");
+    }
+    let kind = SECTION_KINDS[x.kind as usize];
+    let kept = x.bits & section_bits::KEPT != 0;
+    let collected = x.bits & section_bits::COLLECTED != 0;
+    let out = match x.out {
+        0 => None,
+        o if u64::from(o) <= outsecs => Some(u32::from(o) - 1),
+        _ => return Err("an output section out of range"),
+    };
+    if out.is_some() && !kind.carries_output() {
+        return Err("an output section for a kind without output");
+    }
+    let facts = SectionFacts { kind, kept, collected, out };
+    if x.place_chunk != NONE && !facts.has_place() {
+        return Err("a placed section that is not kept, live and assigned");
+    }
+    Ok(facts)
 }
 
 /// `CHUNKS` bits.
@@ -962,16 +1080,19 @@ impl Row for FragAtRow {
 impl Row for SectionRow {
     const WIDTH: usize = 76;
     fn put(&self, w: &mut W<'_>) {
-        w.u32(self.file).u8(self.anchor_kind).pad(3).s(self.anchor).s(self.name);
+        w.u32(self.file).u8(self.anchor_kind).u8(self.kind | self.bits << 4).u16(self.out);
+        w.s(self.anchor).s(self.name);
         w.u32(self.ordinal).u32(self.sh_type).u64(self.sh_flags).u64(self.size);
         w.u64(self.align).u64(self.offset).u32(self.place_chunk).u64(self.place_offset);
     }
     fn get(r: &mut R<'_>) -> Self {
-        let (file, anchor_kind) = (r.u32(), r.u8());
-        r.pad(3);
+        let (file, anchor_kind, packed, out) = (r.u32(), r.u8(), r.u8(), r.u16());
         Self {
             file,
             anchor_kind,
+            kind: packed & 15,
+            bits: packed >> 4,
+            out,
             anchor: r.s(),
             name: r.s(),
             ordinal: r.u32(),
@@ -1647,7 +1768,10 @@ fn validate(s: &State) -> Result<(), StateError> {
             && str_ok(x.anchor)
             && str_ok(x.name)
             && reference(chunks, x.place_chunk, true)
-            && (x.place_chunk != NONE || x.place_offset == 0);
+            && (x.place_chunk != NONE || x.place_offset == 0)
+            && x.kind == 0
+            && x.bits == 0
+            && x.out == 0;
         if !ok {
             return Err(bad(kind::SECTIONS, i, "field out of range"));
         }
