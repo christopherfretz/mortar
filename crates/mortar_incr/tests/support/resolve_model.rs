@@ -956,6 +956,26 @@ fn same_as_full(j: &Joined, d: &resolve::ResolveDelta, new: &Link, what: &str) {
         .map(|g| (want.view().string(g.signature).unwrap(), g.file))
         .collect();
     assert_eq!(groups, want_groups, "{what}: GROUPS");
+    // D2-6: `keepers` names every signature of a section of a changed file
+    // that stays (not gone, not unextracted), with the full link's keeper.
+    let mut sigs: BTreeSet<Vec<u8>> = BTreeSet::new();
+    for c in &j.changed.files {
+        if matches!(c.change, Change::Gone | Change::NoLongerExtracted) {
+            continue;
+        }
+        for s in &c.sections {
+            if s.anchor_kind == 1 {
+                sigs.insert(j.bytes(s.anchor));
+            }
+        }
+    }
+    let got: Vec<Vec<u8>> = d.keepers.iter().map(|k| k.0.clone()).collect();
+    assert_eq!(got, sigs.into_iter().collect::<Vec<_>>(), "{what}: keepers' signatures");
+    for (sig, k) in &d.keepers {
+        let name = String::from_utf8(sig.clone()).unwrap();
+        let want = full.keeper.get(&name).copied().map(FileId);
+        assert_eq!(*k, want, "{what}: the keeper of {name}");
+    }
     let new_names: BTreeSet<String> = d
         .new_keys
         .iter()
