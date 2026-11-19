@@ -40,6 +40,7 @@ use mortar_incr::update::resolve::ResolveDelta;
 use mortar_incr::update::rows::{EdgeRow, FileTable, edge_kind};
 use mortar_incr::update::testing::MemoryState;
 use mortar_incr::update::view::{Change, ChangedFile, ChangedFiles, OdrRows};
+use mortar_testutil::target::Arch;
 use mortar_testutil::{Scratch, tools_required};
 use support::{Source, build_by, store, with_output};
 
@@ -60,9 +61,13 @@ impl Line {
     }
 }
 
-/// The two 64-bit targets' C and C++ drivers.
-const TARGETS: [(&str, &str, &str); 2] =
-    [("aarch64", "gcc", "g++"), ("x86-64", "x86_64-linux-gnu-gcc", "x86_64-linux-gnu-g++")];
+/// The two 64-bit targets' C and C++ drivers, by host (plain on their
+/// own host, prefixed elsewhere and under `MORTAR_TEST_CROSS=1`).
+fn targets() -> [(&'static str, String, String); 2] {
+    [Arch::Aarch64, Arch::X86_64].map(|a| {
+        (if a == Arch::Aarch64 { "aarch64" } else { "x86-64" }, a.gnu("gcc"), a.gnu("g++"))
+    })
+}
 
 fn line(label: &str, cc: &str, flags: &[&str], sources: &[Source], extra: &[&str]) -> Option<Line> {
     let s = Scratch::new(&format!("wp238p3-{}", label.replace([' ', '/'], "-")));
@@ -246,10 +251,10 @@ fn scenarios() -> Vec<Scenario> {
 /// Every scenario's capture on both targets.
 fn captured() -> Vec<(String, MemoryState, OptionKeys)> {
     let mut out = Vec::new();
-    for (arch, cc, cxx) in TARGETS {
+    for (arch, cc, cxx) in targets() {
         for (label, cplus, flags, sources, extra) in scenarios() {
             let label = format!("{label} {arch}");
-            let driver = if cplus { cxx } else { cc };
+            let driver = if cplus { &cxx } else { &cc };
             let Some(l) = line(&label, driver, &flags, &sources, &extra) else { continue };
             let (m, o) = capture(&l);
             out.push((label, m, o));
@@ -452,10 +457,10 @@ fn a_definition_moved_to_an_unread_file_is_refused() {
 #[test]
 fn a_state_without_the_live_hash_is_refused() {
     let mut tried = 0;
-    for (arch, cc, _) in TARGETS {
+    for (arch, cc, _) in targets() {
         let (label, _, flags, sources, extra) = scenarios().swap_remove(0);
         let label = format!("{label} {arch} no-gc");
-        let Some(mut l) = line(&label, cc, &flags, &sources, &extra) else { continue };
+        let Some(mut l) = line(&label, &cc, &flags, &sources, &extra) else { continue };
         // The `--gc-sections` link's option keys, then the state of the
         // same inputs linked without it.
         let (_, o) = capture(&l);
@@ -580,18 +585,18 @@ fn retarget(m: &MemoryState, f: FileId, e: EdgeRow) -> Option<u32> {
 /// (its own line; lifting it is the join's act): end to end.
 #[test]
 fn a_gc_update_falls_back_end_to_end() {
-    let (_, cc, _) = TARGETS[0];
+    let [(_, cc, _), _] = targets();
     let src = [
         Source { name: "a.c", text: "extern int f(void);\nint main(void){ return f(); }\n" },
         Source { name: "b.c", text: "int f(void){ return 1; }\nint g(void){ return 2; }\n" },
     ];
-    let Some(l) = line("e2e", cc, &["-O1", "-ffunction-sections"], &src, &[]) else { return };
+    let Some(l) = line("e2e", &cc, &["-O1", "-ffunction-sections"], &src, &[]) else { return };
     let first = mortar::invoke_in("mortar", &l.args("out"), &l.dir);
     assert!(matches!(first.outcome, mortar::Outcome::Linked { .. }), "{:?}", first.outcome);
     // A new b.o (a new inode and content).
     let b = l.dir.join("b.c");
     std::fs::write(&b, "int f(void){ return 3; }\nint g(void){ return 2; }\n").expect("b.c");
-    let gcc = mortar_testutil::tool(cc).expect("cc");
+    let gcc = mortar_testutil::tool(&cc).expect("cc");
     let o = std::process::Command::new(gcc)
         .args(["-O1", "-ffunction-sections", "-c", "b.c", "-o", "b.c.o.new"])
         .current_dir(&l.dir)
@@ -616,10 +621,10 @@ fn a_gc_update_falls_back_end_to_end() {
 #[test]
 fn the_written_live_hash_is_the_full_marks() {
     let mut tried = 0;
-    for (arch, cc, cxx) in TARGETS {
+    for (arch, cc, cxx) in targets() {
         for (label, cplus, flags, sources, extra) in scenarios() {
             let label = format!("{label} {arch} written");
-            let driver = if cplus { cxx } else { cc };
+            let driver = if cplus { &cxx } else { &cc };
             let Some(l) = line(&label, driver, &flags, &sources, &extra) else { continue };
             let (m, _, full) = capture_raw(&l);
             assert_ne!(full, [0; 16], "{label}");
@@ -748,14 +753,14 @@ const LO_M: &str = "int gfun(void);\nint main(void){ return gfun(); }\n";
 #[test]
 fn refuse_row_mutations() {
     let mut out = String::new();
-    for (arch, cc, _) in TARGETS {
+    for (arch, cc, _) in targets() {
         let src = [
             Source { name: "m.c", text: LO_M },
             Source { name: "b.s", text: LO_B_GROUP },
             Source { name: "a.s", text: LO_A },
         ];
         let label = format!("refuse {arch}");
-        let Some(l) = line(&label, cc, &["-O1"], &src, &["-u", "metasym"]) else { continue };
+        let Some(l) = line(&label, &cc, &["-O1"], &src, &["-u", "metasym"]) else { continue };
         let (m, o) = capture(&l);
         let refuse: Vec<usize> =
             (0..m.edges.len()).filter(|&i| m.edges[i].1.kind == edge_kind::REFUSE).collect();
@@ -826,25 +831,31 @@ fn mark_ids(f: &Front<'_>, m: &MemoryState, fresh: &[(FileId, u32)]) -> Vec<Sect
 fn live_on_the_joins_changed_files_is_the_full_marks_difference() {
     let mut ran = 0;
     let flags = ["-O0", "-ffunction-sections", "-fdata-sections"];
-    for (arch, cc, _) in TARGETS {
+    for (arch, cc, _) in targets() {
         let label = format!("join pair {arch}");
         let v0 = [Source { name: "main.c", text: JL_MAIN }, Source { name: "a.c", text: JL_A0 }];
-        let Some(l) = line(&label, cc, &flags, &v0, &[]) else { continue };
+        let Some(l) = line(&label, &cc, &flags, &v0, &[]) else { continue };
         ran += 1;
         let (m0, _) = capture(&l);
-        let store = store();
-        let f0 = front5(&l, &store);
+        let store0 = store();
+        let f0 = front5(&l, &store0);
         let old = mark_ids(&f0, &m0, &[]);
         drop(f0);
         let v1 = [Source { name: "main.c", text: JL_MAIN }, Source { name: "a.c", text: JL_A1 }];
-        build_by(&l._scratch, cc, &flags, &v1).expect("v1 builds");
+        build_by(&l._scratch, &cc, &flags, &v1).expect("v1 builds");
         let inv = mortar::invoke_in("mortar", &l.args("out1"), &l.dir);
         assert!(matches!(inv.outcome, mortar::Outcome::Linked { .. }), "{label}: v1's link");
         let m1 = mortar_incr::state5::read::decode(
             &std::fs::read(l.dir.join("out1.mortar-state")).expect("v1's state"),
         )
         .expect("v1's state decodes");
-        let f1 = front5(&l, &store);
+        // One store per link, as the linker has (`spec/input.md` §9.3: a
+        // store entry is one link's, shared by device and inode). The
+        // compiler rewrites a.c.o in place; on overlay and ext4 (the
+        // hosted runner's, `/tmp`) it keeps its inode, so v0's store
+        // would hand v1's front v0's bytes, `k` included (B18-1).
+        let store1 = store();
+        let f1 = front5(&l, &store1);
         let a = f1
             .inputs
             .files
