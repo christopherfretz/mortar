@@ -1,17 +1,11 @@
 # WIP-255d2b
 
-Done: step 1 (7bc8aab7, keeps_local/file_locals pure move, static-identical 0 differ,
-timing 212 vs 211 ms), step 2 (b90729c2, update/file_symbols.rs + tests/file_symbols.rs,
-green on AArch64 and x86-64). Record: spec/landed/incr/WP-255d2b.md.
+Done: step 1 (7bc8aab7), step 2 (b90729c2); continuation: item 5 (85732937), R-2 moves
+(4073d01a global_info, 462779eb defined_global; static-identical 0 differ each; protoc
+201/195/199 ms), global_changes + demoted_run (132ee164). Record: spec/landed/incr/WP-255d2b.md.
 
-Next (after the supervisor's rulings R-1..R-3 in the record): global_changes in
-update/file_symbols.rs (kind from (SYMTAB_KEYS stored, classify over the new RESOLVED
-row), name/info/other from a moved CoreSyms::global part, place/value/size from the new
-RESOLVED row, stored from view.symtab_key); then the file's demoted globals appended to
-FileSymbols::locals; then step 4's keys without a row.
+Blocked: F-2 (no capture writes SYMTAB_KEYS: every row NO_ENTRY), F-1 (merged visibility
+and referenced not in ResolveDelta; global_changes takes `merged`). R-3's tests not built.
 
 Resume: scratch /Volumes/AgentWork/mortar-helper/.build/target-wp-140/wp255d2b
-(t2.sh runs the test; gate.sh the full gate; protoc.rsp the timing link).
-
-Gate on 504e4b7d: linktest 0 FAIL, census 716/716, incr-update 456 PASS, static-identical 0 differ;
-fmt/clippy/ci --quick red ONLY on base files (tests/rows_round.rs, mortar_resolve/src/resolve.rs; untouched here).
+(t2.sh runs tests/file_symbols.rs; gate.sh the full gate; moves.sh the move checks).
