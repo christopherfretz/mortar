@@ -335,10 +335,11 @@ fn prepare<'f, 's>(
             pending.push((id, stored));
             continue;
         }
-        let a = match stored {
-            Some((false, s)) if delta.is_none_or(|d| d == s) => {
+        let a = match (stored, delta) {
+            (Some((false, s)), d) if d.is_none_or(|d| d == s) => {
                 stored_answer(view, options, live, id, s)
             }
+            (Some((false, s)), Some(d)) => drawn_in_answer(view, changed, id, d, s),
             _ => Err(fail("facts", format!("key {}: its row changed (F-1)", id.0))),
         };
         answers.push((id, a));
@@ -483,6 +484,65 @@ fn stored_answer(
         return Err(fail("facts", format!("key {}: an event key", id.0)));
     }
     Ok(KeyAns { facts: f, undefined: false })
+}
+
+/// WP-225 M2b-5 item 1 (F-1, ruling "After M2b-4's hand-back" 4): a key
+/// of the file whose new row `d` is not its stored row `s` and not a
+/// definition in this file. When `d` defines the key in a section of a
+/// DRAWN-IN file of the update (`Change::DrawnIn`: its bytes are the
+/// stored ones, its sections read again with fresh ids,
+/// `first_section + k`), the row is compared with that section mapped to
+/// the stored id of the same file and index (`FILE_INDEX`'s `SECTIONS`
+/// range, `first + k`), and with the stored facts: equal, the key is
+/// defined where it was, and its facts are the drawn-in file's own walk's
+/// (`defined_facts` of that file, written into `d.facts` by the join's
+/// R-4a step before any scan: `placement`'s order, and judged there
+/// against the front's capture). Anything else (a definer that is a
+/// changed file, another section, value or size) is a real difference:
+/// `(scan) facts` by name, with the rows.
+fn drawn_in_answer(
+    view: &StateView<'_>,
+    changed: &ChangedFiles,
+    id: SymbolId,
+    d: ResolvedRow,
+    s: ResolvedRow,
+) -> Result<KeyAns, Fail> {
+    use mortar_incr::update::rows::FileTable;
+    use mortar_incr::update::view::Change;
+    let real = |why: String| {
+        Err(fail(
+            "facts",
+            format!("key {}: its row changed (F-1): {why}: the delta {d:?}, the stored {s:?}", id.0),
+        ))
+    };
+    if d.kind != def_kind::SECTION {
+        return real("not a section definition".into());
+    }
+    let Some(c) = changed.files.iter().find(|c| {
+        d.section.checked_sub(c.first_section.0).is_some_and(|k| (k as usize) < c.sections.len())
+    }) else {
+        return real("its section is no changed file's".into());
+    };
+    if c.change != Change::DrawnIn {
+        return real(format!("defined in file {} ({:?})", c.file.0, c.change));
+    }
+    let k = d.section - c.first_section.0;
+    let r = view.file_index(c.file).map_err(rows)?.ranges[FileTable::Sections as usize];
+    if k >= r.count {
+        return Err(corrupt(format!(
+            "key {}: drawn-in file {} has {} stored sections, the row's index {k}",
+            id.0, c.file.0, r.count
+        )));
+    }
+    if (ResolvedRow { section: r.first + k, facts: s.facts, ..d }) != s {
+        return real(format!(
+            "drawn-in file {} section {k} (stored id {})",
+            c.file.0,
+            r.first + k
+        ));
+    }
+    let facts = SymFacts::unpack(d.facts).ok_or_else(|| corrupt("a RESOLVED.facts word"))?;
+    Ok(KeyAns { facts, undefined: false })
 }
 
 /// One section index of the file, as the walk reads it.
