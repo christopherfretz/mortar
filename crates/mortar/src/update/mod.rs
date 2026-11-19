@@ -2488,6 +2488,8 @@ fn debug_string_frags(
     use mortar_core::layout::{ChunkKind, Hole, HoleKind};
     use mortar_incr::update::debug::{str_class, verified};
     use mortar_incr::update::rows::name_hash;
+    /// A fragment's class, merge class word and offset.
+    type Placed = (u8, u32, Option<u64>);
     let refuse = |what: String| debug_fallback(&format!("G-5: {what}"), debug_strings_reason());
     // Per class: the state's output section row and the stored chunk.
     let names: std::collections::BTreeMap<_, _> = stored.outsecs()?.into_iter().collect();
@@ -2505,23 +2507,22 @@ fn debug_string_frags(
     let split = &f.merge.split;
     // frag -> (class, the merge class word, offset); the unchanged ones'
     // offsets are looked up below.
-    let mut at: mortar_core::hash::HashMap<FragId, (u8, u32, Option<u64>)> =
-        mortar_core::hash::HashMap::default();
-    for (row, m) in split.merge_of.iter().enumerate() {
-        let Some(out) = f.assignment.out(m.section) else { continue };
+    let mut at: mortar_core::hash::HashMap<FragId, Placed> = mortar_core::hash::HashMap::default();
+    for (row, merge) in split.merge_of.iter().enumerate() {
+        let Some(out) = f.assignment.out(merge.section) else { continue };
         let Some(class) = str_class(f.assignment.outsecs[out].name) else { continue };
-        let Some((file, _)) = f.resolution.sh_index(m.section) else { continue };
+        let Some((file, _)) = f.resolution.sh_index(merge.section) else { continue };
         let changed = cf.files.binary_search_by_key(&file, |c| c.file).is_ok();
         let meta = f.merge.meta.get(row).ok_or_else(debug_reason)?;
         let word =
             MergeClass { strings: meta.strings, entsize: meta.entsize, align: meta.align }.word();
-        for p in m.pieces.start..m.pieces.start + m.pieces.len {
-            let frag = split.piece_frag[p as usize];
+        for piece in merge.pieces.start..merge.pieces.start + merge.pieces.len {
+            let frag = split.piece_frag[piece as usize];
             if f.layout.merge.offset(frag).is_none() {
                 continue;
             }
             let mine = if changed {
-                let off = u64::from(split.piece_off[p as usize]);
+                let off = u64::from(split.piece_off[piece as usize]);
                 let Some(o) = strings.output_offset(file, class, off) else {
                     return Err(refuse(format!(
                         "file {} class {class}: the string at input {off:#x} has no offset of G-1",
@@ -2532,22 +2533,22 @@ fn debug_string_frags(
             } else {
                 None
             };
-            let e = at.entry(frag).or_insert((class, word, None));
-            e.1 = word;
-            match (e.2, mine) {
-                (Some(a), Some(b)) if a != b => {
+            let entry = at.entry(frag).or_insert((class, word, None));
+            entry.1 = word;
+            match (entry.2, mine) {
+                (Some(was), Some(now)) if was != now => {
                     return Err(refuse(format!(
-                        "file {} class {class}: one string at {a:#x} and {b:#x}",
+                        "file {} class {class}: one string at {was:#x} and {now:#x}",
                         file.0
                     )));
                 }
-                (None, Some(b)) => e.2 = Some(b),
+                (None, Some(now)) => entry.2 = Some(now),
                 _ => {}
             }
         }
     }
     let (mut found, mut kept, mut rows) = (0usize, 0usize, 0usize);
-    let mut frags: Vec<(FragId, (u8, u32, Option<u64>))> = at.into_iter().collect();
+    let mut frags: Vec<(FragId, Placed)> = at.into_iter().collect();
     frags.sort_unstable_by_key(|x| x.0);
     // Per class: every live string's range in the new chunk.
     let mut live: std::collections::BTreeMap<u8, Vec<(u64, u64)>> =
