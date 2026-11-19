@@ -13,11 +13,12 @@ use std::collections::BTreeMap;
 use mortar_arch::{ProofRun, Reloc};
 use mortar_core::assignment::Assignment;
 use mortar_core::inputs::Reader;
-use mortar_core::layout::{ChunkKind, HoleKind};
+use mortar_core::layout::{ChunkKind, Hole, HoleKind};
 use mortar_core::par::Pool;
 use mortar_core::resolution::SectionState;
 use mortar_core::{
-    ChunkId, FileId, Inputs, Layout, Liveness, Resolution, SectionId, Split, SymEntry, SymKey,
+    ChunkId, Column, FileId, Inputs, Layout, Liveness, Resolution, SectionId, Split, SymEntry,
+    SymKey,
 };
 use mortar_diag::{Diagnostic, FileRef, Kind};
 use mortar_elf::{SectionIndex, SymbolIndex};
@@ -228,48 +229,15 @@ pub fn from_layout<R: Rows>(
     let mut members: Vec<(ChunkId, u64, SectionId)> = Vec::new();
     for (s, place) in pl.place.iter() {
         let Some((c, off)) = place.get() else { continue };
-        let row = &m.resolution.sections[s];
-        if !matches!(row.state, SectionState::Kept)
-            || !row.kind.is_placed()
-            || !m.liveness.is_live(s)
-        {
-            continue;
+        if is_member(m, s) {
+            members.push((c, off, s));
         }
-        if m.layout.folds.is_folded(s) {
-            continue;
-        }
-        members.push((c, off, s));
     }
     pool.unit_cost(15).sort_by_key(&mut members, |&(c, off, _)| (c.0, off));
     let mut paths: BTreeMap<FileId, FileRef> = BTreeMap::new();
     for &(c, off, s) in &members {
-        let chunk = &chunks[c];
-        if !chunk.in_file() || !matches!(chunk.kind, ChunkKind::Body(_)) {
-            continue;
-        }
-        let (file, index) = m
-            .resolution
-            .sh_index(s)
-            .ok_or_else(|| internal(&format!("section {} has no file", s.0)))?;
-        let Reader::Object(obj) = &m.inputs.files[file].reader else { continue };
-        let sec = obj.section(index).map_err(|e| internal(&format!("{e:?}")))?;
-        if sec.sh_type() == SHT_NOBITS || sec.size() == 0 {
-            continue;
-        }
-        let Some(range) = sec.file_range().map_err(|e| internal(&format!("{e:?}")))? else {
-            continue;
-        };
-        paths.entry(file).or_insert_with(|| file_ref(m.inputs, file));
-        let rel = m.resolution.sections[s].reloc;
-        let front = SectionFront {
-            file,
-            index,
-            size: sec.size(),
-            flags: sec.flags(),
-            src: range.start as u64,
-            name: sec.name().unwrap_or(b""),
-            rela: if rel.0 == 0 { None } else { Some(table(m.inputs, file, rel)?) },
-        };
+        let Some(front) = member_front(m, s, &chunks[c])? else { continue };
+        paths.entry(front.file).or_insert_with(|| file_ref(m.inputs, front.file));
         crate::rows::row_for(rows, s, (c, off), &front, extras.proof, &mut b)?;
     }
     merged(m, &mut b, &mut paths)?;
@@ -301,6 +269,51 @@ pub fn from_layout<R: Rows>(
     b.finish(window, pool)
 }
 
+/// Whether section `s` is a member of the plan: kept, placed, live and
+/// not folded (its place is the caller's).
+pub(crate) fn is_member(m: &Model<'_, '_>, s: SectionId) -> bool {
+    let row = &m.resolution.sections[s];
+    matches!(row.state, SectionState::Kept)
+        && row.kind.is_placed()
+        && m.liveness.is_live(s)
+        && !m.layout.folds.is_folded(s)
+}
+
+/// The front of member `s` placed in `chunk` ([`crate::rows::row_for`]'s
+/// input), or `None` when it takes no row: its chunk is not an in-file
+/// `Body` chunk, it is not in an object, or it has no file bytes.
+pub(crate) fn member_front<'m>(
+    m: &Model<'m, '_>,
+    s: SectionId,
+    chunk: &mortar_core::layout::Chunk,
+) -> Result<Option<SectionFront<'m>>, Diagnostic> {
+    if !chunk.in_file() || !matches!(chunk.kind, ChunkKind::Body(_)) {
+        return Ok(None);
+    }
+    let (file, index) = m
+        .resolution
+        .sh_index(s)
+        .ok_or_else(|| internal(&format!("section {} has no file", s.0)))?;
+    let Reader::Object(obj) = &m.inputs.files[file].reader else { return Ok(None) };
+    let sec = obj.section(index).map_err(|e| internal(&format!("{e:?}")))?;
+    if sec.sh_type() == SHT_NOBITS || sec.size() == 0 {
+        return Ok(None);
+    }
+    let Some(range) = sec.file_range().map_err(|e| internal(&format!("{e:?}")))? else {
+        return Ok(None);
+    };
+    let rel = m.resolution.sections[s].reloc;
+    Ok(Some(SectionFront {
+        file,
+        index,
+        size: sec.size(),
+        flags: sec.flags(),
+        src: range.start as u64,
+        name: sec.name().unwrap_or(b""),
+        rela: if rel.0 == 0 { None } else { Some(table(m.inputs, file, rel)?) },
+    }))
+}
+
 /// `spec/incr.md` IN-51b: the bytes of every debug hole (a neutral unit
 /// of its section's form) and of the neutral abbreviation table.
 fn debug_holes(m: &Model<'_, '_>, target: Target, b: &mut Builder) -> Result<(), Diagnostic> {
@@ -308,53 +321,87 @@ fn debug_holes(m: &Model<'_, '_>, target: Target, b: &mut Builder) -> Result<(),
     if pl.holes.is_empty() {
         return Ok(());
     }
+    let abbrev = abbrev_offset(&pl.holes, &pl.chunks)?;
+    for h in &pl.holes {
+        let c = &pl.chunks[h.chunk];
+        if !c.in_file() {
+            continue;
+        }
+        // The name is read for a debug unit only, as before the helper.
+        let name = match h.kind {
+            HoleKind::Debug | HoleKind::DeadDebug => c.name(m.assignment).unwrap_or(b""),
+            _ => b"",
+        };
+        if let Some(bytes) = hole_bytes(h, name, target, abbrev)? {
+            b.bytes(c.offset + h.offset, bytes.into_boxed_slice());
+        }
+    }
+    Ok(())
+}
+
+/// The neutral abbreviation table's offset in its output section (0
+/// without one): what every neutral unit's `debug_abbrev_offset` is
+/// (IN-51b). `chunks` is the placement's, whole: an output section's
+/// start is its first chunk's offset.
+///
+/// # Errors
+///
+/// `internal-error` for a table past 4 GiB.
+pub fn abbrev_offset(
+    holes: &[Hole],
+    chunks: &Column<ChunkId, mortar_core::layout::Chunk>,
+) -> Result<u32, Diagnostic> {
     // The start of an output section: its first chunk's offset (by
     // section index).
     let start = |shndx: Option<u32>| {
-        pl.chunks
+        chunks
             .iter()
             .filter(|(_, c)| c.shndx == shndx && c.in_file())
             .map(|(_, c)| c.offset)
             .min()
             .unwrap_or(0)
     };
-    let abbrev = pl.holes.iter().find(|h| h.kind == HoleKind::AbbrevTable).map_or(0, |h| {
-        let c = &pl.chunks[h.chunk];
+    let abbrev = holes.iter().find(|h| h.kind == HoleKind::AbbrevTable).map_or(0, |h| {
+        let c = &chunks[h.chunk];
         c.offset + h.offset - start(c.shndx)
     });
-    let abbrev =
-        u32::try_from(abbrev).map_err(|_| internal("a neutral abbrev table past 4 GiB"))?;
+    u32::try_from(abbrev).map_err(|_| internal("a neutral abbrev table past 4 GiB"))
+}
+
+/// The bytes of hole `h` in a chunk named `name` (IN-51b): a neutral
+/// unit of its section's form, or the neutral abbreviation table; `None`
+/// for a hole whose bytes are not a row's (zero, or a synthetic chunk's).
+///
+/// # Errors
+///
+/// `internal-error` when no neutral unit has the hole's size.
+pub fn hole_bytes(
+    h: &Hole,
+    name: &[u8],
+    target: Target,
+    abbrev: u32,
+) -> Result<Option<Vec<u8>>, Diagnostic> {
     let addr_size = match target.class {
         mortar_elf::Class::Elf64 => 8,
         mortar_elf::Class::Elf32 => 4,
     };
-    for h in &pl.holes {
-        let c = &pl.chunks[h.chunk];
-        if !c.in_file() {
-            continue;
+    Ok(Some(match h.kind {
+        HoleKind::AbbrevTable => {
+            let mut t = crate::neutral::ABBREV_TABLE.to_vec();
+            t.resize(usize::try_from(h.size).unwrap_or(0).max(t.len()), 0);
+            t
         }
-        let at = c.offset + h.offset;
-        let bytes = match h.kind {
-            HoleKind::AbbrevTable => {
-                let mut t = crate::neutral::ABBREV_TABLE.to_vec();
-                t.resize(usize::try_from(h.size).unwrap_or(0).max(t.len()), 0);
-                t
-            }
-            HoleKind::Debug | HoleKind::DeadDebug => {
-                let name = c.name(m.assignment).unwrap_or(b"");
-                crate::neutral::unit(name, h.size, 5, addr_size, abbrev).ok_or_else(|| {
-                    internal(&format!(
-                        "no neutral unit of {:#x} bytes in {}",
-                        h.size,
-                        String::from_utf8_lossy(name)
-                    ))
-                })?
-            }
-            _ => continue,
-        };
-        b.bytes(at, bytes.into_boxed_slice());
-    }
-    Ok(())
+        HoleKind::Debug | HoleKind::DeadDebug => {
+            crate::neutral::unit(name, h.size, 5, addr_size, abbrev).ok_or_else(|| {
+                internal(&format!(
+                    "no neutral unit of {:#x} bytes in {}",
+                    h.size,
+                    String::from_utf8_lossy(name)
+                ))
+            })?
+        }
+        _ => return Ok(None),
+    }))
 }
 
 /// The table of relocation section `rel` of `file` (`SHT_RELA`; REL is
@@ -494,7 +541,7 @@ pub struct SegView {
 
 /// The pad pass's views of `m`'s placement: every in-file chunk with
 /// bytes, and every `PT_LOAD` segment, in column order.
-fn pad_views(m: &Model<'_, '_>) -> (Vec<ChunkView>, Vec<SegView>) {
+pub(crate) fn pad_views(m: &Model<'_, '_>) -> (Vec<ChunkView>, Vec<SegView>) {
     let pl = &m.layout.placement;
     let chunks = pl
         .chunks

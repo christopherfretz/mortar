@@ -22,6 +22,7 @@
 // names (`a`, `b`, `r`, `P`, `S`) are kept in the fill arithmetic.
 #![allow(clippy::result_large_err, clippy::many_single_char_names, clippy::cast_precision_loss)]
 
+pub mod clip_plan;
 pub mod digest;
 pub mod dynamic;
 pub mod dynrel;
