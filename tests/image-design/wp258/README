@@ -1,0 +1,32 @@
+WP-258's experiments (spec/image.md I-47: debug references into dropped COMDAT
+code; and the coordinator's question: llvm-dwarfdump --verify not
+terminating). Not part of any gate; run by hand with a built mortar; each
+script's last line is its DONE line; OUT must be a new directory.
+Record: spec/landed/image/WP-258.md. Every number there comes from these.
+
+src/h.hh a.cc b.cc  two units sharing wp258::twice and wp258::Box<long>::get
+                (COMDAT); b.o is linked second, so its copies are dropped.
+                -DWP258_NE grows twice (sizes then differ on AArch64 and are
+                equal on x86-64); -DWP258_O2 makes twice noinline with
+                location lists (used with -O2).
+src/loop.cc g.cc  the smallest source for which llvm-dwarfdump --verify does
+                not terminate (GCC -O2 -g: a call site inside a lexical block).
+fields.py OUT DROP.o   for each relocation of DROP.o in a debug section whose
+                target is dropped COMDAT code: the bytes OUT has there (DROP's
+                contribution found by the masked input bytes), beside the
+                kept copy's address. --patch DEST SECTIONS ones|zero|kept
+                writes a probe.
+retag.py IN OUT FROM TO  retag every .debug_abbrev abbreviation of tag FROM.
+links.sh OUT [MORTAR]    the matrix: {AArch64, x86-64} x {g++ 14, clang++ 19} x
+                DWARF {4, 5} x {eq, ne, o2}; mortar, GNU ld, lld 19, lld 22,
+                mold (gold is not installed); OUT/verify.tsv (timeout 120 each,
+                TIMEOUT recorded as such), OUT/fields.tsv; plus the probe
+                'ones-rng' (mortar's output with all ones in .debug_rnglists,
+                .debug_addr, .debug_loclists), DWARF 5.
+consumers.sh LINKS_OUT   gdb 16 (gdb-multiarch for x86-64), lldb 19,
+                llvm-symbolizer-22 on 14 configurations of links.sh's
+                outputs; AArch64 also runs the program under gdb.
+                LINKS_OUT/consumers.tsv, per-output transcripts.
+verifyloop.sh OUT [MORTAR] [LINKS_OUT]  --verify (dwarfdump 19 and 22, timeout
+                30) on loop.o and its links by all five linkers, and after the
+                retag probe; OUT/verifyloop.tsv.
