@@ -147,9 +147,9 @@ fn compare(
         for (i, fact) in facts.iter().enumerate().skip(1) {
             let index = SectionIndex(u32::try_from(i).expect("index"));
             let at = format!("{}: m1.o section {i}", line.label);
-            let link = mortar_merge::phase::Link::section(&tables, full_file, index);
+            let whole_link = mortar_merge::phase::Link::section(&tables, full_file, index);
             let mine = fact.out.filter(|_| fact.kept).map(old_name);
-            assert_eq!(link.map(|l| full_name(l.out)), mine, "{at}: Link::section");
+            assert_eq!(whole_link.map(|l| full_name(l.out)), mine, "{at}: Link::section");
             let raw =
                 full.resolution.section_id(full_file, index).and_then(|id| full.assignment.out(id));
             assert_eq!(raw.map(full_name), fact.out.map(old_name), "{at}: the assignment's out");
@@ -843,7 +843,7 @@ fn r3_case(line: &update::Line, name: &str) -> Case {
     let ff = front_of(&mut cache, &old, file, Ids::Update { first_section: first, row })
         .unwrap_or_else(|e| panic!("{}: {e:?}", line.label));
     let oracle = with_symtab_keys(line, &old, "old");
-    let changes = match mortar::update::file_symbols::global_changes(&oracle, &delta, &[ff]) {
+    let outcome = match mortar::update::file_symbols::global_changes(&oracle, &delta, &[ff]) {
         Err(e) => Err(e.report()),
         Ok(got) => {
             let facts = changed_facts(ff, &old, &full.plan, &delta.keepers).expect("facts");
@@ -864,7 +864,7 @@ fn r3_case(line: &update::Line, name: &str) -> Case {
                 .collect())
         }
     };
-    Case { changes, output, affected }
+    Case { changes: outcome, output, affected }
 }
 
 /// R-3 (ruling item 5): the keys without a row of their own in m1.o, on an
@@ -899,36 +899,33 @@ fn global_changes_of_keys_without_a_row() {
                 String::from_utf8_lossy(key),
                 case.output.get(key)
             );
-            match name {
-                "end" => {
-                    // A linker-defined key: the named fall-back, never a value.
-                    let e = case.changes.as_ref().expect_err("a fall-back");
-                    assert_eq!(e, "update-not-implemented (symtab)", "{label}");
-                    assert!(case.output.contains_key(key), "{label}: _end has an entry");
+            if name == "end" {
+                // A linker-defined key: the named fall-back, never a value.
+                let e = case.changes.as_ref().expect_err("a fall-back");
+                assert_eq!(e, "update-not-implemented (symtab)", "{label}");
+                assert!(case.output.contains_key(key), "{label}: _end has an entry");
+            } else {
+                let changes = case.changes.as_ref().unwrap_or_else(|e| panic!("{label}: {e}"));
+                assert!(case.affected.iter().any(|a| a == key), "{label}: the key is affected");
+                for (n, kind, entry) in changes {
+                    let at = format!("{label}: {}: {kind}", String::from_utf8_lossy(n));
+                    match kind.as_str() {
+                        "Removed" | "Demoted" => assert!(!case.output.contains_key(n), "{at}"),
+                        _ => assert_eq!(Some(entry), case.output.get(n), "{at}"),
+                    }
                 }
-                _ => {
-                    let changes = case.changes.as_ref().unwrap_or_else(|e| panic!("{label}: {e}"));
-                    assert!(case.affected.iter().any(|a| a == key), "{label}: the key is affected");
-                    for (n, kind, entry) in changes {
-                        let at = format!("{label}: {}: {kind}", String::from_utf8_lossy(n));
-                        match kind.as_str() {
-                            "Removed" | "Demoted" => assert!(!case.output.contains_key(n), "{at}"),
-                            _ => assert_eq!(Some(entry), case.output.get(n), "{at}"),
-                        }
+                // Every affected key with an entry in the output has a
+                // change or kept its entry unchanged (not this file's).
+                let mine = changes.iter().find(|c| c.0 == key);
+                match case.output.get(key) {
+                    Some(e) => {
+                        let c = mine.unwrap_or_else(|| panic!("{label}: no change"));
+                        assert_eq!(&c.2, e, "{label}");
                     }
-                    // Every affected key with an entry in the output has a
-                    // change or kept its entry unchanged (not this file's).
-                    let mine = changes.iter().find(|c| c.0 == key);
-                    match case.output.get(key) {
-                        Some(e) => {
-                            let c = mine.unwrap_or_else(|| panic!("{label}: no change"));
-                            assert_eq!(&c.2, e, "{label}");
-                        }
-                        None => assert!(
-                            mine.is_none_or(|c| c.1 == "Removed"),
-                            "{label}: no entry in the output"
-                        ),
-                    }
+                    None => assert!(
+                        mine.is_none_or(|c| c.1 == "Removed"),
+                        "{label}: no entry in the output"
+                    ),
                 }
             }
         }
