@@ -877,10 +877,21 @@ impl<'b, 'c> Update<'b, 'c> {
                             && category(&row.name, row.sh_flags) == cat =>
                     {
                         let addr = base.addr(ch, off)?;
-                        grp.regions
+                        let pos = grp
+                            .regions
                             .iter()
-                            .position(|r| r.start <= addr && addr < r.end.max(r.start + 1))
-                            .map(|pos| (addr, pos))
+                            .position(|r| r.start <= addr && addr < r.end.max(r.start + 1));
+                        // A section the stored layout placed in a body of
+                        // `(O, c)` is in one of its file's regions there
+                        // (IN-30: every run of a file's members is one).
+                        // With none, the region's capacity is unknown, so
+                        // neither keep nor place can be applied: refused,
+                        // never sent to the overflow phase (which would
+                        // move a section that did not grow, M2b2b-3).
+                        if pos.is_none() {
+                            return Err(not_implemented());
+                        }
+                        pos.map(|pos| (addr, pos))
                     }
                     _ => None,
                 };

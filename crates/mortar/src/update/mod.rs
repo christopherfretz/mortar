@@ -580,8 +580,13 @@ fn placement(
                     );
                 }
             }
+            // M2b2b-3: whether the stored layout has the changed files'
+            // regions (no full link writes `REGIONS` yet).
+            let regions: usize =
+                cf.files.iter().map(|c| stored.regions_of(c.file).map_or(0, |r| r.len())).sum();
             changed::record(&format!(
-                "M2b-2b fallback: delta::layout: {}; not placed by the front:{unplaced}",
+                "M2b-2b fallback: delta::layout: {}; REGIONS rows of the changed files: \
+                 {regions}; not placed by the front:{unplaced}",
                 e.report()
             ));
         })
