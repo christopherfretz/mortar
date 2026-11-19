@@ -1620,7 +1620,10 @@ fn region_rows(
 /// chunk and do not overlap; they tile its placed sections (each section
 /// in a region of its own file and category, each region starting at its
 /// first section); every `Fill` hole of the chunk is one region's slack,
-/// from its last section's end to its own; a region without slack ends at its
+/// from its last section's end to its own, or the padding before a
+/// region, from the previous region's end to its start (WP-255g, S2-1:
+/// the delta's pad once the region's first member no longer explains it,
+/// and `overflow`'s pad before a new region); a region without slack ends at its
 /// last section and is the chunk's last; a file's ordinals per (output
 /// section, category) are 0, 1, ... in address order. A break is `Err`:
 /// no state is written.
@@ -1768,6 +1771,12 @@ fn regions_check(m: &crate::update::testing::MemoryState) -> Result<(), String> 
                         r.6
                     ));
                 }
+            }
+        }
+        // S2-1 (WP-255g): a pad, `[previous region's end, region start)`.
+        for (k, r) in regs.iter().enumerate().skip(1) {
+            if let Some(h) = holes.iter().position(|h| h.0 == regs[k - 1].1 && h.1 == r.0) {
+                used[h] = true;
             }
         }
         if let Some(h) = used.iter().position(|u| !u) {
