@@ -27,6 +27,11 @@ Scratch: `/Volumes/AgentWork/mortar-helper/.build/target-wp-140/m2b2d/`
   equal bucket for bucket to the base tree run here). e6b722b3
   cherry-picked (supervisor: state_producers test fix).
 
+## Gate (5d8e19d0, once)
+quick ok, linktest 0 FAIL, census 0 fail, fmt, clippy workspace, static
+0 differ, incr-update 472/472 PASS: all green. clippy testhooks: RED on
+`incremental.rs:632/648` `similar_names` (M2b-3 Part 2's, not mine).
+
 ## Next
-- The full gate once on the final tree (`m2b2d/gate.sh`, final line
-  `GATE ...`), then clean the scratch and hand back.
+- Handed back; waiting on rulings (gc-3 branch, update_image.rs edit,
+  expect-full a|b, `layout_inputs_live`).
