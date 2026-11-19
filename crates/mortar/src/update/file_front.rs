@@ -35,7 +35,7 @@ use std::path::{Path, PathBuf};
 
 use mortar_core::id::{ChunkId, FileId, SectionId, SymbolId};
 use mortar_core::identity::Anchor;
-use mortar_core::incr::IncrReason;
+use mortar_core::incr::{IncrReason, Unimplemented};
 use mortar_core::intern::SymName;
 use mortar_core::par::Pool;
 use mortar_elf::consts::{
@@ -178,7 +178,9 @@ fn changed(path: &[u8], what: &str) -> IncrReason {
 /// # Errors
 /// `input-changed` when the bytes read are not the ones `FILES.hash`
 /// names (or no longer an object), `state-corrupt` for rows that do not
-/// fit the file, `update-not-implemented` never.
+/// fit the file; `update-not-implemented (resolve)` for a changed file
+/// (`Ids::Update`) with an `SHF_LINK_ORDER` section outside the groups
+/// linked to a COMDAT member (resolve.md §6.5: the keeper decides).
 pub fn front_of<'c, 's>(
     cache: &'c mut FrontCache<'s>,
     view: &StateView<'_>,
@@ -301,7 +303,9 @@ fn open<'s>(
     // Each section's COMDAT group (resolve.md §6: a member of a group whose
     // flags are exactly `GRP_COMDAT`; only for a live file, as resolve
     // fills `SectionRow::comdat` for live objects alone).
-    let live = row.flags & file_flags::LAZY == 0;
+    // A changed or newly extracted file (`Ids::Update`) is live in the
+    // link the update makes, whatever its old row's `LAZY`.
+    let live = matches!(ids, Ids::Update { .. }) || row.flags & file_flags::LAZY == 0;
     let mut comdat: Vec<Option<&'s [u8]>> = vec![None; len];
     let mut rela: Vec<Option<SectionIndex>> = vec![None; len];
     for i in 1..count {
@@ -336,12 +340,20 @@ fn open<'s>(
     // whose linked section is dropped takes that section's group. Whether
     // it is dropped is the keeper's (whole-program): an unchanged file's
     // stored row says.
+    // A changed file has no stored row: the keeper decides (whole-link,
+    // U-3's), so such a section is a named fall-back, never a guessed anchor.
     let mut sig = comdat.clone();
     for i in 1..count {
         let s = object.section(SectionIndex(i)).map_err(|_| bad("section header"))?;
         let link_order = s.flags() & SHF_LINK_ORDER != 0 && comdat[i as usize].is_none();
-        let linked =
-            if link_order { s.link().ok().and_then(|l| comdat[l.0 as usize]) } else { None };
+        let linked = if link_order {
+            s.link().ok().and_then(|l| comdat.get(l.0 as usize).copied().flatten())
+        } else {
+            None
+        };
+        if linked.is_some() && stored.is_none() {
+            return Err(IncrReason::UpdateNotImplemented(Some(Unimplemented::Resolve)));
+        }
         if let (Some(l), Some(st)) = (linked, &stored)
             && let Some(r) = st.get(i as usize)
             && r.anchor_kind == 1

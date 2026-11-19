@@ -363,22 +363,24 @@ fn compare(
         if fr != st {
             return Err(format!("{label}: the TLS module slot: front {fr:x?}, stored {st:x?}"));
         }
-        let by_name = if opts.tally { globals_by_name(&view)? } else { HashMap::new() };
+        // Keys are matched by name, always (ruling "After 255c3" item 2:
+        // a `SYMBOLS` row is not a `SymbolId`; the compaction's IN-18e
+        // order is the state's own, WP-255d2's record).
+        let by_name = globals_by_name(&view)?;
         for i in 0..l.inputs.symbols.len() {
             let key = SymKey::global(SymbolId(i));
             let name = front_rows.name(key).to_vec();
             let shown = String::from_utf8_lossy(&name).into_owned();
-            // The scale run matches keys by name (the state's numbering is
-            // not the in-process front's there: see the record).
-            let sid = if opts.tally {
-                let Some(r) = stored_id(&by_name, &name, i, &mut seen) else { continue };
-                r
-            } else if stored.name(key) == &name[..] {
-                i
-            } else {
-                let other = String::from_utf8_lossy(stored.name(key)).into_owned();
-                return Err(format!("{label}: key {i} ({shown}) names another key: {other}"));
+            let before = seen.renumbered;
+            let Some(sid) = stored_id(&by_name, &name, i, &mut seen) else {
+                if opts.tally {
+                    continue;
+                }
+                return Err(format!("{label}: key {i} ({shown}) has no single SYMBOLS row"));
             };
+            if before == 0 && seen.renumbered == 1 {
+                eprintln!("{label}: the first renumbered key: {shown}: SymbolId {i}, SYMBOLS row {sid}");
+            }
             let skey = SymKey::global(SymbolId(sid));
             seen.keys += 1;
             same_rows(
