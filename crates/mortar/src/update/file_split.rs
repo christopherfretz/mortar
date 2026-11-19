@@ -29,7 +29,7 @@
 
 use mortar_core::OutSecId;
 use mortar_core::id::{FileId, SectionId, SymbolId};
-use mortar_core::incr::{IncrReason, MergeClass, MergedPiece};
+use mortar_core::incr::{IncrReason, MergeClass, MergedPiece, Unimplemented};
 use mortar_core::inputs::{LinkTarget, RelocForm};
 use mortar_core::par::Pool;
 use mortar_core::resolution::SectionKind;
@@ -37,10 +37,10 @@ use mortar_elf::consts::{SHT_REL, SHT_RELA, STB_WEAK};
 use mortar_elf::{Class, Object, Section, SectionIndex, SymbolIndex};
 use mortar_incr::format::{NONE, def_kind};
 use mortar_incr::update::view::StateView;
+use mortar_merge::What;
 use mortar_merge::cut::{self, Whole};
 use mortar_merge::eh::{self, EhFrames, EhIn, EhReloc, Target};
 use mortar_merge::phase::{self, LinkSection, Relocs, Unit};
-use mortar_merge::{Problem, What};
 use std::borrow::Cow;
 
 use super::file_front::FileFront;
@@ -178,12 +178,11 @@ fn target_of(id: SymbolId, kind: u8, bind: u8, section: u32, value: u64) -> Targ
 }
 
 /// The reason of a problem the split of an opened file meets: the full
-/// link diagnoses it, the update falls back.
-fn reason(front: &FileFront<'_>, p: &Problem) -> IncrReason {
-    IncrReason::InputChanged(format!(
-        "file {}: the split of section {} meets {:?} (the full link reports it)",
-        front.file.0, p.section, p.what
-    ))
+/// link diagnoses it, the update falls back (`update-not-implemented
+/// (split)`, ruling D2-2: the file was opened and its hash checked, so its
+/// input did not change).
+fn reason() -> IncrReason {
+    IncrReason::UpdateNotImplemented(Some(Unimplemented::Split))
 }
 
 /// The split of the file of `front`, with `facts` answering each section
@@ -191,8 +190,8 @@ fn reason(front: &FileFront<'_>, p: &Problem) -> IncrReason {
 /// relocation classification (`phase::ArchRelocs` of the link's `Arch`).
 ///
 /// # Errors
-/// `input-changed` for a section the split refuses or finds malformed
-/// (the full link reports it); `state-corrupt` never from here (the
+/// `update-not-implemented (split)` for a section the split refuses or
+/// finds malformed (the full link reports it); `state-corrupt` never from here (the
 /// rows `global` reads give theirs as a problem).
 pub fn split_of<F>(
     front: &FileFront<'_>,
@@ -206,7 +205,7 @@ where
 {
     let target = LinkTarget::of(front.object.machine());
     let link = FileLink { front, view, facts, target };
-    let units = phase::units(&link, front.file, relocs).map_err(|p| reason(front, &p))?;
+    let units = phase::units(&link, front.file, relocs).map_err(|_| reason())?;
     let mut pieces = Vec::new();
     let mut whole = Vec::new();
     let mut eh_units = Vec::new();
@@ -215,12 +214,7 @@ where
         match u {
             Unit::Merge(m, bytes) => {
                 offs.clear();
-                cut::cut(&bytes, m.strings, m.entsize as usize, &mut offs).map_err(
-                    |(what, offset)| {
-                        let p = Problem { file: m.file, section: m.index, piece: 0, offset, what };
-                        reason(front, &p)
-                    },
-                )?;
+                cut::cut(&bytes, m.strings, m.entsize as usize, &mut offs).map_err(|_| reason())?;
                 let class = MergeClass { strings: m.strings, entsize: m.entsize, align: m.align };
                 for (j, &o) in offs.iter().enumerate() {
                     let end = offs.get(j + 1).map_or(bytes.len(), |&e| e as usize);
@@ -255,13 +249,7 @@ where
             relocs,
         })
         .collect();
-    let eh = eh::parse(pool, word, &eh_in).map_err(|ps| {
-        let first = ps.into_iter().next();
-        first.map_or_else(
-            || IncrReason::InputChanged(format!("file {}: .eh_frame", front.file.0)),
-            |p| reason(front, &p),
-        )
-    })?;
+    let eh = eh::parse(pool, word, &eh_in).map_err(|_| reason())?;
     drop(eh_in);
     let eh_relocs = eh_units.into_iter().map(|u| u.3).collect();
     Ok(FileSplit { file: front.file, pieces, whole, eh, eh_relocs })

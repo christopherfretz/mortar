@@ -66,6 +66,11 @@ const M4: &str = "__asm__(\".symver wp255d_v1, wp255d_ver@V1\");\n\
     extern int _DYNAMIC[] __attribute__((weak));\n\
     extern int wp255d_nowhere __attribute__((weak));\n\
     long wp255d_m4(void) { return (long)_end + (_DYNAMIC != 0) + (&wp255d_nowhere != 0); }\n";
+/// A member whose string section's last string is not terminated (S-8: the
+/// full link refuses it; the split meets it as a problem).
+const M6: &str = "__asm__(\".section .rodata.wp255d_str,\\\"aMS\\\",%progbits,1\\n\"\n\
+    \"\\t.ascii \\\"ab\\\"\\n\\t.text\\n\");\n\
+    int wp255d_m6(int x) { return x + 6; }\n";
 /// An `SHF_LINK_ORDER` section outside the groups, linked to a COMDAT member.
 const M3: &str = "__asm__(\".section .text.wp255d_g,\\\"axG\\\",%progbits,wp255d_g,comdat\\n\"\n\
     \"\\t.globl wp255d_g\\nwp255d_g:\\n\\tret\\n\"\n\
@@ -144,6 +149,7 @@ fn lines() -> Vec<Line> {
         line.compile("m1e", "c++", M1_EDITED);
         line.compile("m3", "c", M3);
         line.compile("m4", "c", M4);
+        line.compile("m6", "c", M6);
         v.push(line);
     }
     v
@@ -462,5 +468,65 @@ fn update_link_order_outside_groups_falls_back() {
         let r = front_of(&mut cache, &view, m3, ids).map(|x| x.file);
         let want = IncrReason::UpdateNotImplemented(Some(Unimplemented::Resolve));
         assert_eq!(r, Err(want), "{}", line.label);
+    }
+}
+
+/// Ruling D2-2 (WP-255d3 D3-3): a problem the split of an opened,
+/// hash-checked file meets is `update-not-implemented (split)` (the input
+/// did not change; the full link reports the problem), not
+/// `input-changed`. `m6.o` (an unterminated string section, S-8) is a
+/// member the old link did not extract: its stored `FILES` row hashes its
+/// bytes; extracted, its split meets `Unterminated`. The facts are the
+/// classification the full link would give the string section (`Merge`,
+/// kept, placed); the full link of the line that extracts it fails.
+#[test]
+fn update_split_problem_falls_back_as_split() {
+    use mortar::update::file_split::{SectionFact, split_of};
+    use mortar_core::OutSecId;
+    use mortar_core::resolution::SectionKind;
+    use mortar_elf::SectionIndex;
+    use mortar_elf::consts::SHF_MERGE;
+    use mortar_merge::phase::ArchRelocs;
+    for line in lines() {
+        line.archive(&["m1.o", "m2.o", "m6.o"]);
+        let old_args = line.args(&["wp255d_m2", "wp255d_m1"]);
+        let old = state(&line, &old_args, "old");
+        let m6 = member(&old, "m6.o");
+        let row = old.file(m6).expect("FILES");
+        let store = support::store();
+        let f = whole(&line, &old_args, &store);
+        let fresh = support::store();
+        let mut cache = FrontCache::new(&fresh, pool(), &line.dir);
+        let ids = Ids::Update { first_section: SectionId(first_free(&old)), row };
+        let ff =
+            front_of(&mut cache, &old, m6, ids).expect("m6 opens: its bytes are the stored ones");
+        let merge: Vec<u32> = ff
+            .sections
+            .iter()
+            .filter(|s| s.flags & SHF_MERGE != 0 && s.name == b".rodata.wp255d_str")
+            .map(|s| s.index.0)
+            .collect();
+        assert_eq!(merge.len(), 1, "{}: the string section", line.label);
+        let facts = |i: SectionIndex| {
+            if merge.contains(&i.0) {
+                SectionFact { kind: SectionKind::Merge, kept: true, out: Some(OutSecId(1)) }
+            } else {
+                SectionFact { kind: SectionKind::Null, kept: false, out: None }
+            }
+        };
+        let r = split_of(ff, &old, &facts, &ArchRelocs(f.arch.get()), &f.pool).map(|x| x.file);
+        let want = IncrReason::UpdateNotImplemented(Some(Unimplemented::Split));
+        assert_eq!(r, Err(want.clone()), "{}", line.label);
+        // The full link of the line that extracts it reports the problem.
+        let a =
+            with_output(&line.args(&["wp255d_m2", "wp255d_m1", "wp255d_m6"]), &line.dir.join("m6"));
+        let inv = mortar::invoke_in("mortar", &a, &line.dir);
+        assert!(
+            !matches!(inv.outcome, mortar::Outcome::Linked { .. }),
+            "{}: {:?}",
+            line.label,
+            inv.outcome
+        );
+        eprintln!("{}: m6.o: the split's {:?}; the full link {:?}", line.label, want, inv.outcome);
     }
 }
