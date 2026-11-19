@@ -597,9 +597,14 @@ fn materialize_mutations_differ_by_the_delta_or_refuse_by_name() {
 
 // ---- D-4 ----------------------------------------------------------------------------
 
-/// `refill` on the first link's output with the delta `d`: whether it
-/// refuses `update-not-implemented (eh)` (`check_moved_code`).
-fn refill_says_eh(line: &Line, s: &Side<'_, '_>, view: &StateView<'_>, d: &LayoutDelta) -> bool {
+/// `refill` on the first link's output with the delta `d`: its answer,
+/// `Ok` or the refusal (`check_moved_code`'s is `(eh)`).
+fn refill_answer(
+    line: &Line,
+    s: &Side<'_, '_>,
+    view: &StateView<'_>,
+    d: &LayoutDelta,
+) -> Result<(), String> {
     use mortar_core::incr::{RefillSet, SymtabPlan, Unimplemented};
     let rows = mortar_incr::state5::LayoutOf { view };
     let stored = StoredLayout::new(&rows);
@@ -612,12 +617,13 @@ fn refill_says_eh(line: &Line, s: &Side<'_, '_>, view: &StateView<'_>, d: &Layou
         mortar_image::update::refill(l, d, &symtab, &set, &stored, &out, &leaves).map(|_| ())
     })
     .expect("the link's view");
-    matches!(
-        r,
+    match r {
+        Ok(()) => Ok(()),
         Err(mortar_image::update::RefillError::Fallback(IncrReason::UpdateNotImplemented(Some(
-            Unimplemented::Eh
-        ))))
-    )
+            Unimplemented::Eh,
+        )))) => Err("(eh)".to_owned()),
+        Err(e) => Err(format!("{e:?}")),
+    }
 }
 
 /// D-4 (ruling: ACCEPTED, the latent id-space bug): `check_moved_code`
@@ -657,13 +663,16 @@ fn check_moved_code_judges_the_front_section_with_the_front_delta() {
                 fid.0
             );
             // Today (update ids): the moved code section is not found.
-            assert!(!refill_says_eh(&line, s, view, &d), "{label}: update ids: (eh) refused");
+            let today = refill_answer(&line, s, view, &d);
+            assert!(today.is_ok(), "{label}: update ids: refill answered {today:?}");
             // The front's ids: found, refused by name.
             let (_, d_f) = s
                 .run2(view, &d, &changes, &s.f.layout)
                 .unwrap_or_else(|e| panic!("{label}: materialize: {e:?}"));
             assert_eq!(d_f.moved, vec![fid], "{label}: d_F.moved is the front's section");
-            assert!(refill_says_eh(&line, s, view, &d_f), "{label}: front ids: not refused (eh)");
+            let fixed = refill_answer(&line, s, view, &d_f);
+            assert_eq!(fixed, Err("(eh)".to_owned()), "{label}: front ids");
+            println!("{label}: D-4: update id {} -> Ok; front id {} -> (eh)", c.id.0, fid.0);
             ran += 1;
         });
     }
