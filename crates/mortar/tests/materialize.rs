@@ -307,6 +307,37 @@ fn keep_file<'v>(
     (d, changes)
 }
 
+/// `computed` without its island rows: F-1's bound refuses a moved code
+/// section on AArch64 (every link has empty islands), and the D-4 test is
+/// of `check_moved_code`, not of that bound (tested in the mutations).
+fn no_islands(computed: &Layout) -> Layout {
+    let mut c = computed.clone();
+    c.placement.sized = Box::default();
+    c
+}
+
+/// The moved mutation's answer: only that section's place differs, 16
+/// bytes on.
+fn moved_checks(
+    label: &str,
+    r: Result<Layout, Refusal>,
+    computed: &Layout,
+    fid: SectionId,
+    pc: ChunkId,
+    po: u64,
+) {
+    let l = r.unwrap_or_else(|e| panic!("{label}: moved: {e:?}"));
+    assert_eq!(
+        place_diff(&l, computed),
+        vec![fid.0],
+        "{label}: moved: the place of that section only"
+    );
+    assert_eq!(l.placement.place[fid].get(), Some((pc, po + 16)), "{label}: moved: its new offset");
+    let mut back = l.clone();
+    back.placement.place.as_mut_slice()[fid.0 as usize] = computed.placement.place[fid];
+    assert_eq!(first_difference(&back, computed), None, "{label}: moved: nothing else");
+}
+
 /// The rows where `a` and `b` differ in `place`.
 fn place_diff(a: &Layout, b: &Layout) -> Vec<u32> {
     let (p, q) = (a.placement.place.as_slice(), b.placement.place.as_slice());
@@ -354,6 +385,12 @@ fn materialize_mutations_differ_by_the_delta_or_refuse_by_name() {
                 None,
                 "{label}: a changed file kept in place"
             );
+            // F-1's bound (ruling Part 2 item 2), the taken branch: every
+            // AArch64 link has its empty islands (`placement.sized`), and a
+            // delta that moves no code keeps them.
+            let aarch64 = label.starts_with("aarch64");
+            assert_eq!(!computed.placement.sized.is_empty(), aarch64, "{label}: island rows");
+            assert_eq!(l.placement.sized, computed.placement.sized, "{label}: islands kept");
             let fid =
                 s.f.resolution.section_id(file, mortar_elf::SectionIndex(code)).expect("its id");
             let uid = changes.iter().find(|c| c.index == code).expect("its change").id;
@@ -372,22 +409,25 @@ fn materialize_mutations_differ_by_the_delta_or_refuse_by_name() {
                 Place::at(sc, so + 16)
             };
             m.moved = vec![uid];
-            let l = s
-                .run(view, &m, &changes, computed)
-                .unwrap_or_else(|e| panic!("{label}: moved: {e:?}"));
-            assert_eq!(
-                place_diff(&l, computed),
-                vec![fid.0],
-                "{label}: moved: the place of that section only"
-            );
-            assert_eq!(
-                l.placement.place[fid].get(),
-                Some((pc, po + 16)),
-                "{label}: moved: its new offset"
-            );
-            let mut back = l.clone();
-            back.placement.place.as_mut_slice()[fid.0 as usize] = computed.placement.place[fid];
-            assert_eq!(first_difference(&back, computed), None, "{label}: moved: nothing else");
+            let r = s.run(view, &m, &changes, computed);
+            if aarch64 {
+                // F-1's bound, the refused branch: an island row, and the
+                // delta moves a code section.
+                let name = refused(&label, "F-1: code moved", r, "F-1's bound");
+                assert!(name.contains("d.moved"), "{label}: F-1 names the move: {name}");
+                reached.push("F-1 bound");
+                // The same move with the island rows dropped from the
+                // front (x86-64's shape): taken (the checks below).
+                let mut c = computed.clone();
+                c.placement.sized = Box::default();
+                let r = s.run(view, &m, &changes, &c).map(|mut l| {
+                    l.placement.sized = computed.placement.sized.clone();
+                    l
+                });
+                moved_checks(&label, r, computed, fid, pc, po);
+            } else {
+                moved_checks(&label, r, computed, fid, pc, po);
+            }
 
             // Grown: one body chunk that no DEFINED row names, 16 bytes more.
             let def_chunks: Vec<ChunkId> = d
@@ -634,6 +674,28 @@ fn materialize_mutations_differ_by_the_delta_or_refuse_by_name() {
                 );
                 reached.push("eh_records");
             }
+            // Part 2 item 5: d.eh's range for a file with records, with one
+            // record more than the front gives it: `(eh)` by name.
+            if let Some(run) = s.eh.iter().find(|r| r.records > 0) {
+                let mut x = empty.clone();
+                x.eh = Some(mortar_core::incr::EhLayout {
+                    chunk: ChunkId(0),
+                    whole: false,
+                    ranges: vec![mortar_core::incr::EhRange {
+                        file: run.file,
+                        offset: run.offset,
+                        capacity: run.capacity,
+                        records: vec![run.offset; run.records as usize + 1],
+                    }],
+                });
+                let r = s.run(view, &x, &[], computed);
+                assert!(
+                    matches!(&r, Err((IncrReason::UpdateNotImplemented(Some(mortar_core::incr::Unimplemented::Eh)), n)) if n.contains("d.eh's range")),
+                    "{label}: the record count: {:?}",
+                    r.err()
+                );
+                reached.push("eh record count");
+            }
             let mut c = computed.clone();
             let mut v = c.placement.redirects.to_vec();
             v.push(Redirect { section: fid, offset: 0, patch: 0 });
@@ -757,7 +819,7 @@ fn check_moved_code_judges_the_front_section_with_the_front_delta() {
             assert!(today.is_ok(), "{label}: update ids: refill answered {today:?}");
             // The front's ids: found, refused by name.
             let (_, d_f) = s
-                .run2(view, &d, &changes, &s.f.layout)
+                .run2(view, &d, &changes, &no_islands(&s.f.layout))
                 .unwrap_or_else(|e| panic!("{label}: materialize: {e:?}"));
             assert_eq!(d_f.moved, vec![fid], "{label}: d_F.moved is the front's section");
             let fixed = refill_answer(&line, s, view, &d_f);
