@@ -178,11 +178,13 @@ fn regions_keep_an_unchanged_file_in_place() {
             let bare_rows = mortar_incr::state5::LayoutOf { view: &bare };
             let without = judge(&bare_rows);
             eprintln!("{}", what(&format!("without REGIONS {without:?}")));
-            // Refused (AArch64: `.text`'s tail is the patch island), or
-            // placed in new overflow regions.
+            // Refused (AArch64: `.text`'s tail is the patch island; or
+            // M2b-2c's "a stored place in no region" refusal, L-159's
+            // sibling in `delta.rs`), or placed in new overflow regions.
             assert!(
-                without.as_ref().is_err_and(|e| e.contains("reserve-exhausted"))
-                    || without.as_ref().is_ok_and(|k| k.opened > 0 && !k.moved.is_empty()),
+                without.as_ref().is_err_and(|e| {
+                    e.contains("reserve-exhausted") || e == "update-not-implemented (layout)"
+                }) || without.as_ref().is_ok_and(|k| k.opened > 0 && !k.moved.is_empty()),
                 "{}",
                 what("without REGIONS the update refuses or moves the file")
             );
