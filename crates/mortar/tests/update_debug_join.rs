@@ -454,15 +454,15 @@ fn type_units_are_debug_unit_kind() {
 }
 
 // spec: incr.md IN-70, IN-56 (WP-230): a renamed local appends a string:
-// not the identity case, `update-not-implemented (layout)` by name (G-1's
-// tail and dead ranges are written with the delta's placement, M2b-3's
-// wiring), and no FINDING.
+// not the identity case; since M2b-3 Part 3 a non-identity hop with debug
+// sections falls back by G-3's name, `update-not-implemented (debug)`
+// (G-1 in the non-identity case is G-4's), and no FINDING.
 #[test]
 fn renamed_local_is_not_the_identity_case() {
     for arch in targets() {
         let Some(l) = refused(arch, "rename", &[], &[], "renamed_local_wp230") else { continue };
         assert!(
-            l.contains("cannot update: update-not-implemented (layout)"),
+            l.contains("cannot update: update-not-implemented (debug)"),
             "{}: {l}",
             arch.name()
         );
@@ -639,8 +639,11 @@ fn growth_step_with_debug_is_debug_growth() {
         let (line, text) = not_taken(&p, &label, &[], &|p| p.rebuild_c(&c_body(2048), &[]));
         assert!(!text.contains("finding"), "{label}:\n{text}");
         if arch == Arch::Aarch64 {
+            // R-2 (a): the producer's own reason is the refusal's name.
             assert!(
-                line.contains("cannot update: update-not-implemented (layout)"),
+                line.contains(
+                    "cannot update: reserve-exhausted: .text: its tail is in a patch island chunk"
+                ),
                 "{label}: {line}"
             );
             assert!(
@@ -649,7 +652,8 @@ fn growth_step_with_debug_is_debug_growth() {
             );
             let (line, text) = not_taken(&p, &label, &[], &|p| p.rebuild_c(&c_grown(1536), &[]));
             assert!(
-                line.contains("cannot update: update-not-implemented (layout)"),
+                line.contains("cannot update: reserve-exhausted: ")
+                    && line.contains("segment reserve (file)"),
                 "{label}: {line}"
             );
             assert!(text.contains("segment reserve (file)"), "{label}:\n{text}");

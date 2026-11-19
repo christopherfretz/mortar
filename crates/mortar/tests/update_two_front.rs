@@ -144,7 +144,14 @@ fn a_grown_function_is_taken_through_front_two_or_refused_by_name() {
                 assert!(!fell_back, "{label}: hop {hop}: taken and fell back: {err}\n{lines}");
                 taken.push(format!("{label} hop {hop}"));
             } else if fell_back {
-                assert!(!lines.trim().is_empty(), "{label}: hop {hop}: a fall-back with no name");
+                // Named in the findings, or in the report's reason
+                // (`small-output` without the testhooks build).
+                let named = err.starts_with("incremental: full (")
+                    && !err.starts_with("incremental: full ()");
+                assert!(
+                    !lines.trim().is_empty() || named,
+                    "{label}: hop {hop}: a fall-back with no name: {err}"
+                );
             }
             // The full link of the same inputs: the same program output.
             p.link("full", &[], &findings);

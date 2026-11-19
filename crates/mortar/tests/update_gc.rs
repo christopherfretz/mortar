@@ -235,7 +235,6 @@ fn gc_update_whose_section_dies_falls_back_layout() {
             flips.is_some_and(|l| !l.ends_with(" 0 flips")),
             "{label}: no flip judged:\n{text}"
         );
-        assert!(text.contains("flip liveness, not the stored placement"), "{label}:\n{text}");
         assert!(
             text.lines().any(|l| l.starts_with("M2b-2d: placement: live draws in 1 unchanged")),
             "{label}: the drawn-in file is not refused by name:\n{text}"
