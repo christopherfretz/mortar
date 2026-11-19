@@ -315,10 +315,13 @@ fn mem_string(m: &MemoryState, s: Str) -> Result<Vec<u8>, IncrReason> {
     m.strings.get(a..b).map(<[u8]>::to_vec).ok_or_else(|| corrupt("a capture string"))
 }
 
-/// A FINDING of M2b-1 (a package's answer that is not the front's): both
-/// answers on the diagnostic stream, then the named fall-back.
+/// A FINDING of M2b-1 (a package's answer that is not the front's): the
+/// named fall-back (a full link follows, correct by construction), and
+/// both answers appended to the file `MORTAR_UPDATE_FINDINGS` names when
+/// it is set (the lane's and the tests' record; never the diagnostic
+/// stream: a fall-back adds no line there).
 fn finding(what: &str) -> IncrReason {
-    eprintln!("mortar: incremental: M2b-1 finding: {what}");
+    record(&format!("M2b-1 finding: {what}"));
     resolve()
 }
 
@@ -338,12 +341,43 @@ fn finding(what: &str) -> IncrReason {
 /// # Errors
 /// The packages' own reasons; `update-not-implemented (resolve)` as
 /// above.
+///
+/// `mark` is called with `"u4"` after the adapter and `"u5"` after the
+/// judgement (the report line's step times). A refusal is also appended to
+/// the `MORTAR_UPDATE_FINDINGS` file when it is set (the lane's count of
+/// the fall-backs by name), as `M2b-1 fallback: <reason>`.
 pub fn u5(
     view: &StateView<'_>,
     changed: &[FileId],
     positional: &[FileId],
     f: &Front<'_>,
     capture: &MemoryState,
+    mark: &mut dyn FnMut(&'static str),
+) -> Result<Option<(ChangedFiles, mortar_incr::update::resolve::ResolveDelta)>, IncrReason> {
+    let r = u5_judged(view, changed, positional, f, capture, mark);
+    if let Err(e) = &r {
+        record(&format!("M2b-1 fallback: {}", e.report()));
+    }
+    r
+}
+
+/// Appends `line` to the `MORTAR_UPDATE_FINDINGS` file when it is set.
+fn record(line: &str) {
+    if let Some(path) = std::env::var_os("MORTAR_UPDATE_FINDINGS") {
+        use std::io::Write as _;
+        if let Ok(mut f) = std::fs::OpenOptions::new().create(true).append(true).open(path) {
+            let _ = writeln!(f, "{line}");
+        }
+    }
+}
+
+fn u5_judged(
+    view: &StateView<'_>,
+    changed: &[FileId],
+    positional: &[FileId],
+    f: &Front<'_>,
+    capture: &MemoryState,
+    mark: &mut dyn FnMut(&'static str),
 ) -> Result<Option<(ChangedFiles, mortar_incr::update::resolve::ResolveDelta)>, IncrReason> {
     use mortar_incr::update::rows::file_flags::LAZY;
     use mortar_incr::update::{extract, resolve as res};
@@ -359,17 +393,33 @@ pub fn u5(
     }
     let options = mortar_resolve::tables::option_keys(&f.plan, &f.inputs.link.directives);
     let mut cf = changed_files(f, view, &files, positional, capture)?;
+    mark("u4");
     let ex = extract::extract(view, &cf, &options)?;
     if !(ex.extracted.is_empty() && ex.unextracted.is_empty() && ex.rounds.is_empty()) {
+        // The extraction by the `LAZY` flag; a round is "any supporting
+        // value" (IN-71b) and the capture writes none (0, which the
+        // canonical form ignores: WP-214's finding), so it is not judged.
         let row = |m: FileId| capture.files.get(m.0 as usize);
-        let front = ex
-            .extracted
-            .iter()
-            .all(|&(m, r)| row(m).is_some_and(|x| x.flags & LAZY == 0 && x.round == r))
-            && ex.unextracted.iter().all(|&m| row(m).is_some_and(|x| x.flags & LAZY != 0))
-            && ex.rounds.iter().all(|&(m, r)| row(m).is_some_and(|x| x.round == r));
+        let front = ex.extracted.iter().all(|&(m, _)| row(m).is_some_and(|x| x.flags & LAZY == 0))
+            && ex.unextracted.iter().all(|&m| row(m).is_some_and(|x| x.flags & LAZY != 0));
         if !front {
-            return Err(finding(&format!("extract gives {ex:?}; the front's FILES rows differ")));
+            let mut rows = String::new();
+            for m in ex
+                .extracted
+                .iter()
+                .map(|x| x.0)
+                .chain(ex.unextracted.iter().copied())
+                .chain(ex.rounds.iter().map(|x| x.0))
+            {
+                let old = view.file(m)?;
+                let now = row(m).ok_or_else(|| corrupt("FILES"))?;
+                let name = String::from_utf8_lossy(&view.string(old.member_name)?).into_owned();
+                rows.push_str(&format!(
+                    " [file {} {name}: stored flags {:#x} round {}, the front's flags {:#x} round {}]",
+                    m.0, old.flags, old.round, now.flags, now.round
+                ));
+            }
+            return Err(finding(&format!("extract gives {ex:?}; the front's FILES rows:{rows}")));
         }
         return Err(resolve());
     }
@@ -433,10 +483,22 @@ pub fn u5(
             == (c.kind, c.typ, c.bind, c.other, c.value, c.size)
             && mine == front_at;
         if !same {
+            let mut files = String::new();
+            for g in
+                [mine.as_ref().map(|x| x.0), front_at.as_ref().map(|x| x.0)].into_iter().flatten()
+            {
+                let old = view.file(FileId(g))?;
+                let now = capture.files.get(g as usize).ok_or_else(|| corrupt("FILES"))?;
+                files.push_str(&format!(
+                    " [file {g}: stored flags {:#x}, the front's flags {:#x}]",
+                    old.flags, now.flags
+                ));
+            }
             return Err(finding(&format!(
-                "key {show}: resolve gives {r:?} at {mine:?}; the front's capture {c:?} at {front_at:?}"
+                "key {show}: resolve gives {r:?} at {mine:?}; the front's capture {c:?} at {front_at:?};{files} extraction {ex:?}"
             )));
         }
     }
+    mark("u5");
     Ok(Some((cf, *delta)))
 }

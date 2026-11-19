@@ -358,8 +358,9 @@ fn reference_of(
     // U4-U5 (M2b-1): the changed files' rows in the update's ids, then
     // `extract` and `resolve` on them; the update goes on only where they
     // say what the front (its capture) says.
-    changed::u5(view, &detected.changed_files, &detected.positional, f, &state)?;
-    steps.mark("u4-u5");
+    changed::u5(view, &detected.changed_files, &detected.positional, f, &state, &mut |n| {
+        steps.mark(n);
+    })?;
     // The identity check (G-3's materialization in the identity case).
     let lock = session.lock().ok_or_else(image)?;
     let corrupt = |e: std::io::Error| IncrReason::StateCorrupt(e.to_string());

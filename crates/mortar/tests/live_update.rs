@@ -781,3 +781,112 @@ fn refuse_row_mutations() {
         std::fs::write(p, &out).expect("the table");
     }
 }
+
+const JL_MAIN: &str = "int f(void);\nint main(void){ return f(); }\n";
+/// v0: `f` -> `k` -> `g`; `h` unreferenced (dead under gc).
+const JL_A0: &str = "int g(void){ return 2; }\nint h(void){ return 3; }\n\
+int k(void){ return g(); }\nint f(void){ return k(); }\n";
+/// v1: `k` removed (so `g` dies), `f` references `h` (so it becomes live).
+const JL_A1: &str =
+    "int g(void){ return 2; }\nint h(void){ return 3; }\nint f(void){ return h(); }\n";
+
+/// The full mark of `f` as a set of the update's ids: a section of a file
+/// in `fresh` at `fresh`'s `first_section` plus its `sh_index`, any other
+/// at its file's first `SECTIONS` row of `m` plus its `sh_index`.
+fn mark_ids(f: &Front<'_>, m: &MemoryState, fresh: &[(FileId, u32)]) -> Vec<SectionId> {
+    let r = &f.resolution;
+    let mut out = Vec::new();
+    for (i, &v) in f.liveness.live.as_slice().iter().enumerate() {
+        if !v {
+            continue;
+        }
+        let (file, index) =
+            r.sh_index(SectionId(u32::try_from(i).expect("ids"))).expect("an index");
+        let first = fresh.iter().find(|(g, _)| *g == file).map_or_else(
+            || m.file_index[file.0 as usize].ranges[FileTable::Sections as usize].first,
+            |&(_, first)| first,
+        );
+        out.push(SectionId(first + index.0));
+    }
+    out.sort_unstable();
+    out
+}
+
+// spec: incr.md IN-71a (WP-238 P3-3, WP-225 M2b-1): `live` on the JOIN's
+// `ChangedFiles` (the U4 adapter over path (A)'s front of v1) and the
+// `ResolveDelta` of `resolve` on them, for a v0 -> v1 pair (a function
+// removed, so a section dies; a reference added, so one becomes live),
+// equals the difference of v0's full mark (stored ids) and v1's full mark
+// (the update's ids), on both 64-bit targets.
+#[test]
+fn live_on_the_joins_changed_files_is_the_full_marks_difference() {
+    let mut ran = 0;
+    let flags = ["-O0", "-ffunction-sections", "-fdata-sections"];
+    for (arch, cc, _) in TARGETS {
+        let label = format!("join pair {arch}");
+        let v0 = [Source { name: "main.c", text: JL_MAIN }, Source { name: "a.c", text: JL_A0 }];
+        let Some(l) = line(&label, cc, &flags, &v0, &[]) else { continue };
+        ran += 1;
+        let (m0, _) = capture(&l);
+        let store = store();
+        let f0 = front5(&l, &store);
+        let old = mark_ids(&f0, &m0, &[]);
+        drop(f0);
+        let v1 = [Source { name: "main.c", text: JL_MAIN }, Source { name: "a.c", text: JL_A1 }];
+        build_by(&l._scratch, cc, &flags, &v1).expect("v1 builds");
+        let inv = mortar::invoke_in("mortar", &l.args("out1"), &l.dir);
+        assert!(matches!(inv.outcome, mortar::Outcome::Linked { .. }), "{label}: v1's link");
+        let m1 = mortar_incr::state5::read::decode(
+            &std::fs::read(l.dir.join("out1.mortar-state")).expect("v1's state"),
+        )
+        .expect("v1's state decodes");
+        let f1 = front5(&l, &store);
+        let a = f1
+            .inputs
+            .files
+            .iter()
+            .find(|(_, x)| x.path.ends_with(b"a.c.o"))
+            .map(|(id, _)| id)
+            .expect("a.c.o");
+        let view = m0.view();
+        let (changed, delta) = mortar::update::changed::u5(&view, &[a], &[], &f1, &m1, &mut |_| {})
+            .unwrap_or_else(|e| panic!("{label}: U4-U5: {}", e.report()))
+            .expect("a.c.o changed");
+        let options = mortar_resolve::tables::option_keys(&f1.plan, &f1.inputs.link.directives);
+        let d = live(&view, &changed, &delta, &options)
+            .unwrap_or_else(|e| panic!("{label}: live: {}", e.report()));
+        let new = mark_ids(&f1, &m0, &[(a, changed.files[0].first_section.0)]);
+        let now_live: Vec<SectionId> =
+            new.iter().filter(|s| old.binary_search(s).is_err()).copied().collect();
+        let now_dead: Vec<SectionId> =
+            old.iter().filter(|s| new.binary_search(s).is_err()).copied().collect();
+        assert_eq!(d.now_live, now_live, "{label}: now_live (old {old:?}, new {new:?})");
+        assert_eq!(d.now_dead, now_dead, "{label}: now_dead (old {old:?}, new {new:?})");
+        // The pair's point: a.c.o's live sections are all fresh (now_live)
+        // and its old ones all gone (now_dead), `g`'s among them, `h`'s
+        // among the fresh; no unchanged file flips.
+        let first = changed.files[0].first_section.0;
+        let fresh = |s: &SectionId| s.0 >= first;
+        assert!(d.now_live.iter().all(fresh) && !d.now_live.is_empty(), "{label}: {d:?}");
+        assert!(d.drawn_in.is_empty(), "{label}: {d:?}");
+        let names = |ids: &[SectionId], fresh_rows: bool| -> Vec<Vec<u8>> {
+            ids.iter()
+                .filter_map(|s| {
+                    if fresh_rows {
+                        let r = changed.files[0].sections.get((s.0 - first) as usize)?;
+                        changed.string(&view, r.name).ok()
+                    } else {
+                        let r = m0.sections.get(s.0 as usize)?;
+                        view.string(r.name).ok()
+                    }
+                })
+                .collect()
+        };
+        let live_names = names(&d.now_live, true);
+        let dead_names = names(&d.now_dead, false);
+        assert!(live_names.iter().any(|n| n == b".text.h"), "{label}: {live_names:?}");
+        assert!(!live_names.iter().any(|n| n == b".text.g"), "{label}: {live_names:?}");
+        assert!(dead_names.iter().any(|n| n == b".text.g"), "{label}: {dead_names:?}");
+    }
+    assert!(ran == 2 || !tools_required(), "{ran} of 2 pairs built");
+}
