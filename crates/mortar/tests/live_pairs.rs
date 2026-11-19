@@ -200,8 +200,7 @@ fn run_pair(arch: &str, cc: &str, cxx: &str, p: &Pair) -> Option<Verdict> {
                 .files
                 .iter()
                 .find(|(_, x)| x.path.ends_with(o.as_bytes()))
-                .map(|(id, _)| id)
-                .unwrap_or_else(|| panic!("{label}: no {o}"))
+                .map_or_else(|| panic!("{label}: no {o}"), |(id, _)| id)
         })
         .collect();
     let view = m0.view();
@@ -357,6 +356,10 @@ fn judged(m: &MemoryState, o: &OptionKeys) -> Result<(), IncrReason> {
 // delta. A row from the dead `dead_user` does not keep it. With and
 // without `-g`, AArch64 and x86-64.
 #[test]
+#[allow(
+    clippy::many_single_char_names,
+    reason = "the state, its options, the label, the line, the row"
+)]
 fn a_start_stop_row_alone_keeps_its_section() {
     let mut ran = 0;
     for (arch, cc, _, _) in targets() {
@@ -640,6 +643,7 @@ fn src(name: &'static str, text: &'static str) -> Source {
 }
 
 /// The pairs, and the one the join cannot take (an extraction change).
+#[allow(clippy::too_many_lines, reason = "one literal per pair")]
 fn operator_pairs() -> Vec<Pair> {
     let helper = "int helper(int x){ return x * 3; }\nint lonely(int x){ return x - 1; }\n";
     let plain = "int user(int x){ return x + 1; }\n";
@@ -788,6 +792,10 @@ fn operator_configuration_pairs_are_the_full_marks_difference() {
 // ---- P3-5: an offset into a split section moved onto another piece ----
 
 /// v0's state of `p` and its option keys.
+#[allow(
+    clippy::many_single_char_names,
+    reason = "the state, its options, the label, the line, the row"
+)]
 fn v0_state(
     arch: &str,
     cc: &str,
@@ -811,6 +819,10 @@ fn v0_state(
 // before any delta) or redundant (the stored walk's sets unchanged);
 // never another set. The table by kind (`WP238_PIECE_TABLE`).
 #[test]
+#[allow(
+    clippy::many_single_char_names,
+    reason = "the state, its options, the label, the line, the row"
+)]
 fn an_offset_into_a_split_section_moved_is_caught_on_every_kind() {
     const KINDS: usize = edge_kind::LAST as usize + 1;
     const CAP: usize = 16;
