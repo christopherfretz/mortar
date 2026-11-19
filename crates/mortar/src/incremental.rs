@@ -255,27 +255,41 @@ fn emit(diagnostics: &Collector, seq: u64, d: Diagnostic) {
     diagnostics.emit(Key::new(PHASE, 0, seq), d);
 }
 
-/// WP-238 P0-7, the Rust oracle of the stored liveness rows: the
-/// stored-form walk (`mortar_incr::update::live::walk_stored`) over `m`,
-/// the format-5 state the capture of `f` is about to write, with the
-/// link's `OptionKeys`, compared with `f`'s full mark on sections AND live
-/// fragments, every section it marks checked KEPT (P0-2), and its hash
-/// with `META.live_hash` (S4). `Ok`: the `incremental: live-check` line
+/// WP-238 P0-7, the Rust oracle of the stored liveness rows, judging the
+/// bytes the reader will read (P3-1a): `m` is a state as DECODED from its
+/// bytes (`state5::read::decode`; the capture passes the reader's own
+/// view of the bytes it is about to write). The stored-form walk
+/// (`mortar_incr::update::live::walk_stored`) over it, with the link's
+/// `OptionKeys`, compared with `f`'s full mark on sections AND live
+/// fragments through the reader's numbering (a link section is its file's
+/// first `SECTIONS` row plus its `sh_index`, as `state5::read` numbers a
+/// file's rows), every section it marks checked KEPT (P0-2), and its hash
+/// with the stored `META.live_hash` (S4); a zero stored hash with a live
+/// section is a difference. `Ok`: the `incremental: live-check` line
 /// (`agree`, or `refused <rule>: <detail>` for a v1 refusal by name).
 /// `Err`: the first difference.
 ///
 /// # Errors
 /// The first section or fragment that differs, a marked section that is
 /// not kept, a hash that differs, or a `state-corrupt` of the walk.
-#[allow(clippy::many_single_char_names, reason = "f, m, r, s, n: the front, the state, its rows")]
 pub fn live_check(
     f: &Front<'_>,
     m: &mortar_incr::update::testing::MemoryState,
 ) -> Result<String, String> {
+    live_check_view(f, &m.view())
+}
+
+/// [`live_check`] over a view of the state's rows.
+#[allow(clippy::many_single_char_names, reason = "f, r, s, n: the front, the state, its rows")]
+#[allow(clippy::too_many_lines, reason = "one oracle, its comparisons in order")]
+fn live_check_view(
+    f: &Front<'_>,
+    view: &mortar_incr::update::view::StateView<'_>,
+) -> Result<String, String> {
     use mortar_core::split::EVERY_PIECE;
+    use mortar_incr::update::rows::FileTable;
     let options = mortar_resolve::tables::option_keys(&f.plan, &f.inputs.link.directives);
-    let view = m.view();
-    let walk = match mortar_incr::update::live::walk_stored(&view, &options) {
+    let walk = match mortar_incr::update::live::walk_stored(view, &options) {
         Ok(w) => w,
         Err((IncrReason::UpdateNotImplemented(_), detail)) => {
             return Ok(format!("incremental: live-check refused {detail}"));
@@ -284,9 +298,6 @@ pub fn live_check(
     };
     let r = &f.resolution;
     let n = r.sections.len() as usize;
-    if walk.live.len() != n {
-        return Err(format!("the state has {} SECTIONS rows, the link {n}", walk.live.len()));
-    }
     let name = |s: mortar_core::SectionId| -> String {
         let Some((file, index)) = r.sh_index(s) else { return format!("section {}", s.0) };
         let d = f.inputs.files[file].display();
@@ -305,21 +316,64 @@ pub fn live_check(
         };
         format!("section {} ({path}:{}:{sec})", s.0, index.0)
     };
-    for (i, &w) in walk.live.iter().enumerate() {
+    // The reader's numbering: link section -> stored `SECTIONS` row, and
+    // back.
+    let rows = walk.live.len();
+    let mut back: Vec<Option<mortar_core::SectionId>> = vec![None; rows];
+    let mut ranges = Vec::new();
+    for i in 0..n {
         let s = mortar_core::SectionId(i as u32);
+        let live = f.liveness.is_live(s);
+        let Some((file, index)) = r.sh_index(s) else {
+            if live {
+                return Err(format!("{} is live in the full mark and has no row", name(s)));
+            }
+            continue;
+        };
+        if ranges.len() <= file.0 as usize {
+            ranges.resize(file.0 as usize + 1, None);
+        }
+        let range = if let Some(x) = ranges[file.0 as usize] {
+            x
+        } else {
+            let x =
+                view.file_index(file).map_err(|e| e.report())?.ranges[FileTable::Sections as usize];
+            ranges[file.0 as usize] = Some(x);
+            x
+        };
+        if index.0 >= range.count {
+            if live {
+                return Err(format!(
+                    "{} is live in the full mark and past its file's rows",
+                    name(s)
+                ));
+            }
+            continue;
+        }
+        let row = (range.first + index.0) as usize;
+        let Some(w) = walk.live.get(row).copied() else {
+            return Err(format!("{}: row {row} past the walk's {rows}", name(s)));
+        };
+        back[row] = Some(s);
         if w && !r.sections[s].is_kept() {
             return Err(format!("{} is marked by the walk but not kept (P0-2)", name(s)));
         }
-        if w != f.liveness.is_live(s) {
-            return Err(format!("{}: walk live={w}, full mark live={}", name(s), !w));
+        if w != live {
+            return Err(format!("{}: walk live={w}, full mark live={live}", name(s)));
         }
+    }
+    if let Some(row) = (0..rows).find(|&i| walk.live[i] && back[i].is_none()) {
+        return Err(format!("SECTIONS row {row} is live in the walk and is no link section"));
     }
     let split = &f.merge.split;
     let mut frag = vec![false; split.frags.len() as usize];
-    for (s, offsets) in &walk.pieces {
+    for (row, offsets) in &walk.pieces {
+        let Some(s) = back.get(row.0 as usize).copied().flatten() else {
+            return Err(format!("SECTIONS row {}: pieces and no link section", row.0));
+        };
         if offsets.as_slice() == [EVERY_PIECE] {
             for &fr in split
-                .merge_pieces(*s)
+                .merge_pieces(s)
                 .and_then(|span| split.piece_frag.get(span.slots()))
                 .unwrap_or_default()
             {
@@ -328,7 +382,7 @@ pub fn live_check(
             continue;
         }
         for &o in offsets {
-            if let Some(p) = split.merge_piece_at(*s, o)
+            if let Some(p) = split.merge_piece_at(s, o)
                 && let Some(&fr) = split.piece_frag.get(p.piece as usize)
             {
                 frag[fr.0 as usize] = true;
@@ -344,17 +398,21 @@ pub fn live_check(
             frag[i], !frag[i]
         ));
     }
-    let h = mortar_incr::update::live::live_hash(&view, &walk.live, &walk.pieces)
+    let live = walk.live.iter().filter(|b| **b).count();
+    let stored = view.meta().map_err(|e| e.report())?.live_hash;
+    if stored == [0; 16] && live > 0 {
+        return Err(format!("META.live_hash is zero and {live} sections are live"));
+    }
+    let h = mortar_incr::update::live::live_hash(view, &walk.live, &walk.pieces)
         .map_err(|e| e.report())?;
-    if h != m.meta.live_hash {
+    if h != stored {
         return Err("META.live_hash: the stored rows do not give the stored live set".into());
     }
-    let live = walk.live.iter().filter(|b| **b).count();
     let frags = frag.iter().filter(|b| **b).count();
     Ok(format!(
         "incremental: live-check agree sections {live}/{n} fragments {frags}/{} rows {}",
         frag.len(),
-        m.edges.len()
+        view.count(format::kind::EDGES)
     ))
 }
 
@@ -1199,33 +1257,45 @@ impl Session {
         let collide = s5.is_some_and(|s| s.collide) || mortar_incr::testhook::state5_collide();
         let made = mortar_incr::capture::state5_rows(state, rows, collide).and_then(|mut m| {
             // WP-238 S4: the capture's live-set hash, from the full mark's
-            // sets (P0-3); then P0-7's oracle when asked for. Both are
-            // timed on their own: `t` skips them.
-            if let Some(Ok((_, at))) = f.incr5.as_ref().and_then(|i| i.live_rows.as_ref()) {
+            // sets (P0-3), over the rows as the encoder numbers them (Part
+            // 3b: `normalize` leaves the `SECTIONS` ranges to the encoder;
+            // S4's sum is by file and position in the file, which the
+            // encoder keeps). Timed on its own: `t` skips it.
+            let gc = f.incr5.as_ref().and_then(|i| i.live_rows.as_ref());
+            if let Some(Ok((_, at))) = gc {
                 let start = Instant::now();
                 let mut th = start;
+                m.index_sections();
                 let h =
                     mortar_incr::update::live::live_hash(&m.view(), f.liveness.live.as_slice(), at)
                         .map_err(|e| e.report())?;
-                m.meta.live_hash = h;
+                m.meta.live_hash = mortar_incr::testhook::live_hash_mutated(h);
                 lap(&self.times, &mut th, "format 5: live-set hash");
-                if mortar_incr::testhook::live_check() {
-                    let checked = live_check(f, &m);
-                    lap(&self.times, &mut th, "format 5: live check");
-                    match checked {
-                        Ok(line) => {
-                            let _ = writeln!(stderr, "{line}");
-                        }
-                        Err(what) => {
-                            let _ = writeln!(stderr, "incremental: live-check DISAGREE {what}");
-                            *failed = Some(format!("live-check: {what}"));
-                            return Err(format!("live-check: {what}"));
-                        }
-                    }
-                }
                 *t += start.elapsed();
             }
-            mortar_incr::capture::state5_encode(&m).map(|b| (m, b))
+            let bytes = mortar_incr::capture::state5_encode(&m)?;
+            // P0-7's oracle when asked for, on the bytes the reader will
+            // read (P3-1a): the reader's view of `bytes`. Its own clock.
+            if matches!(gc, Some(Ok(_))) && mortar_incr::testhook::live_check() {
+                let start = Instant::now();
+                let mut th = start;
+                let checked = mortar_incr::state5::read::open_bytes(bytes.clone())
+                    .map_err(|e| e.report())
+                    .and_then(|v| live_check_view(f, &v));
+                lap(&self.times, &mut th, "format 5: live check");
+                *t += start.elapsed();
+                match checked {
+                    Ok(line) => {
+                        let _ = writeln!(stderr, "{line}");
+                    }
+                    Err(what) => {
+                        let _ = writeln!(stderr, "incremental: live-check DISAGREE {what}");
+                        *failed = Some(format!("live-check: {what}"));
+                        return Err(format!("live-check: {what}"));
+                    }
+                }
+            }
+            Ok((m, bytes))
         });
         let (m, bytes) = match made {
             Ok(x) => x,

@@ -286,21 +286,10 @@ impl MemoryState {
     /// per table (WP-244: a pass per file was quadratic, 0.8 s of protoc's
     /// incremental link).
     fn index_rows(&self) -> Vec<FileIndexRow> {
-        use super::rows::{FileTable, RowRange};
-        fn note(r: &mut RowRange, i: usize) {
-            if r.count == 0 {
-                r.first = u32::try_from(i).unwrap_or(u32::MAX);
-            }
-            r.count += 1;
-            r.capacity = r.count;
-        }
+        use super::rows::FileTable;
         let mut rows = vec![FileIndexRow::default(); self.files.len()];
         let mut by = |t: FileTable, files: &mut dyn Iterator<Item = u32>| {
-            for (i, f) in files.enumerate() {
-                if let Some(row) = rows.get_mut(f as usize) {
-                    note(&mut row.ranges[t as usize], i);
-                }
-            }
+            note_ranges(&mut rows, t, files);
         };
         by(FileTable::Sections, &mut self.sections.iter().map(|s| s.file));
         by(FileTable::Mentions, &mut self.mentions.iter().map(|r| r.0.0));
@@ -323,6 +312,27 @@ impl MemoryState {
             }
         }
         rows
+    }
+
+    /// `FILE_INDEX`'s `SECTIONS` ranges over `sections`, by
+    /// [`Self::index_rows`]' rule (per file the first position and the
+    /// count of its rows), every other field of the rows kept (WP-238 Part
+    /// 3b): `compact::normalize` leaves the ranges to the encoder, so the
+    /// capture's live-set hash (S4), taken before the encoding, sets them
+    /// first. With a file's rows contiguous in `sections` (the capture's
+    /// order, which the encoder keeps per file) a row's position in its
+    /// file is the one the encoder writes.
+    pub fn index_sections(&mut self) {
+        use super::rows::{FileTable, RowRange};
+        let t = FileTable::Sections as usize;
+        for row in &mut self.file_index {
+            row.ranges[t] = RowRange::default();
+        }
+        note_ranges(
+            &mut self.file_index,
+            FileTable::Sections,
+            &mut self.sections.iter().map(|s| s.file),
+        );
     }
 
     /// `NAMES` made afresh: one row per global (kinds 0 and 1) and `GONE`
@@ -354,6 +364,26 @@ impl MemoryState {
 
 fn corrupt(what: &str) -> IncrReason {
     IncrReason::StateCorrupt(format!("{what}: row out of range"))
+}
+
+/// [`MemoryState::index_rows`]' rule for one table: per file of `files`
+/// (one entry per row, in row order) the first position and the count of
+/// its rows, capacity = count.
+fn note_ranges(
+    rows: &mut [FileIndexRow],
+    t: super::rows::FileTable,
+    files: &mut dyn Iterator<Item = u32>,
+) {
+    for (i, f) in files.enumerate() {
+        if let Some(row) = rows.get_mut(f as usize) {
+            let r = &mut row.ranges[t as usize];
+            if r.count == 0 {
+                r.first = u32::try_from(i).unwrap_or(u32::MAX);
+            }
+            r.count += 1;
+            r.capacity = r.count;
+        }
+    }
 }
 
 fn row<T: Clone>(rows: &[T], at: u32, what: &str) -> Rows<T> {

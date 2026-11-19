@@ -76,18 +76,17 @@ fn line(label: &str, cc: &str, flags: &[&str], sources: &[Source], extra: &[&str
     Some(Line { _scratch: s, label: label.to_owned(), dir: b.dir, args })
 }
 
-/// The state `l`'s incremental-mode link writes (decoded), its option
-/// keys, and S4's hash of the FULL mark over the decoded state (P0-3's
-/// capture side: the mark's live bits and `live_positions`), which the
-/// state is given as its `META.live_hash` (see
-/// [`the_written_live_hash_is_the_full_marks`]: on this base the capture
-/// writes zeros).
+/// The state `l`'s incremental-mode link writes (decoded) with the
+/// `META.live_hash` the capture wrote, and its option keys.
 fn capture(l: &Line) -> (MemoryState, OptionKeys) {
-    let (mut m, options, full) = capture_raw(l);
-    m.meta.live_hash = full;
+    let (m, options, _) = capture_raw(l);
     (m, options)
 }
 
+/// [`capture`], and S4's hash of the FULL mark over the decoded state
+/// (P0-3's capture side: the mark's live bits and `live_positions`, a link
+/// section mapped to its file's first `SECTIONS` row plus its `sh_index`,
+/// the reader's numbering), the value the written hash must have.
 fn capture_raw(l: &Line) -> (MemoryState, OptionKeys, [u8; 16]) {
     let inv = mortar::invoke_in("mortar", &l.args("out"), &l.dir);
     assert!(
@@ -432,16 +431,33 @@ fn a_definition_moved_to_an_unread_file_is_refused() {
     assert!(tried > 0 || !tools_required(), "no input reached the reader's check");
 }
 
-/// A state without the rows' hash under `--gc-sections` is refused by name.
+/// A state made without the rows (an incremental-mode link without
+/// `--gc-sections`: no `EDGES`, `META.live_hash` zero) read by an update
+/// under `--gc-sections` is refused by name.
 #[test]
 fn a_state_without_the_live_hash_is_refused() {
-    for (label, mut m, o) in captured().into_iter().take(1) {
-        m.meta.live_hash = [0; 16];
+    let mut tried = 0;
+    for (arch, cc, _) in TARGETS {
+        let (label, _, flags, sources, extra) = scenarios().swap_remove(0);
+        let label = format!("{label} {arch} no-gc");
+        let Some(mut l) = line(&label, cc, &flags, &sources, &extra) else { continue };
+        // The `--gc-sections` link's option keys, then the state of the
+        // same inputs linked without it.
+        let (_, o) = capture(&l);
+        l.args.retain(|a| a != "--gc-sections");
+        let inv = mortar::invoke_in("mortar", &l.args("plain"), &l.dir);
+        assert!(matches!(inv.outcome, mortar::Outcome::Linked { .. }), "{label}: {inv:?}");
+        let bytes = std::fs::read(l.dir.join("plain.mortar-state")).expect("the state");
+        let m = mortar_incr::state5::read::decode(&bytes).expect("the state");
+        assert_eq!(m.meta.live_hash, [0; 16], "{label}");
+        assert!(m.edges.is_empty(), "{label}");
         let e = live_why(&m.view(), &ChangedFiles::default(), &ResolveDelta::default(), &o)
             .expect_err(&label);
         assert!(e.1.starts_with("no-live-hash:"), "{label}: {}", e.1);
         assert_eq!(e.0, IncrReason::UpdateNotImplemented(Some(Unimplemented::Live)));
+        tried += 1;
     }
+    assert!(tried > 0 || !tools_required(), "no state made");
 }
 
 /// The outcome of `live` on a mutated state: `state-corrupt` before any
@@ -577,24 +593,24 @@ fn a_gc_update_falls_back_end_to_end() {
     assert!(text.contains("update-not-implemented (live)"), "{text}");
 }
 
-/// FINDING (not this package's file): the capture's `META.live_hash` is
-/// S4's sum over a `MemoryState` whose `FILE_INDEX` ranges are not filled
-/// yet (`capture::state5_rows`' rows; the ranges are the encoder's), so
-/// every file's body is empty and the state carries zeros: the old walk's
-/// check (S4, F7) and the oracle's hash comparison are vacuous, and
-/// `live` refuses every real state as `no-live-hash`. This test is the
-/// check of the fix (the written hash equals the full mark's over the
-/// written rows); ignored until the capture is fixed.
+/// The capture's WRITTEN `META.live_hash` (WP-238 Part 3b) is S4's hash
+/// of the full mark over the written rows, non-zero, on every scenario
+/// and both targets. (Before Part 3b the capture hashed a `MemoryState`
+/// whose `FILE_INDEX` had no `SECTIONS` ranges, `compact::normalize`'s,
+/// and wrote zeros.)
 #[test]
-#[ignore = "fails on this base: the capture hashes before FILE_INDEX ranges exist"]
 fn the_written_live_hash_is_the_full_marks() {
-    for (arch, cc, _) in TARGETS {
-        let (label, _, flags, sources, extra) = scenarios().swap_remove(0);
-        let Some(l) = line(&format!("{label} {arch} written"), cc, &flags, &sources, &extra) else {
-            continue;
-        };
-        let (m, _, full) = capture_raw(&l);
-        assert_ne!(full, [0; 16]);
-        assert_eq!(m.meta.live_hash, full, "{arch}: the written META.live_hash");
+    let mut tried = 0;
+    for (arch, cc, cxx) in TARGETS {
+        for (label, cplus, flags, sources, extra) in scenarios() {
+            let label = format!("{label} {arch} written");
+            let driver = if cplus { cxx } else { cc };
+            let Some(l) = line(&label, driver, &flags, &sources, &extra) else { continue };
+            let (m, _, full) = capture_raw(&l);
+            assert_ne!(full, [0; 16], "{label}");
+            assert_eq!(m.meta.live_hash, full, "{label}: the written META.live_hash");
+            tried += 1;
+        }
     }
+    assert!(tried > 0 || !tools_required(), "no scenario linked");
 }

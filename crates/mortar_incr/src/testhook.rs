@@ -22,7 +22,10 @@
 //! - `MORTAR_INCR_SMALL_OUTPUT=<bytes>`: `small-output`'s bound for the
 //!   process (WP-225, G-13; [`small_output_bound`]);
 //! - `MORTAR_INCR_LIVE_CHECK` (set to anything): WP-238 P0-7's oracle of
-//!   the stored liveness rows ([`live_check`]).
+//!   the stored liveness rows ([`live_check`]);
+//! - `MORTAR_INCR_LIVE_HASH=zero` or `=flip`: the capture writes a wrong
+//!   `META.live_hash` (zeros, or its first bit flipped), for the test that
+//!   the oracle judges the written bytes ([`live_hash_mutated`]).
 
 use mortar_core::incr::DirtyRange;
 
@@ -227,6 +230,33 @@ pub fn live_check() -> bool {
 #[must_use]
 pub fn live_check() -> bool {
     false
+}
+
+/// WP-238 Part 3b's injection: with the feature and
+/// `MORTAR_INCR_LIVE_HASH=zero` (`=flip`), the capture's `META.live_hash`
+/// `h` is replaced by zeros (has its first bit flipped) before the state
+/// is encoded, so that P0-7's oracle, which judges the written bytes,
+/// must disagree. Any other value: `h`. Without the feature: `h`.
+#[cfg(feature = "testhooks")]
+#[must_use]
+pub fn live_hash_mutated(h: [u8; 16]) -> [u8; 16] {
+    match std::env::var("MORTAR_INCR_LIVE_HASH").as_deref() {
+        Ok("zero") => [0; 16],
+        Ok("flip") => {
+            let mut x = h;
+            x[0] ^= 1;
+            x
+        }
+        _ => h,
+    }
+}
+
+/// WP-238 Part 3b's injection: without the `testhooks` feature, `h`.
+#[cfg(not(feature = "testhooks"))]
+#[inline]
+#[must_use]
+pub fn live_hash_mutated(h: [u8; 16]) -> [u8; 16] {
+    h
 }
 
 #[cfg(test)]

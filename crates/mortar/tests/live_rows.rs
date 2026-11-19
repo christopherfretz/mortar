@@ -59,15 +59,16 @@ fn line(label: &str, cc: &str, flags: &[&str], sources: &[Source], extra: &[&str
     Some(Line { _scratch: s, label: label.to_owned(), dir: b.dir, args })
 }
 
-/// The captured format-5 rows of `l`'s link (incremental mode, the
-/// switch on), and its `incremental:` lines.
+/// The format-5 state `l`'s link (incremental mode, the switch on) WRITES,
+/// decoded from its bytes (P3-1a: the oracle judges what the reader will
+/// read), and its `incremental:` lines.
 fn rows5(l: &Line) -> (MemoryState, String) {
-    let sink: mortar::incremental::Rows5Sink = std::sync::Arc::default();
+    let path = l.dir.join("out.state5");
     let inv = mortar::invoke_state5(
         "mortar",
         &l.args("out"),
         &l.dir,
-        State5 { path: l.dir.join("out.state5"), collide: false, rows: Some(sink.clone()) },
+        State5 { path: path.clone(), collide: false, rows: None },
     );
     assert!(
         matches!(inv.outcome, mortar::Outcome::Linked { .. }),
@@ -76,8 +77,9 @@ fn rows5(l: &Line) -> (MemoryState, String) {
         inv.outcome,
         inv.incremental
     );
-    let m = sink.lock().expect("the sink").take();
-    let m = m.unwrap_or_else(|| panic!("{}: no rows: {}", l.label, inv.incremental));
+    let bytes = std::fs::read(&path).unwrap_or_else(|e| panic!("{}: the state: {e}", l.label));
+    let m = mortar_incr::state5::read::decode(&bytes)
+        .unwrap_or_else(|e| panic!("{}: the state: {e:?}", l.label));
     (m, inv.incremental)
 }
 
@@ -479,8 +481,89 @@ fn the_oracle_names_a_difference() {
     cut.edges.retain(|(_, e)| e.kind == edge_kind::ROOT);
     let why = mortar::incremental::live_check(&f, &cut).expect_err("rows removed");
     assert!(why.contains("walk live=false, full mark live=true"), "{why}");
-    let mut bad = m;
+    let mut bad = m.clone();
     bad.meta.live_hash[0] ^= 1;
     let why = mortar::incremental::live_check(&f, &bad).expect_err("hash changed");
     assert!(why.starts_with("META.live_hash"), "{why}");
+    let mut zero = m;
+    zero.meta.live_hash = [0; 16];
+    let why = mortar::incremental::live_check(&f, &zero).expect_err("hash zeroed");
+    assert!(why.starts_with("META.live_hash is zero and"), "{why}");
+}
+
+/// The testhooks mortar: this test's own binary when the test build has
+/// the feature, else the one `cargo xtask incr-update` builds into
+/// `<target>/testhooks` (built here when missing, as `incr_oracle.rs`).
+#[cfg(feature = "testhooks")]
+fn subject() -> PathBuf {
+    PathBuf::from(env!("CARGO_BIN_EXE_mortar"))
+}
+
+#[cfg(not(feature = "testhooks"))]
+fn subject() -> PathBuf {
+    let exe = std::path::Path::new(env!("CARGO_BIN_EXE_mortar"));
+    let target = exe.parent().and_then(std::path::Path::parent).expect("the target directory");
+    let dir = target.join("testhooks");
+    let cargo = std::env::var_os("CARGO").unwrap_or_else(|| "cargo".into());
+    let out = std::process::Command::new(cargo)
+        .args(["build", "--quiet", "--package", "mortar", "--features", "testhooks"])
+        .current_dir(std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../.."))
+        .env("CARGO_TARGET_DIR", &dir)
+        .env("CARGO_PROFILE_DEV_DEBUG", "0")
+        .output()
+        .expect("cargo");
+    assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+    dir.join("debug").join("mortar")
+}
+
+/// WP-238 Part 3b: the capture's oracle (`MORTAR_INCR_LIVE_CHECK`) judges
+/// the WRITTEN bytes: with the capture made to write a zero or a changed
+/// `META.live_hash` (`MORTAR_INCR_LIVE_HASH`), the link fails with the
+/// oracle's DISAGREE and writes no state; without it, it agrees with a
+/// non-zero written hash. AArch64 and x86-64.
+#[test]
+fn the_capture_oracle_judges_the_written_hash() {
+    let mut tried = 0;
+    for (arch, cc, _) in TARGETS {
+        let src = [
+            Source { name: "a.c", text: "int main(void){ return 0; }\n" },
+            Source { name: "b.c", text: "int myinit(void){ return 40; }\n" },
+        ];
+        let label = format!("hook {arch}");
+        let flags = ["-O1", "-ffunction-sections"];
+        let Some(l) = line(&label, cc, &flags, &src, &["-init=myinit"]) else { continue };
+        let subject = subject();
+        for (mutation, want) in [
+            ("", "incremental: live-check agree"),
+            ("zero", "live-check DISAGREE META.live_hash is zero and"),
+            ("flip", "live-check DISAGREE META.live_hash: the stored rows"),
+        ] {
+            let state = l.dir.join("out.mortar-state");
+            if state.exists() {
+                std::fs::remove_file(&state).expect("the old state");
+            }
+            let out = std::process::Command::new("timeout")
+                .arg("120")
+                .arg(&subject)
+                .args(l.args("out"))
+                .current_dir(&l.dir)
+                .env("MORTAR_INCR_LIVE_CHECK", "1")
+                .env("MORTAR_INCR_LIVE_HASH", mutation)
+                .output()
+                .expect("the subject");
+            let err = String::from_utf8_lossy(&out.stderr);
+            assert!(err.contains(want), "{label} {mutation:?}: {err}");
+            if mutation.is_empty() {
+                assert!(out.status.success(), "{label}: {err}");
+                let m = mortar_incr::state5::read::decode(&std::fs::read(&state).expect("state"))
+                    .expect("the state");
+                assert_ne!(m.meta.live_hash, [0; 16], "{label}");
+            } else {
+                assert!(!out.status.success(), "{label} {mutation}: the link succeeded");
+                assert!(!state.exists(), "{label} {mutation}: a state was written");
+            }
+        }
+        tried += 1;
+    }
+    assert!(tried > 0 || !tools_required(), "no link");
 }
