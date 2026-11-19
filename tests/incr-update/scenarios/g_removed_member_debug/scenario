@@ -1,0 +1,15 @@
+# WP-230 G-3 (WP-228 B4 "For G-3", first item): a file with debug info
+# leaves the link. x.o calls h_extra under EDIT only, so lib.a's member h.o
+# is extracted at hops 0 and 2 and dropped at hops 1 and 3 (a removed
+# contribution: IN-52's neutral dead ranges, the allocated sections' holes).
+# -fdebug-prefix-map=@SRC@ (tests/l10/build.py): one DW_AT_comp_dir in every
+# version, as a real build compiles in one directory (else DEBUG_STRS differs).
+proves: a member with -g that is no longer extracted is either updated equal to the full link (a) or falls back by name
+source: WP-230 G-3 (spec/landed/incr/WP-230.md "G-3"), WP-228 B4 "For G-3"; tests/incr-review w-archive.sh A1's shape in C++
+edit: x.cc
+hops: EDIT, -, EDIT, -
+link: main.o x.o lib.a
+archive lib.a: h
+cflags: -g -fdebug-prefix-map=@SRC@=/incr-src
+options: --build-id
+compilers: gcc kiln

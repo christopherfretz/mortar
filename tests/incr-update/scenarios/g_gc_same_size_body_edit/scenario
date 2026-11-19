@@ -1,0 +1,13 @@
+# WP-230 G-3: the operator's configuration (static, -g, -ffunction-sections
+# -fdata-sections, --gc-sections) with --build-id. c.o's call keeps its
+# target; one immediate changes (5 -> 7, the same size, the same lines).
+# No section's liveness flips, so the update can keep the stored placement.
+# -fdebug-prefix-map=@SRC@ (tests/l10/build.py): one DW_AT_comp_dir in every
+# version, as a real build compiles in one directory (else DEBUG_STRS differs).
+proves: an update under -g and --gc-sections whose edit flips no liveness equals the full link (a), its debug sections included (u_dead's debug words tombstoned as the full link writes them)
+source: WP-230 G-3 (spec/landed/incr/WP-230.md "G-3"); gc_edit_keeps_liveness with -g
+edit: c.cc
+link: main.o c.o u.o
+cflags: -g -fdebug-prefix-map=@SRC@=/incr-src -ffunction-sections -fdata-sections
+options: --gc-sections --build-id
+compilers: gcc kiln

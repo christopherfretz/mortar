@@ -236,9 +236,13 @@ fn gc_update_whose_section_dies_falls_back_layout() {
 }
 
 // spec: incr.md IN-70 (the debug condition at the end of U2, before U6):
-// the same edit with `-g`: `(debug)`, by name, under --gc-sections too.
+// the same edit with `-g` (debug sections that the old version has not):
+// it falls back by name under --gc-sections too. G-3 (WP-230): U2's debug
+// condition is IN-55/IN-55a only; debug sections that appear are not the
+// stored placement, and path (A)'s image of the front falls back
+// `(image)` (`reference_of`), by name.
 #[test]
-fn gc_update_with_debug_falls_back_debug() {
+fn gc_update_with_debug_falls_back_by_name() {
     let mut ran = 0;
     for arch in targets() {
         let Some(p) = Prog::new(arch, "debug") else { continue };
@@ -249,7 +253,7 @@ fn gc_update_with_debug_falls_back_debug() {
         p.rebuild_b(B_LAST, &["-g"]);
         let (ok, err) = p.link("o", &["--incremental=update", "--incremental-report"]);
         assert!(!ok, "{label}: updated: {err}");
-        assert!(err.contains("cannot update: update-not-implemented (debug)"), "{label}: {err}");
+        assert!(err.contains("cannot update: update-not-implemented (image)"), "{label}: {err}");
     }
     assert!(ran == 2 || !tools_required(), "{ran} of the 2 targets");
 }
