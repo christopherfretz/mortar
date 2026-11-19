@@ -510,7 +510,6 @@ impl<'a> SymCtx<'a> {
     fn classify(&self, id: SymbolId) -> Result<(Class3, Option<Row<'a>>), SynthError> {
         let syms: &'a dyn SymSource = self.syms;
         let Some(g) = syms.global(id) else { return Ok((Class3::Skip, None)) };
-        let vis = g.other & 3;
         let at = match g.def {
             SymDef::Section { section, value } => {
                 self.place(section, value, EhWho::Symbol { droppable: false })?
@@ -521,19 +520,28 @@ impl<'a> SymCtx<'a> {
             SymDef::Undefined => g.referenced.then_some(Where::Undefined),
         };
         let Some(at) = at else { return Ok((Class3::Skip, None)) };
-        // S-81: a common symbol is `STT_OBJECT` in `.bss`.
-        let typ = if g.def == SymDef::Common { STT_OBJECT } else { g.typ };
-        // S-77, S-121: hidden and internal definitions are locals, and so
-        // are the definitions resolution writes `STB_LOCAL` (a version
-        // script's or `--exclude-libs`' local keys, `spec/dyn.md` D-114,
-        // WP-150), with their own visibility.
-        let local = (vis == STV_HIDDEN || vis == STV_INTERNAL || g.binding == STB_LOCAL)
-            && g.def != SymDef::Undefined;
-        let binding = if local { STB_LOCAL } else { g.binding };
-        let row =
-            Row { name: g.name.into(), info: binding << 4 | typ, other: g.other, size: g.size, at };
+        let (local, info) = global_info(&g);
+        let row = Row { name: g.name.into(), info, other: g.other, size: g.size, at };
         Ok((if local { Class3::Demoted(g.file) } else { Class3::Global }, Some(row)))
     }
+}
+
+/// S-77, S-81, S-121: a global key's entry with a place (`g` as resolution
+/// leaves it): whether it is DEMOTED to a local of its definer's block, and
+/// its `st_info`. Hidden and internal definitions are locals, and so are
+/// the definitions resolution writes `STB_LOCAL` (a version script's or
+/// `--exclude-libs`' local keys, `spec/dyn.md` D-114, WP-150), with their
+/// own visibility; a common symbol is `STT_OBJECT` (in `.bss`). The full
+/// link's `SymCtx::classify` and an update's global changes (IN-49a) call
+/// it.
+#[must_use]
+pub fn global_info(g: &GlobalIn<'_>) -> (bool, u8) {
+    let vis = g.other & 3;
+    let typ = if g.def == SymDef::Common { STT_OBJECT } else { g.typ };
+    let local = (vis == STV_HIDDEN || vis == STV_INTERNAL || g.binding == STB_LOCAL)
+        && g.def != SymDef::Undefined;
+    let binding = if local { STB_LOCAL } else { g.binding };
+    (local, binding << 4 | typ)
 }
 
 /// S-76, S-78: whether the keep rule keeps local `l` of a file, before its
