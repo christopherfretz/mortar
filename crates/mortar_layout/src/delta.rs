@@ -1347,6 +1347,7 @@ impl<'b, 'c> Update<'b, 'c> {
                 debug_assert!(false, "delta holes of chunk {} overlap or pass its size", chunk.0);
                 return Err(not_implemented());
             }
+            self.region_pads(chunk, &mut holes)?;
             for h in &holes {
                 if !old.contains(h) {
                     made.push(*h);
@@ -1356,6 +1357,97 @@ impl<'b, 'c> Update<'b, 'c> {
         }
         self.holes = all;
         self.made = made;
+        Ok(())
+    }
+
+    /// S2-1 (ruling "After 255e2's hand-back" item 1, option (b)): the
+    /// padding before a touched region that keeps its start is a `Fill`
+    /// hole `[previous region end, region start)` once the item at the
+    /// start no longer explains it (its first member's alignment dropped,
+    /// or the start is free). `holes` is the chunk's final hole list
+    /// (sorted, disjoint); the pad is inserted in order.
+    ///
+    /// The previous region's end is not a row the delta reads (REGIONS is
+    /// file-keyed). It is the end of the last hole before the start, by
+    /// invariant I: in a tolerant body chunk, every region with bytes that
+    /// is followed by another region ends at a `Fill` hole ending exactly
+    /// at its end, or is followed by a `Fill` hole starting at its end (a
+    /// pad). Then `[e, start)`, `e` the end of the last hole ending at or
+    /// before the start, holds no live byte: a live byte there is in a
+    /// region R' before the start with no hole ending in (that byte,
+    /// start], which I excludes. I holds for a full link's state (a
+    /// region followed by another in its part has `Slack::region`'s whole
+    /// slack, at least 64 bytes; only a part's last region is clipped,
+    /// `chunk.rs` `close`) and this function keeps it: a touched region
+    /// with bytes followed by another, or the region an overflow region
+    /// is appended after, with no such hole is `update-not-implemented
+    /// (layout)` (a section fitted exactly to a region's end), never a
+    /// state in which a later pad could cover a live byte. A pad as long
+    /// as the chunk's alignment or more is not padding: none is made (the
+    /// clip plan then refuses the byte by name).
+    fn region_pads(&self, chunk: ChunkId, holes: &mut Vec<Hole>) -> Result<(), IncrReason> {
+        let ch = self.chunks.get(chunk).ok_or_else(not_implemented)?;
+        // Regions live in body chunks only (a merged chunk's tail grows by
+        // item 6, not by a region).
+        if !matches!(ch.kind, ChunkKind::Body(_)) {
+            return Ok(());
+        }
+        let old_size = self.base.chunk(chunk)?.size;
+        let chunk_align = 1u64 << ch.align.min(63);
+        let ends_or_starts_at = |hs: &[Hole], x: u64| {
+            hs.iter().any(|h| h.offset + h.size == x || (h.offset == x && h.size > 0))
+        };
+        let mut pads = Vec::new();
+        for g in self.groups.values() {
+            for r in g.regions.iter().filter(|r| r.row.chunk == chunk) {
+                let (start, end) = (r.row.offset, r.row.offset + r.row.capacity);
+                // I, kept: a touched region with bytes followed by another.
+                if r.row.capacity > 0 && end < ch.size && !ends_or_starts_at(holes, end) {
+                    return Err(not_implemented());
+                }
+                if start == 0 {
+                    continue;
+                }
+                let k = holes.partition_point(|h| h.offset + h.size <= start);
+                let Some(e) = k.checked_sub(1).map(|j| holes[j].offset + holes[j].size) else {
+                    continue;
+                };
+                if e == start || holes.get(k).is_some_and(|h| h.offset < start) {
+                    continue;
+                }
+                // The alignment of the member (with bytes) at the start.
+                let first = self
+                    .changes
+                    .iter()
+                    .enumerate()
+                    .filter(|(i, c)| {
+                        c.size > 0
+                            && matches!(self.fate[*i], Fate::Region { .. })
+                            && self.place[*i] == Some((chunk, start))
+                    })
+                    .map(|(_, c)| align_bytes(c.align).unwrap_or(1))
+                    .max();
+                let explained = first.is_some_and(|a| round_up(e, a) == Some(start));
+                if explained || start - e >= chunk_align {
+                    continue;
+                }
+                pads.push(Hole { chunk, offset: e, size: start - e, kind: HoleKind::Fill });
+            }
+        }
+        // I, kept: the region an overflow region is appended after (its
+        // pad, `overflow`'s, is in `holes` and starts at the old size).
+        if ch.size > old_size && old_size > 0 && !ends_or_starts_at(holes, old_size) {
+            return Err(not_implemented());
+        }
+        if !pads.is_empty() {
+            holes.extend(pads);
+            holes.sort_by_key(|h| (h.offset, h.size));
+            holes.dedup();
+            if holes.windows(2).any(|w| w[0].offset + w[0].size > w[1].offset) {
+                debug_assert!(false, "a pad of chunk {} overlaps a hole", chunk.0);
+                return Err(not_implemented());
+            }
+        }
         Ok(())
     }
 
