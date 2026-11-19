@@ -210,9 +210,11 @@ fn gc_update_that_keeps_liveness_is_taken() {
 }
 
 // spec: incr.md IN-71a (WP-225 gc-lift): a function's last caller removed:
-// `live` agrees with the front, the section flips, so the update falls
-// back by name, `(layout)`, until M2b-3; the full link that follows is the
-// full link of the new inputs.
+// `live` agrees with the front, the section flips and its unchanged file is
+// drawn in (M2b-4 item 5: read with fresh ids, its layout inputs produced);
+// the materializer then falls back by name, `(symtab)` (the file's local
+// span or `.symtab`'s size changes; no `.symtab` plan is wired). The full
+// link that follows is the full link of the new inputs.
 #[test]
 fn gc_update_whose_section_dies_falls_back_layout() {
     let mut ran = 0;
@@ -226,7 +228,7 @@ fn gc_update_whose_section_dies_falls_back_layout() {
         let (ok, err) = p.link("o", &["--incremental=update", "--incremental-report"]);
         assert!(!ok, "{label}: updated: {err}");
         assert!(
-            err.contains("cannot update: update-not-implemented (layout)"),
+            err.contains("cannot update: update-not-implemented (symtab)"),
             "{label}: {err}\nfindings:\n{}",
             p.findings()
         );
@@ -236,9 +238,20 @@ fn gc_update_whose_section_dies_falls_back_layout() {
             flips.is_some_and(|l| !l.ends_with(" 0 flips")),
             "{label}: no flip judged:\n{text}"
         );
+        // M2b-4 item 5: the drawn-in file is read with fresh ids (its
+        // layout inputs produced), and a later producer refuses by name.
         assert!(
-            text.lines().any(|l| l.starts_with("M2b-2d: placement: live draws in 1 unchanged")),
-            "{label}: the drawn-in file is not refused by name:\n{text}"
+            text.lines().any(|l| l.starts_with("M2b-4: placement: live draws in 1 unchanged")
+                && l.contains("read with fresh ids")),
+            "{label}: the drawn-in file is not read:\n{text}"
+        );
+        // Then the materializer: the drawn-in file's local span (its dead
+        // section's locals go) or `.symtab`'s size differs from the stored
+        // one, and no `.symtab` plan is wired (U-5): `(symtab)`, by name.
+        assert!(
+            text.lines().any(|l| l.starts_with("M2b-3 Part 3: materialize (")
+                && l.ends_with("update-not-implemented (symtab)")),
+            "{label}: no (symtab) refusal named:\n{text}"
         );
         // A fall-back's full link (`small-output` comes first here).
         let (ok, err) = p.link("o", &["--incremental", "--incremental-report"]);

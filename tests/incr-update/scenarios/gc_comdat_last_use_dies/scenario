@@ -7,5 +7,5 @@ edit: main.cc
 link: main.o a.o b.o
 cflags: -ffunction-sections -fdata-sections
 options: --gc-sections
-expect-full: update-not-implemented (layout): a section that dies or revives changes the stored placement (SECTIONS.bits, META.live_hash), which the image takes only from M2b-3 on (WP-225 gc-lift), and the placement refuses an unchanged file the live delta draws in, whose layout inputs are not produced (WP-225 M2b-2d)
+expect-full: update-not-implemented (layout|symtab|scan): a section that dies or revives changes the stored placement (SECTIONS.bits, META.live_hash), which the image takes only from M2b-3 on (WP-225 gc-lift), and the placement refuses an unchanged file the live delta draws in, whose layout inputs are not produced (WP-225 M2b-2d) WP-225 M2b-4: a drawn-in file's layout inputs are produced (fresh ids), and the hop then falls back by a later producer's name: the materializer's `(symtab)` (a drawn-in file's local span or `.symtab` size changes: no symtab plan is wired), the scan's `(scan)` (F-1: a key the drawn-in file defines has a new RESOLVED row, its section the fresh id), or `layout_in`'s `(layout)` (a merge section marked in part).
 compilers: gcc kiln

@@ -4,7 +4,7 @@ source: tests/incr-review/w-meaning.sh, case W8
 edit: x.S
 link: a.o x.o
 options: --gc-sections
-expect-full: update-not-implemented (layout): every hop flips a section's liveness, which changes the stored placement (SECTIONS.bits, META.live_hash); `live` is judged against the front's mark and the image takes a new placement only from M2b-3 on (WP-225 gc-lift), so no hop expects a gc UPDATE: a hop that updates fails, a hop that falls back earlier (no-state, small-output) is n/a
+expect-full: update-not-implemented (layout|symtab|scan): every hop flips a section's liveness, which changes the stored placement (SECTIONS.bits, META.live_hash); `live` is judged against the front's mark and the image takes a new placement only from M2b-3 on (WP-225 gc-lift), so no hop expects a gc UPDATE: a hop that updates fails, a hop that falls back earlier (no-state, small-output) is n/a WP-225 M2b-4: a drawn-in file's layout inputs are produced (fresh ids), and the hop then falls back by a later producer's name: the materializer's `(symtab)` (a drawn-in file's local span or `.symtab` size changes: no symtab plan is wired), the scan's `(scan)` (F-1: a key the drawn-in file defines has a new RESOLVED row, its section the fresh id), or `layout_in`'s `(layout)` (a merge section marked in part).
 compilers: gcc
 not kiln: assembly (.S): kiln compiles C++ only; the shape is written in the assembly
 nolibc: yes

@@ -2804,14 +2804,13 @@ fn identity_check_refuses_a_new_relocation() {
 /// Ruling M2a2-3: a merged string of the same size changes (`world` ->
 /// `wurld`). The fragment's identity IS state rows (`FRAGS`, kind 11,
 /// keyed by the content hash, and the file's `FRAG_USE`, kind 56): the
-/// capture differs there, so the identity check refuses it by name,
-/// `update-not-implemented (layout)` (`--incremental=update`'s error,
-/// before the first write), and the link that falls back (plain
-/// `--incremental`) is a full link whose output equals `--incremental=full`'s.
-/// When the delta layout runs (U-4 item 6, M2b/M3) this test flips to an
-/// update.
+/// capture differs there, so it is not the identity case. Since WP-225
+/// M2b-4 (P3-2 fixed) it is an update through front 2: the new string is
+/// appended and the dead one keeps its bytes (L-147), so the output is not
+/// the full link's bytes; the verifier accepts it with the update's map
+/// and the program runs as the full link of the new inputs does.
 #[test]
-fn identity_check_falls_back_by_name_on_a_merged_string_change() {
+fn identity_check_updates_a_merged_string_change() {
     let programs = same_size_programs();
     assert!(programs.len() == 2 || !tools_required(), "{} of the 2 programs built", programs.len());
     for (prog, text, _) in programs {
@@ -2820,30 +2819,23 @@ fn identity_check_falls_back_by_name_on_a_merged_string_change() {
         assert!(text.contains(from), "{from:?} is not in the source");
         let o = prog.mortar_env("o", &["--incremental"], &[]);
         assert!(o.success(), "{arch:?}: {}", o.stderr_text());
-        let before = prog.bytes("o");
         recompile(&prog, &text.replace(from, to));
-        // `--incremental=update` (it ignores `small-output`): the fall-back
-        // is its error, by name, before the first write.
-        let o = prog.mortar_env("o", &["--incremental=update", "--incremental-report"], &[]);
-        let err = o.stderr_text();
-        assert!(!o.success(), "{arch:?}: updated: {err}");
-        assert!(
-            err.contains("cannot update: update-not-implemented (layout)"),
-            "{arch:?}: not the named fall-back: {err}"
-        );
-        assert!(prog.bytes("o") == before, "{arch:?}: the refused update wrote the output");
-        // The link that falls back (plain `--incremental`) is a full link.
-        let o = prog.mortar_env("o", &["--incremental", "--incremental-report"], &[]);
+        // `--incremental=update` (it ignores `small-output`).
+        let map = format!("--mortar-map={}", prog.path("o.map").display());
+        let o = prog.mortar_env("o", &["--incremental=update", "--incremental-report", &map], &[]);
         let err = o.stderr_text();
         assert!(o.success(), "{arch:?}: {err}");
-        assert!(err.contains("incremental: full ("), "{arch:?}: {err}");
+        assert!(err.contains("incremental: update (InPlace)"), "{arch:?}: {err}");
+        let got = prog.bytes("o");
+        let has = |s: &[u8]| got.windows(s.len()).any(|w| w == s);
+        assert!(has(b"wurld\0"), "{arch:?}: the new string is not in the output");
+        assert!(has(b"world\0"), "{arch:?}: the dead string's bytes are not kept (L-147)");
+        let findings =
+            support::plumb::verify(&prog.path("o"), &prog.path("o.map"), &prog.built.dir);
+        assert!(findings.is_empty(), "{arch:?}: the verifier rejects: {findings:?}");
         let o = prog.mortar_env("full", &["--incremental=full"], &[]);
         assert!(o.success(), "{arch:?}: {}", o.stderr_text());
-        let (got, want) = (prog.bytes("o"), prog.bytes("full"));
-        if let Some(i) = got.iter().zip(&want).position(|(a, b)| a != b) {
-            panic!("{arch:?}: the output differs from the full link at {i:#x}");
-        }
-        assert_eq!(got.len(), want.len(), "{arch:?}: sizes");
+        assert_eq!(prog.run("o"), prog.run("full"), "{arch:?}: the program runs otherwise");
     }
 }
 
