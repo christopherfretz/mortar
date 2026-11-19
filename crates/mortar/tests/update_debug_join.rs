@@ -213,9 +213,13 @@ impl Prog {
         if self.arch.is_host() {
             ex.push("run > /dev/null 2>&1".into());
         } else {
-            let port = 20000
-                + (std::process::id() % 20000) as u16
-                + u16::from(self.arch.name().len() as u8);
+            // A port the kernel hands out free (the tests of this binary
+            // run in parallel: a port derived from the pid alone was shared,
+            // and gdb attached to another test's qemu).
+            let port = std::net::TcpListener::bind("127.0.0.1:0")
+                .and_then(|l| l.local_addr())
+                .expect("a free port")
+                .port();
             let mut q = Command::new(tool(self.arch.qemu()).expect("qemu"));
             q.arg("-L")
                 .arg(self.arch.sysroot())
