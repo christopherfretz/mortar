@@ -139,6 +139,10 @@ pub struct Resolved {
     pub file_live: Vec<FileLive>,
     /// The closure's rounds after round 0 (of the last stage).
     pub rounds: u32,
+    /// Per `FileId`: each extracted lazy file's breadth-first round, 0
+    /// for every other file (`live::Closure::round`; IN-71b; of the last
+    /// stage and iteration).
+    pub file_round: Vec<u32>,
     /// The stages resolution ran (`spec/dyn.md` D-12, WP-167): 1 unless a
     /// needed `--as-needed` shared object's reference extracts a member.
     pub stages: u32,
@@ -333,9 +337,9 @@ fn resolve_stage<V: View>(
     // without one runs once.
     let mut prior: Option<PriorOwned> = None;
     let mut iterations = 1;
-    let (mut file_live, rounds, live_objects, keepers, section_base, sections, acc, found) = loop {
+    let (mut file_live, rounds, file_round, live_objects, keepers, section_base, sections, acc, found) = loop {
         let p = prior.as_ref().map(|(live, _)| live.as_slice());
-        let Closure { live: file_live, rounds } =
+        let Closure { live: file_live, rounds, round: file_round } =
             closure(view, &kinds, &targets, &redirect, &roots, &stage.sources, p, pool);
         steps.step("resolve.closure");
         let live_objects: Vec<FileId> = (0..kinds.len())
@@ -408,7 +412,17 @@ fn resolve_stage<V: View>(
                 continue;
             }
         }
-        break (file_live, rounds, live_objects, keepers, section_base, sections, acc, found);
+        break (
+            file_live,
+            rounds,
+            file_round,
+            live_objects,
+            keepers,
+            section_base,
+            sections,
+            acc,
+            found,
+        );
     };
     let ctx = Ctx {
         view,
@@ -574,6 +588,7 @@ fn resolve_stage<V: View>(
     let resolved = Resolved {
         file_live,
         rounds,
+        file_round,
         stages: 1,
         sources: Vec::new(),
         iterations,

@@ -216,6 +216,13 @@ pub struct Closure {
     pub live: Vec<FileLive>,
     /// The number of rounds after round 0 (the depth of the graph).
     pub rounds: u32,
+    /// Per `FileId`: the breadth-first round of each extracted lazy file
+    /// (`spec/incr.md` IN-71b, `FILES.round`): one more than the least
+    /// round of a file with an edge to it, a root counting as round 0
+    /// (so at least 1); 0 for every other file. A lazy file live from
+    /// the iteration before (`prior`) is 1. Filled in the walk itself
+    /// (WP-261), never by a second one.
+    pub round: Vec<u32>,
 }
 
 impl Closure {
@@ -250,6 +257,12 @@ pub(crate) fn closure<V: View>(
     let n = kinds.len();
     let live = Bits::new(n);
     let pull = atomics_u64(n, u64::MAX);
+    // IN-71b's round (WP-261): a minimum over the edges into a file of
+    // one more than its source's round. A file of frontier `i` has round
+    // `i` or `i + 1` (a root's target and a `prior` lazy file start at 1
+    // in frontier 0), fixed before round `i` runs, so the minimum only
+    // ever lowers the files the round finds: deterministic.
+    let round = atomics_u32(n, u32::MAX);
     let mut frontier: Vec<u32> = Vec::new();
     for (f, kind) in kinds.iter().enumerate() {
         let source = sources.get(f).copied().unwrap_or(false);
@@ -261,6 +274,7 @@ pub(crate) fn closure<V: View>(
             || before.is_some_and(FileLive::is_live)
         {
             live.set(f);
+            min_u32(&round[f], u32::from(kind.is_lazy()));
             if *kind != FileKind::Internal {
                 frontier.push(f as u32);
             }
@@ -270,6 +284,7 @@ pub(crate) fn closure<V: View>(
         let target = targets.first[root.key.0 as usize];
         if target != NO_FILE && kinds[target as usize].is_lazy() {
             min_u64(&pull[target as usize], entry_word(FileId::INTERNAL, SymbolIndex(root.arg)));
+            min_u32(&round[target as usize], 1);
             if live.set(target as usize) {
                 frontier.push(target);
             }
@@ -293,9 +308,11 @@ pub(crate) fn closure<V: View>(
                 let file = FileId(frontier[u]);
                 buf.clear();
                 view.mentions(file, buf);
+                let next_round = round[file.0 as usize].load(Relaxed).saturating_add(1);
                 for m in buf.iter() {
                     if let Some(target) = edge(m, targets, redirect, kinds) {
                         min_u64(&pull[target as usize], m.word(file));
+                        min_u32(&round[target as usize], next_round);
                         if live.set(target as usize) {
                             found.push(target);
                         }
@@ -310,8 +327,15 @@ pub(crate) fn closure<V: View>(
             std::mem::take(&mut *next.lock().unwrap_or_else(std::sync::PoisonError::into_inner));
         frontier.sort_unstable();
     }
-    let live = (0..n).map(|f| finish(kinds[f], live.get(f), pull[f].load(Relaxed))).collect();
-    Closure { live, rounds }
+    let live: Vec<FileLive> =
+        (0..n).map(|f| finish(kinds[f], live.get(f), pull[f].load(Relaxed))).collect();
+    let round = (0..n)
+        .map(|f| match live[f] {
+            FileLive::Extracted(_) => round[f].load(Relaxed),
+            _ => 0,
+        })
+        .collect();
+    Closure { live, rounds, round }
 }
 
 fn finish(kind: FileKind, live: bool, pull: u64) -> FileLive {

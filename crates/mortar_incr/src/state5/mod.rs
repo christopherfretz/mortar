@@ -55,8 +55,11 @@ pub use write::{PatchPlan, patch, plan_patch};
 pub const MAGIC: [u8; 8] = *b"MORTARSR";
 /// The format version.
 /// 6 since WP-257a (`SECTIONS`' kind, bits and a place-less row's output
-/// section: a version-5 state is refused, never read with zeros).
-pub const VERSION: u32 = 6;
+/// section: a version-5 state is refused, never read with zeros). 7 since
+/// WP-261 (`FILES.round` written by the full link's capture: a version-6
+/// state holds round 0 for every extracted member, which IN-71b reads as
+/// a `--whole-archive` member; it is refused, `state-version`, never read).
+pub const VERSION: u32 = 7;
 /// The header's size.
 pub const HEADER: usize = 80;
 /// A directory entry's size.
