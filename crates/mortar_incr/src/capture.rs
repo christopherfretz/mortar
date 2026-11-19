@@ -1328,6 +1328,7 @@ fn symtab_keys_check(
 /// 0's range, the area. Without one (`-s`): no block, no row, `META`
 /// zero, no such chunk. A break is the producer's defect: no state is
 /// written.
+#[allow(clippy::too_many_lines)] // one test per property, each with its words
 fn symtab_rows_check(
     m: &crate::update::testing::MemoryState,
     blocks: &[(FileId, mortar_core::incr::SymtabBlock)],
@@ -3468,6 +3469,9 @@ mod wp263 {
         Case { m, blocks, area, tables }
     }
 
+    /// A way to break [`good`]'s rows.
+    type Break = fn(&mut Case);
+
     fn check(c: &Case) -> Result<(), String> {
         symtab_rows_check(&c.m, &c.blocks, Some(c.area), Some(c.tables))
     }
@@ -3475,7 +3479,7 @@ mod wp263 {
     #[test]
     fn good_rows_pass_and_each_break_is_refused() {
         assert_eq!(check(&good()), Ok(()));
-        let cases: [(&str, fn(&mut Case)); 17] = [
+        let cases: [(&str, Break); 17] = [
             ("not in FILES order", |c| (c.blocks[1].0, c.blocks[2].0) = (FileId(2), FileId(1))),
             ("no FILES row", |c| c.blocks[2].0 = FileId(3)),
             ("is LAZY", |c| c.m.files[2].flags |= file_flags::LAZY),
