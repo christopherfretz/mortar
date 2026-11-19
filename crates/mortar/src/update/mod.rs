@@ -376,21 +376,24 @@ fn reference_of(
         })?;
     // U6 (gc-lift): under `--gc-sections`, `live::live`'s delta judged
     // against the front's mark (a disagreement is a FINDING, by name); the
-    // number of sections whose liveness flips.
+    // number of sections whose liveness flips. The ONE walk of the update
+    // (M2b-2d): `placement` takes its delta; without `--gc-sections` the
+    // delta is empty and nothing is walked (`live::live`'s own answer).
     let mut flips = 0usize;
     // U6-U7 (M2b-2b): the delta's placement of the changed files, judged
     // against the front's (a disagreement is a FINDING, by name).
     let placed = match u5 {
         Some((cf, delta)) => {
+            let mut live = mortar_incr::update::live::LiveDelta::default();
             if f.plan.shaping.gc_sections {
-                flips = live_judged(view, f, &cf, &delta)?;
+                (live, flips) = live_judged(view, f, &cf, &delta)?;
                 steps.mark("u6");
             }
             // While the image cannot take the delta's placement (below), a
             // producer's refusal is recorded and the identity check decides
             // alone; a FINDING (the delta disagrees with the front) falls
             // back by name.
-            let p = match placement(view, &stored, f, ctx.store, cwd, &cf, delta, &state) {
+            let p = match placement(view, &stored, f, ctx.store, cwd, &cf, delta, &live, &state) {
                 Ok(p) => Some(p),
                 Err(Why::Refused) => None,
                 Err(Why::Finding(e)) => return Err(e),
@@ -470,7 +473,8 @@ fn reference_of(
 /// FINDING (both sets, by name), and `live`'s own refusal falls back by its
 /// name (`update-not-implemented (live)`, its rule recorded).
 ///
-/// Returns the number of sections whose liveness flips: of the unchanged
+/// Returns the delta (the update's one walk, M2b-2d: [`placement`] takes
+/// it) and the number of sections whose liveness flips: of the unchanged
 /// files, and of the files of `cf` by `sh_index` (a replaced file's live
 /// sections are in `now_dead` by their old ids and in `now_live` by their
 /// fresh ones even when nothing flips).
@@ -481,7 +485,7 @@ fn live_judged(
     f: &crate::front::Front<'_>,
     cf: &mortar_incr::update::view::ChangedFiles,
     delta: &mortar_incr::update::resolve::ResolveDelta,
-) -> Result<usize, IncrReason> {
+) -> Result<(mortar_incr::update::live::LiveDelta, usize), IncrReason> {
     use mortar_core::SectionId;
     use mortar_incr::format::section_bits::{COLLECTED, KEPT};
     use mortar_incr::update::rows::FileTable;
@@ -600,7 +604,7 @@ fn live_judged(
         d.now_dead.len(),
         d.drawn_in.len()
     ));
-    Ok(flips)
+    Ok((d, flips))
 }
 
 /// The delta's placement of the changed files, judged ([`placement`]).
@@ -621,9 +625,17 @@ struct Placed {
 /// ([`judge`]). A disagreement is a FINDING: recorded with both answers
 /// and the update falls back by name.
 ///
-/// `liveness`: `live::live` (no `--gc-sections` here: `run_with` refused it
-/// first, so no comparison of a section's `dead` reads a stored bit, F-8:
-/// the scan's own recomputation is the only one).
+/// `live`: `live::live`'s delta, the update's one walk ([`live_judged`]'s,
+/// judged against the front's mark; the empty delta without
+/// `--gc-sections`). Under `--gc-sections` it gives each changed section's
+/// `live` to `layout_inputs_live` and `scan_of` (F-8: the new side is the
+/// walk's, never a stored bit). A delta that draws in an unchanged file
+/// (a section of it flips, or its marked pieces change) is refused
+/// `(layout)` by name: a drawn-in file's layout inputs (IN-72 item 2a; its
+/// sections that die become holes, and its `.eh_frame` range loses the
+/// dead FDEs) are not produced here (`layout_inputs` takes the files of
+/// `cf` only), so the delta would keep its dead sections placed and its
+/// stale records (WP-225 gc-3).
 #[allow(clippy::too_many_arguments, reason = "the update's inputs, each read once")]
 #[allow(clippy::too_many_lines, reason = "U6-U7's producers in order, then the judgement")]
 fn placement(
@@ -634,6 +646,7 @@ fn placement(
     cwd: &Path,
     cf: &mortar_incr::update::view::ChangedFiles,
     mut delta: mortar_incr::update::resolve::ResolveDelta,
+    live: &mortar_incr::update::live::LiveDelta,
     capture: &mortar_incr::update::testing::MemoryState,
 ) -> Result<Placed, Why> {
     use mortar_core::incr::{FileDemands, LayoutInput};
@@ -642,12 +655,31 @@ fn placement(
     use mortar_merge::phase::ArchRelocs;
     use mortar_scan::ScanOptions;
     let options = mortar_resolve::tables::option_keys(&f.plan, &f.inputs.link.directives);
-    let live = mortar_incr::update::live::live(view, cf, &delta, &options).map_err(refused)?;
+    if !live.drawn_in.is_empty() {
+        changed::record(&format!(
+            "M2b-2d: placement: live draws in {} unchanged files {:?} (now_live {} now_dead {}), \
+             whose layout inputs are not produced: (layout)",
+            live.drawn_in.len(),
+            live.drawn_in,
+            live.now_live.len(),
+            live.now_dead.len()
+        ));
+        return Err(Why::Refused);
+    }
     let mut cache = file_front::FrontCache::new(store, f.pool, cwd);
     let relocs = ArchRelocs(f.arch.get());
-    let inputs =
-        layout_in::layout_inputs(&mut cache, view, stored, &f.plan, cf, &delta, &relocs, &f.pool)
-            .map_err(refused)?;
+    let inputs = layout_in::layout_inputs_live(
+        &mut cache,
+        view,
+        stored,
+        &f.plan,
+        cf,
+        &delta,
+        Some(live),
+        &relocs,
+        &f.pool,
+    )
+    .map_err(refused)?;
     let dynamic = crate::dynamic::arch_status(&f.plan, f.target.machine)
         .map_err(|_| refused(IncrReason::UpdateNotImplemented(Some(Unimplemented::Scan))))?
         == mortar_arch::Status::M2;
@@ -687,7 +719,7 @@ fn placement(
             cf,
             &options,
             &delta,
-            &live,
+            live,
         )
         .map_err(scan)?;
         demands.push(d);
@@ -700,7 +732,7 @@ fn placement(
             cf,
             &options,
             &delta,
-            &live,
+            live,
         )
         .map_err(scan)?;
         for (id, r) in keys {

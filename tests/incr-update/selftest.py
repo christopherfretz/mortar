@@ -246,8 +246,8 @@ def units(log=print):
     case('debug-strs-no-section', duty.debug_strs_check(debug_state(good), debug_elf({b'.debug_str': strs})),
          ['.debug_line_str: 1 rows, no section'])
 
-    # the report's detail word and a scenario's `expect-full:` (an update
-    # under --gc-sections is `update-not-implemented (live)` by rule)
+    # the report's detail word and a scenario's `expect-full:` (a detail
+    # word such as `live` of `update-not-implemented (live)`)
     import tempfile
     with tempfile.TemporaryDirectory(prefix='incr-update-selftest-') as d:
         rp = os.path.join(d, 'rep.txt')

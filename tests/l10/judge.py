@@ -180,8 +180,8 @@ def report_reason(path):
 
 
 def report_detail(path):
-    """The fall-back's detail word (`live` of `incremental: full
-    (update-not-implemented (live))`; spec/incr.md §7), or None."""
+    """The fall-back's detail word (`layout` of `incremental: full
+    (update-not-implemented (layout))`; spec/incr.md §7), or None."""
     t = report_line(path)
     if t is None or t[1] != 'full' or len(t) < 4 or not t[2].startswith('(') or t[2].endswith(')'):
         return None

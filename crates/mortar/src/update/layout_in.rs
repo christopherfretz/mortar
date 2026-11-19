@@ -10,8 +10,9 @@
 //! - `old`: the stored `SECTIONS` row of the file whose identity equals,
 //!   by bytes, the capture's row of the section (`ChangedFile::sections`);
 //! - `kept`: `changed_facts` (resolve's per-object body, with the update's
-//!   keepers `ResolveDelta::keepers`); `live`: `true` (`--gc-sections` is
-//!   refused, `(live)`);
+//!   keepers `ResolveDelta::keepers`); `live`: without `--gc-sections`
+//!   `true`, with it the update's `LiveDelta` (`now_live`, by the fresh ids;
+//!   F-8: never a stored bit), as `file_scan`'s own reading (M2b-2d);
 //! - the pieces and the `.eh_frame` records: `split_of` (with the update's
 //!   resolution, ruling F-9), the records selected by
 //!   `EhPlan::select_in` per file (IN-34a) over `eh_source`;
@@ -31,6 +32,7 @@ use mortar_core::plan::Plan;
 use mortar_diag::{Collector, Policy};
 use mortar_elf::SectionIndex;
 use mortar_elf::consts::SHF_COMPRESSED;
+use mortar_incr::update::live::LiveDelta;
 use mortar_incr::update::resolve::ResolveDelta;
 use mortar_incr::update::view::{Change, ChangedFiles, StateView};
 use mortar_merge::eh::Kind;
@@ -75,19 +77,11 @@ fn anchor_parts(a: Anchor<'_>) -> (u8, &[u8]) {
 /// the file's `ChangedFile` ids and row), `changed_facts` (keepers from
 /// `delta`), `split_of` and `eh_source` (both with `delta`, F-9). `stored`
 /// is the state's layout (`old`'s rows), `plan` the update's line,
-/// `relocs` the target's relocation classification.
+/// `relocs` the target's relocation classification. [`layout_inputs_live`]
+/// with no liveness: under `--gc-sections` it refuses `(live)`.
 ///
 /// # Errors
-/// - `update-not-implemented (live)` under `--gc-sections` (no liveness
-///   producer is called here);
-/// - `(layout)` for a file that is not `Change::Changed` (a drawn-in
-///   file's ids are fresh in `cf` but stored in `layout`'s contract: the
-///   record's question; `changed_files` makes no other kind yet), an
-///   `SHF_COMPRESSED` section (the stored size and `header_of`'s
-///   differ), a section whose alignment is not read, and a section whose
-///   identity the front and the capture's row do not agree on (a FINDING
-///   of two readings of one header);
-/// - `(split)` for what the split refuses, and the producers' own.
+/// As [`layout_inputs_live`].
 #[allow(
     clippy::too_many_arguments,
     reason = "the state, the update's line and results, the target"
@@ -102,9 +96,59 @@ pub fn layout_inputs<'s>(
     relocs: &dyn Relocs,
     pool: &Pool,
 ) -> Result<LayoutInputs<'s>, IncrReason> {
-    if plan.shaping.gc_sections {
-        return Err(IncrReason::UpdateNotImplemented(Some(Unimplemented::Live)));
-    }
+    layout_inputs_live(cache, view, stored, plan, cf, delta, None, relocs, pool)
+}
+
+/// [`layout_inputs`] with the update's liveness `live` (`live::live`'s
+/// delta, U6; WP-225 M2b-2d). Under `--gc-sections` a section of a changed
+/// file is live when its fresh id is in `live.now_live` (a changed file's
+/// sections take fresh ids, so every live one is there; `file_scan`'s
+/// reading), an FDE's code when it is also kept and assigned, and the
+/// file's pieces are those of its live merge sections. Without
+/// `--gc-sections` `live` is not read.
+///
+/// # Errors
+/// - `update-not-implemented (live)` under `--gc-sections` with no `live`;
+/// - `(layout)` under `--gc-sections` for a live merge section of which
+///   the walk marked some pieces only (`live.pieces`): a fragment's
+///   liveness is the whole link's (any file's mark, `mortar_live` gc's
+///   `frag`), which no file's pieces give, and `FRAG_USE` holds the live
+///   fragments only;
+/// - `(layout)` for a file that is not `Change::Changed` (a drawn-in
+///   file's ids are fresh in `cf` but stored in `layout`'s contract: the
+///   record's question; `changed_files` makes no other kind yet), an
+///   `SHF_COMPRESSED` section (the stored size and `header_of`'s
+///   differ), a section whose alignment is not read, and a section whose
+///   identity the front and the capture's row do not agree on (a FINDING
+///   of two readings of one header);
+/// - `(split)` for what the split refuses, and the producers' own.
+#[allow(
+    clippy::too_many_arguments,
+    reason = "the state, the update's line and results, the target"
+)]
+#[allow(
+    clippy::too_many_lines,
+    reason = "per file: the changes, the pieces, the records, in order"
+)]
+pub fn layout_inputs_live<'s>(
+    cache: &mut FrontCache<'s>,
+    view: &StateView<'_>,
+    stored: &StoredLayout<'_>,
+    plan: &Plan,
+    cf: &ChangedFiles,
+    delta: &ResolveDelta,
+    live: Option<&LiveDelta>,
+    relocs: &dyn Relocs,
+    pool: &Pool,
+) -> Result<LayoutInputs<'s>, IncrReason> {
+    let gc = match (plan.shaping.gc_sections, live) {
+        (false, _) => None,
+        (true, Some(l)) => Some(l),
+        (true, None) => return Err(IncrReason::UpdateNotImplemented(Some(Unimplemented::Live))),
+    };
+    // Live: kept without `--gc-sections` (the caller's `kept` decides),
+    // the walk's mark with it.
+    let is_live = |id: SectionId| gc.is_none_or(|l| l.now_live.binary_search(&id).is_ok());
     let mut out = LayoutInputs::default();
     for c in &cf.files {
         if !matches!(c.change, Change::Changed) {
@@ -148,7 +192,7 @@ pub fn layout_inputs<'s>(
                 sh_flags: fs.flags,
                 size: fs.size,
                 align: fs.align,
-                live: true,
+                live: is_live(fs.id),
                 kept: facts[k].kept,
             });
         }
@@ -159,7 +203,27 @@ pub fn layout_inputs<'s>(
             reloc: SectionIndex(0),
         };
         let by_index = |i: SectionIndex| facts.get(i.0 as usize).copied().unwrap_or(null);
-        let s = split_of(ff, view, &by_index, relocs, pool, Some(delta))?;
+        let mut s = split_of(ff, view, &by_index, relocs, pool, Some(delta))?;
+        // Under `--gc-sections`: the pieces of the live merge sections only
+        // (`FilePieces`' contract), each of them marked whole.
+        if let Some(l) = gc {
+            let marks = |sec: SectionId| {
+                l.pieces.binary_search_by_key(&sec, |x| x.0).map_or(&[][..], |i| &l.pieces[i].1[..])
+            };
+            for p in s.pieces.iter().filter(|p| is_live(p.section)) {
+                let m = marks(p.section);
+                let at = |o: u32| m.binary_search(&o).is_ok();
+                if !(at(u32::MAX) || u32::try_from(p.offset).is_ok_and(at)) {
+                    super::changed::record(&format!(
+                        "M2b-2d: layout_in: a live merge section {} marked in part (piece at \
+                         {:#x} unmarked): (layout)",
+                        p.section.0, p.offset
+                    ));
+                    return Err(layout());
+                }
+            }
+            s.pieces.retain(|p| is_live(p.section));
+        }
         // Item 5: the file's kept records (S-46..S-49 per file, IN-34a);
         // an FDE's code section live when kept and assigned (the full
         // link's `liveness.is_live` without `--gc-sections`). An FDE whose
@@ -169,7 +233,7 @@ pub fn layout_inputs<'s>(
         let code_live = |sec: SectionId| match sec.0.checked_sub(first) {
             Some(k) if (k as usize) < facts.len() => {
                 let f = facts[k as usize];
-                f.kept && f.out.is_some()
+                f.kept && f.out.is_some() && is_live(sec)
             }
             _ => {
                 foreign.store(true, Ordering::Relaxed);

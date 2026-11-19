@@ -8,16 +8,19 @@
 //!
 //! - M2b-2c, finding M2b2b-3: a same-size edit of one function (the
 //!   identity case: the full link of the new inputs places the file where
-//!   the stored layout has it). The state the first link writes holds NO
-//!   `REGIONS` row (no full-link producer), so `delta::layout` cannot keep
-//!   a section in its file's region: it refuses by name
-//!   (`update-not-implemented (layout)`) instead of sending every section
-//!   to the overflow phase at the output section's tail (the lane's
-//!   `.text: update 0x86f20, full 0xc70` and its growth step). Given the
-//!   first link's regions (a TEST-ONLY derivation from the stored places
-//!   and the `Fill` hole after each run, `chunk.rs`'s IN-30 rule), it keeps
-//!   every section at the full link's offset, moves nothing and takes no
-//!   growth step.
+//!   the stored layout has it). Without the file's `REGIONS` rows
+//!   `delta::layout` cannot keep a section in its file's region: it
+//!   refuses by name (`update-not-implemented (layout)`) instead of
+//!   sending every section to the overflow phase at the output section's
+//!   tail (the lane's `.text: update 0x86f20, full 0xc70` and its growth
+//!   step). With the first link's regions it keeps every section at the
+//!   full link's offset, moves nothing and takes no growth step.
+//! - M2b-2d (ruling M2b-2c 2): the regions are WP-264's stored `REGIONS`
+//!   rows, and a TEST-ONLY derivation from the stored places and the
+//!   `Fill` hole after each run (`chunk.rs`'s IN-30 rule, [`WithRegions`])
+//!   gives the same rows: the producer checked against the rule, in every
+//!   hop. `Fate::Beside`'s branch where the chunk changes size and the
+//!   empty `.bss` follows its end (ruling M2b-2c 3).
 //!
 //! On AArch64 and x86-64.
 
@@ -29,6 +32,7 @@ mod update;
 
 use mortar::update::file_front::{FrontCache, Ids, front_of, front_of_changed};
 use mortar::update::layout_in::layout_inputs;
+use mortar_core::column::Column;
 use mortar_core::id::{ChunkId, FileId, OutSecId, SectionId, SymKey, SymKind, SymbolId};
 use mortar_core::incr::{
     FileDemands, IncrReason, LayoutInput, LayoutRows, PlaceNow, StoredEhRange, StoredFrag,
@@ -36,10 +40,11 @@ use mortar_core::incr::{
     SymtabBlock, SymtabTables, Unimplemented,
 };
 use mortar_core::layout::{
-    Chunk, ChunkKind, Defined, Hole, HoleKind, Patch, Redirect, Segment, SymPlace, Tls,
+    Chunk, ChunkKind, Defined, Hole, HoleKind, Patch, Redirect, Segment, SegmentRules, SymPlace,
+    Tls, derive_segments,
 };
-use mortar_elf::consts::SHF_EXECINSTR;
-use mortar_elf::{Machine, SectionIndex};
+use mortar_elf::consts::{PT_GNU_STACK, SHF_EXECINSTR};
+use mortar_elf::{Class, Machine, SectionIndex};
 use mortar_incr::format::Str;
 use mortar_incr::update::rows::FileRow;
 use mortar_incr::update::view::{ChangedFiles, StateView};
@@ -119,6 +124,11 @@ struct WithRegions<'a> {
     inner: &'a dyn LayoutRows,
     file: FileId,
     regions: Vec<StoredRegion>,
+    /// TEST-ONLY room after one chunk (`Beside`'s unit test): `(chunk,
+    /// bytes)`, its capacity that much larger and every in-file chunk
+    /// after it that much further on in the file (a segment reserve the
+    /// no-libc program's full link does not leave).
+    room: Option<(ChunkId, u64)>,
 }
 
 impl WithRegions<'_> {
@@ -168,13 +178,43 @@ impl WithRegions<'_> {
 
 impl LayoutRows for WithRegions<'_> {
     fn chunks(&self) -> Result<Vec<(ChunkId, Chunk)>, IncrReason> {
-        self.inner.chunks()
+        let mut v = self.inner.chunks()?;
+        if let Some((at, extra)) = self.room {
+            let end = v.iter().find(|(id, _)| *id == at).map(|(_, c)| c.offset);
+            for (id, c) in &mut v {
+                if *id == at {
+                    c.capacity += extra;
+                } else if end.is_some_and(|e| c.in_file() && c.offset > e) {
+                    c.offset += extra;
+                }
+            }
+        }
+        Ok(v)
     }
     fn order(&self) -> Result<Vec<ChunkId>, IncrReason> {
         self.inner.order()
     }
     fn segments(&self) -> Result<Vec<Segment>, IncrReason> {
-        self.inner.segments()
+        let stored = self.inner.segments()?;
+        if self.room.is_none() {
+            return Ok(stored);
+        }
+        // The room changes the chunks, so the segments are derived again
+        // with the rules that derive the stored ones (L-125).
+        let column = |v: Vec<(ChunkId, Chunk)>| {
+            Column::<ChunkId, Chunk>::from_vec(v.into_iter().map(|(_, c)| c).collect())
+                .expect("chunks")
+        };
+        let (was, now) = (column(self.inner.chunks()?), column(self.chunks()?));
+        let order = self.order()?;
+        let stack = stored.iter().find(|s| s.p_type == PT_GNU_STACK).expect("PT_GNU_STACK").flags;
+        let pie = was.iter().any(|(_, c)| c.kind == ChunkKind::FileHeader && c.addr == Some(0));
+        let rules = [0x1000u64, 0x4000, 0x10000]
+            .into_iter()
+            .map(|max_page| SegmentRules { class: Class::Elf64, max_page, stack, pie })
+            .find(|r| derive_segments(&was, &order, r) == stored)
+            .expect("the rules of the stored segments");
+        Ok(derive_segments(&now, &order, &rules))
     }
     fn outsecs(&self) -> Result<Vec<(OutSecId, Vec<u8>)>, IncrReason> {
         self.inner.outsecs()
@@ -272,6 +312,66 @@ const ASM_X64: &str = "\t.text\n\t.globl _start\n_start:\n\tmovl $42, %edi\n\tmo
 /// of `new-output-section: .bss`.
 #[test]
 fn an_empty_bss_with_no_output_chunk_stays_beside_data() {
+    let judged = empty_bss_hops(
+        "empty .bss",
+        &|t: &str, from: &str| t.replace(from, &from.replace("42", "43")),
+        true,
+        0,
+        &|what: &dyn Fn(&str) -> String, bss: &Placed| {
+            assert_eq!(bss.out.as_deref(), Some(&b".data"[..]), "{}", what(".bss beside .data"));
+        },
+    );
+    if mortar_testutil::tools_required() {
+        assert_eq!(judged, 2, "both targets judged");
+    }
+}
+
+/// `Fate::Beside`'s other branch (ruling M2b-2c 3): `a.o`'s `.data` grows
+/// past its region (8 bytes and 64 of slack, to 80), so `.data`'s chunk
+/// changes size; the empty `.bss`, stored at that chunk's old END, follows
+/// its new end (L-159: the end of the last chunk before `.bss`). The
+/// no-libc program's full link leaves `.data`'s chunk no file reserve
+/// (the same edit with the stored rows is `reserve-exhausted: the PT_LOAD
+/// of .data: segment reserve (file)`), so the stored layout is given 4
+/// KiB of room after that chunk (TEST-ONLY, [`WithRegions::room`]).
+#[test]
+fn an_empty_bss_at_the_chunk_end_follows_the_new_end() {
+    let judged = empty_bss_hops(
+        "empty .bss, .data grown",
+        &|t: &str, _from: &str| t.replace("word:\t.quad 1\n", "word:\t.quad 1\n\t.fill 72, 1, 0\n"),
+        false,
+        0x1000,
+        &|what: &dyn Fn(&str) -> String, bss: &Placed| {
+            assert_eq!(bss.out.as_deref(), Some(&b".data"[..]), "{}", what(".bss beside .data"));
+            let was = bss.chunk_was.expect("the stored chunk");
+            assert_ne!(bss.chunk_now, was, "{}", what("the chunk changed size"));
+            assert_eq!(
+                bss.offset,
+                bss.chunk_now,
+                "{}",
+                what(&format!("at the new end ({was:#x} before)"))
+            );
+        },
+    );
+    if mortar_testutil::tools_required() {
+        assert_eq!(judged, 2, "both targets judged");
+    }
+}
+
+/// What an [`empty_bss_hops`] case asserts of `.bss`: given the message
+/// prefixer and the placed `.bss`.
+type Check = dyn Fn(&dyn Fn(&str) -> String, &Placed);
+
+/// The no-libc `a.o` program on both targets, edited by `edit(text,
+/// immediate)`, one [`hop`] (`identity` as given), `check` on the delta's
+/// `.bss`. Returns the targets judged.
+fn empty_bss_hops(
+    case: &str,
+    edit: &dyn Fn(&str, &str) -> String,
+    identity: bool,
+    room: u64,
+    check: &Check,
+) -> usize {
     let mut judged = 0;
     for (arch, label, text, from) in [
         (mortar_testutil::target::Arch::Aarch64, "aarch64 asm", ASM_A64, "#42"),
@@ -297,8 +397,10 @@ fn an_empty_bss_with_no_output_chunk_stays_beside_data() {
             assert!(o.success(), "{label}: gcc: {}", o.stderr_text());
         };
         assemble(text);
-        let what = |s: &str| format!("{label} empty .bss: {s}");
-        let edit = || assemble(&text.replace(from, &from.replace("42", "43")));
+        let what = |s: &str| format!("{label} {case}: {s}");
+        let edited = edit(text, from);
+        assert_ne!(edited, text, "{}", what("the edit changes the source"));
+        let edit = || assemble(&edited);
         let pick = |v: &StateView<'_>| {
             let files = u32::try_from(v.count(mortar_incr::format::kind::FILES)).expect("FILES");
             (1..files)
@@ -309,18 +411,28 @@ fn an_empty_bss_with_no_output_chunk_stays_beside_data() {
                 })
                 .expect("a.o")
         };
-        let placed = identity_hop(&line, &line.base, &pick, &edit, &what);
-        let bss = placed.iter().find(|p| p.0 == ".bss").expect("a.o's .bss placed");
-        assert_eq!(bss.1.as_deref(), Some(&b".data"[..]), "{}", what(".bss beside .data"));
+        let placed = hop(&line, &line.base, &pick, &edit, &what, identity, room).0;
+        let bss = placed.iter().find(|p| p.name == ".bss").expect("a.o's .bss placed");
+        eprintln!("{}", what(&format!("{bss:?}")));
+        check(&what, bss);
         judged += 1;
     }
-    if mortar_testutil::tools_required() {
-        assert_eq!(judged, 2, "both targets judged");
-    }
+    judged
 }
 
-/// Each placed section's name and the delta's output section name.
-type Sections = Vec<(String, Option<Vec<u8>>)>;
+/// A section the delta placed: its name, its output section's name, its
+/// offset in its chunk, and that chunk's size after and before the update.
+#[derive(Debug)]
+struct Placed {
+    name: String,
+    out: Option<Vec<u8>>,
+    offset: u64,
+    chunk_now: u64,
+    chunk_was: Option<u64>,
+}
+
+/// Each placed section of the changed file.
+type Sections = Vec<Placed>;
 
 /// One identity-case hop ([`hop`] with `identity`).
 fn identity_hop(
@@ -330,7 +442,7 @@ fn identity_hop(
     edit: &dyn Fn(),
     what: &dyn Fn(&str) -> String,
 ) -> Sections {
-    hop(line, args, pick, edit, what, true).0
+    hop(line, args, pick, edit, what, true, 0).0
 }
 
 /// One hop: the state of `args`, `edit`, the front of the new inputs and
@@ -346,7 +458,9 @@ fn identity_hop(
 /// the stored row has it: required first, from the bytes), also every
 /// section at the full link's offset, nothing moved and no growth step.
 /// Gives each placed section's name and the delta's output section name,
-/// and the counts `(pieces, eh records)`.
+/// and the counts `(pieces, eh records)`. `room` > 0: the stored layout is
+/// judged with that many bytes of room after the chunk of the file's
+/// `.data` place ([`WithRegions::room`]; its regions the stored ones).
 #[allow(clippy::too_many_lines, reason = "the hop, then the properties in order")]
 fn hop(
     line: &update::Line,
@@ -355,6 +469,7 @@ fn hop(
     edit: &dyn Fn(),
     what: &dyn Fn(&str) -> String,
     identity: bool,
+    room: u64,
 ) -> (Sections, usize, usize) {
     {
         let old = state(line, args, "old");
@@ -422,13 +537,20 @@ fn hop(
         }
         assert!(placed >= 1, "{}", what("the file has a placed section"));
 
-        // The first link wrote no REGIONS row (no full-link producer).
+        // The first link's REGIONS rows (WP-264's producer), and the
+        // TEST-ONLY derivation from `chunk.rs`'s rule ([`WithRegions`]):
+        // the same rows (ruling M2b-2c 2: the producer checked against the
+        // rule).
         let count = old.count(mortar_incr::format::kind::REGIONS);
-        let mine = stored.regions_of(file).expect("REGIONS");
+        let mut mine = stored.regions_of(file).expect("REGIONS");
+        mine.sort_by_key(|r| (r.out, r.category, r.ordinal));
         eprintln!(
             "{}",
             what(&format!("REGIONS rows: {count} in the state, {} of the file", mine.len()))
         );
+        assert!(!mine.is_empty(), "{}", what("the first link wrote the file's REGIONS"));
+        let derived = WithRegions::derive(&rows, file);
+        assert_eq!(derived, mine, "{}", what("WithRegions' rows are the stored REGIONS"));
 
         // The whole front's demands of the file (TEST-ONLY).
         let symbols = old.count(mortar_incr::format::kind::SYMBOLS);
@@ -468,29 +590,37 @@ fn hop(
         let machine =
             if line.label.starts_with("aarch64") { Machine::AArch64 } else { Machine::X86_64 };
         let target = mortar_layout::target::Target::of(machine);
-        let plain = mortar_layout::delta::layout(&stored, &input, &target);
-        if mine.is_empty() {
-            // Refused by name, never the overflow phase.
+        // Without the file's regions: refused by name, never the overflow
+        // phase (M2b2b-3).
+        let none = WithRegions { inner: &rows, file, regions: Vec::new(), room: None };
+        let bare = mortar_layout::delta::layout(&StoredLayout::new(&none), &input, &target);
+        eprintln!("{}", what(&format!("no regions: {:?}", bare.as_ref().err())));
+        assert!(bare.is_err(), "{}", what("no regions: refused"));
+        if identity {
             let want = IncrReason::UpdateNotImplemented(Some(Unimplemented::Layout));
-            eprintln!("{}", what(&format!("no regions: {:?}", plain.as_ref().err())));
-            assert!(plain.is_err(), "{}", what("no regions: refused"));
-            if identity {
-                assert_eq!(plain.as_ref().err(), Some(&want), "{}", what("no regions: refused"));
-            }
+            assert_eq!(bare.as_ref().err(), Some(&want), "{}", what("no regions: refused"));
         }
 
-        // Given the first link's regions: judged.
-        let with = WithRegions { inner: &rows, file, regions: WithRegions::derive(&rows, file) };
-        eprintln!("{}", what(&format!("derived regions {:?}", with.regions)));
-        let stored2 = StoredLayout::new(&with);
-        let d = mortar_layout::delta::layout(&stored2, &input, &target)
+        // With the stored regions: judged.
+        eprintln!("{}", what(&format!("stored regions {mine:?}")));
+        let data = rows_of.iter().find(|r| &*r.name == b".data").and_then(|r| r.place.get());
+        let roomy = WithRegions {
+            inner: &rows,
+            file,
+            regions: mine.clone(),
+            room: data.filter(|_| room > 0).map(|(ch, _)| (ch, room)),
+        };
+        assert!(room == 0 || roomy.room.is_some(), "{}", what("a .data place for the room"));
+        let roomy_stored = StoredLayout::new(&roomy);
+        let stored2 = if room > 0 { &roomy_stored } else { &stored };
+        let d = mortar_layout::delta::layout(stored2, &input, &target)
             .unwrap_or_else(|e| panic!("{}", what(&format!("with regions: {}", e.report()))));
         let mut out = Vec::new();
         let mut mine: Vec<(u32, u64, u64)> = Vec::new();
         for c in &inputs.changes {
             let fid = f.resolution.section_id(nf, SectionIndex(c.index)).expect("front id");
             let full = f.layout.placement.place[fid].get();
-            let now = match d.place_of(&stored2, c.id).expect("place_of") {
+            let now = match d.place_of(stored2, c.id).expect("place_of") {
                 PlaceNow::Here(p) => p.get(),
                 PlaceNow::NotPlaced => None,
                 PlaceNow::Stored(_) => panic!("{}", what("a changed file's section is Stored")),
@@ -519,14 +649,20 @@ fn hop(
             assert!(addr.is_multiple_of(c.align.max(1)), "{}", what(&format!("{name}: aligned")));
             eprintln!("{}", what(&format!("{name}: update {uo:#x}, full {fo:#x}")));
             mine.push((uc.0, uo, uo + c.size));
-            out.push((name, uout));
+            out.push(Placed {
+                name,
+                out: uout,
+                offset: uo,
+                chunk_now: d.placement.chunks[uc].size,
+                chunk_was: stored_chunks.get(&uc).map(|x| x.size),
+            });
         }
         // No overlap with any other placed section of the same chunk.
         let files = u32::try_from(old.count(mortar_incr::format::kind::FILES)).expect("FILES");
         let mut others: Vec<(u32, u64, u64)> = Vec::new();
         for g in (1..files).map(FileId).filter(|&g| g != file) {
             for s in stored2.sections_of(g).expect("SECTIONS") {
-                if let PlaceNow::Stored(p) = d.place_of(&stored2, s.id).expect("place_of")
+                if let PlaceNow::Stored(p) = d.place_of(stored2, s.id).expect("place_of")
                     && let Some((ch, off)) = p.get()
                 {
                     others.push((ch.0, off, off + s.size));
@@ -602,7 +738,8 @@ fn a_cpp_edit_with_strings_and_a_comdat_is_judged() {
             std::fs::copy(line.dir.join("ehc.o"), line.dir.join("m1.o")).expect("the edit");
             line.archive(&["m8.o", "m1.o", "m2.o"]);
         };
-        let (_, pieces, records) = hop(&line, &args, &|v| member(v, "m1.o"), &edit, &what, false);
+        let (_, pieces, records) =
+            hop(&line, &args, &|v| member(v, "m1.o"), &edit, &what, false, 0);
         assert!(pieces > 0, "{}", what("the strings' pieces judged"));
         assert!(records > 0, "{}", what("the .eh_frame records judged"));
         judged += 1;
