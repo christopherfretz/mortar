@@ -165,22 +165,21 @@ impl<'s, F: Fn(SectionIndex) -> SectionFact + Sync> phase::Link<'s> for FileLink
         // is in the update's ids, as `section_id`'s. A key `find_key` did
         // not find is U-3's new key of that name (`new_keys`, numbered
         // past `SYMBOLS`).
-        let id = match key.key {
-            Some(id) => id,
-            None => {
-                let version = key.version.unwrap_or_default();
-                let at = delta
-                    .new_keys
-                    .iter()
-                    .position(|n| n.name == key.name && n.version == version)
-                    .ok_or_else(|| {
-                        What::Malformed(format!("symbol {}: no new key of its name", index.0))
-                    })?;
-                let symbols = self.view.count(mortar_incr::format::kind::SYMBOLS);
-                u32::try_from(symbols + at as u64)
-                    .map(SymbolId)
-                    .map_err(|_| What::Malformed("SYMBOLS past u32".into()))?
-            }
+        let id = if let Some(id) = key.key {
+            id
+        } else {
+            let version = key.version.unwrap_or_default();
+            let at = delta
+                .new_keys
+                .iter()
+                .position(|n| n.name == key.name && n.version == version)
+                .ok_or_else(|| {
+                    What::Malformed(format!("symbol {}: no new key of its name", index.0))
+                })?;
+            let symbols = self.view.count(mortar_incr::format::kind::SYMBOLS);
+            u32::try_from(symbols + at as u64)
+                .map(SymbolId)
+                .map_err(|_| What::Malformed("SYMBOLS past u32".into()))?
         };
         let at = delta.resolved.binary_search_by_key(&id, |r| r.0).map_err(|_| {
             What::Malformed(format!("symbol {}: key {} is not affected", index.0, id.0))

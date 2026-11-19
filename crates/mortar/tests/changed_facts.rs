@@ -218,9 +218,10 @@ fn changed_facts_and_split_of_an_edited_file() {
         )
         .expect("the new state decodes");
         assert_eq!(nf, file, "{}", what("the same FILES row in both links"));
-        let (cf, delta) = mortar::update::changed::u5(&old, &[file], &[], &f, &capture, &mut |_| {})
-            .unwrap_or_else(|e| panic!("{}", what(&format!("U4-U5: {}", e.report()))))
-            .expect("m1.o changed");
+        let (cf, delta) =
+            mortar::update::changed::u5(&old, &[file], &[], &f, &capture, &mut |_| {})
+                .unwrap_or_else(|e| panic!("{}", what(&format!("U4-U5: {}", e.report()))))
+                .expect("m1.o changed");
         assert_eq!(cf.files[0].first_section, SectionId(first), "{}", what("the ids"));
         let got = split_of(ff, &old, &by_index, &ArchRelocs(f.arch.get()), &f.pool, Some(&delta))
             .unwrap_or_else(|e| panic!("{}", what(&format!("{e:?}"))));

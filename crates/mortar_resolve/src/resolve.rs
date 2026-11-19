@@ -341,7 +341,17 @@ fn resolve_stage<V: View>(
     // without one runs once.
     let mut prior: Option<PriorOwned> = None;
     let mut iterations = 1;
-    let (mut file_live, rounds, file_round, live_objects, keepers, section_base, sections, acc, found) = loop {
+    let (
+        mut file_live,
+        rounds,
+        file_round,
+        live_objects,
+        keepers,
+        section_base,
+        sections,
+        acc,
+        found,
+    ) = loop {
         let p = prior.as_ref().map(|(live, _)| live.as_slice());
         let Closure { live: file_live, rounds, round: file_round } =
             closure(view, &kinds, &targets, &redirect, &roots, &stage.sources, p, pool);

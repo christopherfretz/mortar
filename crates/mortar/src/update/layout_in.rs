@@ -61,7 +61,7 @@ fn split() -> IncrReason {
 /// `anchor_kind`: 0 none, 1 COMDAT, 2 global, 3 local) and its bytes; only
 /// COMPARED with a capture row (the agreement of the front's identity with
 /// the capture's), never written.
-fn anchor_parts<'a>(a: Anchor<'a>) -> (u8, &'a [u8]) {
+fn anchor_parts(a: Anchor<'_>) -> (u8, &[u8]) {
     match a {
         Anchor::None => (0, &[]),
         Anchor::Comdat(n) => (1, n),
@@ -88,7 +88,10 @@ fn anchor_parts<'a>(a: Anchor<'a>) -> (u8, &'a [u8]) {
 ///   identity the front and the capture's row do not agree on (a FINDING
 ///   of two readings of one header);
 /// - `(split)` for what the split refuses, and the producers' own.
-#[allow(clippy::too_many_arguments, reason = "the state, the update's line and results, the target")]
+#[allow(
+    clippy::too_many_arguments,
+    reason = "the state, the update's line and results, the target"
+)]
 pub fn layout_inputs<'s>(
     cache: &mut FrontCache<'s>,
     view: &StateView<'_>,
@@ -107,7 +110,18 @@ pub fn layout_inputs<'s>(
         if !matches!(c.change, Change::Changed) {
             return Err(layout());
         }
-        let ids = Ids::Update { first_section: c.first_section, row: c.row.clone() };
+        // D2-1's row is `c.row`; its `path` and `member_name` are strings
+        // of the UPDATE's buffer (past `STRINGS`), which `front_of` reads
+        // from the state's. `changed_files` checked both equal, by bytes,
+        // to the stored row's (`changed.rs`), so the stored strings name
+        // them (the record's finding M2b2a-1).
+        let st = view.file(c.file)?;
+        let row = mortar_incr::update::rows::FileRow {
+            path: st.path,
+            member_name: st.member_name,
+            ..c.row.clone()
+        };
+        let ids = Ids::Update { first_section: c.first_section, row };
         let ff = front_of(cache, view, c.file, ids)?;
         let facts = changed_facts(ff, view, plan, &delta.keepers)?;
         if facts.len() != ff.sections.len() || c.sections.len() != ff.sections.len() {
@@ -147,7 +161,11 @@ pub fn layout_inputs<'s>(
                 kept: facts[k].kept,
             });
         }
-        let null = SectionFact { kind: mortar_core::resolution::SectionKind::Null, kept: false, out: None };
+        let null = SectionFact {
+            kind: mortar_core::resolution::SectionKind::Null,
+            kept: false,
+            out: None,
+        };
         let by_index = |i: SectionIndex| facts.get(i.0 as usize).copied().unwrap_or(null);
         let s = split_of(ff, view, &by_index, relocs, pool, Some(delta))?;
         // Item 5: the file's kept records (S-46..S-49 per file, IN-34a);
