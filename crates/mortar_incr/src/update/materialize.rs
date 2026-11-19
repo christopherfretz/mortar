@@ -923,11 +923,20 @@ fn symtab_locals(
 }
 
 /// `slots.sizes`: the front's list; each synthetic chunk's translated size
-/// must be it.
+/// must be it, except `.eh_frame` and `.eh_frame_hdr`, which the delta
+/// sizes itself (IN-72 item 5, `delta.rs:129-134`: the stored ranges and
+/// pads kept, so the size is the stored layout's, not a fresh link's):
+/// their translated size is taken (within the chunk's capacity), and front
+/// 2 judges it, rebuilding both plans from the materialized records and
+/// pads and checking every plan's size against this list (`front.rs`,
+/// "Every plan's size is its chunk's"; a difference fails front 2, a
+/// FINDING).
 fn sizes(computed: &Layout, chunks: &[Chunk]) -> Result<Vec<(ChunkId, u64)>, Refusal> {
+    let mut out = Vec::with_capacity(computed.slots.sizes.len());
     for &(c, size) in &computed.slots.sizes {
         let x = &chunks[c.slot()];
         if x.size == size {
+            out.push((c, size));
             continue;
         }
         let name = match x.kind {
@@ -938,7 +947,13 @@ fn sizes(computed: &Layout, chunks: &[Chunk]) -> Result<Vec<(ChunkId, u64)>, Ref
             "sizes: chunk {} ({name}): translated {:#x}, the front's {size:#x}",
             c.0, x.size
         );
-        return Err(if size > x.capacity {
+        let eh = matches!(x.kind, ChunkKind::Synthetic(_))
+            && (name == ".eh_frame" || name == ".eh_frame_hdr");
+        if eh && x.size <= x.capacity {
+            out.push((c, x.size));
+            continue;
+        }
+        return Err(if size > x.capacity || (eh && x.size > x.capacity) {
             (IncrReason::ReserveExhausted(name), what)
         } else if name == ".symtab" || name == ".strtab" {
             symtab(what)
@@ -946,7 +961,7 @@ fn sizes(computed: &Layout, chunks: &[Chunk]) -> Result<Vec<(ChunkId, u64)>, Ref
             layout(what)
         });
     }
-    Ok(computed.slots.sizes.to_vec())
+    Ok(out)
 }
 
 /// **The materializer** (D-2, D-3): the stored layout `stored` of `view`
@@ -1018,6 +1033,22 @@ fn materialize_in(
         });
     }
     sym_place.sort_by_key(|r| r.key);
+    // The delta does not place commons (D-3 `sym_place`): a stored
+    // allocation whose size or alignment is not the front's (a common that
+    // grew, or one more strictly aligned) is not the update's to keep.
+    for r in &sym_place {
+        let front = computed.placement.sym_place.iter().find(|x| x.key == r.key);
+        if front.map(|x| (x.size, x.align)) != Some((r.size, r.align)) {
+            return Err(layout(format!(
+                "sym_place: the stored allocation of {:?} is size {:#x} align 2^{}, the front's {:?} \
+                 (the delta does not place commons)",
+                r.key,
+                r.size,
+                r.align,
+                front.map(|x| (x.size, x.align))
+            )));
+        }
+    }
     let defined = defined(view, link, &chunk_rows, d, &ids, &mut g, computed, &chunks)?;
     let (patches, redirects) = patches(view, link, stored, &ids, &mut g, computed)?;
     let mut holes = Vec::new();
@@ -1038,7 +1069,9 @@ fn materialize_in(
     slots.eh_records = eh_records(view, stored, d, front)?.into();
     slots.symtab_locals = symtab_locals(stored, computed)?;
     slots.sizes = sizes(computed, &chunks)?.into();
-    let sized = sized(computed, &chunks)?;
+    segment_ends(d, &chunks)?;
+    let moves = moves_code(link, d, &ids, &chunk_rows, &chunks)?;
+    let sized = sized(computed, &chunks, moves.as_deref())?;
     let placement = Placement {
         kind: mortar_core::PlacementKind::Loadable,
         chunks: Column::from_vec(chunks).map_err(|_| image("chunks: too many".into()))?,
@@ -1063,25 +1096,190 @@ fn materialize_in(
 /// `placement.sized` (an island or an address-dependent synthetic chunk,
 /// L-115): the delta does not compute one (`delta.rs:29-31`); the front's
 /// row is kept when the delta's chunk has the front's size, otherwise
-/// `(layout)`. RULING NEEDED: the note refused any row, but every AArch64
-/// link has empty islands (size 0, one per code output section), so the
-/// note's rule refuses every AArch64 update. Equal size does not prove the
-/// size right at the delta's addresses (an island's need is a distance);
-/// the patches table is the stored one either way.
-fn sized(computed: &Layout, chunks: &[Chunk]) -> Result<Box<[Sized]>, Refusal> {
+/// `(layout)` (Part 2's rule, ruled: every AArch64 link has empty islands,
+/// size 0, one per code output section). An equal size does not prove the
+/// size right at the delta's addresses (an island's need is a distance), so
+/// the row is taken ONLY when the delta moves no executable code (`moves`,
+/// [`moves_code`]'s answer: ruling Part 2 item 2, F-1's bound); otherwise
+/// `(layout)` by name, until an island-reach check at the delta's
+/// addresses exists.
+fn sized(
+    computed: &Layout,
+    chunks: &[Chunk],
+    moves: Option<&str>,
+) -> Result<Box<[Sized]>, Refusal> {
     for r in &computed.placement.sized {
         let have = chunks.get(r.chunk.slot()).map(|c| c.size);
+        let kind = computed.placement.chunks.get(r.chunk).map(|c| c.kind);
         if have != Some(r.size) {
             return Err(layout(format!(
-                "sized: chunk {} ({:?}) is {:#x} in the front, {have:#x?} in the delta (an \
+                "sized: chunk {} ({kind:?}) is {:#x} in the front, {have:#x?} in the delta (an \
                  address-dependent size the delta does not compute)",
-                r.chunk.0,
-                computed.placement.chunks.get(r.chunk).map(|c| c.kind),
-                r.size
+                r.chunk.0, r.size
+            )));
+        }
+        if let Some(what) = moves {
+            return Err(layout(format!(
+                "sized: F-1's bound: chunk {} ({kind:?}, size {:#x}) is an address-dependent row \
+                 and the delta moves executable code ({what}); no island-reach check at the \
+                 delta's addresses",
+                r.chunk.0, r.size
             )));
         }
     }
     Ok(computed.placement.sized.clone())
+}
+
+/// `placement.segments` (the delta's, derived again by `delta::layout`):
+/// the memory of every `PT_LOAD` ends where a chunk's `size` ends
+/// (`spec/layout.md` L-9; the verifier's S18: an incremental policy gives
+/// the last chunk of a `PT_LOAD` no slack, L-87's list). FINDING (M2b-3
+/// Part 3, the lane's `s4_frag_ordinals` and `w6_string_dedup_into_changed`
+/// hop 2, gcc, both targets): after a growth step of `.rodata` (capacity
+/// 0x14 to 0x1014, the last chunk of the `R` `PT_LOAD`) the delta's
+/// segment has `p_memsz` 0x1134, the chunk's CAPACITY end, where the
+/// section ends at 0x134. Refused by name, before front 2. (`p_filesz`
+/// runs to a capacity end by L-125 when NOBITS chunks follow: not checked.)
+fn segment_ends(d: &LayoutDelta, chunks: &[Chunk]) -> Result<(), Refusal> {
+    for (k, g) in d.placement.segments.as_slice().iter().enumerate() {
+        if g.p_type != mortar_elf::consts::PT_LOAD || g.memsz == 0 {
+            continue;
+        }
+        let end = g.addr + g.memsz;
+        if !chunks.iter().any(|c| c.size > 0 && c.addr.is_some_and(|a| a + c.size == end)) {
+            return Err(layout(format!(
+                "FINDING: segments: the delta's PT_LOAD {k} (addr {:#x} memsz {:#x}) ends at \
+                 {end:#x}, where no chunk's size ends (L-9, S18: a growth step gave the last \
+                 chunk of a PT_LOAD slack)",
+                g.addr, g.memsz
+            )));
+        }
+    }
+    Ok(())
+}
+
+/// Whether the delta moves executable code (F-1's bound, [`sized`]): a
+/// section of `d.moved` or `d.revived` whose input section is
+/// `SHF_EXECINSTR`, or a chunk of an executable output section whose
+/// address is not its stored one (a growth step, a chunk moved). The
+/// first such, by name; `None` when no code moves. Every other section
+/// keeps its stored place (D-3 `place`, refusal (i)), so with no chunk of
+/// code moved and no code section in those lists, no branch distance
+/// between sections the stored link had changes.
+fn moves_code(
+    link: &Link<'_, '_>,
+    d: &LayoutDelta,
+    ids: &Ids<'_>,
+    chunk_rows: &[(ChunkId, Chunk)],
+    chunks: &[Chunk],
+) -> Result<Option<String>, Refusal> {
+    use mortar_elf::consts::SHF_EXECINSTR;
+    let res = link.resolution;
+    for (list, v) in [("moved", &d.moved), ("revived", &d.revived)] {
+        for &id in v {
+            let Some(&s) = ids.changed.get(&id.0) else {
+                return Err(layout(format!(
+                    "sized: d.{list} names section {}, which no change names",
+                    id.0
+                )));
+            };
+            let Some((file, index)) = res.sh_index(s) else { continue };
+            let exec = match link.inputs.files.get(file).map(|f| &f.reader) {
+                Some(Reader::Object(o)) => {
+                    o.section(index).is_ok_and(|x| x.flags() & SHF_EXECINSTR != 0)
+                }
+                _ => false,
+            };
+            if exec {
+                return Ok(Some(format!(
+                    "d.{list}: section {} (file {} index {})",
+                    s.0, file.0, index.0
+                )));
+            }
+        }
+    }
+    for (row, (_, old)) in chunk_rows.iter().enumerate() {
+        let id = ids.chunk(ChunkId(row as u32), "sized")?;
+        let now = &chunks[id.slot()];
+        let out = match now.kind {
+            ChunkKind::Body(pt) | ChunkKind::Patches(pt) => pt.out,
+            _ => continue,
+        };
+        let exec = link.assignment.outsecs.get(out).is_some_and(|o| o.flags & SHF_EXECINSTR != 0);
+        if exec && now.addr != old.addr {
+            return Ok(Some(format!(
+                "chunk {} ({:?}) from {:x?} to {:x?}",
+                id.0, now.kind, old.addr, now.addr
+            )));
+        }
+    }
+    Ok(None)
+}
+
+/// The S-47 record-offset check (ruling Part 2 item 5, D-3's `eh_records`
+/// row): the `.eh_frame` the image computes from the materialized
+/// `slots.eh_records` (front 2's runs, `Incr5::eh`: each file's range as
+/// the plan lays its records with S-47's sizes and the `EhPad` holes)
+/// against the delta in the front's ids `d_f`. A file of `d_f.eh`'s ranges
+/// starts where its range does, with that range's capacity and its record
+/// count (when the range lists its records); every other file with
+/// records starts at its stored `FILES.eh_offset` with its stored
+/// capacity. Front 2's side of the check: `materialize` has no record
+/// sizes (record sizes are not stored, `read.rs:1144`; the plan computes
+/// them). `(eh)` by name otherwise.
+///
+/// # Errors
+/// `update-not-implemented (eh)`, or a row the view cannot read.
+pub fn eh_runs_judged(
+    view: &StateView<'_>,
+    d_f: &LayoutDelta,
+    runs: &[EhFile],
+) -> Result<(), Refusal> {
+    let ranges = d_f.eh.as_ref().map(|e| e.ranges.as_slice()).unwrap_or_default();
+    for r in ranges {
+        let run = runs.iter().find(|x| x.file == r.file);
+        let (offset, capacity, records) =
+            run.map_or((None, 0, 0), |x| (Some(x.offset), x.capacity, x.records as usize));
+        let listed = !r.records.is_empty();
+        if r.capacity == 0 && run.is_none() {
+            continue;
+        }
+        if offset != Some(r.offset)
+            || capacity != r.capacity
+            || (listed && records != r.records.len())
+            || (listed && r.records.first() != Some(&r.offset))
+        {
+            return Err(eh(format!(
+                "eh_records (S-47): file {}: d.eh's range at {:#x} capacity {:#x} {} records \
+                 (first {:x?}), the image's {offset:x?} capacity {capacity:#x} {records} records",
+                r.file.0,
+                r.offset,
+                r.capacity,
+                r.records.len(),
+                r.records.first()
+            )));
+        }
+    }
+    for x in runs {
+        if ranges.iter().any(|r| r.file == x.file) {
+            continue;
+        }
+        if d_f.eh.as_ref().is_some_and(|e| e.whole) {
+            return Err(eh(format!(
+                "eh_records (S-47): file {} has records and no range in a whole d.eh",
+                x.file.0
+            )));
+        }
+        let row = view.file(x.file).map_err(read)?;
+        if u64::from(row.eh_offset) != x.offset || u64::from(row.eh_capacity) != x.capacity {
+            return Err(eh(format!(
+                "eh_records (S-47): file {}: stored at {:#x} capacity {:#x}, the image's at \
+                 {:#x} capacity {:#x}",
+                x.file.0, row.eh_offset, row.eh_capacity, x.offset, x.capacity
+            )));
+        }
+    }
+    Ok(())
 }
 
 /// D-4: the delta in the FRONT's ids, for `refill` and `update_map`

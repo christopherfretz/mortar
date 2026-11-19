@@ -1,0 +1,9 @@
+# WP-225 M2b-3 Part 3: the first non-identity update. c.o's function
+# grows by a few instructions (EDIT), inside its file's region (IN-33's
+# slack), then shrinks back; the image takes the delta's placement
+# through front 2 (R-1), every chunk refilled (R-3).
+proves: an update whose changed function grows in its region writes the delta's placement (not the full link's), and that output is equivalent to the full link (a), its dirty ranges cover every changed byte (b), and its state is judged (c)
+source: WP-225 M2b-3 Part 3 (spec/landed/incr/WP-225.md "M2b-3 Part 3")
+edit: c.cc
+link: main.o c.o u.o
+compilers: gcc kiln

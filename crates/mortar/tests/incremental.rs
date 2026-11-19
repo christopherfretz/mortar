@@ -2765,14 +2765,16 @@ fn identity_case(case: &str, a64: (&str, &str), x64: (&str, &str), update: bool)
 }
 
 /// M2a-2: a GLOBAL symbol whose size changes (`_start`'s `.size`, the
-/// bytes the same): its `RESOLVED` row differs: `(layout)`.
+/// bytes the same): its `RESOLVED` row differs, so it is not the identity
+/// case; since M2b-3 Part 3 it is an update through front 2, and it
+/// equals the full link of the new inputs, byte for byte.
 #[test]
 fn identity_check_refuses_a_symbol_size_change() {
     identity_case(
         "global symbol size",
         ("\tsvc #0\n", "\tsvc #0\n\t.size _start, 8\n"),
         ("\tsyscall\n", "\tsyscall\n\t.size _start, 8\n"),
-        false,
+        true,
     );
 }
 
@@ -2786,14 +2788,16 @@ fn identity_check_updates_a_local_symbol_size_change() {
 }
 
 /// M2a-2 (i): a relocation to another key at the same size (an immediate
-/// becomes an address): a new reference of the changed file: `(layout)`.
+/// becomes an address): a new reference of the changed file, not the
+/// identity case; since M2b-3 Part 3 an update through front 2, equal to
+/// the full link of the new inputs, byte for byte.
 #[test]
 fn identity_check_refuses_a_new_relocation() {
     identity_case(
         "new relocation",
         ("mov x0, #42", "adr x0, word2"),
         ("movl $42, %edi", "movl $word, %edi"),
-        false,
+        true,
     );
 }
 
