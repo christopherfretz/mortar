@@ -183,6 +183,10 @@ pub struct Resolved {
     /// `.gnu.warning.<sym>` sections of live files, by the key `<sym>`
     /// (§10: the scan warns per reference).
     pub gnu_warning_syms: Vec<(SymbolId, FileId, SectionIndex)>,
+    /// `.gnu.warning.<sym>` sections of live files (not dropped) whose
+    /// `<sym>` is no key (WP-263, `META.gnu_warning_orphans`: an update
+    /// that adds a key `<sym>` would owe it the warning).
+    pub gnu_warning_orphans: u32,
     pub entry: EntryPoint,
     /// Every diagnostic, sorted.
     pub problems: Vec<Problem>,
@@ -613,6 +617,7 @@ fn resolve_stage<V: View>(
         retained: found.retained,
         meta: found.meta,
         gnu_warning_syms: found.gnu_warning_syms,
+        gnu_warning_orphans: found.gnu_warning_orphans,
         entry,
         problems,
         gnu,
@@ -664,6 +669,8 @@ struct Found {
     retained: Vec<(FileId, SectionIndex)>,
     meta: Vec<(FileId, SectionIndex)>,
     gnu_warning_syms: Vec<(SymbolId, FileId, SectionIndex)>,
+    /// `.gnu.warning.<sym>` sections whose `<sym>` is no key.
+    gnu_warning_orphans: u32,
 }
 
 impl Found {
@@ -672,6 +679,7 @@ impl Found {
             && self.retained.is_empty()
             && self.meta.is_empty()
             && self.gnu_warning_syms.is_empty()
+            && self.gnu_warning_orphans == 0
     }
 
     fn append(&mut self, mut other: Self) {
@@ -679,6 +687,7 @@ impl Found {
         self.retained.append(&mut other.retained);
         self.meta.append(&mut other.meta);
         self.gnu_warning_syms.append(&mut other.gnu_warning_syms);
+        self.gnu_warning_orphans += other.gnu_warning_orphans;
     }
 }
 
@@ -1026,6 +1035,8 @@ fn object_rows<'v, S, K>(
                     Note::GnuWarningSym if !dropped => {
                         if let Some(key) = find_key(&s.name[b".gnu.warning.".len()..]) {
                             out.gnu_warning_syms.push((key, file, SectionIndex(i)));
+                        } else {
+                            out.gnu_warning_orphans += 1;
                         }
                     }
                     _ => {}

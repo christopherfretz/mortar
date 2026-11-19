@@ -321,6 +321,11 @@ pub struct Resolution {
     /// breadth-first, so its update is `closure-iterated`. 1 for a table
     /// no closure made ([`Self::empty`]).
     pub iterations: u32,
+    /// The live files' `.gnu.warning.<sym>` sections (not in a dropped
+    /// COMDAT copy) whose `<sym>` is no key (`mortar_resolve::Resolved::
+    /// gnu_warning_orphans`; `META.gnu_warning_orphans`, WP-263: 255d5's
+    /// F-7). 0 for a table no resolution made ([`Self::empty`]).
+    pub gnu_warning_orphans: u32,
     pub def: Column<SymbolId, Def>,
     pub props: Column<SymbolId, SymProps>,
     /// The keys with a common mention, sorted by id, with the maximum size
@@ -391,6 +396,7 @@ impl Resolution {
             file_live: Column::filled(files, FileLive::Dead),
             file_round: Box::new([]),
             iterations: 1,
+            gnu_warning_orphans: 0,
             def: Column::filled(symbols, Def::Undefined { weak: false }),
             props: Column::filled(symbols, SymProps::default()),
             common: Box::new([]),

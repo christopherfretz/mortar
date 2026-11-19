@@ -60,7 +60,7 @@ const S: To = To::Strings;
 
 /// The columns of every table of [`super::TABLES`], in its order.
 pub const COLUMNS: [(u32, &[Column]); 38] = [
-    (kind::META, &[c("version", 8, S), c("...", 216, V)]),
+    (kind::META, &[c("version", 8, S), c("...", 220, V)]),
     (kind::STAT, &[c("tag..pad", 8, V), c("path", 8, S), c("dev..hash", 64, V), c("fstype", 8, S)]),
     (
         kind::FILES,

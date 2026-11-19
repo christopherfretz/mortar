@@ -906,7 +906,16 @@ pub struct Link5<'a> {
     /// (`SymtabPlan::incr_global_area`) and per `SymbolId` its entry and
     /// `st_name` (`SymtabPlan::incr_global_keys`, `(NONE, 0)`: no global
     /// entry); `None` with no `.symtab` (`-s`), every row `NONE`.
-    pub symtab: Option<(mortar_core::incr::SymtabBlock, &'a [(u32, u32)])>,
+    /// Then (WP-263) `SYMTAB`'s rows and `META.symtab`: the plan's blocks
+    /// in `.symtab` order (`SymtabPlan::incr_blocks`, the internal file's
+    /// as `FileId(0)`) and the tables' sizes (`SymtabPlan::incr_tables`).
+    #[allow(clippy::type_complexity)] // the four answers of one plan, together or none
+    pub symtab: Option<(
+        mortar_core::incr::SymtabBlock,
+        &'a [(u32, u32)],
+        &'a [(FileId, mortar_core::incr::SymtabBlock)],
+        mortar_core::incr::SymtabTables,
+    )>,
 }
 
 impl std::fmt::Debug for Link5<'_> {
@@ -966,6 +975,14 @@ pub struct Rows5 {
     /// ([`symtab_keys_check`]).
     symtab_keys: Vec<crate::update::rows::SymtabKeyRow>,
     symtab_area: Option<mortar_core::incr::SymtabBlock>,
+    /// `SYMTAB` (WP-263): the plan's blocks in `.symtab` order, the
+    /// internal file's (`FileId(0)`) among them, checked with the area
+    /// and the sizes ([`symtab_rows_check`]); `META.symtab`.
+    symtab_blocks: Vec<(FileId, mortar_core::incr::SymtabBlock)>,
+    symtab_tables: Option<mortar_core::incr::SymtabTables>,
+    /// `META.gnu_warning_orphans` (WP-263, 255d5's F-7): resolve's
+    /// `Resolution::gnu_warning_orphans`.
+    gnu_warning_orphans: u32,
     /// Counts for the experiments (`incremental: state5 ...` lines).
     pub notes: Vec<String>,
     /// WP-257a: per `SECTIONS` row, what the section IS.
@@ -1297,6 +1314,154 @@ fn symtab_keys_check(
     Ok(())
 }
 
+/// `SYMTAB` and `META.symtab`'s write-time check (IN-18e, IN-49a;
+/// WP-263), on every capture. With a `.symtab`: the plan's blocks are in
+/// `FILES` order (the internal file's first, as file 0), each of a file
+/// with a `FILES` row that is not `LAZY`, holding at least one entry and
+/// at most its capacity, and they tile `[1, tail_first)`; the local tail
+/// reserve ends at `sh_info`, where the global area starts; the area is
+/// dense (capacity = count) and ends `.symtab`'s entries; the `.strtab`
+/// regions are each used at most to their capacity and tile from the
+/// first block's region to the area's names, which end `.strtab`;
+/// `META.symtab`'s sizes are the `.symtab` and `.strtab` chunks' sizes,
+/// and `SYMTAB`'s rows are the blocks of the input files and, in file
+/// 0's range, the area. Without one (`-s`): no block, no row, `META`
+/// zero, no such chunk. A break is the producer's defect: no state is
+/// written.
+#[allow(clippy::too_many_lines)] // one test per property, each with its words
+fn symtab_rows_check(
+    m: &crate::update::testing::MemoryState,
+    blocks: &[(FileId, mortar_core::incr::SymtabBlock)],
+    area: Option<mortar_core::incr::SymtabBlock>,
+    tables: Option<mortar_core::incr::SymtabTables>,
+) -> Result<(), String> {
+    use crate::update::rows::file_flags::LAZY;
+    let err = |what: String| Err(format!("SYMTAB: {what} (IN-49a)"));
+    let chunk = |name: &[u8]| {
+        m.chunks.iter().find(|c| {
+            m.strings.get(c.name.off as usize..(c.name.off + c.name.len) as usize) == Some(name)
+        })
+    };
+    let (Some(area), Some(t)) = (area, tables) else {
+        if !blocks.is_empty() || !m.symtab.is_empty() {
+            return err("rows for an output without .symtab".into());
+        }
+        if m.meta.symtab != mortar_core::incr::SymtabTables::default() {
+            return err("META.symtab is not zero for an output without .symtab".into());
+        }
+        if chunk(b".symtab").is_some() {
+            return err("a .symtab chunk with no table sizes".into());
+        }
+        return Ok(());
+    };
+    let mut at = 1u32;
+    let mut str_at: Option<u64> = None;
+    let mut prev: Option<FileId> = None;
+    for &(file, b) in blocks {
+        let who = format!("file {}'s block", file.0);
+        if prev.is_some_and(|p| p >= file) {
+            return err(format!(
+                "{who} after file {}'s: not in FILES order",
+                prev.map_or(0, |p| p.0)
+            ));
+        }
+        prev = Some(file);
+        match m.files.get(file.0 as usize) {
+            None => return err(format!("{who}: no FILES row")),
+            Some(f) if file.0 != 0 && f.flags & LAZY != 0 => {
+                return err(format!("{who}: the file is LAZY"));
+            }
+            Some(_) => {}
+        }
+        if b.first != at {
+            return err(format!(
+                "{who} starts at entry {} where the one before ends at {at}",
+                b.first
+            ));
+        }
+        if b.count == 0 || b.count > b.capacity {
+            return err(format!("{who} holds {} entries of capacity {}", b.count, b.capacity));
+        }
+        if b.strtab_len > b.strtab_capacity {
+            return err(format!(
+                "{who}'s .strtab region uses {} of {} bytes",
+                b.strtab_len, b.strtab_capacity
+            ));
+        }
+        if str_at.is_some_and(|s| s != b.strtab_offset) {
+            return err(format!(
+                "{who}'s .strtab region starts at {} where the one before ends at {}",
+                b.strtab_offset,
+                str_at.unwrap_or_default()
+            ));
+        }
+        at = b
+            .first
+            .checked_add(b.capacity)
+            .ok_or_else(|| format!("SYMTAB: {who} ends past 2^32 entries"))?;
+        str_at = Some(b.strtab_offset + b.strtab_capacity);
+    }
+    if at != t.tail_first {
+        return err(format!(
+            "the blocks end at entry {at}, the tail reserve starts at {}",
+            t.tail_first
+        ));
+    }
+    if u64::from(t.tail_first) + u64::from(t.tail_capacity) != u64::from(t.sh_info) {
+        return err(format!(
+            "the tail reserve [{}, +{}) does not end at sh_info {}",
+            t.tail_first, t.tail_capacity, t.sh_info
+        ));
+    }
+    if area.first != t.sh_info || area.count != area.capacity {
+        return err(format!(
+            "the global area starts at {} (sh_info {}), holds {} of {}",
+            area.first, t.sh_info, area.count, area.capacity
+        ));
+    }
+    if str_at.is_some_and(|s| s != area.strtab_offset) {
+        return err(format!(
+            "the blocks' .strtab regions end at {}, the global names start at {}",
+            str_at.unwrap_or_default(),
+            area.strtab_offset
+        ));
+    }
+    if area.strtab_len != area.strtab_capacity
+        || area.strtab_offset + area.strtab_len != t.strtab_size
+    {
+        return err(format!(
+            "the global names [{}, +{}) (held {}) do not end .strtab's {}",
+            area.strtab_offset, area.strtab_len, area.strtab_capacity, t.strtab_size
+        ));
+    }
+    let entsize = if m.meta.class == mortar_elf::consts::ELFCLASS64 { 24 } else { 16 };
+    let entries = u64::from(area.first) + u64::from(area.count);
+    if entries * entsize != t.symtab_size {
+        return err(format!(
+            "{entries} entries of {entsize} bytes where META.symtab's size is {}",
+            t.symtab_size
+        ));
+    }
+    for (name, size) in [(&b".symtab"[..], t.symtab_size), (&b".strtab"[..], t.strtab_size)] {
+        let shown = String::from_utf8_lossy(name);
+        match chunk(name) {
+            None => return err(format!("no {shown} chunk")),
+            Some(c) if c.size != size => {
+                return err(format!(
+                    "{shown}'s chunk is {} bytes, META.symtab says {size}",
+                    c.size
+                ));
+            }
+            Some(_) => {}
+        }
+    }
+    let rows = blocks.iter().filter(|(f, _)| f.0 != 0).count() + 1;
+    if m.symtab.len() != rows || m.symtab.first() != Some(&(FileId(0), area)) {
+        return err("the rows are not the input files' blocks and file 0's global area".into());
+    }
+    Ok(())
+}
+
 /// One file's part of [`rows5`], with keys as `SymbolId`s.
 #[derive(Default)]
 struct File5<'s> {
@@ -1617,8 +1782,10 @@ fn rows5(
     // SYMTAB_KEYS (WP-262): the symbol table plan's own walk, by row.
     let none = crate::update::rows::SymtabKeyRow { index: NONE, strtab: 0 };
     out.symtab_keys = vec![none; n_rows];
-    let entries = extra.symtab.map(|(area, entries)| {
+    let entries = extra.symtab.map(|(area, entries, blocks, tables)| {
         out.symtab_area = Some(area);
+        out.symtab_blocks = blocks.to_vec();
+        out.symtab_tables = Some(tables);
         entries
     });
     if entries.is_some_and(|e| e.len() != first.len()) {
@@ -1752,6 +1919,7 @@ fn rows5(
         return Err("META.iterations 0: no closure ran (IN-71b)".into());
     }
     out.iterations = res.iterations;
+    out.gnu_warning_orphans = res.gnu_warning_orphans;
     let debug_note;
     (out.debug_strs, debug_note) = debug_str_rows(link, keys, layout, live_frags)?;
     out.notes = vec![
@@ -1961,6 +2129,16 @@ pub fn state5_rows(
     }
     m.symtab_keys = rows.symtab_keys;
     symtab_keys_check(&m, rows.symtab_area)?;
+    // SYMTAB and META.symtab (WP-263): each file's block, file 0's range
+    // the global area (IN-18e); the internal file's own block is checked
+    // with the others and has no row (the record's finding).
+    m.meta.gnu_warning_orphans = rows.gnu_warning_orphans;
+    if let (Some(area), Some(tables)) = (rows.symtab_area, rows.symtab_tables) {
+        m.meta.symtab = tables;
+        m.symtab = rows.symtab_blocks.iter().copied().filter(|(f, _)| f.0 != 0).collect();
+        m.symtab.insert(0, (FileId(0), area));
+    }
+    symtab_rows_check(&m, &rows.symtab_blocks, rows.symtab_area, rows.symtab_tables)?;
     if rows.slot_refs.len() != m.slots.len() {
         return Err("SLOTS: the rows are not this state's".into());
     }
@@ -3230,5 +3408,114 @@ mod wp262 {
         assert!(symtab_keys_check(&m, None).is_err());
         m.symtab_keys.iter_mut().for_each(|k| *k = SymtabKeyRow { index: NONE, strtab: 0 });
         assert_eq!(symtab_keys_check(&m, None), Ok(()));
+    }
+}
+
+#[cfg(test)]
+mod wp263 {
+    //! `SYMTAB` and `META.symtab`'s write-time check
+    //! ([`symtab_rows_check`]): each way a row can break it is refused.
+    use super::symtab_rows_check;
+    use crate::format::{ChunkRow, Str};
+    use crate::update::rows::{FileRow, file_flags};
+    use crate::update::testing::MemoryState;
+    use mortar_core::FileId;
+    use mortar_core::incr::{SymtabBlock, SymtabTables};
+
+    fn block(first: u32, count: u32, capacity: u32, str: (u64, u64, u64)) -> SymtabBlock {
+        SymtabBlock {
+            first,
+            count,
+            capacity,
+            strtab_offset: str.0,
+            strtab_len: str.1,
+            strtab_capacity: str.2,
+        }
+    }
+
+    struct Case {
+        m: MemoryState,
+        blocks: Vec<(FileId, SymtabBlock)>,
+        area: SymtabBlock,
+        tables: SymtabTables,
+    }
+
+    /// Three files: the internal block [1, 5), file 1's [5, 10), file 2's
+    /// [10, 13); the tail [13, 77); the global area [77, 83) of 24-byte
+    /// entries; `.strtab`'s regions from 31, its names [105, 145).
+    fn good() -> Case {
+        let mut m = MemoryState { strings: b".symtab.strtab".to_vec(), ..MemoryState::default() };
+        m.meta.class = mortar_elf::consts::ELFCLASS64;
+        m.files = vec![FileRow::default(); 3];
+        let chunk = |off, size| ChunkRow { name: Str { off, len: 7 }, size, ..ChunkRow::default() };
+        m.chunks = vec![chunk(0, 83 * 24), chunk(7, 145)];
+        let blocks = vec![
+            (FileId(0), block(1, 2, 4, (31, 10, 26))),
+            (FileId(1), block(5, 3, 5, (57, 12, 28))),
+            (FileId(2), block(10, 1, 3, (85, 4, 20))),
+        ];
+        let area = block(77, 6, 6, (105, 40, 40));
+        let tables = SymtabTables {
+            sh_info: 77,
+            tail_first: 13,
+            tail_capacity: 64,
+            symtab_size: 83 * 24,
+            symtab_slack: 4096,
+            strtab_size: 145,
+            strtab_slack: 4096,
+        };
+        m.meta.symtab = tables;
+        m.symtab = vec![(FileId(0), area), blocks[1], blocks[2]];
+        Case { m, blocks, area, tables }
+    }
+
+    /// A way to break [`good`]'s rows.
+    type Break = fn(&mut Case);
+
+    fn check(c: &Case) -> Result<(), String> {
+        symtab_rows_check(&c.m, &c.blocks, Some(c.area), Some(c.tables))
+    }
+
+    #[test]
+    fn good_rows_pass_and_each_break_is_refused() {
+        assert_eq!(check(&good()), Ok(()));
+        let cases: [(&str, Break); 17] = [
+            ("not in FILES order", |c| (c.blocks[1].0, c.blocks[2].0) = (FileId(2), FileId(1))),
+            ("no FILES row", |c| c.blocks[2].0 = FileId(3)),
+            ("is LAZY", |c| c.m.files[2].flags |= file_flags::LAZY),
+            ("starts at entry 11", |c| c.blocks[2].1.first = 11),
+            ("holds 6 entries of capacity 5", |c| c.blocks[1].1.count = 6),
+            ("holds 0 entries", |c| c.blocks[2].1.count = 0),
+            ("uses 29 of 28", |c| c.blocks[1].1.strtab_len = 29),
+            ("region starts at 86", |c| c.blocks[2].1.strtab_offset = 86),
+            ("the tail reserve starts at 14", |c| c.tables.tail_first = 14),
+            ("does not end at sh_info", |c| c.tables.tail_capacity = 63),
+            ("the global area starts at 78", |c| c.area.first = 78),
+            ("holds 6 of 7", |c| c.area.capacity = 7),
+            ("the global names start at 106", |c| c.area.strtab_offset = 106),
+            ("do not end .strtab", |c| c.tables.strtab_size = 146),
+            ("entries of 24 bytes", |c| c.tables.symtab_size = 83 * 24 + 1),
+            (".symtab's chunk is 1990 bytes", |c| c.m.chunks[0].size = 1990),
+            ("not the input files' blocks", |c| {
+                c.m.symtab.pop();
+            }),
+        ];
+        for (what, break_it) in cases {
+            let mut c = good();
+            break_it(&mut c);
+            let e = check(&c).expect_err(what);
+            assert!(e.contains(what), "{what}: {e}");
+        }
+        let mut c = good();
+        c.m.chunks.remove(1);
+        assert!(check(&c).expect_err("no .strtab chunk").contains("no .strtab chunk"));
+        // No `.symtab`: no block, no row, META zero, no chunk.
+        let mut c = good();
+        assert!(symtab_rows_check(&c.m, &c.blocks, None, None).is_err());
+        c.m.symtab.clear();
+        c.m.meta.symtab = SymtabTables::default();
+        assert!(symtab_rows_check(&c.m, &[], None, None).expect_err("chunk").contains("chunk"));
+        c.m.chunks.clear();
+        assert_eq!(symtab_rows_check(&c.m, &[], None, None), Ok(()));
     }
 }

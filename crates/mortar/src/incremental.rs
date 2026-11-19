@@ -1432,12 +1432,22 @@ impl Session {
                             .map_err(|e| format!("SYMTAB_KEYS: {e:?}"))?
                             .ok_or("SYMTAB_KEYS: a .symtab plan without IN-49a's form")?
                             .map_err(|e| format!("SYMTAB_KEYS: {e:?}"))?;
-                        Some((area, keys))
+                        // SYMTAB and META.symtab (WP-263): the plan's own
+                        // blocks and sizes.
+                        let blocks = plan
+                            .incr_blocks()
+                            .ok_or("SYMTAB: an incremental-mode .symtab without IN-49a's blocks")?;
+                        let tables = plan.incr_tables().ok_or(
+                            "META.symtab: an incremental-mode .symtab without IN-49a's tail",
+                        )?;
+                        Some((area, keys, blocks, tables))
                     }
                 };
                 lap(&self.times, &mut t, "symtab keys");
                 let five = mortar_incr::capture::Link5 {
-                    symtab: symtab_keys.as_ref().map(|(a, k)| (*a, k.as_slice())),
+                    symtab: symtab_keys
+                        .as_ref()
+                        .map(|(a, k, b, t)| (*a, k.as_slice(), b.as_slice(), *t)),
                     stack: &stack,
                     properties: &i5.properties,
                     option_keys: &i5.option_keys,

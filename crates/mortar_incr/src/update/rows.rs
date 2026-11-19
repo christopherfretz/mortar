@@ -868,6 +868,11 @@ pub struct MetaRow {
     /// (`state-corrupt` when it differs). Zero without `--gc-sections`.
     /// Compaction copies it. 16 bytes.
     pub live_hash: [u8; 16],
+    /// The live files' `.gnu.warning.<sym>` sections (not in a dropped
+    /// COMDAT copy) whose `<sym>` is no key of the link (WP-263, 255d5's
+    /// F-7: resolve's `Resolution::gnu_warning_orphans`). When 0, a key an
+    /// update adds has no such section to warn about. 4 bytes.
+    pub gnu_warning_orphans: u32,
 }
 
 impl Default for MetaRow {
@@ -891,6 +896,7 @@ impl Default for MetaRow {
             iterations: 0,
             versioned: 0,
             live_hash: [0; 16],
+            gnu_warning_orphans: 0,
         }
     }
 }
