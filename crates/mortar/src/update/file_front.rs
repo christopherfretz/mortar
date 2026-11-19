@@ -39,11 +39,12 @@ use mortar_core::incr::IncrReason;
 use mortar_core::intern::SymName;
 use mortar_core::par::Pool;
 use mortar_elf::consts::{
-    GRP_COMDAT, SHF_LINK_ORDER, SHT_GROUP, SHT_REL, SHT_RELA, STT_FILE, STT_SECTION,
+    GRP_COMDAT, SHF_LINK_ORDER, SHT_GROUP, SHT_REL, SHT_RELA,
 };
-use mortar_elf::{Object, SectionIndex, SymbolSection};
+use mortar_elf::{Object, SectionIndex};
 use mortar_image::plan::RelaTable;
 use mortar_image::rows::SectionFront;
+use mortar_incr::capture;
 use mortar_incr::format::NONE;
 use mortar_incr::update::rows::{FileRow, FileTable, file_flags};
 use mortar_incr::update::view::StateView;
@@ -271,11 +272,8 @@ fn open<'s>(
         Ids::Update { first_section } => (first_section, None),
     };
 
-    // §7.1: the first named non-local / local symbol defined at offset 0
-    // of each section (`capture::Keys::file_keys`' reading).
+    // The non-local entries and their keys.
     let len = count as usize;
-    let mut global: Vec<Option<&'s [u8]>> = vec![None; len];
-    let mut local: Vec<Option<&'s [u8]>> = vec![None; len];
     let mut keys = Vec::new();
     let mut first_global = 0;
     let mut versioned = 0;
@@ -296,15 +294,6 @@ fn open<'s>(
                     st_value: sym.st_value,
                     st_size: sym.st_size,
                 });
-            }
-            let kind = sym.st_info & 0xf;
-            if name.is_empty() || kind == STT_SECTION || kind == STT_FILE || sym.st_value != 0 {
-                continue;
-            }
-            let Ok(SymbolSection::Section(at)) = symtab.section_of(index, &sym) else { continue };
-            let slot = if index.0 < first_global { &mut local } else { &mut global };
-            if let Some(s @ None) = slot.get_mut(at.0 as usize) {
-                *s = Some(name);
             }
         }
     }
@@ -342,6 +331,30 @@ fn open<'s>(
         }
     }
 
+    // Each section's COMDAT signature as resolve's row gives it.
+    // resolve.md §6.5: an `SHF_LINK_ORDER` section outside the groups
+    // whose linked section is dropped takes that section's group. Whether
+    // it is dropped is the keeper's (whole-program): an unchanged file's
+    // stored row says.
+    let mut sig = comdat.clone();
+    for i in 1..count {
+        let s = object.section(SectionIndex(i)).map_err(|_| bad("section header"))?;
+        let link_order = s.flags() & SHF_LINK_ORDER != 0 && comdat[i as usize].is_none();
+        let linked =
+            if link_order { s.link().ok().and_then(|l| comdat[l.0 as usize]) } else { None };
+        if let (Some(l), Some(st)) = (linked, &stored)
+            && let Some(r) = st.get(i as usize)
+            && r.anchor_kind == 1
+            && view.string(r.anchor)? == l
+        {
+            sig[i as usize] = Some(l);
+        }
+    }
+    // §7.1: the anchor, by the capture's own producer.
+    let (section_keys, _) =
+        capture::section_keys(&object, &|i| sig.get(i.0 as usize).copied().flatten())
+            .map_err(bad)?;
+
     let mut sections = Vec::with_capacity(len);
     let mut seen: BTreeMap<(Anchor<'s>, &'s [u8]), u32> = BTreeMap::new();
     let with_ids = if stored.as_ref().is_some_and(Vec::is_empty) { 0 } else { count };
@@ -349,21 +362,7 @@ fn open<'s>(
         let s = object.section(SectionIndex(i)).map_err(|_| bad("section header"))?;
         let name = if i > 0 { s.name().map_err(|_| bad("section name"))? } else { &[][..] };
         let id = SectionId(first_section.0 + i);
-        let mut sig = comdat[i as usize];
-        // resolve.md §6.5: an `SHF_LINK_ORDER` section outside the groups
-        // whose linked section is dropped takes that section's group.
-        // Whether it is dropped is the keeper's (whole-program): an
-        // unchanged file's stored row says.
-        let link_order = i > 0 && s.flags() & SHF_LINK_ORDER != 0 && sig.is_none();
-        let linked =
-            if link_order { s.link().ok().and_then(|l| comdat[l.0 as usize]) } else { None };
-        if let (Some(l), Some(st)) = (linked, &stored) {
-            let r = &st[i as usize];
-            if r.anchor_kind == 1 && view.string(r.anchor)? == l {
-                sig = Some(l);
-            }
-        }
-        let anchor = Anchor::choose(sig, global[i as usize], local[i as usize]);
+        let anchor = section_keys[i as usize].anchor;
         let ordinal = seen.entry((anchor, name)).or_insert(0);
         let this = *ordinal;
         *ordinal += 1;

@@ -165,47 +165,16 @@ impl<'s> Keys<'s> {
         let Reader::Object(object) = f.reader else {
             return Ok((Ordinals::new(Vec::new()), Ordinals::new(Vec::new())));
         };
-        let bad = |what: &str| format!("{}: {what}", String::from_utf8_lossy(f.path));
-        let count = object.section_count() as usize;
-        let mut global: Vec<Option<&'s [u8]>> = vec![None; count];
-        let mut local: Vec<Option<&'s [u8]>> = vec![None; count];
-        let mut names = Vec::new();
-        if let Some(symbols) = object.symbols().map_err(|_| bad("symbol table"))? {
-            let first_global = symbols.first_global().0;
-            for (index, sym) in symbols.iter() {
-                let name = symbols.name(&sym).map_err(|_| bad("symbol name"))?;
-                if index.0 < first_global {
-                    names.push(name);
-                }
-                let kind = sym.st_info & 0xf;
-                if name.is_empty() || kind == STT_SECTION || kind == STT_FILE || sym.st_value != 0 {
-                    continue;
-                }
-                let Ok(SymbolSection::Section(at)) = symbols.section_of(index, &sym) else {
-                    continue;
-                };
-                let slot = if index.0 < first_global { &mut local } else { &mut global };
-                if let Some(s @ None) = slot.get_mut(at.0 as usize) {
-                    *s = Some(name);
-                }
-            }
-        }
-        let mut keys = Vec::with_capacity(count);
-        for i in 0..count {
-            let name = match object.section(SectionIndex(i as u32)) {
-                Ok(s) if i > 0 => s.name().map_err(|_| bad("section name"))?,
-                _ => &[][..],
-            };
-            let comdat = link
-                .resolution
-                .section_id(file, SectionIndex(i as u32))
+        let comdat = |i: SectionIndex| {
+            link.resolution
+                .section_id(file, i)
                 .and_then(|id| link.resolution.sections.get(id))
                 .and_then(|row| row.comdat.get())
                 .and_then(|c| inputs.comdats.get(c))
-                .map(|c| c.name);
-            let anchor = Anchor::choose(comdat, global[i], local[i]);
-            keys.push(SectionKey { anchor, name });
-        }
+                .map(|c| c.name)
+        };
+        let (keys, names) = section_keys(&object, &comdat)
+            .map_err(|what| format!("{}: {what}", String::from_utf8_lossy(f.path)))?;
         Ok((Ordinals::new(keys), Ordinals::new(names)))
     }
 
@@ -261,6 +230,58 @@ impl<'s> Keys<'s> {
             complete,
         })
     }
+}
+
+
+/// §7.1 for one object: each section's key (anchor, then name), section
+/// 0 included, and the names of its local symbol-table entries in order.
+/// The anchor is `comdat(i)` (the section's COMDAT signature, as the
+/// caller knows it), else the first named non-local, else local, symbol
+/// defined at offset 0 of the section. The ONE producer of the anchor:
+/// the capture (`Keys::file_keys`) and the update's per-file front
+/// (`mortar::update::file_front`) both call it.
+///
+/// # Errors
+/// The part of the object that does not read (`symbol table`, `symbol
+/// name`, `section name`).
+pub fn section_keys<'s>(
+    object: &mortar_elf::Object<'s>,
+    comdat: &dyn Fn(SectionIndex) -> Option<&'s [u8]>,
+) -> Result<(Vec<SectionKey<'s>>, Vec<&'s [u8]>), &'static str> {
+    let count = object.section_count() as usize;
+    let mut global: Vec<Option<&'s [u8]>> = vec![None; count];
+    let mut local: Vec<Option<&'s [u8]>> = vec![None; count];
+    let mut names = Vec::new();
+    if let Some(symbols) = object.symbols().map_err(|_| "symbol table")? {
+        let first_global = symbols.first_global().0;
+        for (index, sym) in symbols.iter() {
+            let name = symbols.name(&sym).map_err(|_| "symbol name")?;
+            if index.0 < first_global {
+                names.push(name);
+            }
+            let kind = sym.st_info & 0xf;
+            if name.is_empty() || kind == STT_SECTION || kind == STT_FILE || sym.st_value != 0 {
+                continue;
+            }
+            let Ok(SymbolSection::Section(at)) = symbols.section_of(index, &sym) else {
+                continue;
+            };
+            let slot = if index.0 < first_global { &mut local } else { &mut global };
+            if let Some(s @ None) = slot.get_mut(at.0 as usize) {
+                *s = Some(name);
+            }
+        }
+    }
+    let mut keys = Vec::with_capacity(count);
+    for i in 0..count {
+        let name = match object.section(SectionIndex(i as u32)) {
+            Ok(s) if i > 0 => s.name().map_err(|_| "section name")?,
+            _ => &[][..],
+        };
+        let anchor = Anchor::choose(comdat(SectionIndex(i as u32)), global[i], local[i]);
+        keys.push(SectionKey { anchor, name });
+    }
+    Ok((keys, names))
 }
 
 /// The content hash of a fragment's bytes (`L128`, IN-18a `FRAGS`).
