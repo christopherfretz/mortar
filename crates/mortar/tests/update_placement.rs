@@ -143,7 +143,7 @@ impl WithRegions<'_> {
             std::collections::BTreeMap::new();
         let mut v = Vec::new();
         for ((ch, cat), (start, end, out)) in runs {
-            let fill = inner
+            let pad = inner
                 .holes_in(ch)
                 .expect("HOLES")
                 .iter()
@@ -157,7 +157,7 @@ impl WithRegions<'_> {
                 ordinal: *n,
                 chunk: ch,
                 offset: start,
-                capacity: end - start + fill,
+                capacity: end - start + pad,
             });
             *n += 1;
         }
@@ -319,6 +319,9 @@ fn an_empty_bss_with_no_output_chunk_stays_beside_data() {
     }
 }
 
+/// Each placed section's name and the delta's output section name.
+type Sections = Vec<(String, Option<Vec<u8>>)>;
+
 /// One identity-case hop ([`hop`] with `identity`).
 fn identity_hop(
     line: &update::Line,
@@ -326,7 +329,7 @@ fn identity_hop(
     pick: &dyn Fn(&StateView<'_>) -> FileId,
     edit: &dyn Fn(),
     what: &dyn Fn(&str) -> String,
-) -> Vec<(String, Option<Vec<u8>>)> {
+) -> Sections {
     hop(line, args, pick, edit, what, true).0
 }
 
@@ -344,6 +347,7 @@ fn identity_hop(
 /// section at the full link's offset, nothing moved and no growth step.
 /// Gives each placed section's name and the delta's output section name,
 /// and the counts `(pieces, eh records)`.
+#[allow(clippy::too_many_lines, reason = "the hop, then the properties in order")]
 fn hop(
     line: &update::Line,
     args: &[String],
@@ -351,7 +355,7 @@ fn hop(
     edit: &dyn Fn(),
     what: &dyn Fn(&str) -> String,
     identity: bool,
-) -> (Vec<(String, Option<Vec<u8>>)>, usize, usize) {
+) -> (Sections, usize, usize) {
     {
         let old = state(line, args, "old");
         edit();
