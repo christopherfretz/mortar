@@ -500,13 +500,6 @@ fn placement(
         let by_index = |i: SectionIndex| facts.get(i.0 as usize).copied().unwrap_or(null);
         let split = file_split::split_of(ff, view, &by_index, &relocs, &f.pool, Some(&delta))
             .map_err(refused)?;
-        // FINDING M2b2b-1 (the record): `file_scan.rs:280-281` reads the
-        // front's `row.path`/`member_name` (the update's string space,
-        // M2b2a-1) from the state's `STRINGS` alone. Until it reads them
-        // through `ChangedFiles::string`, the scan is given the front with
-        // the stored row's two strings (`changed_files` checked them equal
-        // by bytes); a file without a stored row is refused by name.
-        let ff = &scan_front(view, cf, ff).map_err(refused)?;
         let d = file_scan::scan_of_why(
             f.arch.get(),
             opts,
@@ -607,28 +600,6 @@ enum Why {
 fn refused(e: IncrReason) -> Why {
     changed::record(&format!("M2b-2b fallback: {}", e.report()));
     Why::Refused
-}
-
-/// The front `ff` with its row's `path` and `member_name` the stored row's
-/// (finding M2b2b-1), checked equal by bytes to the update's strings.
-fn scan_front<'s>(
-    view: &StateView<'_>,
-    cf: &mortar_incr::update::view::ChangedFiles,
-    ff: &file_front::FileFront<'s>,
-) -> Result<file_front::FileFront<'s>, IncrReason> {
-    let layout = || IncrReason::UpdateNotImplemented(Some(Unimplemented::Layout));
-    if u64::from(ff.file.0) >= view.count(kind::FILES) {
-        return Err(layout());
-    }
-    let st = view.file(ff.file)?;
-    if view.string(st.path)? != cf.string(view, ff.row.path)?
-        || view.string(st.member_name)? != cf.string(view, ff.row.member_name)?
-    {
-        return Err(layout());
-    }
-    let mut x = ff.clone();
-    (x.row.path, x.row.member_name) = (st.path, st.member_name);
-    Ok(x)
 }
 
 fn layout_in_lost() -> IncrReason {
