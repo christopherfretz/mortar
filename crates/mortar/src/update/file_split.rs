@@ -87,7 +87,7 @@ struct FileLink<'a, 's, F> {
     target: LinkTarget,
 }
 
-impl<'s, F> FileLink<'_, 's, F> {
+impl<F> FileLink<'_, '_, F> {
     fn index(&self, file: FileId, index: SectionIndex) -> Option<usize> {
         (file == self.front.file).then_some(index.0 as usize)
     }
