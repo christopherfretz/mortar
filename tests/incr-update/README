@@ -29,7 +29,8 @@ A scenario
   expect-full: <reason> (<detail>): <why>
                                 (no hop after the first may be an update by rule: check
                                 `expect`; the --gc-sections scenarios say
-                                `update-not-implemented (live)`, WP-215 seam 3, WP-238 later)
+                                `update-not-implemented (layout)` when every hop flips a
+                                section's liveness: WP-225 gc-lift, until M2b-3)
 
 Configurations are tests/l10/build.py's `<gcc|kiln>-<a64|x64|i386>-O0-nog-nofs-static`.
 By the operator's ruling (2026-11-17) AArch64 and x86-64 are required; i386

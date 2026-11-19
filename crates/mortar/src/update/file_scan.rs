@@ -277,8 +277,8 @@ fn prepare<'f, 's>(
             }
         })
         .collect();
-    let path = view.string(front.row.path).map_err(rows)?;
-    let member = view.string(front.row.member_name).map_err(rows)?;
+    let path = changed.string(view, front.row.path).map_err(rows)?;
+    let member = changed.string(view, front.row.member_name).map_err(rows)?;
     let path = String::from_utf8_lossy(&path).into_owned();
     let display = if member.is_empty() {
         FileRef::new(path)

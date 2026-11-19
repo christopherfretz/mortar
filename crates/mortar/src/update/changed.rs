@@ -337,9 +337,10 @@ pub(super) fn finding_as(what: &str, reason: IncrReason) -> IncrReason {
 /// (a file of a changed path is changed when the capture's `FILES` hash
 /// is not the stored one), [`changed_files`], `extract`, `resolve` (with
 /// its draw-ins, at most `RESOLVE_CALLS`), and their answers judged
-/// against path (A)'s front through its capture `capture`: no member
-/// newly extracted, dropped or with another round (else
-/// `update-not-implemented (resolve)`: M2b-1 makes no extraction), and
+/// against path (A)'s front through its capture `capture`: an extraction
+/// change judged by the front's `LAZY` flags and `FILES.round` (F-10: a
+/// disagreement is a FINDING; rounds alone go on; a flip is
+/// `update-not-implemented (resolve)`: no `Extracted` file is made), and
 /// every affected key's `RESOLVED` row equal to the capture's (key by
 /// name, section by identity; `facts` aside, the scan's). A disagreement
 /// is a FINDING ([`finding`]) and falls back by name. Returns the
@@ -431,17 +432,41 @@ fn u5_judged(
     mark("u4");
     let ex = extract::extract(view, &cf, &options)?;
     if !(ex.extracted.is_empty() && ex.unextracted.is_empty() && ex.rounds.is_empty()) {
-        // The extraction by the `LAZY` flag; a round is "any supporting
-        // value" (IN-71b) and the capture writes none (0, which the
-        // canonical form ignores: WP-214's finding), so it is not judged.
+        // F-10 (gc-lift): the extraction judged against the front's
+        // capture: the flips by the `LAZY` flag, every round (of a member
+        // now extracted, or still extracted with another round) by the
+        // front's `FILES.round` (WP-261: the capture writes the full link's
+        // round; the canonical form still clears it, so only this judges
+        // it).
         let row = |m: FileId| capture.files.get(m.0 as usize);
+        let round = |&(m, r): &(FileId, u32)| row(m).is_some_and(|x| x.round == r);
         let front = ex.extracted.iter().all(|&(m, _)| row(m).is_some_and(|x| x.flags & LAZY == 0))
-            && ex.unextracted.iter().all(|&m| row(m).is_some_and(|x| x.flags & LAZY != 0));
+            && ex.unextracted.iter().all(|&m| row(m).is_some_and(|x| x.flags & LAZY != 0))
+            && ex.extracted.iter().all(round)
+            && ex.rounds.iter().all(round);
         if !front {
             let rows = extraction_rows(view, capture, &ex)?;
             return Err(finding(&format!("extract gives {ex:?}; the front's FILES rows:{rows}")));
         }
-        return Err(resolve());
+        // Agreement. Rounds alone go on into the update (the capture's rows
+        // are the state it writes). A flip needs the members' rows in the
+        // update (`Extracted`: fresh ids, as for a changed file;
+        // `NoLongerExtracted`: `live`'s overlay leaves it out), which
+        // `changed_files` does not make, and changes the placement
+        // (M2b-3): a fall-back by name.
+        if !(ex.extracted.is_empty() && ex.unextracted.is_empty()) {
+            record(&format!(
+                "M2b-1 extraction: agrees with the front ({} extracted, {} no longer, {} rounds); flips are not taken: (resolve)",
+                ex.extracted.len(),
+                ex.unextracted.len(),
+                ex.rounds.len()
+            ));
+            return Err(resolve());
+        }
+        record(&format!(
+            "M2b-1 extraction: {} rounds agree with the front; taken on",
+            ex.rounds.len()
+        ));
     }
     let mut calls = 0;
     let delta = loop {

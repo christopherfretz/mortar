@@ -581,8 +581,9 @@ fn retarget(m: &MemoryState, f: FileId, e: EdgeRow) -> Option<u32> {
     }
 }
 
-/// The join still refuses every `--gc-sections` update before `live`
-/// (its own line; lifting it is the join's act): end to end.
+/// WP-225 gc-lift (the join's act): a `--gc-sections` update is no longer
+/// refused before `live` by the option, end to end (the link succeeds; the
+/// update's judgement of `live` is `update_gc.rs`'s).
 #[test]
 fn a_gc_update_falls_back_end_to_end() {
     let [(_, cc, _), _] = targets();
@@ -610,7 +611,8 @@ fn a_gc_update_falls_back_end_to_end() {
     );
     let second = mortar::invoke_in("mortar", &args, &l.dir);
     let text = format!("{:?}\n{}", second.outcome, second.incremental);
-    assert!(text.contains("update-not-implemented (live)"), "{text}");
+    assert!(matches!(second.outcome, mortar::Outcome::Linked { .. }), "{text}");
+    assert!(!text.contains("update-not-implemented (live)"), "{text}");
 }
 
 /// The capture's WRITTEN `META.live_hash` (WP-238 Part 3b) is S4's hash
