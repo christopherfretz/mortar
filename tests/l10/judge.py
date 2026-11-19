@@ -190,15 +190,17 @@ def report_detail(path):
 
 def expect_full(v, want, detail):
     """A scenario's `expect-full:` (tests/incr-update): a hop that may not
-    be an update by rule (an update under `--gc-sections` is
-    `update-not-implemented (live)`, IN-71a, WP-215 seam 3) is that named
-    full link or another fall-back that comes first (`no-state`,
-    `small-output`, ...); `update` fails, and so does `want` with another
-    detail word."""
+    be an update by rule (an update under `--gc-sections` whose liveness
+    flips is `update-not-implemented (layout)`, WP-225 gc-lift, until
+    M2b-3) is that named full link or another fall-back that comes first
+    (`no-state`, `small-output`, ...); `update` fails, and so does `want`
+    with another detail word. `want`'s detail may name several words
+    (`layout|symtab`: refusals of one reason that come before the rule's,
+    e.g. the refill's, WP-225 M2b-2d), any of which passes."""
     reason, wr, wd = v.reason, want[0], want[1]
     if reason == 'update':
         v.add('expect', 'FAIL an update where the rule says `full (%s (%s))`' % (wr, wd))
-    elif reason == wr and detail != wd:
+    elif reason == wr and detail not in wd.split('|'):
         v.add('expect', 'FAIL `full (%s (%s))` where the rule says `(%s)`' % (wr, detail, wd))
     elif reason == wr:
         v.add('expect', 'pass (%s (%s))' % (wr, wd))

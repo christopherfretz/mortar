@@ -1165,6 +1165,13 @@ fn write_symtab(
     // as the file slack after a full link's table is. The old end is the
     // previous output's `.symtab` `sh_size` (its section header, read
     // above); the range must not reach another section of the new output.
+    // When it does, the state is not corrupt (WP-225 gc-2): the new layout
+    // gives `.symtab` a reserve after its OWN size (IN-49), not the stored
+    // capacity, so a table that shrinks by more than that reserve has the
+    // next section (`.strtab`) inside the old table's tail; and a new
+    // layout whose allocated part shrank moves `.symtab` itself. Zeroing
+    // over that section is never written: `update-not-implemented
+    // (symtab)`, until the table keeps its stored capacity.
     if o.size > n.size {
         let zero = n.offset + n.size..n.offset + o.size;
         let hit = new.rows.iter().enumerate().skip(1).any(|(i, r)| {
@@ -1175,10 +1182,7 @@ fn write_symtab(
                 && zero.start < r.offset + r.size
         });
         if hit {
-            return Err(RefillError::Fallback(IncrReason::StateCorrupt(format!(
-                "SYMTAB: the previous .symtab's end {:#x} reaches another section of the update",
-                zero.end
-            ))));
+            return Err(not_implemented(Unimplemented::Symtab));
         }
         counts.symtab_entries += (o.size - n.size) / es;
         overlay.put(zero.start, vec![0; (zero.end - zero.start) as usize]);

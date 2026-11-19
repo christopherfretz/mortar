@@ -26,11 +26,13 @@ A scenario
   compilers: gcc [kiln]         targets: a64 x64 [i386]       not <compiler|target>: <why>
   nolibc: yes                   (no libc: `-static -m <emulation>`, entry _start)
   also-reversed: <why>          (the series again from the edited side)
-  expect-full: <reason> (<detail>): <why>
+  expect-full: <reason> (<detail>[|<detail>...]): <why>
                                 (no hop after the first may be an update by rule: check
                                 `expect`; the --gc-sections scenarios say
                                 `update-not-implemented (layout)` when every hop flips a
-                                section's liveness: WP-225 gc-lift, until M2b-3)
+                                section's liveness: WP-225 gc-lift, until M2b-3; several
+                                details: any of them, for refusals of the same reason that
+                                come before the rule's, WP-225 M2b-2d)
 
 Configurations are tests/l10/build.py's `<gcc|kiln>-<a64|x64|i386>-O0-nog-nofs-static`.
 By the operator's ruling (2026-11-17) AArch64 and x86-64 are required; i386
