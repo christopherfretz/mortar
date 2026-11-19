@@ -322,8 +322,17 @@ fn reference_of(
         .map(|(chunk, _)| RefillChunk { chunk, reasons: 0 })
         .collect();
     let set = RefillSet { chunks, ..RefillSet::default() };
-    let (refill, size, state, map) =
-        refill_capture(session, view, &stored, f, ctx, cwd, out, &delta, &set, steps)?;
+    // M2b-2d item 8 (M2b-4): a refusal here is named in the findings. On
+    // kiln AArch64's `gc_eh_owner_dies` hop 1 it is `walk_eh`'s (`(eh)`,
+    // `mortar_image/src/update.rs`, the `P` arm): hod's CIEs encode the
+    // personality 0x9c (indirect pcrel sdata8) and the LSDA 0x1c (pcrel
+    // sdata8), and IN-34a's move takes 0x9b and 0x1b only.
+    let (refill, size, state, map) = refill_capture(
+        session, view, &stored, f, ctx, cwd, out, &delta, &set, steps,
+    )
+    .inspect_err(|e| {
+        changed::record(&format!("M2b-4: front 1's refill or capture: {}", e.report()));
+    })?;
     // The identity check (G-3's materialization in the identity case),
     // first: the non-identity case materializes the delta (below).
     let lock = session.lock().ok_or_else(image)?;
