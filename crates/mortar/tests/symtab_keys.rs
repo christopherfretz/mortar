@@ -47,9 +47,13 @@ fn sources() -> Vec<Source> {
 __attribute__((visibility("hidden"))) int wp262_hidden = 7;
 extern char _end[];
 long wp262_sink;
+int wp262_v1() { return 1; }
+int wp262_v2() { return 2; }
 }
+__asm__(".symver wp262_v1, wp262_ver@V1");
+__asm__(".symver wp262_v2, wp262_ver@@V2");
 __attribute__((constructor)) static void wp262_init() {
-    wp262_sink = wp262_hidden + reinterpret_cast<long>(_end);
+    wp262_sink = wp262_hidden + reinterpret_cast<long>(_end) + wp262_v1() + wp262_v2();
 }
 "#,
     });
@@ -133,6 +137,11 @@ fn output_globals(label: &str, out: &Path) -> Globals {
     (first, syms.len(), globals, locals)
 }
 
+/// A `.symtab` name before its version (`foo@V1`, `foo@@V2`: `foo`).
+fn base(name: &[u8]) -> &[u8] {
+    name.iter().position(|&c| c == b'@').map_or(name, |i| &name[..i])
+}
+
 /// What [`judge`] counted.
 struct Judged {
     sh_info: u32,
@@ -170,7 +179,7 @@ fn judge(label: &str, m: &MemoryState, out: &Path) -> Judged {
     let mut by_name: HashMap<&[u8], Vec<u32>> = HashMap::new();
     for (i, name, st_name) in &globals {
         by_index.insert(*i, (name.as_slice(), *st_name));
-        by_name.entry(name.as_slice()).or_default().push(*i);
+        by_name.entry(base(name)).or_default().push(*i);
     }
     let mut row_at: HashMap<u32, usize> = HashMap::new();
     let (mut stored, mut none_global, mut local_rows) = (0, 0, 0);
@@ -194,7 +203,21 @@ fn judge(label: &str, m: &MemoryState, out: &Path) -> Judged {
                 k.index
             )
         };
-        assert_eq!(ename, name, "{label}: row {r}: entry {} is another name's", k.index);
+        // S-75 (WP-150): a definition its object writes with a version
+        // keeps that spelling: `foo@V1` for the key `foo@V1`, `foo@@V2`
+        // for the key `foo` of a default version.
+        let version = text(m, sym.version);
+        let spelled = if version.is_empty() {
+            ename == name || (base(ename) == name && ename[name.len()..].starts_with(b"@@"))
+        } else {
+            ename == [name, &b"@"[..], version].concat()
+        };
+        assert!(
+            spelled,
+            "{label}: row {r} {shown}: entry {} is {}",
+            k.index,
+            String::from_utf8_lossy(ename)
+        );
         assert_eq!(k.strtab, st_name, "{label}: row {r} {shown}: strtab against st_name");
         if let Some(other) = row_at.insert(k.index, r) {
             panic!("{label}: rows {other} and {r} name entry {}", k.index);
@@ -255,6 +278,22 @@ fn stored_keys_name_the_output_globals() {
         let end = row_of(b"_end");
         let e = m.symtab_keys[end];
         assert!(j.names.get(&e.index).is_some_and(|x| x == b"_end"), "{label}: _end's row {e:?}");
+        // `.symver`: the key `wp262_ver@V1` and the default `wp262_ver`
+        // (`wp262_ver@@V2`), each with its entry.
+        let ver: Vec<(Vec<u8>, u32)> = m
+            .symbols
+            .iter()
+            .zip(&m.symtab_keys)
+            .filter(|(s, _)| text(&m, s.name) == b"wp262_ver")
+            .map(|(s, k)| (text(&m, s.version).to_vec(), k.index))
+            .collect();
+        let spelled: Vec<&[u8]> =
+            ver.iter().map(|(_, i)| j.names.get(i).map_or(&b"NONE"[..], Vec::as_slice)).collect();
+        assert_eq!(ver.len(), 2, "{label}: wp262_ver's rows {ver:?}");
+        assert!(
+            spelled.contains(&&b"wp262_ver@V1"[..]) && spelled.contains(&&b"wp262_ver@@V2"[..]),
+            "{label}: wp262_ver's entries {spelled:?}"
+        );
         let sink = m.symtab_keys[row_of(b"wp262_sink")];
         assert_ne!(sink.index, NONE, "{label}: wp262_sink's row");
         eprintln!(

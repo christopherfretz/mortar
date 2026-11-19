@@ -1212,12 +1212,15 @@ fn file_round(res: &Resolution, file: FileId) -> Result<u32, String> {
 /// `SYMTAB_KEYS`' write-time check (IN-18e, IN-49a; WP-262), on every
 /// capture: with the output's global area `[first, first + count)`, every
 /// entry of it is named by exactly one row, every row not `NONE` names an
-/// entry of it, and its `strtab` is the entry's `st_name` as S-86 lays
-/// the area's names (in entry order from the area's first byte, each
-/// name and its zero; the fixed table's names at their own offsets),
-/// ending at the area's last byte. Without a `.symtab` (`-s`) every row
-/// is `NONE`. A row that breaks this is the producer's defect: no state
-/// is written.
+/// entry of it, and the rows' `strtab` are where S-86 lays the area's
+/// names: in entry order from the area's first byte, each at least its
+/// key's name and its zero past the one before (the entry's name is the
+/// key's, or the key's spelled with its version, `foo@V1`, `foo@@V2`:
+/// S-75, WP-150), the last ending inside the area; the fixed table's
+/// names at their own offsets. The exact lengths are the symbol table
+/// plan's (`SymtabPlan::incr_global_keys` checks its walk against its
+/// counting pass). Without a `.symtab` (`-s`) every row is `NONE`. A row
+/// that breaks this is the producer's defect: no state is written.
 fn symtab_keys_check(
     m: &crate::update::testing::MemoryState,
     area: Option<mortar_core::incr::SymtabBlock>,
@@ -1249,7 +1252,10 @@ fn symtab_keys_check(
         }
         *slot = r as u32;
     }
-    let mut at = area.strtab_offset;
+    let end = area.strtab_offset + area.strtab_len;
+    // The first byte the next region name may start at, and whether a
+    // region name came before (the first starts AT the area's first byte).
+    let (mut at, mut first) = (area.strtab_offset, true);
     for (i, &r) in by_entry.iter().enumerate() {
         let entry = u64::from(area.first) + i as u64;
         if r == NONE {
@@ -1266,22 +1272,27 @@ fn symtab_keys_check(
             b"__erratum_843419_veneer" => Some(7),
             _ => None,
         };
-        let want = fixed.unwrap_or(at);
-        if u64::from(k.strtab) != want {
+        let s = u64::from(k.strtab);
+        let placed = match fixed {
+            Some(f) => s == f,
+            None if first => s == at,
+            None => s >= at,
+        };
+        if !placed {
             return err(format!(
-                "row {r} (entry {entry}): strtab {} where the area's names put {want}",
-                k.strtab
+                "row {r} (entry {entry}): strtab {s} where the area's names put {}{at}",
+                if first || fixed.is_some() { "" } else { "at least " }
             ));
         }
         if fixed.is_none() {
-            at += name.len() as u64 + 1;
+            at = s + name.len() as u64 + 1;
+            first = false;
+            if at > end {
+                return err(format!(
+                    "row {r} (entry {entry}): its name ends past the area's {end}"
+                ));
+            }
         }
-    }
-    if at != area.strtab_offset + area.strtab_len {
-        return err(format!(
-            "the global area's names end at {at}, its bytes at {}",
-            area.strtab_offset + area.strtab_len
-        ));
     }
     Ok(())
 }
@@ -3198,13 +3209,14 @@ mod wp262 {
     fn a_good_table_passes_and_each_break_is_refused() {
         let (m, area) = good();
         assert_eq!(symtab_keys_check(&m, Some(area)), Ok(()));
-        let cases: [(&str, Break); 7] = [
+        let cases: [(&str, Break); 8] = [
             ("outside", |m, _| m.symtab_keys[0].index = 12),
             ("one index", |m, _| m.symtab_keys[1] = SymtabKeyRow { index: 10, strtab: 40 }),
             ("named by no row", |m, _| m.symtab_keys[1] = SymtabKeyRow { index: NONE, strtab: 0 }),
             ("strtab", |m, _| m.symtab_keys[1].strtab = 42),
-            ("strtab", |m, _| m.symtab_keys.swap(0, 1)),
-            ("end at", |_, a| a.strtab_len = 6),
+            ("ends past", |m, _| m.symtab_keys.swap(0, 1)),
+            ("ends past", |_, a| a.strtab_len = 4),
+            ("at least", |m, _| m.symtab_keys[1].strtab = 41),
             ("named by no row", |_, a| a.count = 3),
         ];
         for (what, break_it) in cases {
