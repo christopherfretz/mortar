@@ -865,6 +865,7 @@ struct SecSeen {
 /// `Assignment::out` (an output section matched by name, and its
 /// `OUTSECS` row checked to be its `OutSecId`), and `phase::Link::section`
 /// against the triple. `Err` names the first disagreement.
+#[allow(clippy::too_many_lines)] // one comparison, field by field
 fn sections_agree(linked: &Linked, state: Vec<u8>) -> Result<SecSeen, String> {
     use mortar_incr::format::kind as table;
     use mortar_incr::update::rows::FileTable;
@@ -945,7 +946,7 @@ fn sections_agree(linked: &Linked, state: Vec<u8>) -> Result<SecSeen, String> {
                         String::from_utf8_lossy(&name)
                     ));
                 }
-                let rrow = l.resolution.sections[id];
+                let resolved = l.resolution.sections[id];
                 let fout = l.assignment.out(id);
                 let (fk, fp) = (front_rows.section_kind(id), front_rows.section_place(id));
                 let (sk, sp) = (stored.section_kind(sid), stored.section_place(sid));
@@ -958,8 +959,8 @@ fn sections_agree(linked: &Linked, state: Vec<u8>) -> Result<SecSeen, String> {
                 let Some((kind, kept, out)) = stored.section_fact(sid) else {
                     return Err(format!("{at}: no stored facts: {:?}", stored.failure()));
                 };
-                if kind != rrow.kind || kept != rrow.is_kept() {
-                    return Err(format!("{at}: stored {kind:?}/{kept}, resolve {rrow:?}"));
+                if kind != resolved.kind || kept != resolved.is_kept() {
+                    return Err(format!("{at}: stored {kind:?}/{kept}, resolve {resolved:?}"));
                 }
                 match (fout, out) {
                     (None, None) => {}
@@ -976,7 +977,7 @@ fn sections_agree(linked: &Linked, state: Vec<u8>) -> Result<SecSeen, String> {
                     }
                 }
                 let split = tables.section(fid, index);
-                let want = (kept && out.is_some()).then(|| (kind, out));
+                let want = (kept && out.is_some()).then_some((kind, out));
                 if split.map(|s| (s.kind, Some(s.out))) != want {
                     return Err(format!("{at}: Link::section {split:?}, stored {want:?}"));
                 }
@@ -985,7 +986,7 @@ fn sections_agree(linked: &Linked, state: Vec<u8>) -> Result<SecSeen, String> {
                 let collected = kept && !l.liveness.is_live(id);
                 seen.merge_kept_collected += usize::from(kind == SectionKind::Merge && collected);
                 seen.comdat_losers += usize::from(
-                    rrow.state
+                    resolved.state
                         == mortar_core::resolution::SectionState::Dropped(
                             mortar_core::resolution::DropReason::Comdat,
                         ),
