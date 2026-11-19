@@ -1353,6 +1353,7 @@ fn shadow_near(
 /// WP-255e2 S2-1's evidence at file offset `x` of chunk `id`: the stored
 /// holes (the state before this update), the `REGIONS` rows of the chunk,
 /// the previous output's bytes and front 2's bytes over `[x-0x48, x+0x10)`.
+#[allow(clippy::many_single_char_names, reason = "a diagnostic's offsets, short-lived")]
 fn s21_evidence(
     stored: &mortar_core::incr::StoredLayout<'_>,
     view: &StateView<'_>,
@@ -1680,7 +1681,7 @@ fn shadow_s3(
     };
     let rows = update_rows::UpdateRows::new(base, view, stored, &set.data);
     let front = mortar_image::rows::FrontRows::new(*l);
-    let globals = u32::try_from(f.inputs.symbols.len()).unwrap_or(u32::MAX);
+    let globals = f.inputs.symbols.len();
     format!("S3: {}", update_rows::compare_values(&rows, view, &front, globals))
 }
 

@@ -775,15 +775,16 @@ fn residue_is_not_seen(arch: Arch) {
                 v.retain(|x| x.section != d.section);
             }
             let base = l.layout.placement.chunks[c].offset;
-            let clip = [base + d.offset..base + d.offset + d.size];
+            let range = base + d.offset..base + d.offset + d.size;
+            let clip = std::slice::from_ref(&range);
             let count = |k| all.by_chunk.get(&k).map(Vec::len);
             let chunks = &l.layout.placement.chunks;
             assert!(
-                mortar_image::clip_plan::check_member_counts(&all, chunks, &clip, &count).is_ok(),
+                mortar_image::clip_plan::check_member_counts(&all, chunks, clip, &count).is_ok(),
                 "{arch:?}: the whole index has the count"
             );
             let refused =
-                mortar_image::clip_plan::check_member_counts(&edited, chunks, &clip, &count);
+                mortar_image::clip_plan::check_member_counts(&edited, chunks, clip, &count);
             assert!(
                 matches!(&refused, Err(ClipError::Internal(e)) if format!("{e:?}").contains("the independent count")),
                 "{arch:?}: the residue is refused by the count: {refused:?}"
