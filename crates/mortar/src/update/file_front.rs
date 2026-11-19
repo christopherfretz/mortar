@@ -244,14 +244,16 @@ fn open<'s>(
     file: FileId,
     ids: Ids,
 ) -> Result<FileFront<'s>, IncrReason> {
-    let row = match &ids {
-        Ids::Stored => view.file(file)?,
-        Ids::Update { row, .. } => {
+    // The row its bytes are checked against, and the update's first id
+    // (`None`: an unchanged file, `Ids::Stored`).
+    let (row, update) = match ids {
+        Ids::Stored => (view.file(file)?, None),
+        Ids::Update { first_section, row } => {
             let strings = view.count(mortar_incr::format::kind::STRINGS);
             if u64::from(row.path.off) + u64::from(row.path.len) > strings {
                 return Err(IncrReason::UpdateNotImplemented(Some(Unimplemented::Resolve)));
             }
-            row.clone()
+            (row, Some(first_section))
         }
     };
     let path = view.string(row.path)?;
@@ -273,8 +275,8 @@ fn open<'s>(
     let table = object.symbols().map_err(|_| bad("symbol table"))?;
 
     // The ids and the stored rows (an unchanged file).
-    let (first_section, stored) = match ids {
-        Ids::Stored => {
+    let (first_section, stored) = match update {
+        None => {
             let index = view.file_index(file)?;
             let range = index.ranges[FileTable::Sections as usize];
             let stored = view.sections_of(file)?;
@@ -294,7 +296,7 @@ fn open<'s>(
                 (SectionId(range.first), Some(stored))
             }
         }
-        Ids::Update { first_section, .. } => (first_section, None),
+        Some(first_section) => (first_section, None),
     };
 
     // The non-local entries and their keys.
@@ -328,7 +330,7 @@ fn open<'s>(
     // fills `SectionRow::comdat` for live objects alone).
     // A changed or newly extracted file (`Ids::Update`) is live in the
     // link the update makes, whatever its old row's `LAZY`.
-    let live = matches!(ids, Ids::Update { .. }) || row.flags & file_flags::LAZY == 0;
+    let live = update.is_some() || row.flags & file_flags::LAZY == 0;
     let mut comdat: Vec<Option<&'s [u8]>> = vec![None; len];
     let mut rela: Vec<Option<SectionIndex>> = vec![None; len];
     for i in 1..count {

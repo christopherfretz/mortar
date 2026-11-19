@@ -192,9 +192,9 @@ fn whole<'s>(line: &Line, args: &[String], store: &'s mortar_input::store::Store
 
 /// The member of `lib2.a` whose name ends in `name`, in `view`.
 fn member(view: &StateView<'_>, name: &str) -> FileId {
-    (1..)
+    let files = u32::try_from(view.count(mortar_incr::format::kind::FILES)).expect("FILES");
+    (1..files)
         .map(FileId)
-        .take_while(|&id| view.file(id).is_ok())
         .find(|&id| {
             let r = view.file(id).expect("FILES");
             r.member != 0
