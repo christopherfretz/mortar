@@ -3157,3 +3157,63 @@ pub fn file_rows(
     }
     Ok(out)
 }
+
+#[cfg(test)]
+mod wp262 {
+    //! `SYMTAB_KEYS`' write-time check ([`symtab_keys_check`]): each way
+    //! a row can break it is refused.
+    use super::{NONE, symtab_keys_check};
+    use crate::format::Str;
+    use crate::update::rows::{SymbolRow, SymtabKeyRow};
+    use crate::update::testing::MemoryState;
+    use mortar_core::incr::SymtabBlock;
+
+    /// Keys `ab`, `c`, `d` (no entry); the area [10, 12) whose names
+    /// start at byte 40: `ab` at 40, `c` at 43.
+    fn good() -> (MemoryState, SymtabBlock) {
+        let mut m = MemoryState { strings: b"abcd".to_vec(), ..MemoryState::default() };
+        for (off, len) in [(0, 2), (2, 1), (3, 1)] {
+            m.symbols.push(SymbolRow { name: Str { off, len }, ..SymbolRow::default() });
+        }
+        m.symtab_keys = vec![
+            SymtabKeyRow { index: 10, strtab: 40 },
+            SymtabKeyRow { index: 11, strtab: 43 },
+            SymtabKeyRow { index: NONE, strtab: 0 },
+        ];
+        let area = SymtabBlock {
+            first: 10,
+            count: 2,
+            capacity: 2,
+            strtab_offset: 40,
+            strtab_len: 5,
+            strtab_capacity: 5,
+        };
+        (m, area)
+    }
+
+    #[test]
+    fn a_good_table_passes_and_each_break_is_refused() {
+        let (m, area) = good();
+        assert_eq!(symtab_keys_check(&m, Some(area)), Ok(()));
+        let cases: [(&str, fn(&mut MemoryState, &mut SymtabBlock)); 7] = [
+            ("outside", |m, _| m.symtab_keys[0].index = 12),
+            ("one index", |m, _| m.symtab_keys[1] = SymtabKeyRow { index: 10, strtab: 40 }),
+            ("named by no row", |m, _| m.symtab_keys[1] = SymtabKeyRow { index: NONE, strtab: 0 }),
+            ("strtab", |m, _| m.symtab_keys[1].strtab = 42),
+            ("strtab", |m, _| m.symtab_keys.swap(0, 1)),
+            ("end at", |_, a| a.strtab_len = 6),
+            ("named by no row", |_, a| a.count = 3),
+        ];
+        for (what, break_it) in cases {
+            let (mut m, mut a) = good();
+            break_it(&mut m, &mut a);
+            let e = symtab_keys_check(&m, Some(a)).expect_err(what);
+            assert!(e.contains(what), "{what}: {e}");
+        }
+        // No `.symtab`: every row NONE.
+        let (mut m, _) = good();
+        assert!(symtab_keys_check(&m, None).is_err());
+        m.symtab_keys.iter_mut().for_each(|k| *k = SymtabKeyRow { index: NONE, strtab: 0 });
+        assert_eq!(symtab_keys_check(&m, None), Ok(()));
+    }
+}
