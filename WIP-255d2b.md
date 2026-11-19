@@ -12,3 +12,6 @@ FileSymbols::locals; then step 4's keys without a row.
 
 Resume: scratch /Volumes/AgentWork/mortar-helper/.build/target-wp-140/wp255d2b
 (t2.sh runs the test; gate.sh the full gate; protoc.rsp the timing link).
+
+Gate on 504e4b7d: linktest 0 FAIL, census 716/716, incr-update 456 PASS, static-identical 0 differ;
+fmt/clippy/ci --quick red ONLY on base files (tests/rows_round.rs, mortar_resolve/src/resolve.rs; untouched here).
