@@ -664,8 +664,11 @@ fn patches(
 
 /// `merge.frag_off`: each live non-debug fragment of the front at its
 /// identity's offset (`d.frags` first, then `FRAGS`); a `.debug_*`
-/// fragment at the front's (WP-239 R-1; `debug_condition` keeps changed
-/// files without debug sections).
+/// fragment at the front's (WP-239 R-1: no `FRAGS` row), except one
+/// `d.frags` lists: a merged debug string the join placed as IN-56 keeps
+/// it (WP-230 G-5: G-1's offset of a changed file's string, the verified
+/// stored one of an unchanged file's, where front 1's merge puts it
+/// elsewhere), at that offset.
 fn frag_off(
     stored: &StoredLayout<'_>,
     d: &LayoutDelta,
@@ -693,6 +696,12 @@ fn frag_off(
         d.frags.iter().map(|f| ((f.out.0, f.class, f.hash), (f.offset, f.refs))).collect();
     let mut taken: mortar_core::hash::HashSet<(u32, u32, [u8; 16])> =
         mortar_core::hash::HashSet::default();
+    // G-5: the rows `d.frags` gives for debug output sections (the join's
+    // merged debug strings); none, and no debug fragment is hashed.
+    let names: HashMap<u32, Vec<u8>> =
+        stored.outsecs().map_err(read)?.into_iter().map(|(o, n)| (o.0, n)).collect();
+    let debug_rows =
+        d.frags.iter().any(|f| names.get(&f.out.0).is_some_and(|n| n.starts_with(b".debug_")));
     let mut frag_off = front.computed.merge.frag_off.clone();
     let mut buf = Vec::new();
     for (i, off) in frag_off.as_mut_slice().iter_mut().enumerate() {
@@ -705,10 +714,19 @@ fn frag_off(
             .assignment
             .out(f.section)
             .ok_or_else(|| image(format!("frag_off: fragment {i} has no output section")))?;
+        let row = ids.out_rows.get(out.0 as usize).copied().unwrap_or(NONE);
         if link.assignment.outsecs[out].name.starts_with(b".debug_") {
+            if debug_rows && row != NONE {
+                let hash = crate::capture::frag_hash(link, frag, &mut buf)
+                    .ok_or_else(|| image(format!("frag_off: fragment {i}'s bytes")))?;
+                let key = (row, class[i], hash);
+                if let Some(&(at, _)) = mine.get(&key) {
+                    taken.insert(key);
+                    *off = at;
+                }
+            }
             continue;
         }
-        let row = ids.out_rows.get(out.0 as usize).copied().unwrap_or(NONE);
         if row == NONE {
             return Err(layout(format!(
                 "frag_off: fragment {i}'s output section has no OUTSECS row"

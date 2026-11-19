@@ -121,11 +121,17 @@ pub enum Unimplemented {
     /// no producer yet (F-1), or a diagnostic, event or overlap the full
     /// scan reports (F-2). The case is named in the caller's detail.
     Scan,
+    /// A changed file's merged debug strings (`.debug_str`,
+    /// `.debug_line_str`) the non-identity update cannot write as IN-56
+    /// keeps them (every stored string where it is, new ones appended):
+    /// a live string of the new link with no verified stored offset and
+    /// not one G-1 appended (WP-230 G-5, the G-4 string refusals named).
+    DebugStrings,
 }
 
 impl Unimplemented {
     /// Every word, in `spec/incr.md` §7's order.
-    pub const ALL: [Self; 17] = [
+    pub const ALL: [Self; 18] = [
         Self::State5,
         Self::Resolve,
         Self::Refill,
@@ -143,6 +149,7 @@ impl Unimplemented {
         Self::Slots,
         Self::Split,
         Self::Scan,
+        Self::DebugStrings,
     ];
 
     /// The word (`spec/incr.md` §7).
@@ -166,6 +173,7 @@ impl Unimplemented {
             Self::Slots => "slots",
             Self::Split => "split",
             Self::Scan => "scan",
+            Self::DebugStrings => "debug-strings",
         }
     }
 }

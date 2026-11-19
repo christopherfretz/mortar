@@ -358,8 +358,10 @@ pub fn strings_with(
 }
 
 /// Whether the previous output holds `s` and its NUL at `off` of the
-/// section at file offset `base`, `size` bytes long (R-2.1).
-fn verified(previous: &[u8], base: u64, size: u64, off: u64, s: &[u8]) -> bool {
+/// section at file offset `base`, `size` bytes long (R-2.1). Public for
+/// the join's lookup of an unchanged file's strings (WP-230 G-5).
+#[must_use]
+pub fn verified(previous: &[u8], base: u64, size: u64, off: u64, s: &[u8]) -> bool {
     let len = s.len() as u64;
     if off.saturating_add(len) >= size {
         return false;
@@ -927,6 +929,20 @@ pub fn place(
         )));
     }
 
+    // IN-56 (WP-230 G-5): a merged debug string chunk grows over the
+    // strings G-1 appended (`append_at` kept them within its capacity);
+    // every stored string stays where it is (L-147).
+    for (cid, at, bytes) in plan.strings.appended.values() {
+        let end = at + bytes.len() as u64;
+        let c = layout.placement.chunks.get_mut(*cid).ok_or_else(debug_reason)?;
+        if end > c.capacity {
+            return Err(IncrReason::DebugCompaction(format!(
+                "the debug string tail is full ({end:#x} > {:#x})",
+                c.capacity
+            )));
+        }
+        c.size = c.size.max(end);
+    }
     // Into the layout.
     let mut touched: BTreeSet<ChunkId> = BTreeSet::new();
     for (c, hs) in &holes {
