@@ -158,6 +158,7 @@ pub fn changed_files(
 /// `fr`'s rows with its sections at `first ..`, its `Str`s (offsets into
 /// the update's buffer) past `base`, its keys by name (position in
 /// `keys`, in the order the rows first name them).
+#[allow(clippy::too_many_lines, reason = "one translation per table, in ChangedFile's order")]
 fn translate(
     f: &Front<'_>,
     fr: &FileRows,
@@ -232,10 +233,10 @@ fn translate(
     let mut edges = Vec::with_capacity(fr.edges.len());
     for e in &fr.edges {
         use edge_kind::Target;
-        let live = || IncrReason::UpdateNotImplemented(Some(Unimplemented::Live));
+        let live = |_| IncrReason::UpdateNotImplemented(Some(Unimplemented::Live));
         let target = match (edge_kind::target(e.kind), e.target) {
             (Some(Target::Key), LiveTarget::Key(k)) => key(k.0)?,
-            (Some(Target::Section), LiveTarget::Section(t)) => section(t.0).map_err(|_| live())?,
+            (Some(Target::Section), LiveTarget::Section(t)) => section(t.0).map_err(live)?,
             (Some(Target::Zero), LiveTarget::None) => 0,
             (Some(Target::Code), LiveTarget::Code(c)) => c,
             _ => {
@@ -371,6 +372,32 @@ fn record(line: &str) {
     }
 }
 
+/// A finding's `FILES` rows of the members `ex` names: stored and the
+/// front's (capture `capture`) flags and rounds.
+fn extraction_rows(
+    view: &StateView<'_>,
+    capture: &MemoryState,
+    ex: &mortar_incr::update::extract::Extraction,
+) -> Result<String, IncrReason> {
+    use std::fmt::Write as _;
+    let mut rows = String::new();
+    let members = ex.extracted.iter().map(|x| x.0);
+    let members =
+        members.chain(ex.unextracted.iter().copied()).chain(ex.rounds.iter().map(|x| x.0));
+    for m in members {
+        let old = view.file(m)?;
+        let now = capture.files.get(m.0 as usize).ok_or_else(|| corrupt("FILES"))?;
+        let name = String::from_utf8_lossy(&view.string(old.member_name)?).into_owned();
+        let _ = write!(
+            rows,
+            " [file {} {name}: stored flags {:#x} round {}, the front's flags {:#x} round {}]",
+            m.0, old.flags, old.round, now.flags, now.round
+        );
+    }
+    Ok(rows)
+}
+
+#[allow(clippy::too_many_lines, reason = "U4-U5 and their judgement, in record §0.2's order")]
 fn u5_judged(
     view: &StateView<'_>,
     changed: &[FileId],
@@ -381,6 +408,7 @@ fn u5_judged(
 ) -> Result<Option<(ChangedFiles, mortar_incr::update::resolve::ResolveDelta)>, IncrReason> {
     use mortar_incr::update::rows::file_flags::LAZY;
     use mortar_incr::update::{extract, resolve as res};
+    use std::fmt::Write as _;
     let mut files = Vec::new();
     for &id in changed {
         let now = capture.files.get(id.0 as usize).ok_or_else(|| corrupt("FILES"))?;
@@ -403,22 +431,7 @@ fn u5_judged(
         let front = ex.extracted.iter().all(|&(m, _)| row(m).is_some_and(|x| x.flags & LAZY == 0))
             && ex.unextracted.iter().all(|&m| row(m).is_some_and(|x| x.flags & LAZY != 0));
         if !front {
-            let mut rows = String::new();
-            for m in ex
-                .extracted
-                .iter()
-                .map(|x| x.0)
-                .chain(ex.unextracted.iter().copied())
-                .chain(ex.rounds.iter().map(|x| x.0))
-            {
-                let old = view.file(m)?;
-                let now = row(m).ok_or_else(|| corrupt("FILES"))?;
-                let name = String::from_utf8_lossy(&view.string(old.member_name)?).into_owned();
-                rows.push_str(&format!(
-                    " [file {} {name}: stored flags {:#x} round {}, the front's flags {:#x} round {}]",
-                    m.0, old.flags, old.round, now.flags, now.round
-                ));
-            }
+            let rows = extraction_rows(view, capture, &ex)?;
             return Err(finding(&format!("extract gives {ex:?}; the front's FILES rows:{rows}")));
         }
         return Err(resolve());
@@ -489,10 +502,11 @@ fn u5_judged(
             {
                 let old = view.file(FileId(g))?;
                 let now = capture.files.get(g as usize).ok_or_else(|| corrupt("FILES"))?;
-                files.push_str(&format!(
+                let _ = write!(
+                    files,
                     " [file {g}: stored flags {:#x}, the front's flags {:#x}]",
                     old.flags, now.flags
-                ));
+                );
             }
             return Err(finding(&format!(
                 "key {show}: resolve gives {r:?} at {mine:?}; the front's capture {c:?} at {front_at:?};{files} extraction {ex:?}"

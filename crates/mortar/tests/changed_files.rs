@@ -7,6 +7,12 @@
 //! symbol) against the state the FULL link of the new inputs writes. A
 //! wrong `Str` offset into `ChangedFiles::strings` is caught.
 
+#![allow(
+    clippy::too_many_lines,
+    clippy::many_single_char_names,
+    reason = "the oracle: one table after another, each pair of closures `mine`/`theirs`"
+)]
+
 mod support;
 
 use std::ffi::OsString;

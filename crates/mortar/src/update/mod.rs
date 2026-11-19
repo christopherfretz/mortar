@@ -293,7 +293,7 @@ fn reference_of(
     // U4: the front's file of each id is the state's row (and no file
     // appeared: the front has the state's files, M2b-1).
     let files = &detected.changed_files;
-    if f.inputs.files.len() as u64 != view.count(kind::FILES) {
+    if u64::from(f.inputs.files.len()) != view.count(kind::FILES) {
         return Err(IncrReason::UpdateNotImplemented(Some(Unimplemented::Resolve)));
     }
     for &file in files {

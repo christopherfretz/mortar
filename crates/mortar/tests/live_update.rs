@@ -819,6 +819,10 @@ fn mark_ids(f: &Front<'_>, m: &MemoryState, fresh: &[(FileId, u32)]) -> Vec<Sect
 // equals the difference of v0's full mark (stored ids) and v1's full mark
 // (the update's ids), on both 64-bit targets.
 #[test]
+#[allow(
+    clippy::used_underscore_binding,
+    reason = "the shared `Line`'s scratch, rebuilt in place for v1"
+)]
 fn live_on_the_joins_changed_files_is_the_full_marks_difference() {
     let mut ran = 0;
     let flags = ["-O0", "-ffunction-sections", "-fdata-sections"];
