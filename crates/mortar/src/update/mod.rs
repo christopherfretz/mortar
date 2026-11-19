@@ -1479,12 +1479,17 @@ fn debug_judged(
             debug_reason(),
         ));
     };
+    // G-3b (testhooks only): G-1's answer made to differ from the front's
+    // by one byte, so that each judged item is seen to give its FINDING.
+    let injected = debug_injected_plan(plan);
+    let plan = injected.as_ref().unwrap_or(plan);
     // IN-50 step 1.
     for c in &plan.contributions {
         if c.taken != Taken::InPlace {
             return Err(debug_finding(&format!(
-                "the identity case, but file {} chunk {} took {:?}",
-                c.file.0, c.chunk.0, c.taken
+                "the identity case, but file {} chunk {} took {:?}: allotment {:#x}+{:#x} for \
+                 {:#x} bytes, members {:x?}",
+                c.file.0, c.chunk.0, c.taken, c.allot.offset, c.allot.size, c.size, c.members
             )));
         }
     }
@@ -1561,8 +1566,11 @@ fn debug_judged(
         // (the identity check has already equated the stored chunks).
         let replaced: Vec<(u64, u64, Vec<u8>)> =
             plan.aranges.iter().map(|&(_, s, e)| (s, e, Vec::new())).collect();
-        let mine =
+        let mut mine =
             debug::aranges(&[], &replaced).map_err(|e| debug_fallback("debug::aranges", e))?;
+        if debug_injected("in54") {
+            mine.push(0);
+        }
         if !mine.is_empty() {
             return Err(debug_finding(&format!(
                 ".debug_aranges: none in the front, and G-1's rewrite is {} bytes",
@@ -1600,8 +1608,12 @@ fn debug_judged(
             }
             replaced.push((s, e, sets));
         }
-        let mine =
+        let mut mine =
             debug::aranges(&prev, &replaced).map_err(|e| debug_fallback("debug::aranges", e))?;
+        if debug_injected("in54") && !mine.is_empty() {
+            let at = mine.len() - 1;
+            mine[at] ^= 1;
+        }
         if mine != now {
             let at = mine.iter().zip(&now).position(|(a, b)| a != b);
             return Err(debug_finding(&format!(
@@ -1612,20 +1624,36 @@ fn debug_judged(
         }
         aranges = now.len();
     }
-    // R-5 (a).
+    // R-5 (a). A copy G-1 leaves in place must be one the previous output
+    // placed and the front places: anything else is a disagreement.
     for &(new, old) in &plan.comdat_in_place {
-        let Some(o) = stored.section(old)? else { continue };
-        let (Some((oc, oo)), Some(fid)) =
-            (o.place.get(), f.resolution.section_id(o.file, SectionIndex(o.index)))
-        else {
-            continue;
+        let copy = |what: &str| {
+            debug_finding(&format!("kept group copy {} (old {}): {what}", new.0, old.0))
         };
-        let Some((fc, fo)) = pl.place.get(fid).and_then(|p| p.get()) else { continue };
+        let Some(o) = stored.section(old)? else {
+            return Err(copy("no stored section"));
+        };
+        let Some((oc, oo)) = o.place.get() else {
+            return Err(copy("not placed in the previous output"));
+        };
+        let Some(fid) = f.resolution.section_id(o.file, SectionIndex(o.index)) else {
+            return Err(copy("no section of the front"));
+        };
+        let Some((fc, fo)) = pl.place.get(fid).and_then(|p| p.get()) else {
+            return Err(copy("the front does not place it"));
+        };
         let old_chunk = stored.chunks()?.into_iter().find(|(id, _)| *id == oc).map(|(_, c)| c);
-        let Some(old_chunk) = old_chunk else { continue };
+        let Some(old_chunk) = old_chunk else {
+            return Err(copy("no stored chunk"));
+        };
         let mut was = vec![0u8; usize::try_from(o.size).map_err(|_| debug_reason())?];
         std::os::unix::fs::FileExt::read_exact_at(previous, &mut was, old_chunk.offset + oo)
             .map_err(|e| IncrReason::OutputChanged(e.to_string()))?;
+        if debug_injected("r5a")
+            && let Some(b) = was.first_mut()
+        {
+            *b ^= 1;
+        }
         let is = new_bytes(pl.chunks[fc].offset + fo, o.size)?;
         if was != is {
             return Err(debug_fallback(
@@ -1644,6 +1672,56 @@ fn debug_judged(
         plan.comdat_in_place.len()
     ));
     Ok(())
+}
+
+/// G-3b (WP-230; tests, `testhooks` only): whether `MORTAR_G3_INJECT`
+/// names `item`, one of `debug_judged`'s judged items (`in50`, `in56`,
+/// `in54`, `r5a`), whose G-1 answer is then made to differ from the
+/// front's by one byte (recorded `G-3 debug: injected <item>`). Always
+/// `false` without the feature: nothing is read.
+fn debug_injected(item: &str) -> bool {
+    #[cfg(feature = "testhooks")]
+    {
+        let on = std::env::var_os("MORTAR_G3_INJECT").is_some_and(|v| v == item);
+        if on {
+            changed::record(&format!("G-3 debug: injected {item}"));
+        }
+        on
+    }
+    #[cfg(not(feature = "testhooks"))]
+    {
+        let _ = item;
+        false
+    }
+}
+
+/// G-3b (tests): `plan` with IN-50 step 1's answer (`in50`: a one-byte
+/// hole after the first contribution) or IN-56's (`in56`: the first
+/// string of the first map one byte further) changed, when
+/// [`debug_injected`] says so; `None` otherwise.
+fn debug_injected_plan(
+    plan: &mortar_incr::update::debug::DebugPlan,
+) -> Option<mortar_incr::update::debug::DebugPlan> {
+    use mortar_core::layout::{Hole, HoleKind};
+    if debug_injected("in50") {
+        let mut p = plan.clone();
+        let c = p.contributions.first()?;
+        let hole = Hole {
+            chunk: c.chunk,
+            offset: c.allot.offset + c.size,
+            size: 1,
+            kind: HoleKind::Debug,
+        };
+        p.chunks.push((c.chunk, vec![hole]));
+        return Some(p);
+    }
+    if debug_injected("in56") {
+        let mut p = plan.clone();
+        let first = p.strings.maps.values_mut().next()?.first_mut()?;
+        first.1 += 1;
+        return Some(p);
+    }
+    None
 }
 
 /// The non-allocated sections of `file`'s object in the front: id, name,

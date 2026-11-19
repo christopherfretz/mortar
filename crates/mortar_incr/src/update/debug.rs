@@ -248,7 +248,7 @@ pub fn str_class(name: &[u8]) -> Option<u8> {
 pub fn append_at(size: u64, capacity: u64, pending: u64, len: u64) -> Result<u32, IncrReason> {
     let at = size.saturating_add(pending);
     let end = at.saturating_add(len).saturating_add(1);
-    let off = u32::try_from(at).map_err(|_| {
+    let off = u32::try_from(at).ok().filter(|_| at < str_limit()).ok_or_else(|| {
         IncrReason::DebugStrLimit(format!("an appended debug string at offset {at:#x}"))
     })?;
     if end > capacity {
@@ -257,6 +257,19 @@ pub fn append_at(size: u64, capacity: u64, pending: u64, len: u64) -> Result<u32
         )));
     }
     Ok(off)
+}
+
+/// The offsets a 32-bit string word names: `[0, 2^32)` (B1-5). Tests
+/// (`testhooks` only; WP-230 G-3b): `MORTAR_G3_STR_LIMIT` lowers the
+/// bound, so that an update of a small output reaches `debug-str-limit`
+/// through the update path (an output with 4 GiB of debug strings is not
+/// a test's).
+fn str_limit() -> u64 {
+    #[cfg(feature = "testhooks")]
+    if let Some(n) = std::env::var("MORTAR_G3_STR_LIMIT").ok().and_then(|v| v.parse().ok()) {
+        return n;
+    }
+    1 << 32
 }
 
 /// IN-56 (R-2, B1-4): each string of the changed files' merged debug
@@ -795,14 +808,28 @@ pub fn place(
             let hs = chunk_holes(&mut holes, layout, stored, chunk)?;
             let whole = old.get(&run.name).map(|(a, _)| with_slack(*a, hs));
             let kept = kept_ranges(old.get(&run.name).map(|o| &o.1), &in_place);
-            let old_allot = if kept.is_empty() { whole } else { None };
+            // With group copies kept in place (R-5 a), the run's own old
+            // allotment is that of its old rows that are not kept, when they
+            // are one range with no kept copy inside it: IN-50 step 1 applies
+            // to it as to any contribution (G-3b: before, step 1 was never
+            // tried, and the run took its own old range as a dead range).
+            let own = if kept.is_empty() {
+                None
+            } else {
+                own_allot(old.get(&run.name).map(|o| &o.1), &in_place, &kept, hs)
+            };
+            let old_allot = if kept.is_empty() { whole } else { own };
             if let Some(w) = whole
                 && !kept.is_empty()
             {
-                // Group copies kept in place (R-5 a) hold their bytes; the
-                // rest of the old allotment is dead before the choice.
+                // Group copies kept in place hold their bytes, and the own
+                // allotment is the run's old one; the rest of the old
+                // allotment is dead before the choice.
+                let mut held = kept.clone();
+                held.extend(own.map(|o| (o.offset, o.size)));
+                held.sort_unstable();
                 let hs = holes.get_mut(&chunk).expect("read above");
-                free_around(hs, chunk, w, &kept, &run.name)?;
+                free_around(hs, chunk, w, &held, &run.name)?;
             }
             let hs = &holes[&chunk];
             let ch = &layout.placement.chunks[chunk];
@@ -1008,6 +1035,27 @@ fn kept_ranges(
         .collect();
     v.sort_unstable();
     v
+}
+
+/// R-5 a: the old allotment of a run's rows that are not kept in place
+/// (`in_place`), their span and the `Debug` hole after it, when no `kept`
+/// range is inside it; `None` otherwise (or with no such row).
+fn own_allot(
+    rows: Option<&Vec<&StoredSection>>,
+    in_place: &BTreeSet<SectionId>,
+    kept: &[(u64, u64)],
+    holes: &[Hole],
+) -> Option<Allot> {
+    let own: Vec<(u64, u64)> = rows
+        .into_iter()
+        .flatten()
+        .filter(|r| !in_place.contains(&r.id))
+        .filter_map(|r| Some((r.place.get()?.1, r.size)))
+        .collect();
+    let start = own.iter().map(|r| r.0).min()?;
+    let end = own.iter().map(|r| r.0 + r.1).max()?;
+    let a = with_slack(Allot { offset: start, size: end - start }, holes);
+    kept.iter().all(|&(o, sz)| o + sz <= a.offset || o >= a.offset + a.size).then_some(a)
 }
 
 /// `whole` (an old allotment) becomes dead ranges (R-3) around the
