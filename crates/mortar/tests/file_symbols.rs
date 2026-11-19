@@ -104,9 +104,9 @@ fn compare(
         std::fs::copy(line.dir.join(format!("{edit}.o")), line.dir.join("m1.o")).expect("edit");
         line.archive(members);
         // The full link of the new inputs: its output is the oracle.
-        let new = state(&line, &args, "new");
+        let new = state(line, &args, "new");
         let store = support::store();
-        let full = whole(&line, &args, &store);
+        let full = whole(line, &args, &store);
         let file = member(&old, "m1.o");
         let captured = new.file(member(&new, "m1.o")).expect("FILES");
         let stored = old.file(file).expect("FILES");
@@ -257,9 +257,8 @@ fn compare(
 #[test]
 fn file_symbols_of_an_edited_file() {
     for line in lines(&[("m1s", "c++", M1_SYM)]) {
-        let seen = compare(&line, "m1s", &["m1.o", "m2.o"], &["wp255d_m2", "wp255d_m1"], &|_, _| {
-            None
-        });
+        let seen =
+            compare(&line, "m1s", &["m1.o", "m2.o"], &["wp255d_m2", "wp255d_m1"], &|_, _| None);
         let named = |n: &[u8]| seen.have.iter().any(|e| e.name.windows(n.len()).any(|w| w == n));
         assert!(named(b"wp255d2b_helper") && named(b"wp255d2b_counter"), "{}: statics", line.label);
         assert!(seen.cases[".L in the input (dropped)"] > 0, "{}: a .L local", line.label);
@@ -288,6 +287,158 @@ fn file_symbols_drops_a_dropped_comdat_copys_locals() {
                 "{}: the dropped copy's mapping symbols",
                 line.label
             );
+        }
+    }
+}
+
+/// `m1.o` (old: `m1e`, C++) edited: `wp255d_m1_renamed` renamed
+/// `wp255d_m1_renamed2` (a global removed, one added), `wp255d_added`
+/// removed, `wp255d_m1_data` made hidden (demoted), `wp255d2b_new` added.
+const M1_GLOBALS: &str = "extern \"C\" { __attribute__((visibility(\"hidden\"))) int wp255d_m1_data = 1; }\n\
+    inline __attribute__((noinline)) int wp255d_inl(int x) { return x * 3 + wp255d_m1_data; }\n\
+    extern \"C\" int wp255d_m1_renamed2(int x) { return x ^ 5; }\n\
+    extern \"C\" int wp255d2b_new = 9;\n\
+    extern \"C\" int wp255d_m1(int x) { return wp255d_inl(x) + wp255d_m1_renamed2(x) + wp255d2b_new; }\n";
+
+/// R-2, R-1: `global_changes` and the demoted run of an edited lane object
+/// against the FULL link's output `.symtab`, by name. The merged
+/// visibility and `referenced` (`merged`, record R-4) are the full link's
+/// resolution's, by name: the test supplies that producer.
+#[test]
+fn global_changes_of_an_edited_file() {
+    use mortar::update::file_symbols::{demoted_run, global_changes};
+    use mortar_core::resolution::RefFlags;
+    use mortar_synth::symtab_incr::{GlobalKind, GlobalPlace};
+    for line in lines(&[("m1x", "c++", M1_GLOBALS)]) {
+        let args = line.args(&["wp255d_m2", "wp255d_m1"]);
+        std::fs::copy(line.dir.join("m1e.o"), line.dir.join("m1.o")).expect("old m1");
+        line.archive(&["m1.o", "m2.o"]);
+        let old = state(&line, &args, "old");
+        std::fs::copy(line.dir.join("m1x.o"), line.dir.join("m1.o")).expect("the edit");
+        line.archive(&["m1.o", "m2.o"]);
+        let new = state(&line, &args, "new");
+        let capture = mortar_incr::state5::read::decode(
+            &std::fs::read(line.dir.join("new.state5")).expect("the new state"),
+        )
+        .expect("decodes");
+        let store = support::store();
+        let full = whole(&line, &args, &store);
+        let file = member(&old, "m1.o");
+        let in_front = update::same_file(&full, &old, file);
+        let (changed, delta) =
+            mortar::update::changed::u5(&old, &[in_front], &[], &full, &capture, &mut |_| {})
+                .unwrap_or_else(|e| panic!("{}: U4-U5: {}", line.label, e.report()))
+                .expect("m1.o changed");
+        let first = changed.files[0].first_section;
+        let captured = capture.files[member(&new, "m1.o").0 as usize].clone();
+        let stored = old.file(file).expect("FILES");
+        let row = FileRow { base: captured.base, len: captured.len, hash: captured.hash, ..stored };
+        let fresh = support::store();
+        let mut cache = FrontCache::new(&fresh, pool(), &line.dir);
+        let ff = front_of(&mut cache, &old, file, Ids::Update { first_section: first, row })
+            .unwrap_or_else(|e| panic!("{}: {e:?}", line.label));
+        // The merged visibility and `referenced` by name: the full link's.
+        let name_of = |id: mortar_core::id::SymbolId| -> Vec<u8> {
+            if u64::from(id.0) < old.count(mortar_incr::format::kind::SYMBOLS) {
+                old.string(old.symbol(id).expect("SYMBOLS").name).expect("name")
+            } else {
+                delta.new_keys
+                    [(id.0 as usize) - old.count(mortar_incr::format::kind::SYMBOLS) as usize]
+                    .name
+                    .clone()
+            }
+        };
+        let merged = |id| {
+            let n = name_of(id);
+            let (k, _) = full.inputs.symbols.iter().find(|(_, k)| k.name == &n[..])?;
+            let p = full.resolution.props.get(k).copied().unwrap_or_default();
+            Some((p.visibility, p.refs.contains(RefFlags::FROM_OBJECT)))
+        };
+        let got = global_changes(&old, &delta, &[ff], &merged)
+            .unwrap_or_else(|e| panic!("{}: global_changes: {}", line.label, e.report()));
+        let run = demoted_run(ff, &got);
+        // The oracle: the full link's output.
+        let bytes = std::fs::read(line.dir.join("new")).expect("the output");
+        let header = FileHeader::parse(&bytes).expect("an ELF header");
+        let table = SectionTable::parse(&bytes, &header).expect("section headers");
+        let syms = table.find_symbol_table(SHT_SYMTAB).expect("symbols").expect("a .symtab");
+        let entry = |s: &mortar_elf::Sym| {
+            let sec = (s.st_shndx != 0 && s.st_shndx < 0xff00).then(|| {
+                table
+                    .get(SectionIndex(u32::from(s.st_shndx)))
+                    .expect("sec")
+                    .name()
+                    .expect("n")
+                    .to_vec()
+            });
+            (s.st_info, s.st_other, s.st_size, sec)
+        };
+        let outsecs = old.outsecs().expect("OUTSECS");
+        let mine = |place: GlobalPlace, info: u8, other: u8, size: u64| {
+            let sec = match place {
+                GlobalPlace::Section(s) => {
+                    let o = ff.sections.iter().position(|x| x.id == s).expect("m1.o's section");
+                    let keepers: Vec<(Vec<u8>, Option<FileId>)> = delta.keepers.clone();
+                    let facts = changed_facts(ff, &old, &full.plan, &keepers).expect("facts");
+                    let out = facts[o].out.expect("an output section");
+                    Some(old.string(outsecs[out.0 as usize].name).expect("name"))
+                }
+                _ => None,
+            };
+            (info, other, size, sec)
+        };
+        let mut kinds: BTreeMap<String, usize> = BTreeMap::new();
+        for g in &got {
+            let n = name_of(g.key);
+            let label = format!("{}: {}", line.label, String::from_utf8_lossy(&n));
+            *kinds.entry(format!("{:?}", g.kind)).or_default() += 1;
+            let sk = (u64::from(g.key.0) < old.count(mortar_incr::format::kind::SYMBOLS))
+                .then(|| old.symtab_key(g.key).expect("SYMTAB_KEYS"));
+            eprintln!("{label}: {:?}, stored SYMTAB_KEYS {sk:?}", g.kind);
+            let global = syms
+                .iter()
+                .find(|(i, s)| i.0 >= syms.first_global().0 && syms.name(s).expect("n") == &n[..]);
+            match g.kind {
+                GlobalKind::Removed | GlobalKind::Demoted => assert!(global.is_none(), "{label}"),
+                _ => {
+                    let (_, s) = global.unwrap_or_else(|| panic!("{label}: no global entry"));
+                    assert_eq!(mine(g.place, g.info, g.other, g.size), entry(&s), "{label}");
+                }
+            }
+        }
+        // The demoted run: m1x's block after its locals, by name.
+        let mut inside = false;
+        let want: Vec<_> = syms
+            .locals()
+            .filter(|(_, s)| {
+                if s.st_info & 0xf == STT_FILE {
+                    inside = syms.name(s).expect("n").ends_with(b"m1x.src");
+                }
+                inside && run.iter().any(|l| l.name == syms.name(s).expect("n"))
+            })
+            .map(|(_, s)| (syms.name(&s).expect("n").to_vec(), entry(&s)))
+            .collect();
+        let have: Vec<_> = run
+            .iter()
+            .map(|l| {
+                (
+                    l.name.to_vec(),
+                    mine(GlobalPlace::Section(l.section.expect("s")), l.info, l.other, l.size),
+                )
+            })
+            .collect();
+        eprintln!("{}: global changes {kinds:?}, demoted run {:?}", line.label, have);
+        assert_eq!(have, want, "{}: the demoted run", line.label);
+        for k in ["Demoted", "Added"] {
+            assert!(kinds.contains_key(k), "{}: a {k} global", line.label);
+        }
+        // The removed keys are `gone`. Their `Removed` needs the stored
+        // `SYMTAB_KEYS` index, which no capture writes yet (record F-2:
+        // every row reads `NO_ENTRY`, so a stored global reads as absent
+        // and a surviving one as `Promoted`): not asserted here.
+        let gone: Vec<Vec<u8>> = delta.gone.iter().map(|&k| name_of(k)).collect();
+        for n in [&b"wp255d_m1_renamed"[..], b"wp255d_added"] {
+            assert!(gone.iter().any(|g| g == n), "{}: {n:?} gone", line.label);
         }
     }
 }
