@@ -454,3 +454,434 @@ fn removing_the_last_start_use_kills_its_section() {
     }
     assert!(out.len() == 4 || !tools_required(), "{} of 4 pairs", out.len());
 }
+
+// ---- P3-5: a REFUSE row and the local-symbol FDE through the join ----
+
+const LO_A: &str = "  .section .text.g,\"axG\",%progbits,grp,comdat\n  .globl gfun\n  .type gfun,%function\n\
+gfun:\n  ret\n  .section .meta,\"ao\",%progbits,gfun\n  .globl metasym\nmetasym:\n  .long 5\n";
+/// `LO_A` with `metasym` in a plain section (no `REFUSE` row).
+const LO_A_PLAIN: &str = "  .section .text.g,\"axG\",%progbits,grp,comdat\n  .globl gfun\n  .type gfun,%function\n\
+gfun:\n  ret\n  .section .rodata.meta,\"a\",%progbits\n  .globl metasym\nmetasym:\n  .long 5\n";
+const LO_B_GROUP: &str = "  .section .text.g,\"axG\",%progbits,grp,comdat\n  .globl gfun\n  .type gfun,%function\ngfun:\n  ret\n";
+const LO_M0: &str = "int gfun(void);\nint main(void){ return gfun(); }\n";
+const LO_M1: &str = "int gfun(void);\nint main(void){ return gfun() + 1; }\n";
+
+/// The FDE of `foo` names it by the LOCAL `lfoo` (kept in the relocation:
+/// `.text.m` is `SHF_MERGE`), `live_rows.rs`' `fdelocal`.
+fn fde_local(ra: u32) -> &'static str {
+    fde_naming(ra, "lfoo")
+}
+
+/// [`fde_local`] with the FDE's initial location named by `sym` (`foo`:
+/// the global, a `REFUSE` row `fde-global`).
+fn fde_naming(ra: u32, sym: &str) -> &'static str {
+    format!(
+        "  .section .text.m,\"axM\",%progbits,4\n  .globl foo\n  .type foo,%function\nfoo:\n\
+         \x20 .long 0\nlfoo:\n  .long 0\n  .size foo,.-foo\n\
+         \x20 .section .eh_frame,\"a\",%progbits\ncie:\n  .long cie_end - cie_start\ncie_start:\n\
+         \x20 .long 0\n  .byte 1\n  .asciz \"zR\"\n  .uleb128 1\n  .sleb128 -8\n  .uleb128 {ra}\n\
+         \x20 .uleb128 1\n  .byte 0x1b\n  .balign 4, 0\ncie_end:\nfde:\n\
+         \x20 .long fde_end - fde_start\nfde_start:\n  .long fde_start - cie\n  .long {sym} - .\n\
+         \x20 .long 4\n  .uleb128 0\n  .balign 4, 0\nfde_end:\n"
+    )
+    .leak()
+}
+
+fn p35_pairs(ra: u32) -> Vec<Pair> {
+    let lo = |m: &'static str, a: &'static str| {
+        vec![
+            Source { name: "m.c", text: m },
+            Source { name: "b.s", text: LO_B_GROUP },
+            Source { name: "a.s", text: a },
+        ]
+    };
+    vec![
+        Pair {
+            // a stored `REFUSE` row (an unchanged file's): refused
+            name: "refuse-stored",
+            cxx: false,
+            flags: vec!["-O1"],
+            v0: lo(LO_M0, LO_A),
+            v1: lo(LO_M1, LO_A),
+            changed: vec!["m.c.o"],
+            extra: vec!["-u", "metasym"],
+            dies: vec![],
+            lives: vec![],
+        },
+        Pair {
+            // a fresh `REFUSE` row (the changed file's): refused
+            name: "refuse-fresh",
+            cxx: false,
+            flags: vec!["-O1"],
+            v0: lo(LO_M0, LO_A_PLAIN),
+            v1: lo(LO_M0, LO_A),
+            changed: vec!["a.s.o"],
+            extra: vec!["-u", "metasym"],
+            dies: vec![],
+            lives: vec![],
+        },
+        Pair {
+            // a fresh `REFUSE` row `fde-global` (the changed file's FDE
+            // now names the global `foo`)
+            name: "refuse-fresh-fde",
+            cxx: false,
+            flags: vec!["-O1"],
+            v0: vec![
+                Source { name: "m.c", text: "int foo(void);\nint main(void){ return foo(); }\n" },
+                Source { name: "f.s", text: fde_local(ra) },
+            ],
+            v1: vec![
+                Source { name: "m.c", text: "int foo(void);\nint main(void){ return foo(); }\n" },
+                Source { name: "f.s", text: fde_naming(ra, "foo") },
+            ],
+            changed: vec!["f.s.o"],
+            extra: vec![],
+            dies: vec![],
+            lives: vec![],
+        },
+        Pair {
+            // `foo`'s last use removed: `.text.m` and its FDE die
+            name: "fde-local",
+            cxx: false,
+            flags: vec!["-O1"],
+            v0: vec![
+                Source {
+                    name: "m.c",
+                    text: "int foo(void);\nint main(void){ return foo(); } /* a call: `foo != 0` folds */\n",
+                },
+                Source { name: "f.s", text: fde_local(ra) },
+            ],
+            v1: vec![
+                Source { name: "m.c", text: "int main(void){ return 0; }\n" },
+                Source { name: "f.s", text: fde_local(ra) },
+            ],
+            changed: vec!["m.c.o"],
+            extra: vec![],
+            dies: vec![".text.m"],
+            lives: vec![],
+        },
+    ]
+}
+
+// spec: incr.md IN-71a (WP-238 P3-5): through the join's `ChangedFiles`,
+// a stored `REFUSE` row and a fresh one fall back `def-dropped` by name;
+// the FDE named by a LOCAL non-section symbol of a split text section
+// gives exactly the full marks' difference. AArch64 and x86-64.
+#[test]
+fn refuse_rows_and_the_local_fde_through_the_join() {
+    let mut out = Vec::new();
+    for (arch, cc, cxx, ra) in targets() {
+        for p in p35_pairs(ra) {
+            if let Some(v) = run_pair(arch, &cc, &cxx, &p) {
+                out.push((format!("{} {arch}", p.name), v));
+            }
+        }
+    }
+    let mut table = String::new();
+    for (l, v) in &out {
+        let _ = writeln!(table, "{l} | {v:?}");
+        if l.starts_with("refuse-stored") {
+            assert!(
+                matches!(v, Verdict::Fallback(w) if w.starts_with("live: def-dropped")),
+                "{l}: {v:?}"
+            );
+        } else if l.starts_with("refuse-fresh-fde") {
+            assert!(
+                matches!(v, Verdict::Fallback(w) if w.starts_with("live: fde-global")),
+                "{l}: {v:?}"
+            );
+        } else if l.starts_with("refuse-fresh") {
+            // the join refuses first (`closure-iterated`: `metasym`'s
+            // definition is in a dropped COMDAT copy): named, before `live`
+            assert!(
+                matches!(v, Verdict::Fallback(w) if w.starts_with("u5: closure-iterated")),
+                "{l}: {v:?}"
+            );
+        } else {
+            assert!(matches!(v, Verdict::Counted(..)), "{l}: {v:?}");
+        }
+    }
+    eprintln!("{table}");
+    if let Ok(p) = std::env::var("WP238_PAIR_TABLE") {
+        let old = std::fs::read_to_string(&p).unwrap_or_default();
+        std::fs::write(p, old + &table).expect("the table");
+    }
+    assert!(out.len() == 8 || !tools_required(), "{} of 8 pairs", out.len());
+}
+
+// ---- the operator's configuration: static C++, -g, sections, gc ----
+
+const CXX_FLAGS: [&str; 4] = ["-O0", "-g", "-ffunction-sections", "-fdata-sections"];
+const CX_MAIN: &str = "int user(int);\nint main(int c, char **){ return user(c); }\n";
+
+fn cxx_pair(
+    name: &'static str,
+    v0: Vec<Source>,
+    v1: Vec<Source>,
+    changed: &'static str,
+    dies: Vec<&'static str>,
+    lives: Vec<&'static str>,
+) -> Pair {
+    Pair {
+        name,
+        cxx: true,
+        flags: CXX_FLAGS.to_vec(),
+        v0,
+        v1,
+        changed: vec![changed],
+        extra: vec![],
+        dies,
+        lives,
+    }
+}
+
+fn src(name: &'static str, text: &'static str) -> Source {
+    Source { name, text }
+}
+
+/// The pairs, and the one the join cannot take (an extraction change).
+fn operator_pairs() -> Vec<Pair> {
+    let helper = "int helper(int x){ return x * 3; }\nint lonely(int x){ return x - 1; }\n";
+    let plain = "int user(int x){ return x + 1; }\n";
+    let twice = "inline int twice(int x){ return x * 2; }\n";
+    vec![
+        cxx_pair(
+            "cxx-last-caller",
+            vec![
+                src("main.cc", CX_MAIN),
+                src("a.cc", helper),
+                src("b.cc", "int helper(int);\nint user(int x){ return helper(x) + 1; }\n"),
+            ],
+            vec![src("main.cc", CX_MAIN), src("a.cc", helper), src("b.cc", plain)],
+            "b.cc.o",
+            vec![".text._Z6helperi"],
+            vec![],
+        ),
+        cxx_pair(
+            "cxx-new-call",
+            vec![src("main.cc", CX_MAIN), src("a.cc", helper), src("b.cc", plain)],
+            vec![
+                src("main.cc", CX_MAIN),
+                src("a.cc", helper),
+                src("b.cc", "int lonely(int);\nint user(int x){ return lonely(x) + 1; }\n"),
+            ],
+            "b.cc.o",
+            vec![],
+            vec![".text._Z6lonelyi"],
+        ),
+        cxx_pair(
+            // `twice` is a COMDAT in a.cc (first: elected; its user `fa`
+            // dead) and in b.cc; `fb`, its last live use, loses its caller
+            "cxx-comdat-last-use",
+            vec![
+                src("main.cc", "int fb(int);\nint main(int c, char **){ return fb(c); }\n"),
+                src(
+                    "a.cc",
+                    "inline int twice(int x){ return x * 2; }\nint fa(int x){ return twice(x); }\n",
+                ),
+                src(
+                    "b.cc",
+                    "inline int twice(int x){ return x * 2; }\nint fb(int x){ return twice(x) + 1; }\n",
+                ),
+            ],
+            vec![
+                src("main.cc", "int fb(int);\nint main(int c, char **){ return c; }\n"),
+                src(
+                    "a.cc",
+                    "inline int twice(int x){ return x * 2; }\nint fa(int x){ return twice(x); }\n",
+                ),
+                src(
+                    "b.cc",
+                    "inline int twice(int x){ return x * 2; }\nint fb(int x){ return twice(x) + 1; }\n",
+                ),
+            ],
+            "main.cc.o",
+            vec![".text._Z5twicei", ".text._Z2fbi"],
+            vec![],
+        ),
+        cxx_pair(
+            // `thrower`'s caller removed: its `.gcc_except_table` dies
+            "cxx-eh-owner",
+            vec![
+                src(
+                    "main.cc",
+                    "int thrower(int);\nint main(int c, char **){ return thrower(c); }\n",
+                ),
+                src(
+                    "b.cc",
+                    "int thrower(int x){ try { if (x > 100) throw x; return x; } catch (int e) { return -e; } }\n",
+                ),
+            ],
+            vec![
+                src("main.cc", "int thrower(int);\nint main(int c, char **){ return c; }\n"),
+                src(
+                    "b.cc",
+                    "int thrower(int x){ try { if (x > 100) throw x; return x; } catch (int e) { return -e; } }\n",
+                ),
+            ],
+            "main.cc.o",
+            vec![".text._Z7throweri", ".gcc_except_table._Z7throweri"],
+            vec![],
+        ),
+        cxx_pair(
+            // v1 calls `atoi` (a libc member v0 did not extract): F-10
+            "cxx-new-extraction",
+            vec![src("main.cc", CX_MAIN), src("b.cc", plain)],
+            vec![
+                src("main.cc", CX_MAIN),
+                src(
+                    "b.cc",
+                    "extern \"C\" int atoi(const char *);\nint user(int x){ return atoi(\"4\") + x; }\n",
+                ),
+            ],
+            "b.cc.o",
+            vec![],
+            vec![],
+        ),
+        {
+            let _ = twice;
+            cxx_pair(
+                // unchanged COMDAT, a changed caller: nothing flips in it
+                "cxx-comdat-kept",
+                vec![
+                    src("main.cc", "int fb(int);\nint main(int c, char **){ return fb(c); }\n"),
+                    src(
+                        "b.cc",
+                        "inline int twice(int x){ return x * 2; }\nint fb(int x){ return twice(x) + 1; }\n",
+                    ),
+                ],
+                vec![
+                    src("main.cc", "int fb(int);\nint main(int c, char **){ return fb(c) + 2; }\n"),
+                    src(
+                        "b.cc",
+                        "inline int twice(int x){ return x * 2; }\nint fb(int x){ return twice(x) + 1; }\n",
+                    ),
+                ],
+                "main.cc.o",
+                vec![],
+                vec![],
+            )
+        },
+    ]
+}
+
+// spec: incr.md IN-71a (WP-238 Part 4): the operator's configuration
+// (static C++, `-g -ffunction-sections -fdata-sections`, `--gc-sections`):
+// through `changed::u5` and `live`, every pair the join takes gives
+// exactly the full marks' difference; a pair it cannot take (an
+// extraction change, F-10) falls back by name and is listed, not counted.
+#[test]
+fn operator_configuration_pairs_are_the_full_marks_difference() {
+    let out = run_all(&operator_pairs());
+    let mut counted = 0;
+    for (l, v) in &out {
+        if l.starts_with("cxx-new-extraction") {
+            assert!(matches!(v, Verdict::Fallback(w) if w.contains("(resolve)")), "{l}: {v:?}");
+        } else {
+            assert!(matches!(v, Verdict::Counted(..)), "{l}: {v:?}");
+            counted += 1;
+        }
+    }
+    assert!(counted == 10 || !tools_required(), "{counted} of 10 pairs counted");
+}
+
+// ---- P3-5: an offset into a split section moved onto another piece ----
+
+/// v0's state of `p` and its option keys.
+fn v0_state(
+    arch: &str,
+    cc: &str,
+    cxx: &str,
+    p: &Pair,
+) -> Option<(String, MemoryState, OptionKeys)> {
+    let label = format!("{} {arch} v0", p.name);
+    let l = line(&label, if p.cxx { cxx } else { cc }, &p.flags, &p.v0, &p.extra)?;
+    let m = link(&l, "out");
+    let store0 = store();
+    let f = front5(&l, &store0);
+    let o = mortar_resolve::tables::option_keys(&f.plan, &f.inputs.link.directives);
+    Some((label, m, o))
+}
+
+// spec: incr.md IN-71a, S4 (WP-238 P3-5): on the v0 states of the pairs
+// with split sections (`.text.m` `SHF_MERGE` code named by an FDE, merged
+// strings, `-g`'s `.debug_str`), an `EDGES` row of every section-target
+// kind into a marked split section, its offset moved to another marked
+// offset of that section (else offset + 1): caught (`state-corrupt` by S4
+// before any delta) or redundant (the stored walk's sets unchanged);
+// never another set. The table by kind (`WP238_PIECE_TABLE`).
+#[test]
+fn an_offset_into_a_split_section_moved_is_caught_on_every_kind() {
+    const KINDS: usize = edge_kind::LAST as usize + 1;
+    const CAP: usize = 16;
+    let mut table = [(0usize, 0usize, 0usize); KINDS];
+    let mut states = 0;
+    for (arch, cc, cxx, ra) in targets() {
+        let pairs: Vec<Pair> = p35_pairs(ra)
+            .into_iter()
+            .filter(|p| p.name == "fde-local")
+            .chain(startstop_pairs().into_iter().filter(|p| p.name.ends_with("-g")))
+            .chain(
+                operator_pairs()
+                    .into_iter()
+                    .filter(|p| matches!(p.name, "cxx-eh-owner" | "cxx-comdat-last-use")),
+            )
+            .collect();
+        for p in &pairs {
+            let Some((label, m, o)) = v0_state(arch, &cc, &cxx, p) else { continue };
+            states += 1;
+            let before = walk_stored(&m.view(), &o).unwrap_or_else(|e| panic!("{label}: {}", e.1));
+            let mut per = [0usize; KINDS];
+            for (i, &(_, e)) in m.edges.iter().enumerate() {
+                if edge_kind::target(e.kind) != Some(edge_kind::Target::Section)
+                    || matches!(e.kind, edge_kind::LINK_ORDER | edge_kind::GROUP)
+                    || e.offset == u32::MAX
+                {
+                    continue;
+                }
+                let Ok(at) = before.pieces.binary_search_by_key(&SectionId(e.target), |p| p.0)
+                else {
+                    continue;
+                };
+                let k = usize::from(e.kind);
+                table[k].0 += 1;
+                if per[k] >= CAP {
+                    continue;
+                }
+                per[k] += 1;
+                let to =
+                    before.pieces[at].1.iter().copied().find(|&x| x != e.offset && x != u32::MAX);
+                let mut r = m.clone();
+                r.edges[i].1.offset = to.unwrap_or(e.offset + 1);
+                match judged(&r, &o) {
+                    Err(IncrReason::StateCorrupt(_)) => table[k].1 += 1,
+                    Ok(()) => {
+                        let after = walk_stored(&r.view(), &o).map_err(|e| e.1);
+                        assert_eq!(after.as_ref(), Ok(&before), "{label} row {i}: another set");
+                        table[k].2 += 1;
+                    }
+                    Err(e) => panic!("{label} row {i}: {}", e.report()),
+                }
+            }
+        }
+    }
+    let mut out = format!(
+        "{states} states; kind rows-into-split | moved (<= {CAP}/kind/state): caught/redundant\n"
+    );
+    for (k, t) in table.iter().enumerate() {
+        if t.0 > 0 {
+            let _ = writeln!(out, "{k:>2} {:>6} | {}/{}", t.0, t.1, t.2);
+        }
+    }
+    eprintln!("{out}");
+    if let Ok(p) = std::env::var("WP238_PIECE_TABLE") {
+        std::fs::write(p, &out).expect("the table");
+    }
+    assert!(states == 8 || !tools_required(), "{states} of 8 states");
+    // Only `LOCAL` rows point into split sections here (`FDE_SECTION`'s
+    // targets are LSDAs, never split; an FDE's initial location is no row).
+    assert!(
+        table[usize::from(edge_kind::LOCAL)].1 > 0 || !tools_required(),
+        "nothing caught:\n{out}"
+    );
+}
