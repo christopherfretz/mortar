@@ -493,10 +493,7 @@ fn refill_capture(
     delta: &mortar_core::incr::LayoutDelta,
     set: &mortar_core::incr::RefillSet,
     steps: &mut Steps,
-) -> Result<
-    (mortar_image::update::Refill, u64, mortar_incr::update::testing::MemoryState, Option<Vec<u8>>),
-    IncrReason,
-> {
+) -> Result<Refilled, IncrReason> {
     let image = || IncrReason::UpdateNotImplemented(Some(Unimplemented::Image));
     let meta = view.meta()?;
     let leaves = view.leaves()?;
@@ -994,8 +991,14 @@ struct Materialized {
     df: mortar_core::incr::LayoutDelta,
 }
 
+/// [`refill_capture`]'s answer: the refill, the output's size, the
+/// capture and the machine map.
+type Refilled =
+    (mortar_image::update::Refill, u64, mortar_incr::update::testing::MemoryState, Option<Vec<u8>>);
+
 /// Front 1's answer: the identity case's reference, or the non-identity
 /// case's materialized layout for front 2.
+#[allow(clippy::large_enum_variant, reason = "one value per update, moved once")]
 enum First {
     Identity(Reference),
     Materialized(Box<Materialized>),
@@ -1084,7 +1087,7 @@ fn front_two(
             changed::record(&format!("{what}: {}", reason.report()));
             Err(reason)
         }
-        (Err(e), None) if e == IncrReason::UpdateNotImplemented(Some(Unimplemented::Diags)) => {
+        (Err(IncrReason::UpdateNotImplemented(Some(Unimplemented::Diags))), None) => {
             Err(changed::finding_as(
                 "M2b-3 Part 3: front 2 refused the materialized layout (its diagnostics: the \
                  line above): (image)",

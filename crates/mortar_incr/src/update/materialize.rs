@@ -1176,7 +1176,7 @@ fn moves_code(
     use mortar_elf::consts::SHF_EXECINSTR;
     let res = link.resolution;
     for (list, v) in [("moved", &d.moved), ("revived", &d.revived)] {
-        for &id in v.iter() {
+        for &id in v {
             let Some(&s) = ids.changed.get(&id.0) else {
                 return Err(layout(format!(
                     "sized: d.{list} names section {}, which no change names",
