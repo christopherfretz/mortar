@@ -931,6 +931,9 @@ pub struct Rows5 {
     /// `EDGES` (WP-238 S1), by the source's file.
     edges: Vec<(FileId, crate::update::rows::EdgeRow)>,
     versioned: u32,
+    /// `META.iterations` (IN-71b "Iterations", WP-261): resolve's
+    /// `Resolution::iterations`, at least 1.
+    iterations: u32,
     /// `DEBUG_STRS` (WP-247, [`debug_str_rows`]).
     debug_strs: Vec<crate::update::rows::DebugStrRow>,
     /// Counts for the experiments (`incremental: state5 ...` lines).
@@ -1611,6 +1614,10 @@ fn rows5(
     let exports = exports.count();
     out.option_keys = extra.option_keys.to_vec();
     out.versioned = files5.iter().map(|f| f.versioned).sum();
+    if res.iterations == 0 {
+        return Err("META.iterations 0: no closure ran (IN-71b)".into());
+    }
+    out.iterations = res.iterations;
     let debug_note;
     (out.debug_strs, debug_note) = debug_str_rows(link, keys, layout, live_frags)?;
     out.notes = vec![
@@ -1813,6 +1820,7 @@ pub fn state5_rows(
     m.copies = rows.copies;
     m.edges = rows.edges;
     m.meta.versioned = rows.versioned;
+    m.meta.iterations = rows.iterations;
     m.debug_strs = rows.debug_strs;
     if rows.slot_refs.len() != m.slots.len() {
         return Err("SLOTS: the rows are not this state's".into());

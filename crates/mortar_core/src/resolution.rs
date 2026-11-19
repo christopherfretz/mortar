@@ -314,6 +314,13 @@ pub struct Resolution {
     /// `FILES.round`: at least 1, a root counting as round 0); 0 for any
     /// other file. Empty for a table no closure made ([`Self::empty`]).
     pub file_round: Box<[u32]>,
+    /// The iterations of the closure (`spec/resolve.md` §6.2, WP-200;
+    /// `mortar_resolve::Resolved::iterations` of the last stage): 1 unless
+    /// a dropped copy's definitions fed back. `META.iterations` (IN-71b
+    /// "Iterations", WP-261): an iterated link's rounds are not
+    /// breadth-first, so its update is `closure-iterated`. 1 for a table
+    /// no closure made ([`Self::empty`]).
+    pub iterations: u32,
     pub def: Column<SymbolId, Def>,
     pub props: Column<SymbolId, SymProps>,
     /// The keys with a common mention, sorted by id, with the maximum size
@@ -383,6 +390,7 @@ impl Resolution {
         Self {
             file_live: Column::filled(files, FileLive::Dead),
             file_round: Box::new([]),
+            iterations: 1,
             def: Column::filled(symbols, Def::Undefined { weak: false }),
             props: Column::filled(symbols, SymProps::default()),
             common: Box::new([]),

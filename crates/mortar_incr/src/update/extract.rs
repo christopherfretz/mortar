@@ -351,6 +351,27 @@ impl<'a, 's> Ctx<'a, 's> {
                 let lazy = row.flags & file_flags::LAZY != 0;
                 let gone = row.flags & file_flags::GONE != 0;
                 let member = row.member != 0 && (lazy || row.round > 0);
+                // WP-261 (rulings "After WP-261's first hand-back" item 3,
+                // option (a)): a stored member row neither `LAZY` nor of a
+                // round is IN-71b's `--whole-archive` member. When the
+                // update's line has the file as a lazy member (its
+                // changed row, the front's, is `LAZY` or of a round), the
+                // stored row is not a `--whole-archive` one but an
+                // extracted lazy member stored without its round: the
+                // removal cone would never reach it.
+                if let Some(c) = cf
+                    && row.member != 0
+                    && !lazy
+                    && !gone
+                    && row.round == 0
+                    && c.row.member != 0
+                    && (c.row.flags & file_flags::LAZY != 0 || c.row.round > 0)
+                {
+                    return Err(corrupt(format!(
+                        "file {file}: an extracted lazy member stored with round 0 (IN-71b: \
+                         the line has it lazy; the row reads as --whole-archive)"
+                    )));
+                }
                 Facts {
                     rank: row.rank,
                     kind: row.kind,

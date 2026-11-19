@@ -1048,6 +1048,7 @@ pub fn resolution<V: View>(
     Ok(Resolution {
         file_live: mortar_core::Column::from_vec(file_live)?,
         file_round: r.file_round.clone().into_boxed_slice(),
+        iterations: r.iterations,
         def: mortar_core::Column::from_vec(def)?,
         props: mortar_core::Column::from_vec(props)?,
         common: r.common.clone().into_boxed_slice(),

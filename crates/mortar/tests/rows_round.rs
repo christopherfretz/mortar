@@ -28,7 +28,10 @@ use mortar_incr::format::def_kind;
 use mortar_incr::update::rows::file_flags;
 use mortar_incr::update::testing::MemoryState;
 use mortar_testutil::{Scratch, run, tool, tools_required};
-use support::{Driver, build, build_by, with_output};
+use mortar_core::incr::{IncrReason, OptionKeys};
+use mortar_incr::update::extract;
+use mortar_incr::update::view::ChangedFiles;
+use support::{Driver, Source, build, build_by, with_output};
 
 const STB_WEAK: u8 = 2;
 
@@ -243,6 +246,7 @@ fn stored_round_equals_the_front_and_the_walk() {
                 named.push((r, if is_lazy { None } else { Some(row.round) }));
             }
         }
+        assert_eq!(m.meta.iterations, 1, "{label}: META.iterations of a link that ran once");
         named.sort_unstable();
         assert_eq!(
             named,
@@ -257,4 +261,98 @@ fn stored_round_equals_the_front_and_the_walk() {
         ran += 1;
     }
     eprintln!("[wp261] {ran} links compared");
+}
+
+/// resolve.md §6.2's iterated shape (WP-200; `mortar_resolve`'s
+/// `s6_2_wp200_strong_reference_extracts_past_a_dropped_weak_definition`)
+/// on real objects: `wu.o` refers strongly to `wp261_y`, `wp261_g` and
+/// `wp261_hx`; `wa.o` keeps COMDAT group `wp261G` (`wp261_g`); `wb.o`'s
+/// copy of it also defines `wp261_hx` WEAK, and `wb.o` defines
+/// `wp261_y`; `libhx.a`'s `hx.o` defines `wp261_hx`. Round 0 takes
+/// `wb.o`'s weak definition as `first(wp261_hx)`, so `hx.o` is not
+/// extracted; `wb.o`'s copy is dropped, its `wp261_hx` demoted, and the
+/// closure runs again and extracts `hx.o`: 2 iterations.
+const ITERATED: [Source; 3] = [
+    Source {
+        name: "wu.c",
+        text: "extern int wp261_y(void);\nextern void wp261_g(void), wp261_hx(void);\n\
+void *wp261_refs[] = { (void *)wp261_y, (void *)wp261_g, (void *)wp261_hx };\n\
+int main(void) { return wp261_refs[2] == 0; }\n",
+    },
+    Source {
+        name: "wa.c",
+        text: "__asm__(\".section .text.wp261g,\\\"axG\\\",@progbits,wp261G,comdat\\n\"\n\
+\".globl wp261_g\\n.type wp261_g, @function\\nwp261_g: .long 0\\n.text\\n\");\n\
+int wp261_a_only(void) { return 4; }\n",
+    },
+    Source {
+        name: "wb.c",
+        text: "__asm__(\".section .text.wp261g,\\\"axG\\\",@progbits,wp261G,comdat\\n\"\n\
+\".globl wp261_g\\n.type wp261_g, @function\\nwp261_g: .long 0\\n\"\n\
+\".weak wp261_hx\\n.type wp261_hx, @function\\nwp261_hx: .long 0\\n.text\\n\");\n\
+int wp261_y(void) { return 1; }\n",
+    },
+];
+
+// spec: incr.md IN-71b "Iterations" (WP-261; rulings "After WP-261's
+// first hand-back" item 4): the full link's capture writes
+// `Resolution::iterations` into `META.iterations`; the update of an
+// iterated link falls back `closure-iterated`, by name, from `extract`
+// and end to end.
+#[test]
+fn iterated_link_stores_its_iterations_and_its_update_falls_back() {
+    let mut ran = 0;
+    for (label, cc) in [("aarch64", "gcc"), ("x86-64", "x86_64-linux-gnu-gcc")] {
+        let s = Scratch::new(&format!("wp261-iter-{label}"));
+        let Some(b) = build_by(&s, cc, &["-O1"], &ITERATED) else {
+            assert!(!tools_required(), "{cc} is required");
+            continue;
+        };
+        let compiler = tool(cc).expect("the compiler");
+        let hx_src = s.write("hx.c", "void wp261_hx(void) {}\n");
+        let hx = s.join("hx.o");
+        let o = run(
+            &compiler,
+            &["-O1".into(), "-c".into(), hx_src.into_os_string(), "-o".into(), hx.clone().into()],
+        );
+        assert!(o.success(), "{cc}: {}", o.stderr_text());
+        let lib = b.dir.join("libhx.a");
+        let ar = tool("ar").expect("ar");
+        let o = run(&ar, &["rcs".into(), lib.clone().into_os_string(), hx.into_os_string()]);
+        assert!(o.success(), "ar: {}", o.stderr_text());
+        let mut args = b.args;
+        // Before libc's group: the line `wu.o wa.o wb.o libhx.a`.
+        let at = args.iter().position(|a| a.ends_with("wb.c.o")).expect("wb.c.o") + 1;
+        args.insert(at, lib.to_string_lossy().into_owned());
+        let line = Line { _scratch: s, label, dir: b.dir, args };
+        let m = state(&line);
+        assert_eq!(m.meta.iterations, 2, "{label}: META.iterations of the iterated link");
+        let hx_row = m.files.iter().find(|r| text(&m, r.member_name) == "hx.o").expect("hx.o");
+        assert_eq!(hx_row.flags & file_flags::LAZY, 0, "{label}: hx.o extracted");
+        let view = m.view();
+        let r = extract::extract(&view, &ChangedFiles::default(), &OptionKeys::default());
+        assert!(matches!(r, Err(IncrReason::ClosureIterated(_))), "{label}: {r:?}");
+        // End to end: `wa.o` edited (a new body), then an update.
+        let src = line.dir.join("wa.c");
+        let edited = ITERATED[1].text.replace("return 4;", "return 5;");
+        std::fs::write(&src, edited).expect("wa.c");
+        let obj = line.dir.join("wa.c.o.new");
+        let o = run(
+            &compiler,
+            &["-O1".into(), "-c".into(), src.into_os_string(), "-o".into(), obj.clone().into()],
+        );
+        assert!(o.success(), "{cc}: {}", o.stderr_text());
+        std::fs::rename(&obj, line.dir.join("wa.c.o")).expect("rename");
+        let mut args = with_output(&line.args, &line.dir.join("out"));
+        args.extend(
+            ["--incremental=update", "--incremental-state", "out.mortar-state"]
+                .map(OsString::from),
+        );
+        let second = mortar::invoke_in("mortar", &args, &line.dir);
+        let report = format!("{:?}\n{}", second.outcome, second.incremental);
+        assert!(report.contains("closure-iterated"), "{label}: {report}");
+        eprintln!("[wp261] {label}: iterated link, META.iterations 2, update: closure-iterated");
+        ran += 1;
+    }
+    assert!(ran == 2 || !tools_required(), "{ran} of 2 links");
 }
