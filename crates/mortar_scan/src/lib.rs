@@ -41,7 +41,7 @@ mod walk;
 pub mod weak;
 
 pub use driver::scan_file;
-pub use view::{Prep, Program, Whole};
+pub use view::{Prep, Program, Whole, global_facts, undefined_kind};
 pub use walk::{Visit, Walker};
 
 use std::sync::atomic::AtomicU16;
