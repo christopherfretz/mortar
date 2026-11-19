@@ -640,13 +640,23 @@ fn materialize_mutations_differ_by_the_delta_or_refuse_by_name() {
             c.placement.sized = vec![Sized { chunk: ChunkId(0), size }].into();
             refused(&label, "sized", s.run(view, &empty, &[], &c), "sized");
             reached.push("sized");
+            // WP-225 M2b-5 item 2: the spans are the front's plan's (front
+            // 2's S-88 takes no other), not the stored blocks.
             let mut c = computed.clone();
             if let Some(sp) = c.slots.symtab_locals.as_mut_slice().get_mut(file.0 as usize) {
                 sp.len += 1;
-                refused(&label, "symtab_locals", s.run(view, &empty, &[], &c), "symtab_locals");
-                reached.push("symtab_locals");
+                let l = s.run(view, &empty, &[], &c).unwrap_or_else(|e| {
+                    panic!("{label}: symtab_locals: {e:?}");
+                });
+                assert_eq!(l.slots.symtab_locals, c.slots.symtab_locals, "{label}: the front's spans");
+                reached.push("symtab_locals taken");
             }
-            if let Some(&(ch, size)) = computed.slots.sizes.first() {
+            let name = |c: ChunkId| match computed.placement.chunks[c].kind {
+                ChunkKind::Synthetic(s) => s.name.to_vec(),
+                _ => Vec::new(),
+            };
+            let table = |c: ChunkId| matches!(&name(c)[..], b".symtab" | b".strtab");
+            if let Some(&(ch, size)) = computed.slots.sizes.iter().find(|x| !table(x.0)) {
                 let mut c = computed.clone();
                 c.slots.sizes = vec![(ch, size.saturating_sub(1))].into();
                 refused(&label, "sizes", s.run(view, &empty, &[], &c), "sizes:");
@@ -660,6 +670,32 @@ fn materialize_mutations_differ_by_the_delta_or_refuse_by_name() {
                     r.err()
                 );
                 reached.push("sizes reserve");
+            }
+            // M2b-5 item 2: `.symtab`'s size from the front's plan within the
+            // chunk's capacity (the chunk takes it); past it, by name.
+            if let Some(&(ch, size)) = computed.slots.sizes.iter().find(|x| table(x.0)) {
+                let mut c = computed.clone();
+                let mut v = c.slots.sizes.to_vec();
+                v.iter_mut().find(|x| x.0 == ch).expect("the row").1 = size - 24;
+                c.slots.sizes = v.into();
+                let l = s.run(view, &empty, &[], &c).unwrap_or_else(|e| {
+                    panic!("{label}: a smaller .symtab: {e:?}");
+                });
+                assert_eq!(l.placement.chunks[ch].size, size - 24, "{label}: the chunk's size");
+                assert!(l.slots.sizes.contains(&(ch, size - 24)), "{label}: the slot's size");
+                reached.push("symtab size taken");
+                let cap = computed.placement.chunks[ch].capacity;
+                let mut c = computed.clone();
+                let mut v = c.slots.sizes.to_vec();
+                v.iter_mut().find(|x| x.0 == ch).expect("the row").1 = cap + 24;
+                c.slots.sizes = v.into();
+                let r = s.run(view, &empty, &[], &c);
+                assert!(
+                    matches!(&r, Err((IncrReason::ReserveExhausted(n), _)) if n == ".symtab" || n == ".strtab"),
+                    "{label}: .symtab past its capacity: {:?}",
+                    r.err()
+                );
+                reached.push("symtab size reserve");
             }
             if !computed.slots.eh_records.is_empty() {
                 let mut c = computed.clone();
