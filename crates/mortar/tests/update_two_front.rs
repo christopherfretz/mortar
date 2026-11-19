@@ -157,6 +157,14 @@ fn a_grown_function_is_taken_through_front_two_or_refused_by_name() {
                     s1.starts_with("255e shadow: equal"),
                     "{label}: hop {hop}: C' is not front 2: {shadow}"
                 );
+                // WP-255e2 S3: `rows::sym` over the update's STATE rows
+                // (`UpdateRows`) equals front 2's for every global matched
+                // by name; a key it cannot value is refused by name.
+                let s3 = shadow.rsplit(" | ").next().unwrap_or("");
+                assert!(
+                    s3.starts_with("S3: update rows: ") && s3.ends_with(" 0 differ"),
+                    "{label}: hop {hop}: S3: {s3}"
+                );
                 taken.push(format!("{label} hop {hop}"));
             } else if fell_back {
                 // Named in the findings, or in the report's reason
