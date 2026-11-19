@@ -1,11 +1,10 @@
 # WIP WP-225 M2b-2c (branch wp/225-m2b2c)
 
-Done:
-- 1 M2b2b-3: cause = the state has NO `REGIONS` rows (no full-link producer;
-  `capture::state5_rows` never fills `MemoryState.regions`). `delta.rs`
-  `Update::file` sent every section to overflow. Fix: refused
-  `update-not-implemented (layout)` when a stored place has no region.
-  Test `tests/update_placement.rs` `a_same_size_edit_keeps_its_place_given_its_regions`.
-
-Next: 2 (M2b2b-2, L-159 empty-only output section), 3, 4, 5, 6.
-Resume: scratch /Volumes/AgentWork/mortar-helper/.build/target-wp-145/scratch-m2b2c (scripts t1.sh, t2.sh, lane1.sh).
+Done (record: spec/landed/incr/WP-225.md "M2b-2c"):
+- 1 M2b2b-3: no full-link producer of REGIONS; delta refuses by name instead of overflow.
+- 2 M2b2b-2: L-159 empty section beside a neighbour chunk (Fate::Beside).
+- 4 C++ fixture judged (tests/update_placement.rs, with test-only regions).
+- 5 timing on protoc (placement ~12 ms of ~720 ms update; live 0).
+Next: 6 the full gate (scratch gate.sh, FINAL line), then 3 the fall-back
+table from findings-gate.txt, into the record.
+Scratch: /Volumes/AgentWork/mortar-helper/.build/target-wp-145/scratch-m2b2c
