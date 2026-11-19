@@ -126,6 +126,7 @@ pub fn layout(
             u.chunks[h].size = size;
         }
     }
+    u.beside()?;
     let mut delta = u.finish()?;
     delta.files = files.into_keys().collect();
     if let Some(o) = eh {
@@ -406,10 +407,15 @@ impl Base {
                 entsize: 0,
             })
         };
-        let Some(out) = self.out_named(oname, s.flags) else {
-            return Fate::Refuse(Refusal::NoOutput);
-        };
-        let Some(first) = self.first_chunk(out) else {
+        let out = self.out_named(oname, s.flags);
+        let first = out.and_then(|o| self.first_chunk(o));
+        // L-159: an empty allocated section whose output section has no
+        // chunk (its live members are all empty) is placed beside a
+        // neighbour chunk, as the full link places it (M2b2b-2).
+        if first.is_none() && alloc && s.size == 0 {
+            return Fate::Beside;
+        }
+        let (Some(out), Some(first)) = (out, first) else {
             return Fate::Refuse(Refusal::NoOutput);
         };
         let bits = SHF_ALLOC | SHF_WRITE | SHF_EXECINSTR | SHF_TLS;
@@ -576,6 +582,10 @@ enum Fate {
     Debug,
     /// Placed by a part of IN-72 the update cannot do.
     Refuse(Refusal),
+    /// L-159: an empty section of an output section with no chunk, placed
+    /// at its previous place (the end, or the start, of the neighbour
+    /// chunk L-159 chose), which follows that chunk's end ([`Update::beside`]).
+    Beside,
 }
 
 impl Refusal {
@@ -857,6 +867,14 @@ impl<'b, 'c> Update<'b, 'c> {
                     }
                 }
                 Fate::Region { out, cat } => by_group.entry((out, cat)).or_default().push(i),
+                Fate::Beside => match prev.and_then(|p| p.place.get()) {
+                    // Settled once the chunks' sizes are (`beside`).
+                    Some(at) => {
+                        base.chunk(at.0)?;
+                        self.place[i] = Some(at);
+                    }
+                    None => return Err(Refusal::NoOutput.reason(c.key.name)),
+                },
             }
             self.fate[i] = fate;
         }
@@ -877,10 +895,21 @@ impl<'b, 'c> Update<'b, 'c> {
                             && category(&row.name, row.sh_flags) == cat =>
                     {
                         let addr = base.addr(ch, off)?;
-                        grp.regions
+                        let pos = grp
+                            .regions
                             .iter()
-                            .position(|r| r.start <= addr && addr < r.end.max(r.start + 1))
-                            .map(|pos| (addr, pos))
+                            .position(|r| r.start <= addr && addr < r.end.max(r.start + 1));
+                        // A section the stored layout placed in a body of
+                        // `(O, c)` is in one of its file's regions there
+                        // (IN-30: every run of a file's members is one).
+                        // With none, the region's capacity is unknown, so
+                        // neither keep nor place can be applied: refused,
+                        // never sent to the overflow phase (which would
+                        // move a section that did not grow, M2b2b-3).
+                        if pos.is_none() {
+                            return Err(not_implemented());
+                        }
+                        pos.map(|pos| (addr, pos))
                     }
                     _ => None,
                 };
@@ -943,6 +972,41 @@ impl<'b, 'c> Update<'b, 'c> {
                     None => grp.overflow.push(i),
                 }
             }
+        }
+        Ok(())
+    }
+
+    /// L-159's empty sections ([`Fate::Beside`]), once every chunk has its
+    /// size: the full link puts them at the END of the last chunk before
+    /// their output section in order (of the same rank and load class),
+    /// else at the START of the first one after it, with no alignment. The
+    /// update does not search for that neighbour again: the chunk order is
+    /// the stored one (an output section that appears or empties is refused
+    /// elsewhere), so it is the previous place's chunk. A place at that
+    /// chunk's old end moves to its new end; one at its start stays; any
+    /// other place, or one in a chunk that was empty and changed size (a
+    /// start and an end are the same offset, as `end_rows`), is refused.
+    fn beside(&mut self) -> Result<(), IncrReason> {
+        for i in 0..self.changes.len() {
+            if self.fate[i] != Fate::Beside {
+                continue;
+            }
+            let Some((c, off)) = self.place[i] else { continue };
+            let old = self.base.chunk(c)?.size;
+            let new = self.chunks.get(c).ok_or_else(not_implemented)?.size;
+            let at = if old == new {
+                off
+            } else if off == old && old != 0 {
+                new
+            } else if off == 0 && old != 0 {
+                0
+            } else {
+                return Err(not_implemented());
+            };
+            if at > new {
+                return Err(not_implemented());
+            }
+            self.place[i] = Some((c, at));
         }
         Ok(())
     }
