@@ -694,3 +694,243 @@ fn demoted_run_of_two_keys_in_one_file() {
         assert_eq!(have, want, "{}: the demoted run, in the full link's order", line.label);
     }
 }
+
+/// R-3: old and new `m1.o` (C) of each case; the new one changes
+/// `wp255d_m1`'s body only, so the case's key is affected (m1.o mentions
+/// it, old or new) and nothing else about it changes, except in
+/// `unextracted`, where the edit drops m1.o's (weak) reference to
+/// `wp255d_m3`, which then only the unextracted member `m3.o` names (`m4.o`, with versioned definitions, is left out of the archive: `(versioned)`).
+const R3_CASES: [(&str, &str, &str, &str); 4] = [
+    (
+        "end",
+        "_end",
+        "extern char _end[];\nlong wp255d_m1(long x) { return x + (long)_end; }\n",
+        "extern char _end[];\nlong wp255d_m1(long x) { return x * 3 + (long)_end; }\n",
+    ),
+    (
+        "dynamic",
+        "_DYNAMIC",
+        // A data word, not code: x86-64's `-O1` code for a weak
+        // undefined's address names `_GLOBAL_OFFSET_TABLE_` (a
+        // linker-defined key: the `(symtab)` fall-back of `end`; F-4).
+        "__asm__(\".weak _DYNAMIC\\n.data\\n.globl wp255d2b_dp\\nwp255d2b_dp: .dc.a _DYNAMIC\\n.text\\n\");\n\
+         long wp255d_m1(long x) { return x + 1; }\n",
+        "__asm__(\".weak _DYNAMIC\\n.data\\n.globl wp255d2b_dp\\nwp255d2b_dp: .dc.a _DYNAMIC\\n.text\\n\");\n\
+         long wp255d_m1(long x) { return x * 3 + 1; }\n",
+    ),
+    (
+        "weak",
+        "wp255d_nowhere",
+        // A data word, as `dynamic` (x86-64's code form names
+        // `_GLOBAL_OFFSET_TABLE_`: the record's F-4).
+        "__asm__(\".weak wp255d_nowhere\\n.data\\n.globl wp255d2b_wp\\nwp255d2b_wp: .dc.a wp255d_nowhere\\n.text\\n\");\n\
+         long wp255d_m1(long x) { return x + 1; }\n",
+        "__asm__(\".weak wp255d_nowhere\\n.data\\n.globl wp255d2b_wp\\nwp255d2b_wp: .dc.a wp255d_nowhere\\n.text\\n\");\n\
+         long wp255d_m1(long x) { return x * 3 + 1; }\n",
+    ),
+    (
+        "unextracted",
+        "wp255d_m3",
+        // A data word, as `weak` (F-4).
+        "__asm__(\".weak wp255d_m3\\n.data\\n.globl wp255d2b_up\\nwp255d2b_up: .dc.a wp255d_m3\\n.text\\n\");\n\
+         long wp255d_m1(long x) { return x + 1; }\n",
+        "long wp255d_m1(long x) { return x * 3 + 1; }\n",
+    ),
+];
+
+/// One case's outcome: per change, its key's name, kind and entry
+/// fields (`st_info`, `st_other`, `st_size`, output section name), or the
+/// fall-back's word; the full link's global entries by name.
+type CaseEntry = (u8, u8, u64, Option<Vec<u8>>);
+struct Case {
+    changes: Result<Vec<(Vec<u8>, String, CaseEntry)>, String>,
+    output: BTreeMap<Vec<u8>, CaseEntry>,
+    affected: Vec<Vec<u8>>,
+}
+
+fn r3_case(line: &update::Line, name: &str) -> Case {
+    let args = line.args(&["wp255d_m2", "wp255d_m1"]);
+    let members = ["m1.o", "m2.o", "m3.o"];
+    std::fs::copy(line.dir.join(format!("r3o_{name}.o")), line.dir.join("m1.o")).expect("old m1");
+    line.archive(&members);
+    let old = state(line, &args, "old");
+    std::fs::copy(line.dir.join(format!("r3n_{name}.o")), line.dir.join("m1.o")).expect("new m1");
+    line.archive(&members);
+    let new = state(line, &args, "new");
+    let capture = mortar_incr::state5::read::decode(
+        &std::fs::read(line.dir.join("new.state5")).expect("the new state"),
+    )
+    .expect("decodes");
+    let store = support::store();
+    let full = whole(line, &args, &store);
+    // The full link's output: its global entries by name.
+    let bytes = std::fs::read(line.dir.join("new")).expect("the output");
+    let header = FileHeader::parse(&bytes).expect("an ELF header");
+    let table = SectionTable::parse(&bytes, &header).expect("section headers");
+    let syms = table.find_symbol_table(SHT_SYMTAB).expect("symbols").expect("a .symtab");
+    let mut output = BTreeMap::new();
+    for (i, s) in syms.iter() {
+        if i.0 >= syms.first_global().0 {
+            let sec = (s.st_shndx != 0 && s.st_shndx < 0xff00).then(|| {
+                let x = table.get(SectionIndex(u32::from(s.st_shndx))).expect("sec");
+                x.name().expect("n").to_vec()
+            });
+            output.insert(
+                syms.name(&s).expect("n").to_vec(),
+                (s.st_info, s.st_other, s.st_size, sec),
+            );
+        }
+    }
+    let file = member(&old, "m1.o");
+    let in_front = update::same_file(&full, &old, file);
+    let delta =
+        match mortar::update::changed::u5(&old, &[in_front], &[], &full, &capture, &mut |_| {}) {
+            Ok(Some((changed, delta))) => (changed, delta),
+            Ok(None) => panic!("{}: {name}: m1.o not changed", line.label),
+            Err(e) => {
+                return Case {
+                    changes: Err(format!("U4-U5: {}", e.report())),
+                    output,
+                    affected: vec![],
+                };
+            }
+        };
+    let (changed, delta) = delta;
+    let n_syms = old.count(mortar_incr::format::kind::SYMBOLS);
+    let name_of = |id: SymbolId| -> Vec<u8> {
+        if u64::from(id.0) < n_syms {
+            old.string(old.symbol(id).expect("SYMBOLS").name).expect("name")
+        } else {
+            delta.new_keys[(id.0 as usize) - n_syms as usize].name.clone()
+        }
+    };
+    for (id, r) in &delta.resolved {
+        let n = String::from_utf8_lossy(&name_of(*id)).into_owned();
+        eprintln!("{}: {name}: {n}: RESOLVED {r:?}", line.label);
+    }
+    // R-4 over these keys too.
+    for &(id, vis, referenced) in &delta.merged {
+        let n = name_of(id);
+        let Some((k, _)) = full.inputs.symbols.iter().find(|(_, k)| k.name == &n[..]) else {
+            panic!(
+                "{}: {name}: {:?} not a key of the full link",
+                line.label,
+                String::from_utf8_lossy(&n)
+            );
+        };
+        let p = full.resolution.props.get(k).copied().unwrap_or_default();
+        let want = (p.visibility, p.refs.contains(mortar_core::resolution::RefFlags::FROM_OBJECT));
+        assert_eq!(
+            (vis, referenced),
+            want,
+            "{}: {name}: {:?}: merged",
+            line.label,
+            String::from_utf8_lossy(&n)
+        );
+    }
+    let affected = delta
+        .resolved
+        .iter()
+        .map(|r| name_of(r.0))
+        .chain(delta.gone.iter().map(|&k| name_of(k)))
+        .collect();
+    let first = changed.files[0].first_section;
+    let captured = capture.files[member(&new, "m1.o").0 as usize].clone();
+    let stored = old.file(file).expect("FILES");
+    let row = FileRow { base: captured.base, len: captured.len, hash: captured.hash, ..stored };
+    let fresh = support::store();
+    let mut cache = FrontCache::new(&fresh, pool(), &line.dir);
+    let ff = front_of(&mut cache, &old, file, Ids::Update { first_section: first, row })
+        .unwrap_or_else(|e| panic!("{}: {e:?}", line.label));
+    let oracle = with_symtab_keys(line, &old, "old");
+    let changes = match mortar::update::file_symbols::global_changes(&oracle, &delta, &[ff]) {
+        Err(e) => Err(e.report()),
+        Ok(got) => {
+            let facts = changed_facts(ff, &old, &full.plan, &delta.keepers).expect("facts");
+            let outsecs = old.outsecs().expect("OUTSECS");
+            Ok(got
+                .iter()
+                .map(|g| {
+                    let sec = match g.place {
+                        mortar_synth::symtab_incr::GlobalPlace::Section(s) => {
+                            let o = ff.sections.iter().position(|x| x.id == s).expect("m1.o's");
+                            let out = facts[o].out.expect("an output section");
+                            Some(old.string(outsecs[out.0 as usize].name).expect("name"))
+                        }
+                        _ => None,
+                    };
+                    (name_of(g.key), format!("{:?}", g.kind), (g.info, g.other, g.size, sec))
+                })
+                .collect())
+        }
+    };
+    Case { changes, output, affected }
+}
+
+/// R-3 (ruling item 5): the keys without a row of their own in m1.o, on an
+/// edit of m1.o: a linker-defined key (`_end`), `_DYNAMIC` (weak,
+/// undefined in a static link), an undefined weak with no definition, a
+/// key only an unextracted member names. Each change equals the full
+/// link's global entry by name (a `Removed` key has none); a linker-defined
+/// key falls back with the word `(symtab)`.
+#[test]
+fn global_changes_of_keys_without_a_row() {
+    let mut extra = Vec::new();
+    let names: Vec<(String, String)> =
+        R3_CASES.iter().map(|c| (format!("r3o_{}", c.0), format!("r3n_{}", c.0))).collect();
+    for (c, (o, n)) in R3_CASES.iter().zip(&names) {
+        extra.push((o.as_str(), "c", c.2));
+        extra.push((n.as_str(), "c", c.3));
+    }
+    for line in lines(&extra) {
+        for (name, key, _, _) in R3_CASES {
+            let case = r3_case(&line, name);
+            let label = format!("{}: {name}", line.label);
+            let key = key.as_bytes();
+            eprintln!(
+                "{label}: {:?}",
+                case.changes.as_ref().map(|c| c
+                    .iter()
+                    .map(|x| (String::from_utf8_lossy(&x.0).into_owned(), x.1.clone(), x.2.clone()))
+                    .collect::<Vec<_>>())
+            );
+            eprintln!(
+                "{label}: the full link's entry of {:?}: {:?}",
+                String::from_utf8_lossy(key),
+                case.output.get(key)
+            );
+            match name {
+                "end" => {
+                    // A linker-defined key: the named fall-back, never a value.
+                    let e = case.changes.as_ref().expect_err("a fall-back");
+                    assert_eq!(e, "update-not-implemented (symtab)", "{label}");
+                    assert!(case.output.contains_key(key), "{label}: _end has an entry");
+                }
+                _ => {
+                    let changes = case.changes.as_ref().unwrap_or_else(|e| panic!("{label}: {e}"));
+                    assert!(case.affected.iter().any(|a| a == key), "{label}: the key is affected");
+                    for (n, kind, entry) in changes {
+                        let at = format!("{label}: {}: {kind}", String::from_utf8_lossy(n));
+                        match kind.as_str() {
+                            "Removed" | "Demoted" => assert!(!case.output.contains_key(n), "{at}"),
+                            _ => assert_eq!(Some(entry), case.output.get(n), "{at}"),
+                        }
+                    }
+                    // Every affected key with an entry in the output has a
+                    // change or kept its entry unchanged (not this file's).
+                    let mine = changes.iter().find(|c| c.0 == key);
+                    match case.output.get(key) {
+                        Some(e) => {
+                            let c = mine.unwrap_or_else(|| panic!("{label}: no change"));
+                            assert_eq!(&c.2, e, "{label}");
+                        }
+                        None => assert!(
+                            mine.is_none_or(|c| c.1 == "Removed"),
+                            "{label}: no entry in the output"
+                        ),
+                    }
+                }
+            }
+        }
+    }
+}
