@@ -234,10 +234,9 @@ fn changed_definer<'a>(
 ///   (`ResolveDelta::resolved`, the section in the update's ids);
 /// - `stored`: `view.symtab_key` (`None` for `Added` and `Promoted`).
 ///
-/// `fronts` are the changed files' fronts (`Ids::Update`). `merged` is the
-/// resolution's answer per affected key: its merged visibility (S-121) and
-/// whether a live relocation refers to it (resolve.md §3.7); see the
-/// record's R-4 (`ResolveDelta` does not carry them).
+/// `fronts` are the changed files' fronts (`Ids::Update`). The merged
+/// visibility (S-121) and whether a live object refers to a key (resolve.md
+/// §3.7) are the resolution's: `ResolveDelta::merged` (ruling R-4).
 ///
 /// Every affected key gets an answer for the new link; a key that stays
 /// a global is `Changed` (rewritten with what the full link writes). A
@@ -250,16 +249,24 @@ fn changed_definer<'a>(
 /// a linker-defined key (its rule, `CoreSyms::global`'s `Internal` arm, is
 /// not shared yet), a common, a defined key whose definer is not a changed
 /// file and whose entry needs a name (demoted or appended: its name may be
-/// versioned), a key `merged` does not answer.
+/// versioned). `state-corrupt`: a delta whose `merged` is not parallel to
+/// `resolved`.
 pub fn global_changes<'a>(
     view: &StateView<'_>,
     delta: &'a ResolveDelta,
     fronts: &[&'a FileFront<'a>],
-    merged: &dyn Fn(SymbolId) -> Option<(u8, bool)>,
 ) -> Result<Vec<GlobalChange<'a>>, IncrReason> {
     let symbols = view.count(kind::SYMBOLS);
+    let skewed =
+        || IncrReason::StateCorrupt("ResolveDelta: merged is not parallel to resolved".into());
+    if delta.merged.len() != delta.resolved.len() {
+        return Err(skewed());
+    }
     let mut out = Vec::new();
-    for &(id, r) in &delta.resolved {
+    for (&(id, r), &(m, vis, referenced)) in delta.resolved.iter().zip(&delta.merged) {
+        if m != id {
+            return Err(skewed());
+        }
         let in_state = u64::from(id.0) < symbols;
         let stored = if in_state {
             let k = view.symtab_key(id).map_err(|_| corrupt_key(id, "no row"))?;
@@ -268,7 +275,6 @@ pub fn global_changes<'a>(
             None
         };
         let old_global = stored.is_some_and(|(i, _)| i != NO_ENTRY);
-        let Some((vis, referenced)) = merged(id) else { return Err(not_built()) };
         let new = new_entry(id, &r, vis, referenced, delta, fronts, old_global)?;
         let kind = match (old_global, &new) {
             (true, None) => GlobalKind::Removed,
@@ -414,34 +420,80 @@ fn new_entry<'a>(
 
 /// R-1: a changed file's DEMOTED run (S-74's `Seg::Demoted(f)`, after its
 /// locals): the `Demoted` changes whose definition is in a section of
-/// `front`, in `SymbolId` order (`ResolveDelta::resolved`'s order).
+/// `front`, in the full link's order. The full link's rule
+/// (`mortar_synth::symtab::SymtabPlan::new`: `count` lists the demoted in
+/// `SymbolId` order, then a stable sort by defining file) is `SymbolId`
+/// order, and a fresh link numbers `SymbolId`s by first mention (model.md
+/// §2.3: files in `FileId` order, each file's non-local entries in table
+/// order). The update holds that first mention for every key: `(at_file,
+/// at_index)`, from `ResolveDelta::at` when it changed, else the key's
+/// `SYMBOLS` row (a new key's from `ResolveDelta::new_keys`), and `FileId`
+/// order is `FILES.rank` order. So the run is sorted by (`rank` of
+/// `at_file`, `at_index`), not by the state's `SymbolId`s (which keep the
+/// OLD link's first-mention order).
+///
+/// # Errors
+/// `state-corrupt`: a key without its `SYMBOLS` row or not in the delta;
+/// `update-not-implemented (symtab)`: a demoted key whose first mention is
+/// in a file new to the state (no stored rank) or none (`at_file` `NONE`:
+/// none can be, it has a definer).
 pub fn demoted_run<'a>(
+    view: &StateView<'_>,
+    delta: &ResolveDelta,
     front: &FileFront<'_>,
     changes: &[GlobalChange<'a>],
-) -> Vec<LocalSymbol<'a>> {
-    changes
-        .iter()
-        .filter(|g| g.kind == GlobalKind::Demoted)
-        .filter_map(|g| {
-            let section = match g.place {
-                GlobalPlace::Section(s) => Some(s),
-                _ => None,
-            };
-            let mine = match section {
-                Some(s) => front.sections.iter().any(|x| x.id == s),
-                // An absolute demoted key: its definer is not in the row
-                // (the update gives none; `new_entry` refuses an unread
-                // definer's name).
-                None => false,
-            };
-            mine.then_some(LocalSymbol {
+) -> Result<Vec<LocalSymbol<'a>>, IncrReason> {
+    let symbols = view.count(kind::SYMBOLS);
+    let mut run = Vec::new();
+    for g in changes.iter().filter(|g| g.kind == GlobalKind::Demoted) {
+        let section = match g.place {
+            GlobalPlace::Section(s) => Some(s),
+            _ => None,
+        };
+        let mine = match section {
+            Some(s) => front.sections.iter().any(|x| x.id == s),
+            // An absolute demoted key: its definer is not in the row
+            // (the update gives none; `new_entry` refuses an unread
+            // definer's name).
+            None => false,
+        };
+        if !mine {
+            continue;
+        }
+        let (at_file, at_index) = if let Some(&(_, f, i)) =
+            delta.at.iter().find(|(k, _, _)| *k == g.key)
+        {
+            (f, i)
+        } else if u64::from(g.key.0) < symbols {
+            let row = view.symbol(g.key)?;
+            (row.at_file, row.at_index)
+        } else {
+            let new = usize::try_from(u64::from(g.key.0) - symbols)
+                .ok()
+                .and_then(|n| delta.new_keys.get(n))
+                .ok_or_else(|| {
+                    IncrReason::StateCorrupt(format!("key {}: not a new key of the delta", g.key.0))
+                })?;
+            (new.row.at_file, new.row.at_index)
+        };
+        if at_file == mortar_incr::format::NONE {
+            return Err(not_built());
+        }
+        // A first mention in a file new to the state (appeared): its
+        // rank is the join's, not stored.
+        let rank = view.file(FileId(at_file)).map_err(|_| not_built())?.rank;
+        run.push((
+            (rank, at_index),
+            LocalSymbol {
                 name: g.name,
                 info: g.info,
                 other: g.other,
                 section,
                 value: g.value,
                 size: g.size,
-            })
-        })
-        .collect()
+            },
+        ));
+    }
+    run.sort_by_key(|r| r.0);
+    Ok(run.into_iter().map(|r| r.1).collect())
 }

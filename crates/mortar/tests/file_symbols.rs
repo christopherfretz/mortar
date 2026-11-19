@@ -30,13 +30,14 @@ use std::collections::BTreeMap;
 use mortar::update::file_front::{FrontCache, Ids, front_of};
 use mortar::update::file_split::{SectionFact, changed_facts, split_of};
 use mortar::update::file_symbols::file_symbols;
-use mortar_core::id::{FileId, SectionId};
+use mortar_core::id::{FileId, SectionId, SymbolId};
 use mortar_core::identity::Anchor;
 use mortar_core::resolution::SectionKind;
 use mortar_elf::consts::{SHT_SYMTAB, STB_LOCAL, STT_FILE, STT_SECTION};
 use mortar_elf::{FileHeader, SectionIndex, SectionTable, SymbolIndex};
 use mortar_incr::update::rows::FileRow;
 use mortar_merge::phase::ArchRelocs;
+use mortar_synth::symtab_incr::NO_ENTRY;
 use update::{first_free, lines, member, pool, state, whole};
 
 /// `m1.o` edited (C++): `wp255d_m1_renamed` (the new name of the old body),
@@ -338,7 +339,7 @@ fn global_changes_of_an_edited_file() {
         let ff = front_of(&mut cache, &old, file, Ids::Update { first_section: first, row })
             .unwrap_or_else(|e| panic!("{}: {e:?}", line.label));
         // The merged visibility and `referenced` by name: the full link's.
-        let name_of = |id: mortar_core::id::SymbolId| -> Vec<u8> {
+        let name_of = |id: SymbolId| -> Vec<u8> {
             if u64::from(id.0) < old.count(mortar_incr::format::kind::SYMBOLS) {
                 old.string(old.symbol(id).expect("SYMBOLS").name).expect("name")
             } else {
@@ -348,15 +349,37 @@ fn global_changes_of_an_edited_file() {
                     .clone()
             }
         };
-        let merged = |id| {
+        // R-4: the delta's merged answer per affected key equals the full
+        // link's resolution, by name.
+        assert_eq!(delta.merged.len(), delta.resolved.len(), "{}: merged", line.label);
+        let mut answers: BTreeMap<String, (u8, bool)> = BTreeMap::new();
+        for &(id, vis, referenced) in &delta.merged {
             let n = name_of(id);
-            let (k, _) = full.inputs.symbols.iter().find(|(_, k)| k.name == &n[..])?;
+            let label = format!("{}: {}", line.label, String::from_utf8_lossy(&n));
+            let (k, _) = full
+                .inputs
+                .symbols
+                .iter()
+                .find(|(_, k)| k.name == &n[..])
+                .unwrap_or_else(|| panic!("{label}: not a key of the full link"));
             let p = full.resolution.props.get(k).copied().unwrap_or_default();
-            Some((p.visibility, p.refs.contains(RefFlags::FROM_OBJECT)))
-        };
-        let got = global_changes(&old, &delta, &[ff], &merged)
+            let want = (p.visibility, p.refs.contains(RefFlags::FROM_OBJECT));
+            assert_eq!((vis, referenced), want, "{label}: the merged answer");
+            answers.insert(String::from_utf8_lossy(&n).into_owned(), want);
+        }
+        eprintln!("{}: merged answers {answers:?}", line.label);
+        assert!(
+            answers.values().any(|a| a.0 == 2) && answers.values().any(|a| a.0 == 0),
+            "{}: a hidden and a default key",
+            line.label
+        );
+        // The oracle fixture (ruling item 1): `SYMTAB_KEYS` from the OLD
+        // output's `.symtab` by name, since no capture writes it (F-2).
+        let oracle = with_symtab_keys(&line, &old, "old");
+        let got = global_changes(&oracle, &delta, &[ff])
             .unwrap_or_else(|e| panic!("{}: global_changes: {}", line.label, e.report()));
-        let run = demoted_run(ff, &got);
+        let run = demoted_run(&oracle, &delta, ff, &got)
+            .unwrap_or_else(|e| panic!("{}: demoted_run: {}", line.label, e.report()));
         // The oracle: the full link's output.
         let bytes = std::fs::read(line.dir.join("new")).expect("the output");
         let header = FileHeader::parse(&bytes).expect("an ELF header");
@@ -393,7 +416,7 @@ fn global_changes_of_an_edited_file() {
             let label = format!("{}: {}", line.label, String::from_utf8_lossy(&n));
             *kinds.entry(format!("{:?}", g.kind)).or_default() += 1;
             let sk = (u64::from(g.key.0) < old.count(mortar_incr::format::kind::SYMBOLS))
-                .then(|| old.symtab_key(g.key).expect("SYMTAB_KEYS"));
+                .then(|| oracle.symtab_key(g.key).expect("SYMTAB_KEYS"));
             eprintln!("{label}: {:?}, stored SYMTAB_KEYS {sk:?}", g.kind);
             let global = syms
                 .iter()
@@ -432,13 +455,74 @@ fn global_changes_of_an_edited_file() {
         for k in ["Demoted", "Added"] {
             assert!(kinds.contains_key(k), "{}: a {k} global", line.label);
         }
-        // The removed keys are `gone`. Their `Removed` needs the stored
-        // `SYMTAB_KEYS` index, which no capture writes yet (record F-2:
-        // every row reads `NO_ENTRY`, so a stored global reads as absent
-        // and a surviving one as `Promoted`): not asserted here.
+        // The removed keys are `gone` and, with the oracle's stored
+        // entries, `Removed`; the surviving globals are `Changed` (none
+        // `Promoted`: each had an entry).
         let gone: Vec<Vec<u8>> = delta.gone.iter().map(|&k| name_of(k)).collect();
         for n in [&b"wp255d_m1_renamed"[..], b"wp255d_added"] {
             assert!(gone.iter().any(|g| g == n), "{}: {n:?} gone", line.label);
+            let g = got.iter().find(|g| name_of(g.key) == n);
+            let g = g.unwrap_or_else(|| panic!("{}: {n:?}: no change", line.label));
+            assert_eq!(g.kind, GlobalKind::Removed, "{}: {n:?}", line.label);
+        }
+        assert!(!kinds.contains_key("Promoted"), "{}: {kinds:?}", line.label);
+        for n in [&b"wp255d_m1"[..], b"_Z10wp255d_inli"] {
+            let g = got.iter().find(|g| name_of(g.key) == n);
+            let g = g.unwrap_or_else(|| panic!("{}: {n:?}: no change", line.label));
+            assert_eq!(g.kind, GlobalKind::Changed, "{}: {n:?}", line.label);
+        }
+        // Every change's `stored` is the oracle's row (the old output's).
+        for g in &got {
+            if matches!(g.kind, GlobalKind::Removed | GlobalKind::Changed) {
+                let k = oracle.symtab_key(g.key).expect("SYMTAB_KEYS");
+                assert_eq!(g.stored, Some((k.index, k.strtab)), "{}: stored", line.label);
+                assert_ne!(k.index, NO_ENTRY, "{}: a stored entry", line.label);
+            }
         }
     }
+}
+
+/// The oracle fixture (ruling item 1 of 255d2b's second hand-back): the
+/// state `out`.state5 with its `SYMTAB_KEYS` rows read from `out`'s OWN
+/// `.symtab`, by name: each global key with a global entry of its name gets
+/// that entry's index and `st_name` (the reader's bytes); every other row
+/// stays `NO_ENTRY`. Not a producer (WP-262 writes the rows from the full
+/// link's symtab plan); a test-only stored view.
+fn with_symtab_keys(
+    line: &update::Line,
+    view: &mortar_incr::update::view::StateView<'_>,
+    out: &str,
+) -> mortar_incr::update::view::StateView<'static> {
+    use mortar_incr::format::kind::SYMBOLS;
+    use mortar_incr::update::rows::{SymtabKeyRow, sym_kind};
+    let state = std::fs::read(line.dir.join(format!("{out}.state5"))).expect("the state");
+    let mut m = mortar_incr::state5::read::decode(&state).expect("decodes");
+    let bytes = std::fs::read(line.dir.join(out)).expect("the output");
+    let header = FileHeader::parse(&bytes).expect("an ELF header");
+    let table = SectionTable::parse(&bytes, &header).expect("section headers");
+    let syms = table.find_symbol_table(SHT_SYMTAB).expect("symbols").expect("a .symtab");
+    let mut globals: BTreeMap<Vec<u8>, (u32, u32)> = BTreeMap::new();
+    for (i, s) in syms.iter() {
+        if i.0 >= syms.first_global().0 {
+            let prev = globals.insert(syms.name(&s).expect("name").to_vec(), (i.0, s.st_name));
+            assert!(prev.is_none(), "{}: two global entries of one name", line.label);
+        }
+    }
+    let n = usize::try_from(view.count(SYMBOLS)).expect("SYMBOLS");
+    m.symtab_keys.resize(n, SymtabKeyRow { index: NO_ENTRY, strtab: 0 });
+    let mut found = 0;
+    for (id, row) in m.symtab_keys.iter_mut().enumerate() {
+        let key = view.symbol(SymbolId(u32::try_from(id).expect("id"))).expect("SYMBOLS");
+        if !matches!(key.kind, sym_kind::GLOBAL | sym_kind::VERSIONED) {
+            continue;
+        }
+        let name = view.string(key.name).expect("name");
+        if let Some(&(index, strtab)) = globals.get(&name) {
+            *row = SymtabKeyRow { index, strtab };
+            found += 1;
+        }
+    }
+    assert!(found > 0, "{}: the oracle found global entries", line.label);
+    let encoded = mortar_incr::state5::write::encode(&m).expect("encodes");
+    mortar_incr::state5::read::open_bytes(encoded).expect("the oracle state opens")
 }
