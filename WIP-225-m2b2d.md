@@ -23,8 +23,9 @@ Scratch: `/Volumes/AgentWork/mortar-helper/.build/target-wp-140/m2b2d/`
 
 - gc-3's `mortar_incr` fix + the two scenarios: branch
   `wp/225-m2b2d-gc3` (one commit on this branch), green there.
-- Fall-back table and record section "M2b-2d" written (before = base tree
-  922a2aa6 run with the same command; b21 findings did not exist).
+- Fall-back table and record section "M2b-2d" written (before = b21 findings,
+  equal bucket for bucket to the base tree run here). e6b722b3
+  cherry-picked (supervisor: state_producers test fix).
 
 ## Next
 - The full gate once on the final tree (`m2b2d/gate.sh`, final line
