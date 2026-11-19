@@ -61,8 +61,12 @@ pub const MAGIC: [u8; 8] = *b"MORTARSR";
 /// a `--whole-archive` member; it is refused, `state-version`, never read).
 /// 8 since WP-262 (`SYMTAB_KEYS` written by the full link's capture: a
 /// version-7 state holds `NONE` for every key, which IN-49a reads as a
-/// key without a global entry; it is refused, `state-version`).
-pub const VERSION: u32 = 8;
+/// key without a global entry; it is refused, `state-version`). 9 since
+/// WP-263 (`SYMTAB`'s rows and `META.symtab` written by the full link's
+/// capture, and `META.gnu_warning_orphans`: a version-8 state holds no
+/// block and zero sizes, which IN-49a's plan reads as an empty table; it
+/// is refused, `state-version`).
+pub const VERSION: u32 = 9;
 /// The header's size.
 pub const HEADER: usize = 80;
 /// A directory entry's size.
@@ -498,7 +502,7 @@ impl Rec for u8 {
 }
 
 impl Rec for MetaRow {
-    const WIDTH: usize = 224;
+    const WIDTH: usize = 228;
     fn put(&self, w: &mut W<'_>) {
         let p = self.clone_probe.unwrap_or_default();
         w.s(self.version).u16(self.machine).u8(self.class).u8(self.output_kind);
@@ -510,7 +514,7 @@ impl Rec for MetaRow {
         let t = &self.symtab;
         w.u32(t.sh_info).u32(t.tail_first).u32(t.tail_capacity).u32(self.versioned);
         w.u64(t.symtab_size).u64(t.symtab_slack).u64(t.strtab_size).u64(t.strtab_slack);
-        w.bytes(&self.live_hash);
+        w.bytes(&self.live_hash).u32(self.gnu_warning_orphans);
     }
     fn get(r: &mut R<'_>) -> Self {
         let (version, machine, class, output_kind) = (r.s(), r.u16(), r.u8(), r.u8());
@@ -532,6 +536,7 @@ impl Rec for MetaRow {
             strtab_slack: r.u64(),
         };
         let live_hash: [u8; 16] = r.take();
+        let gnu_warning_orphans = r.u32();
         if synced > 1 || probed > 1 || u32::from(build_id_len) > crate::format::MAX_BUILD_ID {
             r.bad_pad = true;
         }
@@ -557,6 +562,7 @@ impl Rec for MetaRow {
             clone_probe: (probed == 1).then_some(probe),
             symtab,
             live_hash,
+            gnu_warning_orphans,
         }
     }
 }
@@ -1249,14 +1255,20 @@ mod tests {
     }
 
     // spec: WP-238 "Step 2" S4 (`META.live_hash`, 16 bytes after
-    // `versioned`'s area: META is 224 bytes)
+    // `versioned`'s area), WP-263 (`gnu_warning_orphans`, 4 bytes after
+    // it: META is 228 bytes)
     #[test]
     fn meta_live_hash_is_read_back() {
-        let m = MetaRow { live_hash: *b"live-set-hash-16", ..MetaRow::default() };
+        let m = MetaRow {
+            live_hash: *b"live-set-hash-16",
+            gnu_warning_orphans: 0x0102_0304,
+            ..MetaRow::default()
+        };
         let b = encode_rows(std::slice::from_ref(&m));
         assert_eq!(b.len(), <MetaRow as Rec>::WIDTH);
-        assert_eq!(b.len(), 224);
-        assert_eq!(&b[208..], &m.live_hash);
+        assert_eq!(b.len(), 228);
+        assert_eq!(&b[208..224], &m.live_hash);
+        assert_eq!(&b[224..], &0x0102_0304u32.to_le_bytes());
         let back = decode_rows::<MetaRow>(&b, kind::META, 0).expect("reads");
         assert_eq!(back, vec![m]);
     }

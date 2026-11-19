@@ -313,7 +313,11 @@ fn version_7_state_is_refused() {
         let label = line.label;
         let (_, mut bytes) = state(&line);
         assert_eq!(&bytes[..8], b"MORTARSR", "{label}: format 5's magic");
-        assert_eq!(bytes[8..12], 8u32.to_le_bytes(), "{label}: the state's version");
+        assert_eq!(
+            bytes[8..12],
+            mortar_incr::state5::VERSION.to_le_bytes(),
+            "{label}: the state's version"
+        );
         bytes[8..12].copy_from_slice(&7u32.to_le_bytes());
         let e = mortar_incr::state5::read::decode(&bytes).expect_err("a version-7 state decodes");
         let shown = format!("{e:?}");
