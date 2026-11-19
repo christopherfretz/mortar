@@ -98,10 +98,11 @@ fn the_hosted_lanes_run_the_gate_as_the_development_machine_does() {
         );
         let steps = selected_steps(id, job);
         let expected: Vec<&str> = match *id {
-            "tests" => vec!["fmt", "clippy", "test"],
-            _ => {
-                STEP_NAMES.into_iter().filter(|s| !["fmt", "clippy", "test"].contains(s)).collect()
-            }
+            "tests" => vec!["fmt", "clippy", "test", "debug-join"],
+            _ => STEP_NAMES
+                .into_iter()
+                .filter(|s| !["fmt", "clippy", "test", "debug-join"].contains(s))
+                .collect(),
         };
         assert_eq!(steps, expected, "job {id}'s steps");
         runs.extend(steps);

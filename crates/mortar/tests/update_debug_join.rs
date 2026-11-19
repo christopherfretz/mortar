@@ -795,3 +795,87 @@ fn new_debug_output_section_is_image_before_g1() {
         assert!(now > was, "{label}: e_shnum {was} -> {now}");
     }
 }
+
+// ---- G-4 (WP-230): `-g` in the non-identity update -----------------------
+
+/// `c.cc` whose `c_value` calls `u_helper` (another file's function: a new
+/// relocation against `.text` of `u.cc`, and `u_helper`'s name, already a
+/// string of the output), `n` statements longer than [`c_cc`]'s.
+fn c_calls(n: usize) -> String {
+    format!(
+        "#define C_K 9\nint u_helper(int);\nint c_value(int x) {{\n  int scaled = x * C_K;\n  {}return scaled + u_helper(1);\n}}\n",
+        "scaled = scaled * 3 + 1; ".repeat(n)
+    )
+}
+
+/// The non-identity case on `p`: each version of `c.cc` in `versions`
+/// rebuilt and updated in turn. Each update is taken (`G-4 debug: judged`
+/// in the findings file, no FINDING), byte-equal to the full link of the
+/// same inputs, runs as it, and gdb (and lldb on its host) answer as on
+/// it; returns each update's judged line.
+fn moved_case(p: &mut Prog, label: &str, versions: &[String]) -> Vec<String> {
+    let mut judged = Vec::new();
+    let (ok, err) = p.link("o", &["--incremental"]);
+    assert!(ok, "{label}: the first link: {err}");
+    for (hop, text) in versions.iter().enumerate() {
+        let _ = std::fs::remove_file(&p.findings);
+        p.rebuild_c(text, &[]);
+        let (ok, err) = p.link("o", &["--incremental=update", "--incremental-report"]);
+        assert!(ok, "{label} hop {hop}: not an update: {err}\nfindings:\n{}", p.findings());
+        assert!(err.contains("incremental: update ("), "{label} hop {hop}: {err}");
+        let findings = no_finding(p, label);
+        let line = findings.lines().find(|l| l.starts_with("G-4 debug: judged"));
+        let Some(line) = line else { panic!("{label} hop {hop}: G-4 not judged:\n{findings}") };
+        assert!(findings.contains("taken: front 2"), "{label} hop {hop}:\n{findings}");
+        judged.push(line.to_owned());
+        let o = p.bytes("o");
+        p.equals_full_link("o", &format!("{label} hop {hop}"));
+        assert_eq!(p.run("o"), p.run("full"), "{label} hop {hop}: the program's output");
+        let (gu, gf) = (p.gdb("o", "scaled"), p.gdb("full", "scaled"));
+        assert_ne!(gu, "TIMEOUT", "{label} hop {hop}: gdb on the update");
+        assert!(gu.contains("c_value"), "{label} hop {hop}: gdb:\n{gu}");
+        assert_eq!(gu, gf, "{label} hop {hop}: gdb answers differ (update, full link)");
+        if let (Some(lu), Some(lf)) = (p.lldb("o", "scaled"), p.lldb("full", "scaled")) {
+            assert_ne!(lu, "TIMEOUT", "{label} hop {hop}: lldb on the update");
+            assert_eq!(lu, lf, "{label} hop {hop}: lldb answers differ");
+        }
+        assert_eq!(o, p.bytes("o"), "{label}: the update's output changed under the debuggers");
+        eprintln!("{label} hop {hop}: {line}\ngdb transcript:\n{gu}");
+    }
+    p.keep("o", label);
+    judged
+}
+
+/// Grow, shrink and new-relocation versions of `c.cc` (no new string).
+fn moved_versions() -> Vec<String> {
+    vec![c_body(2), c_body(0), c_body(3), c_calls(1), c_body(1)]
+}
+
+// spec: incr.md IN-50, IN-54, IN-56, IN-70 (WP-230 G-4): a `-g` program
+// whose changed file grows, shrinks and gains a relocation against
+// another file's code (sizes change: not the identity case): front 2
+// writes G-1's placement (`materialize` of the delta with `debug::place`),
+// judged against front 1 (`G-4 debug: judged`); each update is byte-equal
+// to the full link, and gdb and lldb answer as on it.
+#[test]
+fn grow_shrink_and_new_relocation_with_debug_are_taken() {
+    for arch in targets() {
+        let Some(mut p) = Prog::new(arch, "g4moved", &[], false) else { continue };
+        let label = format!("g4 moved {}", arch.name());
+        let judged = moved_case(&mut p, &label, &moved_versions());
+        assert_eq!(judged.len(), moved_versions().len(), "{label}");
+    }
+}
+
+// spec: as above, under the operator's configuration (static, -g,
+// -ffunction-sections -fdata-sections, --gc-sections).
+#[test]
+fn gc_grow_shrink_and_new_relocation_with_debug_are_taken() {
+    const GC: [&str; 2] = ["-ffunction-sections", "-fdata-sections"];
+    for arch in targets() {
+        let Some(mut p) = Prog::new(arch, "g4movedgc", &GC, true) else { continue };
+        let label = format!("g4 moved gc {}", arch.name());
+        let judged = moved_case(&mut p, &label, &moved_versions());
+        assert_eq!(judged.len(), moved_versions().len(), "{label}");
+    }
+}

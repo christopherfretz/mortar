@@ -83,10 +83,19 @@ pub fn cargo_step(args: &[&str]) -> bool {
 
 /// The steps of `cargo xtask ci`, in the order they run, each with its
 /// `cargo` arguments (`spec/harness.md` "ci").
-pub const STEPS: [(&str, &[&str]); 3] = [
+///
+/// `debug-join` (WP-230, G-3b rulings item 2): the update's `-g` join
+/// tests with the test hooks (`--features testhooks` is on `mortar` alone,
+/// so the workspace's `test` step does not build them: the injected
+/// disagreements and `debug-str-limit` cases run only here).
+pub const STEPS: [(&str, &[&str]); 4] = [
     ("fmt", &["fmt", "--all", "--check"]),
     ("clippy", &["clippy", "--workspace", "--all-targets", "--", "-D", "warnings"]),
     ("test", &["test", "--workspace"]),
+    (
+        "debug-join",
+        &["test", "-p", "mortar", "--features", "testhooks", "--test", "update_debug_join"],
+    ),
 ];
 
 /// The link-test step, which runs after the cargo steps: `cargo xtask
@@ -115,8 +124,17 @@ pub const MASON: &str = "mason";
 pub const SWEEP: &str = "sweep";
 
 /// Every step's name, in the order they run.
-pub const STEP_NAMES: [&str; 8] =
-    [STEPS[0].0, STEPS[1].0, STEPS[2].0, LINKTEST, CENSUS, MASON, SWEEP, STATIC_IDENTICAL];
+pub const STEP_NAMES: [&str; 9] = [
+    STEPS[0].0,
+    STEPS[1].0,
+    STEPS[2].0,
+    STEPS[3].0,
+    LINKTEST,
+    CENSUS,
+    MASON,
+    SWEEP,
+    STATIC_IDENTICAL,
+];
 
 /// The arguments of the census step.
 pub fn census_args(quick: bool) -> Vec<String> {
@@ -302,7 +320,17 @@ mod tests {
         assert_eq!(all.steps, STEP_NAMES);
         assert_eq!(
             all.steps,
-            ["fmt", "clippy", "test", "linktest", "census", "mason", "sweep", "static-identical"]
+            [
+                "fmt",
+                "clippy",
+                "test",
+                "debug-join",
+                "linktest",
+                "census",
+                "mason",
+                "sweep",
+                "static-identical"
+            ]
         );
         assert_eq!(parse(&[]).unwrap().steps, all.steps);
         let two = parse(&["--step", "test", "--step=fmt"]).unwrap();
@@ -356,6 +384,7 @@ mod tests {
                 "fmt --all --check",
                 "clippy --workspace --all-targets -- -D warnings",
                 "test --workspace",
+                "test -p mortar --features testhooks --test update_debug_join",
             ]
         );
     }
