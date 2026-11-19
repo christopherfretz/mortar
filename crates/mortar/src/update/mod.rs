@@ -19,6 +19,7 @@
 //! `debug::place` after it (U7); liveness (WP-238) is U6, between U5 and
 //! U7 (`live::live`, whose `LiveDelta` feeds `SectionChange::live`).
 
+pub mod changed;
 pub mod file_front;
 pub mod file_split;
 pub mod probe;
@@ -198,15 +199,13 @@ fn run_with(
     if b.map.is_some() || b.print_map || b.dependency_file.is_some() {
         return Err(IncrReason::UpdateNotImplemented(Some(Unimplemented::Image)).into());
     }
-    // M2a: one changed object, not an archive member (U4's member-level
-    // judgement and U5's extraction loop are M2b's).
-    if detected.changed_files.len() != 1 || detected.changed_paths.len() != 1 {
+    // M2b-1: any number of changed objects and archive members; U4's
+    // member-level judgement (the capture's hash) and U5's answers
+    // (`extract`, `resolve`, which must say what the front says) decide in
+    // `reference_of`. Nothing changed: no update to make.
+    if detected.changed_files.is_empty() {
         return Err(IncrReason::UpdateNotImplemented(Some(Unimplemented::Resolve)).into());
     }
-    if view.file(detected.changed_files[0])?.member != 0 {
-        return Err(IncrReason::UpdateNotImplemented(Some(Unimplemented::Resolve)).into());
-    }
-    let file = detected.changed_files[0];
     let out = session.out.as_ref().ok_or_else(|| IncrReason::NoState(String::new()))?;
     // U1's tuple of the output (IN-77a), taken before the front reads.
     let checked = Tuple::of(&out.metadata().map_err(|e| IncrReason::OutputChanged(e.to_string()))?);
@@ -214,7 +213,7 @@ fn run_with(
     // The front is dropped before the first write.
     let reference = image_link(ctx, cwd, None, |f| {
         steps.mark("front");
-        reference_of(session, &view, file, f, ctx, cwd, out, &mut steps)
+        reference_of(session, &view, &detected, f, ctx, cwd, out, &mut steps)
     })?;
     write_identity(session, &view, ctx, cwd, out, checked, reference, ops, steps)
 }
@@ -281,7 +280,7 @@ struct Reference {
 fn reference_of(
     session: &Session,
     view: &StateView<'_>,
-    file: FileId,
+    detected: &Detected,
     f: &crate::front::Front<'_>,
     ctx: &Ctx<'_>,
     cwd: &Path,
@@ -291,17 +290,24 @@ fn reference_of(
     use mortar_core::incr::{LayoutDelta, RefillChunk, RefillSet, StoredLayout, SymtabPlan};
     let layout = || IncrReason::UpdateNotImplemented(Some(Unimplemented::Layout));
     let image = || IncrReason::UpdateNotImplemented(Some(Unimplemented::Image));
-    // U4: the front's file of that id is the state's row.
-    let row = view.file(file)?;
-    let path = view.string(row.path)?;
-    if f.inputs.files.get(file).is_none_or(|x| x.path != path.as_slice()) {
+    // U4: the front's file of each id is the state's row (and no file
+    // appeared: the front has the state's files, M2b-1).
+    let files = &detected.changed_files;
+    if u64::from(f.inputs.files.len()) != view.count(kind::FILES) {
         return Err(IncrReason::UpdateNotImplemented(Some(Unimplemented::Resolve)));
+    }
+    for &file in files {
+        let row = view.file(file)?;
+        let path = view.string(row.path)?;
+        if f.inputs.files.get(file).is_none_or(|x| x.path != path.as_slice()) {
+            return Err(IncrReason::UpdateNotImplemented(Some(Unimplemented::Resolve)));
+        }
     }
     let meta = view.meta()?;
     let leaves = view.leaves()?;
     let rows = mortar_incr::state5::LayoutOf { view };
     let stored = StoredLayout::new(&rows);
-    let delta = LayoutDelta { files: vec![file], ..LayoutDelta::default() };
+    let delta = LayoutDelta { files: files.clone(), ..LayoutDelta::default() };
     let chunks: Vec<RefillChunk> = f
         .layout
         .placement
@@ -349,6 +355,12 @@ fn reference_of(
     let rows5 = rows5.ok_or_else(image)?;
     let state = mortar_incr::capture::state5_rows(&state, rows5, false).map_err(|_| image())?;
     steps.mark("capture");
+    // U4-U5 (M2b-1): the changed files' rows in the update's ids, then
+    // `extract` and `resolve` on them; the update goes on only where they
+    // say what the front (its capture) says.
+    changed::u5(view, &detected.changed_files, &detected.positional, f, &state, &mut |n| {
+        steps.mark(n);
+    })?;
     // The identity check (G-3's materialization in the identity case).
     let lock = session.lock().ok_or_else(image)?;
     let corrupt = |e: std::io::Error| IncrReason::StateCorrupt(e.to_string());
@@ -360,7 +372,7 @@ fn reference_of(
     let new = mortar_incr::state5::canon::canon_of(&state)
         .map_err(|e| IncrReason::StateCorrupt(e.to_string()))?;
     let diffs = mortar_incr::state5::canon::compare(&new, &old, &stored);
-    if !identity(&diffs, file) {
+    if !identity(&diffs, files) {
         return Err(layout());
     }
     steps.mark("check");
@@ -376,13 +388,15 @@ fn reference_of(
 /// - the output's `STAT` stamp tuple (cleared by the canonical form) and
 ///   the changed input's `STAT` row (its stamps and hash);
 /// - `LEAVES` (the leaves and their root: the bytes changed);
-/// - the ONE `FILES` row of the changed file (`row <id>`: the canonical
-///   `FILES` table is in id order; its stamps and hash).
-fn identity(diffs: &[mortar_incr::state5::canon::CanonDiff], file: FileId) -> bool {
-    let row = format!("row {}", file.0);
+/// - the `FILES` rows of the changed files (`row <id>`: the canonical
+///   `FILES` table is in id order; their stamps and hash; M2b-1: every
+///   file of a changed path, the members whose bytes are equal giving no
+///   difference).
+fn identity(diffs: &[mortar_incr::state5::canon::CanonDiff], files: &[FileId]) -> bool {
+    let rows: Vec<String> = files.iter().map(|f| format!("row {}", f.0)).collect();
     diffs.iter().all(|d| match d.kind {
         kind::STAT | kind::LEAVES => true,
-        kind::FILES => d.row == row,
+        kind::FILES => rows.contains(&d.row),
         _ => false,
     })
 }
@@ -609,12 +623,20 @@ fn debug_condition(view: &StateView<'_>, d: &Detected, cwd: &Path) -> Result<(),
             bytes
         };
         let Ok(object) = mortar_elf::Object::parse(&bytes) else { continue };
-        for i in 1..object.section_count() {
-            let Ok(s) = object.section(mortar_elf::SectionIndex(i)) else { continue };
-            if s.flags() & SHF_ALLOC == 0 && s.name().is_ok_and(|n| n.starts_with(b".debug_")) {
-                return Err(debug());
-            }
+        if object_has_debug(&object) {
+            return Err(debug());
         }
     }
     Ok(())
+}
+
+/// Whether `object` has a non-alloc `.debug_*` section (IN-70's debug
+/// condition on the new bytes; `ChangedFile::debug`).
+pub(crate) fn object_has_debug(object: &mortar_elf::Object<'_>) -> bool {
+    use mortar_elf::consts::SHF_ALLOC;
+    (1..object.section_count()).any(|i| {
+        object.section(mortar_elf::SectionIndex(i)).is_ok_and(|s| {
+            s.flags() & SHF_ALLOC == 0 && s.name().is_ok_and(|n| n.starts_with(b".debug_"))
+        })
+    })
 }
