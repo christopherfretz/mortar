@@ -288,8 +288,9 @@ fn run(p: &Pair, edit: &dyn Fn(&mut OptionKeys, &mut ScanOptions<'_>, &mut bool)
     let null =
         SectionFact { kind: SectionKind::Null, kept: false, out: None, reloc: SectionIndex(0) };
     let by_index = |i: SectionIndex| facts.get(i.0 as usize).copied().unwrap_or(null);
-    let split = split_of(ff, &view, &by_index, &ArchRelocs(f1.arch.get()), &f1.pool, Some(&x.delta))
-        .unwrap_or_else(|e| panic!("{label}: split_of: {e:?}"));
+    let split =
+        split_of(ff, &view, &by_index, &ArchRelocs(f1.arch.get()), &f1.pool, Some(&x.delta))
+            .unwrap_or_else(|e| panic!("{label}: split_of: {e:?}"));
     let mut opts = ScanOptions {
         output: output_kind(f1.plan.kind),
         dynamic: false,
