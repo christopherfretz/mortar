@@ -1387,6 +1387,11 @@ impl<'b, 'c> Update<'b, 'c> {
     /// clip plan then refuses the byte by name).
     fn region_pads(&self, chunk: ChunkId, holes: &mut Vec<Hole>) -> Result<(), IncrReason> {
         let ch = self.chunks.get(chunk).ok_or_else(not_implemented)?;
+        // Regions live in body chunks only (a merged chunk's tail grows by
+        // item 6, not by a region).
+        if !matches!(ch.kind, ChunkKind::Body(_)) {
+            return Ok(());
+        }
         let old_size = self.base.chunk(chunk)?.size;
         let chunk_align = 1u64 << ch.align.min(63);
         let ends_or_starts_at = |hs: &[Hole], x: u64| {
