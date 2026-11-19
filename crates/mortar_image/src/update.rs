@@ -342,6 +342,10 @@ pub fn refill(
             overlay.put(r.start, vec![0; (r.end - r.start) as usize]);
         }
     }
+    // A dead string piece keeps its bytes as written (`DeadFragment`,
+    // L-147): over what the image filled (a merged chunk is refilled
+    // whole, and the image has no piece there), the previous output's.
+    keep_dead_fragments(pl, layout, stored, &prev, &mut overlay, &mut counts)?;
     // 3. `.eh_frame`'s unchanged records: their PC-relative fields moved
     // with the code (IN-34a "Pad and move"), from the previous bytes.
     if let (Some(i), Some(records), true) = (eh_index, &eh_records, eh_moves) {
@@ -554,6 +558,57 @@ fn frag_ranges(link: &Link<'_, '_>, layout: &LayoutDelta) -> Vec<Range<u64>> {
 /// moved for another reason (`LayoutDelta::moved`) has FDEs this writer
 /// cannot translate (its old place is the stored row, not an input of
 /// `refill`): `update-not-implemented (eh)`.
+/// L-147: every dead string piece of the placement `pl` (its own
+/// `DeadFragment` holes, and those `layout` made) keeps the bytes the
+/// previous output has there, put over what the image filled. A merged
+/// chunk only grows by appending and its pieces never move (L-147), so a
+/// dead piece is at the same chunk offset in the previous output, in the
+/// stored chunk of that output section header (`stored`'s `Merged` chunk
+/// of the same `shndx`; the section header tables have the same rows, by
+/// name, checked before). A hole outside such a chunk, or past its
+/// stored size, is `update-not-implemented (image)`.
+fn keep_dead_fragments(
+    pl: &Placement,
+    layout: &LayoutDelta,
+    stored: &StoredLayout<'_>,
+    prev: &Previous<'_>,
+    overlay: &mut Overlay,
+    counts: &mut Counts,
+) -> Result<(), RefillError> {
+    use mortar_core::layout::HoleKind;
+    let mut dead: Vec<mortar_core::layout::Hole> = pl
+        .holes
+        .iter()
+        .chain(&layout.holes)
+        .filter(|h| h.kind == HoleKind::DeadFragment)
+        .copied()
+        .collect();
+    if dead.is_empty() {
+        return Ok(());
+    }
+    dead.sort_by_key(|h| (h.chunk, h.offset, h.size));
+    dead.dedup();
+    let image = || not_implemented(Unimplemented::Image);
+    let old = stored.chunks().map_err(RefillError::Fallback)?;
+    for h in &dead {
+        let c = pl.chunks.get(h.chunk).ok_or_else(image)?;
+        if !matches!(c.kind, ChunkKind::Merged(_)) || !c.in_file() {
+            return Err(image());
+        }
+        let mut was = old.iter().filter(|(_, o)| {
+            matches!(o.kind, ChunkKind::Merged(_)) && o.shndx.is_some() && o.shndx == c.shndx
+        });
+        let (Some((_, o)), None) = (was.next(), was.next()) else { return Err(image()) };
+        if h.offset + h.size > o.size.min(o.capacity) || h.offset + h.size > c.size {
+            return Err(image());
+        }
+        let bytes = prev.read(o.offset + h.offset..o.offset + h.offset + h.size)?;
+        counts.copied += h.size;
+        overlay.put(c.offset + h.offset, bytes);
+    }
+    Ok(())
+}
+
 fn check_moved_code(link: &Link<'_, '_>, layout: &LayoutDelta) -> Result<(), RefillError> {
     if layout.moved.is_empty() || layout.eh.as_ref().is_some_and(|e| e.whole) {
         return Ok(());

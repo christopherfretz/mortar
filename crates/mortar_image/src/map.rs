@@ -903,6 +903,67 @@ fn drop_dead_slots(d: &mut Decisions, layout: &mortar_core::incr::LayoutDelta) {
     });
 }
 
+/// The padding before each `dead .. strings` line of an allocated section
+/// (L-147's dead pieces), stated as a `hole` (plumb.md P-I1, WP-225
+/// M2b-4): the alignment padding a dead piece had while it was live is
+/// explained by no item once it is a `dead` line, which has no alignment.
+/// The gap is from the end of the last item of `m` (a `place`, a
+/// `piece`, a `chunk`, a `common`, another `hole` or `dead` line) that
+/// starts in the section before the line, or the section's start, to the
+/// line; it holds the section's fill (the merged chunk's padding, zero).
+fn dead_string_padding(link: &crate::link::Link<'_, '_>, m: &mut Map) {
+    let pl = &link.layout.placement;
+    // Per output section name: its start, as `dead_lines` takes it.
+    let start_of = |name: &[u8]| -> Option<u64> {
+        pl.chunks
+            .iter()
+            .filter(|(_, c)| c.is_alloc() && c.name(link.assignment) == Some(name))
+            .filter_map(|(_, c)| c.addr)
+            .min()
+    };
+    let mut add: Vec<(usize, DeadLine)> = Vec::new();
+    for (k, d) in m.dead.iter().enumerate() {
+        if d.kind != Some(DeadKind::Strings) {
+            continue;
+        }
+        let Some(base) = start_of(&d.out) else { continue };
+        let at = base + d.offset;
+        let mut end = base;
+        let mut see = |s: u64, size: u64| {
+            if (base..at).contains(&s) {
+                end = end.max(s + size);
+            }
+        };
+        for p in m.placed.iter().flatten() {
+            match *p {
+                Placed::Place { addr, size, .. } | Placed::Piece { addr, size, .. } => {
+                    see(addr, size);
+                }
+            }
+        }
+        for c in &m.chunks {
+            if let Some(a) = c.addr {
+                see(a, c.size);
+            }
+        }
+        for c in &m.commons {
+            see(c.addr, c.size);
+        }
+        for e in m.dead.iter().filter(|e| e.out == d.out) {
+            see(base + e.offset, e.size);
+        }
+        if end < at {
+            add.push((
+                k,
+                DeadLine { out: d.out.clone(), offset: end - base, size: at - end, kind: None },
+            ));
+        }
+    }
+    for (k, line) in add.into_iter().rev() {
+        m.dead.insert(k, line);
+    }
+}
+
 /// The map of an update (WP-211 §C; `spec/image.md` I-78a; WP-218, U-6):
 /// the full link's records of `link` (the update's output `P_U`: its
 /// `Placement` is the materialized one), `incremental`, the decision
@@ -927,6 +988,7 @@ pub fn update_map(
 ) -> Result<Map, mortar_core::incr::IncrReason> {
     let mut m = crate::link::map_of(link);
     m.incremental = true;
+    dead_string_padding(link, &mut m);
     if m.decisions.is_none() {
         m.decisions = Some(decisions_of(&crate::link::LinkTables::new(*link)));
     }

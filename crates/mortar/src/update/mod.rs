@@ -403,27 +403,6 @@ fn reference_of(
             p.summary
         );
         return match p.materialized {
-            // FINDING (M2b-3 Part 3, the lane's s4_frag_ordinals and
-            // w6_string_dedup_into_changed, gcc, both targets): a fragment
-            // the delta kills is a `DeadFragment` hole, and the map's `dead
-            // .. strings` line for it leaves the alignment padding before it
-            // covered by no item (plumb P-I1: padding is explained only
-            // before an item with an alignment). Not judged: refused by name.
-            Some(Ok((_, df)))
-                if df
-                    .holes
-                    .iter()
-                    .any(|h| h.kind == mortar_core::layout::HoleKind::DeadFragment) =>
-            {
-                let h =
-                    df.holes.iter().find(|h| h.kind == mortar_core::layout::HoleKind::DeadFragment);
-                changed::record(&format!(
-                    "M2b-3 Part 3: materialized ({what}), but the delta kills a merged fragment \
-                     ({h:?}): the map's coverage of the padding before a dead fragment (P-I1) is \
-                     not judged: (layout)"
-                ));
-                Err(layout())
-            }
             Some(Ok((lu, df))) => {
                 changed::record(&format!("M2b-3 Part 3: materialized ({what}): front 2"));
                 Ok(First::Materialized(Box::new(Materialized { l1: f.layout.clone(), lu, df })))
