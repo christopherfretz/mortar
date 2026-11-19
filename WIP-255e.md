@@ -16,7 +16,8 @@ Next:
    next member): bytes of the output there, then which producer ends the
    hole short (the delta's `holes()` region end vs the full link's
    `slack.region`).
-2. Lane counts: `.build/target-wp-140/w255e/after-findings.txt`, bucket
-   by `255e shadow:` prefix.
-3. Timing (protoc static), the full gate.
+2. Lane (done, ec3550da): incr-update 584 PASS / 0 FAIL; 86 taken hops, 86
+   `255e shadow: equal` (S1), 0 finding, 0 refused; S2 78 equal, 8 with no
+   range outside synthetic chunks. Evidence `w255e/after-findings.txt`.
+3. NOT done (hand-back at the budget): protoc timing, the full gate.
 Resume: `w255e/lane.sh` (tests + `cargo xtask incr-update` with findings).
