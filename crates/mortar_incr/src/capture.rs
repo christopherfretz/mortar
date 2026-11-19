@@ -4348,12 +4348,23 @@ mod wp264 {
                     chunk: 0,
                     kind: hole_kind::FILL,
                     offset: 0x58,
-                    size: 8,
+                    size: 4,
                     tomb: false,
                 });
             },
             "is no region's slack",
         );
+        // WP-255g S2-1: the padding from one region's end to the next
+        // region's start as a `Fill` hole is a pad, not a break.
+        let mut pad = m.clone();
+        pad.holes.push(HoleRow {
+            chunk: 0,
+            kind: hole_kind::FILL,
+            offset: 0x58,
+            size: 8,
+            tomb: false,
+        });
+        assert_eq!(regions_check(&pad), Ok(()), "a pad between two regions");
         broken(&|b| b.regions[0].1.chunk = 1, "no chunk 1");
         broken(&|b| b.chunks[0].tag = tag_byte(ChunkTag::Merged), "not a hole-tolerant body");
         // A member of another output section (L-159's empty neighbour) is
