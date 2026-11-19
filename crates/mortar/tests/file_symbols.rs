@@ -164,7 +164,18 @@ fn compare(
         let null =
             SectionFact { kind: SectionKind::Null, kept: false, out: None, reloc: SectionIndex(0) };
         let by_index = |i: SectionIndex| facts.get(i.0 as usize).copied().unwrap_or(null);
-        let split = split_of(ff, &old, &by_index, &ArchRelocs(full.arch.get()), &full.pool, None)
+        // F-9: a changed file's split answers its globals from the update's
+        // resolution (U4-U5 over the new link's capture).
+        let capture = mortar_incr::state5::read::decode(
+            &std::fs::read(line.dir.join("new.state5")).expect("the new state"),
+        )
+        .expect("the new state decodes");
+        let (_, delta) =
+            mortar::update::changed::u5(&old, &[file], &[], &full, &capture, &mut |_| {})
+                .unwrap_or_else(|e| panic!("{}: U4-U5: {}", line.label, e.report()))
+                .expect("m1.o changed");
+        let relocs = ArchRelocs(full.arch.get());
+        let split = split_of(ff, &old, &by_index, &relocs, &full.pool, Some(&delta))
             .unwrap_or_else(|e| panic!("{}: {e:?}", line.label));
         let got = file_symbols(ff, &facts, full.plan.shaping.discard, &split, &[])
             .unwrap_or_else(|e| panic!("{}: {e:?}", line.label));
