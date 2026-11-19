@@ -987,15 +987,27 @@ pub struct Rows5 {
     pub notes: Vec<String>,
     /// WP-257a: per `SECTIONS` row, what the section IS.
     sections: Vec<SectionFacts>,
-    /// `DIAGS` (WP-265, [`diag_rows`]), in the capture's ids.
-    diags: Vec<crate::update::diags::DiagRow>,
+    /// `DIAGS` (WP-265, [`diag_rows`]), in the capture's ids, their keys
+    /// by name until [`state5_rows`] resolves them.
+    diags: Vec<NamedDiag>,
 }
 
 impl Rows5 {
-    /// `DIAGS`' rows ([`diag_rows`]: the link's warnings, read before its
-    /// report is finished), stored by [`state5_rows`].
-    pub fn put_diags(&mut self, rows: Vec<crate::update::diags::DiagRow>) {
-        self.diags = rows;
+    /// `DIAGS`' rows of the link's `warnings` (the collector's, read before
+    /// its report is finished) and of `gnu_warnings`, as [`diag_rows`]
+    /// makes them; [`state5_rows`] stores them, their keys the rows of the
+    /// state it makes (the options' rows included).
+    ///
+    /// # Errors
+    /// [`diag_rows`]'.
+    pub fn capture_diags(
+        &mut self,
+        inputs: &Inputs<'_>,
+        gnu_warnings: &[(SymbolId, FileId, SectionIndex)],
+        warnings: &[(mortar_diag::Key, mortar_diag::Diagnostic)],
+    ) -> Result<(), String> {
+        self.diags = diag_rows_named(inputs, gnu_warnings, warnings)?;
+        Ok(())
     }
 }
 
@@ -2448,8 +2460,6 @@ pub fn state5_rows(
         m.symtab.extend(rows.symtab_blocks.iter().copied());
     }
     symtab_rows_check(&m, &rows.symtab_blocks, rows.symtab_area, rows.symtab_tables)?;
-    // DIAGS (WP-265): the link's warnings, checked by `diag_rows`.
-    m.diags = rows.diags;
     // REGIONS (WP-264): the full link's regions, from its stored placement.
     m.regions = region_rows(&m)?;
     regions_check(&m)?;
@@ -2523,6 +2533,16 @@ pub fn state5_rows(
                 ..SymbolRow::default()
             });
         }
+    }
+    // DIAGS (WP-265): the link's warnings, checked by `diag_rows`; their
+    // keys are rows of this state, the options' rows included.
+    if !rows.diags.is_empty() {
+        let text = |x: Str| m.strings.get(x.off as usize..(x.off + x.len) as usize).unwrap_or(&[]);
+        let resolved = resolve_diag_keys(
+            rows.diags,
+            m.symbols.iter().map(|r| (r.kind, text(r.name), text(r.version))),
+        )?;
+        m.diags = resolved;
     }
     // The rows added for the options' names are no key of the link: none
     // has a `.symtab` entry.
@@ -2616,13 +2636,33 @@ struct PendingDiag {
 /// # Errors
 /// A warning whose subjects are not known here, named (its code and why):
 /// the link writes no state (the next link is a full one, `no-state`).
-#[allow(clippy::too_many_lines, reason = "each code's subjects, in one place")]
 pub fn diag_rows(
     inputs: &Inputs<'_>,
     gnu_warnings: &[(SymbolId, FileId, SectionIndex)],
     four: &State,
     warnings: &[(mortar_diag::Key, mortar_diag::Diagnostic)],
 ) -> Result<Vec<crate::update::diags::DiagRow>, String> {
+    let named = diag_rows_named(inputs, gnu_warnings, warnings)?;
+    resolve_diag_keys(
+        named,
+        four.symbols.iter().map(|r| (r.kind, four.str(r.name), four.str(r.version))),
+    )
+}
+
+/// A `DIAGS` row whose key subject is still a name ([`diag_rows_named`]):
+/// the row holds `Subject::Key(SymbolId(NONE))` for it until
+/// [`resolve_diag_keys`] puts the key's `SYMBOLS` row.
+type NamedDiag = (crate::update::diags::DiagRow, Option<(Vec<u8>, Vec<u8>)>);
+
+/// [`diag_rows`]' rows, each key by its name (`state5_rows` resolves them
+/// after it adds the rows of the options' unmentioned names: an
+/// `entry-not-found` warning's key is one).
+#[allow(clippy::too_many_lines, reason = "each code's subjects, in one place")]
+fn diag_rows_named(
+    inputs: &Inputs<'_>,
+    gnu_warnings: &[(SymbolId, FileId, SectionIndex)],
+    warnings: &[(mortar_diag::Key, mortar_diag::Diagnostic)],
+) -> Result<Vec<NamedDiag>, String> {
     use crate::update::diags::{DiagRef, Subject, reference_site};
     use mortar_diag::subject::{SubjectKind, subjects};
     use mortar_diag::{Context, Diagnostic, FileRef, Kind, Place, Relation, Style};
@@ -2839,40 +2879,11 @@ pub fn diag_rows(
             dormant: Some(h.1),
         });
     }
-    // The keys' `SYMBOLS` rows: one pass over the rows for every name.
-    let mut rows_of: HashMap<(Vec<u8>, Vec<u8>), Option<u32>> = HashMap::default();
-    for p in &pending {
-        if let Some(n) = &p.name {
-            rows_of.insert(n.clone(), None);
-        }
-    }
-    if !rows_of.is_empty() {
-        for (i, r) in four.symbols.iter().enumerate() {
-            if !matches!(r.kind, sym_kind::GLOBAL | sym_kind::VERSIONED) {
-                continue;
-            }
-            let k = (four.str(r.name).to_vec(), four.str(r.version).to_vec());
-            if let Some(slot) = rows_of.get_mut(&k) {
-                if slot.is_some() {
-                    return Err("DIAGS: two SYMBOLS rows of one key".into());
-                }
-                *slot = Some(i as u32);
-            }
-        }
-    }
     let plain = Style::plain("");
     let mut out = Vec::with_capacity(pending.len());
     for p in pending {
         let code = p.d.id();
-        let key = match &p.name {
-            Some(n) => Some(SymbolId(rows_of.get(n).copied().flatten().ok_or_else(|| {
-                refuse(
-                    code,
-                    &format!("its key {:?} has no SYMBOLS row", String::from_utf8_lossy(&n.0)),
-                )
-            })?)),
-            None => None,
-        };
+        let key = p.name.as_ref().map(|_| SymbolId(NONE));
         let row = if let (Some(holder), Some(k)) = (p.dormant, key) {
             crate::update::diags::dormant(&p.d, k, holder)
         } else {
@@ -2887,15 +2898,68 @@ pub fn diag_rows(
         if back != p.d || back.render(&plain) != p.d.render(&plain) {
             return Err(refuse(code, "its row reads back to another warning"));
         }
-        out.push(row);
+        out.push((row, p.name));
     }
     let mut seen: Vec<(u16, u32, u64, &str, &str)> = out
         .iter()
-        .map(|r| (r.key.phase, r.key.unit, r.key.seq, &r.code[..], &r.text[..]))
+        .map(|(r, _)| (r.key.phase, r.key.unit, r.key.seq, &r.code[..], &r.text[..]))
         .collect();
     seen.sort_unstable();
     if seen.windows(2).any(|w| w[0] == w[1]) {
         return Err("DIAGS: two warnings of one key, code and text (IN-75a)".into());
+    }
+    Ok(out)
+}
+
+/// [`diag_rows_named`]' rows with each key subject its `SYMBOLS` row:
+/// `symbols` gives each row's (kind, name, version); one pass for every
+/// name wanted.
+///
+/// # Errors
+/// A name with no global row, or with two (named).
+fn resolve_diag_keys<'b>(
+    named: Vec<NamedDiag>,
+    symbols: impl Iterator<Item = (u8, &'b [u8], &'b [u8])>,
+) -> Result<Vec<crate::update::diags::DiagRow>, String> {
+    use crate::update::diags::Subject;
+    let mut rows_of: HashMap<(Vec<u8>, Vec<u8>), Option<u32>> = HashMap::default();
+    for (_, n) in &named {
+        if let Some(n) = n {
+            rows_of.insert(n.clone(), None);
+        }
+    }
+    if !rows_of.is_empty() {
+        for (i, (kind, name, version)) in symbols.enumerate() {
+            if !matches!(kind, sym_kind::GLOBAL | sym_kind::VERSIONED) {
+                continue;
+            }
+            if let Some(slot) = rows_of.get_mut(&(name.to_vec(), version.to_vec())) {
+                if slot.is_some() {
+                    return Err("DIAGS: two SYMBOLS rows of one key".into());
+                }
+                *slot = Some(i as u32);
+            }
+        }
+    }
+    let mut out = Vec::with_capacity(named.len());
+    for (mut row, name) in named {
+        if let Some(n) = name {
+            let k = rows_of.get(&n).copied().flatten().ok_or_else(|| {
+                format!(
+                    "DIAGS: a warning {}: its key {:?} has no SYMBOLS row (IN-75a)",
+                    row.code,
+                    String::from_utf8_lossy(&n.0)
+                )
+            })?;
+            for x in &mut row.subjects {
+                if *x == Subject::Key(SymbolId(NONE)) {
+                    *x = Subject::Key(SymbolId(k));
+                }
+            }
+            row.subjects.sort_unstable();
+            row.subjects.dedup();
+        }
+        out.push(row);
     }
     Ok(out)
 }

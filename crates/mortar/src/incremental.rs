@@ -1366,16 +1366,13 @@ impl Session {
         // DIAGS (IN-75a, WP-265): the link's warnings, read before its
         // report is finished, each with its subjects; a warning whose
         // subjects are not known: no state (named).
+        // (The dormant rows alone are `state`'s, which an update's state
+        // shares.)
         let warnings = diagnostics.warnings();
         let gnu_warnings = &f.gnu_warnings;
-        if !warnings.is_empty() || !gnu_warnings.is_empty() {
+        if !warnings.is_empty() {
             let start = Instant::now();
-            rows.put_diags(mortar_incr::capture::diag_rows(
-                &f.inputs,
-                gnu_warnings,
-                state,
-                &warnings,
-            )?);
+            rows.capture_diags(&f.inputs, gnu_warnings, &warnings)?;
             let mut th = start;
             lap(&self.times, &mut th, "format 5: DIAGS");
             *t += start.elapsed();
@@ -1686,6 +1683,16 @@ impl Session {
             state.leaves.push(row);
         }
         state.strings = strings.into_bytes();
+        // DIAGS (IN-75a, WP-265): the dormant rows of the warned keys no
+        // reference reaches, from the front alone (an update's state, whose
+        // front is quiet, holds what the full link of its inputs holds);
+        // `state5_bytes` adds the full link's warnings.
+        let mut rows5 = rows5;
+        if let Some(r) = &mut rows5
+            && !f.gnu_warnings.is_empty()
+        {
+            r.capture_diags(&f.inputs, &f.gnu_warnings, &[])?;
+        }
         Ok((state, rows5))
     }
 }
