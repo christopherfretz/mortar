@@ -61,9 +61,6 @@ use mortar_elf::{Object, SectionIndex, SymbolIndex, SymbolSection, SymbolTable};
 use crate::read::{self, ReadFail};
 use crate::{LiveInputs, LiveOptions, PHASE};
 
-#[cfg(feature = "wp238-probe")]
-mod probe;
-
 /// A diagnostic with its key.
 pub(crate) type Keyed = (Key, Diagnostic);
 
@@ -535,12 +532,6 @@ pub(crate) fn collect(
 
     let live: Vec<bool> = marks.live.into_iter().map(AtomicBool::into_inner).collect();
     let frag_live: Vec<bool> = marks.frag.into_iter().map(AtomicBool::into_inner).collect();
-    #[cfg(feature = "wp238-probe")]
-    {
-        let fresh = new_marks();
-        let cx = p.walk(tables_in, &fresh);
-        probe::run(&cx, &new_marks, &roots, tables_in, &live, &frag_live);
-    }
     Ok(Liveness {
         live: Column::from_vec(live).unwrap_or_default(),
         frag_live: Column::from_vec(frag_live).unwrap_or_default(),

@@ -8,11 +8,6 @@ license.workspace = true
 repository.workspace = true
 publish.workspace = true
 
-[features]
-# WP-238 step 1's experiment probe (gc/probe.rs): off by default; deleted
-# in step 2.
-wp238-probe = []
-
 [dependencies]
 mortar_arch.workspace = true
 mortar_core.workspace = true
