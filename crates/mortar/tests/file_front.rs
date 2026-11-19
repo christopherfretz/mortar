@@ -190,6 +190,20 @@ fn compare(
     seen.files += 1;
     let stored = view.sections_of(file).expect("SECTIONS");
     let range = view.file_index(file).expect("FILE_INDEX").ranges[FileTable::Sections as usize];
+    let r = view.file(file).expect("FILES");
+    if stored.is_empty() && r.flags & mortar_incr::update::rows::file_flags::LAZY == 0 {
+        // WP-255d2: what a file without `SECTIONS` rows and without
+        // `LAZY` IS (its `FILES` row), for the record.
+        let name = view.string(r.member_name).expect("member name");
+        eprintln!(
+            "[wp255d2] {}: no SECTIONS rows: FILES.flags {:#x}, member {}, kind {}, {} mentions",
+            what(""),
+            r.flags,
+            String::from_utf8_lossy(&name),
+            r.kind,
+            want.mentions.len()
+        );
+    }
     assert_eq!(ff.sections.len(), want.sections.len(), "{}", what("section count"));
     let Reader::Object(obj) = f.inputs.files[file].reader else { panic!("{}", what("no object")) };
     for (k, (s, w)) in ff.sections.iter().zip(&want.sections).enumerate() {
