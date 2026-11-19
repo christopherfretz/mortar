@@ -2028,18 +2028,9 @@ fn clip_jobs(
     out
 }
 
-/// The inputs of [`crate::clip_plan::for_clips`] for `ranges` from
-/// `link` (WP-255c2a; an update finds them in its state, 255e): every
-/// member section that meets a range, by file offset, the pad views, the
-/// holes of the chunks a range meets, the abbreviation table's offset and
-/// the structural chunks' bytes; the plan over `rows`.
-fn clip_plan_of<R: Rows>(
-    link: &Link<'_, '_>,
-    rows: &R,
-    ranges: &[std::ops::Range<u64>],
-) -> Result<crate::plan::Plan, crate::clip_plan::ClipError> {
-    use crate::clip_plan::{ClipParts, ClipSection};
-    let model = Model {
+/// The model of `link` the plan makers read.
+fn clip_model<'l>(link: &Link<'l, '_>) -> Model<'l, 'l> {
+    Model {
         inputs: link.inputs,
         resolution: link.resolution,
         liveness: link.liveness,
@@ -2048,23 +2039,73 @@ fn clip_plan_of<R: Rows>(
         assignment: link.assignment,
         order: Some(link.order),
         eh: link.eh.map(|e| e.1),
-    };
+    }
+}
+
+/// The member index of `link` ([`crate::clip_plan::Members`], WP-255c2b):
+/// for each in-file `Body` chunk, every section `from_layout` makes an
+/// `Input` row of ([`layout_plan::is_member`] and
+/// [`layout_plan::member_front`]), in offset order, with its input
+/// header's alignment. A full link's form of what an update reads from a
+/// stored table (255e). O(sections).
+///
+/// # Errors
+///
+/// An unreadable input section header.
+pub fn clip_members(link: &Link<'_, '_>) -> Result<crate::clip_plan::Members, Diagnostic> {
+    use crate::clip_plan::{Member, Members};
+    let model = clip_model(link);
     let pl = &link.layout.placement;
-    let meets = |lo: u64, hi: u64| ranges.iter().any(|r| r.start < hi && lo < r.end && lo < hi);
-    let mut sections = Vec::new();
+    let mut by: std::collections::BTreeMap<ChunkId, Vec<(u64, Member)>> =
+        std::collections::BTreeMap::new();
     for (s, place) in pl.place.iter() {
         let Some((c, off)) = place.get() else { continue };
-        let chunk = &pl.chunks[c];
-        if !meets(chunk.offset, chunk.offset + chunk.size) || !layout_plan::is_member(&model, s) {
+        if !layout_plan::is_member(&model, s) {
             continue;
         }
-        let Some(front) = layout_plan::member_front(&model, s, chunk)? else { continue };
-        let at = chunk.offset + off;
-        if meets(at, at + front.size) {
-            sections.push(ClipSection { section: s, place: (c, off), front });
+        if layout_plan::member_front(&model, s, &pl.chunks[c])?.is_none() {
+            continue;
         }
+        let align = link
+            .resolution
+            .sh_index(s)
+            .and_then(|(f, i)| match &link.inputs.files[f].reader {
+                Reader::Object(o) => o.section(i).ok().and_then(|x| x.alignment().ok()),
+                _ => None,
+            })
+            .unwrap_or(1);
+        by.entry(c).or_default().push((off, Member { section: s, align }));
     }
-    sections.sort_by_key(|s| pl.chunks[s.place.0].offset + s.place.1);
+    let by_chunk = by
+        .into_iter()
+        .map(|(c, mut v)| {
+            v.sort_by_key(|m| m.0);
+            (c, v.into_iter().map(|m| m.1).collect())
+        })
+        .collect();
+    Ok(Members { by_chunk })
+}
+
+/// The inputs of [`crate::clip_plan::for_clips`] for `ranges` from
+/// `link` (WP-255c2a; an update finds them in its state, 255e): the member
+/// index ([`clip_members`], changed by `members_edit`, a test's hook), the
+/// sections' fronts, the pad views, the holes of the chunks a range meets,
+/// the abbreviation table's offset and the structural chunks' bytes; the
+/// plan over `rows`.
+fn clip_plan_of<R: Rows>(
+    link: &Link<'_, '_>,
+    rows: &R,
+    ranges: &[std::ops::Range<u64>],
+    members_edit: impl FnOnce(&mut crate::clip_plan::Members),
+) -> Result<crate::plan::Plan, crate::clip_plan::ClipError> {
+    use crate::clip_plan::ClipParts;
+    let model = clip_model(link);
+    let pl = &link.layout.placement;
+    let meets = |lo: u64, hi: u64| ranges.iter().any(|r| r.start < hi && lo < r.end && lo < hi);
+    let mut members = clip_members(link)?;
+    members_edit(&mut members);
+    let front =
+        |s: SectionId, (c, _): (ChunkId, u64)| layout_plan::member_front(&model, s, &pl.chunks[c]);
     let (chunk_views, seg_views) = layout_plan::pad_views(&model);
     let holes: Vec<(mortar_core::layout::Hole, &[u8])> = pl
         .holes
@@ -2086,7 +2127,28 @@ fn clip_plan_of<R: Rows>(
         structure: &structure,
         proof: link.proof,
     };
-    crate::clip_plan::for_clips(rows, ranges, &sections, &parts)
+    crate::clip_plan::for_clips(rows, ranges, &members, &front, &parts)
+}
+
+/// [`crate::clip_plan::sections_in`] over `link`'s rows and
+/// [`clip_members`] for each `(chunk, range)` query (a test's path,
+/// WP-255c2b).
+///
+/// # Errors
+///
+/// [`clip_members`]' error.
+#[doc(hidden)]
+#[allow(clippy::type_complexity)]
+pub fn clip_sections_for_test(
+    link: &Link<'_, '_>,
+    queries: &[(ChunkId, std::ops::Range<u64>)],
+) -> Result<Vec<Result<Vec<crate::clip_plan::Placed>, crate::clip_plan::ClipError>>, Diagnostic> {
+    let tables = LinkTables::new(*link);
+    let members = clip_members(link)?;
+    Ok(queries
+        .iter()
+        .map(|(c, r)| crate::clip_plan::sections_in(tables.rows(), &members, *c, r.clone()))
+        .collect())
 }
 
 /// What [`refill_clip_plan`] built and filled.
@@ -2118,8 +2180,23 @@ pub fn refill_clip_plan(
     ranges: &[std::ops::Range<u64>],
     edit: impl FnOnce(&mut crate::plan::Plan),
 ) -> Result<ClipFill, Result<crate::clip_plan::ClipError, Failed>> {
+    refill_clip_plan_with(link, ranges, |_| {}, edit)
+}
+
+/// [`refill_clip_plan`] with the member index changed by `members_edit`
+/// first (a test's hook, WP-255c2b: one member dropped).
+///
+/// # Errors
+///
+/// As [`refill_clip_plan`].
+pub fn refill_clip_plan_with(
+    link: &Link<'_, '_>,
+    ranges: &[std::ops::Range<u64>],
+    members_edit: impl FnOnce(&mut crate::clip_plan::Members),
+    edit: impl FnOnce(&mut crate::plan::Plan),
+) -> Result<ClipFill, Result<crate::clip_plan::ClipError, Failed>> {
     let tables = LinkTables::new(*link);
-    let mut clip = clip_plan_of(link, tables.rows(), ranges).map_err(Ok)?;
+    let mut clip = clip_plan_of(link, tables.rows(), ranges, members_edit).map_err(Ok)?;
     edit(&mut clip);
     with_image(link, Path::new(""), |img, whole, _, _| {
         clip.deferred_order = deferred_orders(link, &clip)?;
