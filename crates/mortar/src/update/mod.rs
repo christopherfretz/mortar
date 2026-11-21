@@ -2059,6 +2059,11 @@ fn fill_difference(
 /// views (the delta's chunks and segments).
 #[allow(clippy::too_many_lines, reason = "the index, its two checks, the plan, its fill")]
 #[allow(clippy::too_many_arguments, reason = "front 2, C''s fill and the update's rows")]
+#[allow(clippy::many_single_char_names, reason = "front 2, its link, C''s refill, short-lived")]
+#[allow(
+    clippy::result_large_err,
+    reason = "`ClipParts`' closures return a `Diagnostic` (its type)"
+)]
 fn s3_bytes(
     rows: &update_rows::UpdateRows<'_, '_>,
     view: &StateView<'_>,
