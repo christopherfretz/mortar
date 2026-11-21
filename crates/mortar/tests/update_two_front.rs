@@ -139,7 +139,12 @@ fn a_grown_function_is_taken_through_front_two_or_refused_by_name() {
             let lines = std::fs::read_to_string(&findings).expect("findings");
             let err = std::fs::read_to_string(&rep).expect("rep.txt");
             assert!(!o.stderr_text().contains("incremental:"), "{label}: {}", o.stderr_text());
-            let front2 = lines.lines().any(|l| l.starts_with("M2b-3 Part 3: taken: front 2"));
+            // WP-267 P-5: every taken hop is front 2's; the non-identity
+            // ones refill every chunk (and run C' in shadow).
+            let front2 =
+                lines.lines().any(|l| l.starts_with("M2b-3 Part 3: taken: front 2 (every chunk"));
+            let identity =
+                lines.lines().any(|l| l.starts_with("M2b-3 Part 3: taken: front 2 (identity"));
             let fell_back = !err.starts_with("incremental: update");
             assert!(
                 !lines.lines().any(|l| l.contains("FINDING")),
@@ -184,6 +189,8 @@ fn a_grown_function_is_taken_through_front_two_or_refused_by_name() {
                     "{label}: hop {hop}: S3 bytes: {s3b}"
                 );
                 taken.push(format!("{label} hop {hop}"));
+            } else if identity {
+                assert!(!fell_back, "{label}: hop {hop}: taken and fell back: {err}\n{lines}");
             } else if fell_back {
                 // Named in the findings, or in the report's reason
                 // (`small-output` without the testhooks build).
