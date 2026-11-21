@@ -586,9 +586,11 @@ fn state_blocks(path: &std::path::Path) -> Vec<Block> {
     out
 }
 
-/// An ELF64 output's `.symtab` entries `(name, st_info, st_name)` (names
-/// from `.strtab`) and the `.strtab` range.
-fn symtab_entries(elf: &[u8]) -> (Vec<(Vec<u8>, u8, u32)>, std::ops::Range<usize>) {
+/// A `.symtab` entry: its name (from `.strtab`), `st_info`, `st_name`.
+type Entry = (Vec<u8>, u8, u32);
+
+/// An ELF64 output's `.symtab` entries.
+fn symtab_entries(elf: &[u8]) -> Vec<Entry> {
     let le = |at: usize, n: usize| {
         elf[at..at + n].iter().rev().fold(0u64, |a, &x| a << 8 | u64::from(x)) as usize
     };
@@ -605,8 +607,8 @@ fn symtab_entries(elf: &[u8]) -> (Vec<(Vec<u8>, u8, u32)>, std::ops::Range<usize
             .expect("the section")
     };
     let (st, ss) = (range(b".symtab"), range(b".strtab"));
-    let strtab = &elf[ss.clone()];
-    let entries = elf[st]
+    let strtab = &elf[ss];
+    elf[st]
         .chunks_exact(24)
         .map(|e| {
             let name = u32::from_le_bytes(e[0..4].try_into().expect("4"));
@@ -614,8 +616,7 @@ fn symtab_entries(elf: &[u8]) -> (Vec<(Vec<u8>, u8, u32)>, std::ops::Range<usize
             let end = strtab[at..].iter().position(|&b| b == 0).map_or(strtab.len(), |n| at + n);
             (strtab[at..end].to_vec(), e[4], name)
         })
-        .collect();
-    (entries, ss)
+        .collect()
 }
 
 /// M2b-5b (WP-225; I-78a, IN-49a, IN-78): after a taken update whose
@@ -680,9 +681,9 @@ fn the_update_map_states_the_output_symtab_blocks() {
                 assert!(!want.is_empty(), "{}: {what}: the full link stores no block", p.label);
                 assert_eq!(got, want, "{}: {what}: the map's blocks are the full link's", p.label);
                 let elf = std::fs::read(p.dir.join("u")).expect("the update's output");
-                let (entries, strtab) = symtab_entries(&elf);
+                let entries = symtab_entries(&elf);
                 let full_elf = std::fs::read(p.dir.join("g")).expect("the full link's output");
-                let (full_entries, _) = symtab_entries(&full_elf);
+                let full_entries = symtab_entries(&full_elf);
                 let mut outside = Vec::new();
                 for ((path, member), [first, count, _, str_at, str_cap]) in &got {
                     for i in *first..first + count {
@@ -706,7 +707,6 @@ fn the_update_map_states_the_output_symtab_blocks() {
                         }
                     }
                 }
-                let _ = strtab;
                 // The shape: x.o's block holds `f` exactly when `f` is local.
                 let x_obj = p.dir.join("x.c.o").to_string_lossy().into_owned();
                 let names_of = |path: &str| -> Vec<Vec<u8>> {

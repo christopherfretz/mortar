@@ -512,7 +512,7 @@ fn refill_capture(
     // (S-74): no stored block stands beside them ([`OutputBlocks`]).
     // Without a front plan (no `.symtab`), `update_map` reads the stored
     // rows as before.
-    let blocks = f.synth.symtab.as_ref().and_then(|p| p.incr_blocks());
+    let blocks = f.synth.symtab.as_ref().and_then(mortar_synth::SymtabPlan::incr_blocks);
     let map_plan = mortar_core::incr::SymtabPlan {
         blocks: blocks.clone().unwrap_or_default(),
         ..mortar_core::incr::SymtabPlan::default()
