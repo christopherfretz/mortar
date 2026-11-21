@@ -1,0 +1,12 @@
+# WP-279: the commonest pair of edits. The first link has c.o's grown
+# function; hop 1 shrinks it (the region keeps its capacity), hop 2
+# grows it back into the region it left, hop 3 grows it past the first
+# link's size (inside the region's slack). protoc's grow-back hop
+# (WP-274 section 4.2) was refused `update-not-implemented (layout)`.
+proves: a function that shrinks and then grows back into its region (and past its first size, inside the slack) is an update taken in place at every hop, equivalent to the full link (a), its dirty ranges cover every changed byte (b), its state judged (c)
+source: WP-279 (WP-274 record section 8 item 0a; 255e3's clock, spec/landed/incr/WP-255e.md)
+edit BIG: c.cc
+edit HUGE: c.cc
+hops: BIG, -, BIG, HUGE
+link: main.o c.o u.o
+compilers: gcc kiln

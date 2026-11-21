@@ -1550,10 +1550,13 @@ fn symtab_rows_check(
 /// to the part's limit; no hole when clipped to 0). Here: per body chunk
 /// of such a section, its placed sections whose own output section
 /// (`SECTIONS.out`) is the chunk's (L-159's empty neighbours are not its
-/// members), by offset; a run ends where the key changes or a `Fill` hole
-/// starts; its capacity runs to that hole's end. Ordinals per (file,
-/// output section, category) in address order (a run cut by a part limit
-/// is two regions).
+/// members), by offset; a run ends only where the key changes (as in
+/// `close` and in the map's `region` records): a `Fill` hole between two
+/// of its members, a member's freed tail (IN-3a), is the region's
+/// (WP-279: the file keeps the region it had, IN-72 item 2); its capacity
+/// runs to the end of the `Fill` hole at its last member's end. Ordinals
+/// per (file, output section, category) in address order (a run cut by a
+/// part limit is two regions).
 ///
 /// # Errors
 /// A row that names a missing chunk, output section or string.
@@ -1630,10 +1633,10 @@ fn region_rows(
             } else {
                 0
             };
-            // A run ends at a key change or at a `Fill` hole between its
-            // end and this member (a zero-size member at its end is its).
+            // A run ends at a key change only: a `Fill` hole between its
+            // end and this member is a freed tail inside it (WP-279).
             if let Some(r) = run
-                && (r.0 != s.file || r.1 != cat || next_hole(r.3).is_some_and(|h| h.0 < off))
+                && (r.0 != s.file || r.1 != cat)
             {
                 close(r, &mut found);
                 run = None;
@@ -1665,11 +1668,12 @@ fn region_rows(
 /// chunk and do not overlap; they tile its placed sections (each section
 /// in a region of its own file and category, each region starting at its
 /// first section); every `Fill` hole of the chunk is one region's slack,
-/// from its last section's end to its own, or the padding before a
-/// region, from the previous region's end to its start (WP-255g, S2-1:
-/// the delta's pad once the region's first member no longer explains it,
-/// and `overflow`'s pad before a new region); a region without slack ends at its
-/// last section and is the chunk's last; a file's ordinals per (output
+/// from its last section's end to its own, a freed tail inside a region,
+/// between its first section and its last section's end (IN-3a, WP-279),
+/// or the padding before a region, from the previous region's end to its
+/// start (WP-255g, S2-1: the delta's pad once the region's first member
+/// no longer explains it, and `overflow`'s pad before a new region); a
+/// region without slack ends at its last section and is the chunk's last; a file's ordinals per (output
 /// section, category) are 0, 1, ... in address order. A break is `Err`:
 /// no state is written.
 #[allow(clippy::too_many_lines)] // one check per property, each with its words
@@ -1797,7 +1801,8 @@ fn regions_check(m: &crate::update::testing::MemoryState) -> Result<(), String> 
         }
     }
     for (ci, regs) in &by_chunk {
-        let holes = fills.remove(ci).unwrap_or_default();
+        let mut holes = fills.remove(ci).unwrap_or_default();
+        holes.sort_unstable();
         let mut used = vec![false; holes.len()];
         for (k, r) in regs.iter().enumerate() {
             let who = format!("file {}'s region [{:#x}, {:#x}) of chunk {ci}", r.2, r.0, r.1);
@@ -1816,6 +1821,15 @@ fn regions_check(m: &crate::update::testing::MemoryState) -> Result<(), String> 
                         r.6
                     ));
                 }
+            }
+        }
+        // WP-279: a freed tail inside a region, between its first section
+        // and its last section's end (IN-3a), is the region's.
+        for r in regs {
+            let mut h = holes.partition_point(|x| x.0 < r.5);
+            while h < holes.len() && holes[h].1 <= r.6 {
+                used[h] = true;
+                h += 1;
             }
         }
         // S2-1 (WP-255g): a pad, `[previous region's end, region start)`.
@@ -4561,6 +4575,43 @@ mod wp264 {
         assert_eq!(region_rows(&n).expect("the rows"), rows);
         n.regions = rows;
         assert_eq!(regions_check(&n), Ok(()));
+    }
+
+    /// WP-279: file 1's `.text` shrinks from 0x10 to 0x8 bytes in place;
+    /// its freed tail [0x8, 0x10) is a `Fill` hole between it and its
+    /// `.text.b` (IN-3a). The file keeps its one region [0, 0x58) (IN-72
+    /// item 2), as the full link made it: the run does not end at the
+    /// hole, and the hole is the region's. At 1bfce906 the region was
+    /// split in two, [0, 0x10) and a new ordinal 1 [0x10, 0x58), and the
+    /// next update that grew `.text` back filled ordinal 0 to its end,
+    /// next to ordinal 1, and was refused `update-not-implemented`.
+    #[test]
+    fn a_freed_tail_inside_a_region_is_the_regions() {
+        let mut m = placed();
+        m.sections[0].size = 0x8;
+        // The state's holes are in address order.
+        m.holes.insert(
+            0,
+            HoleRow { chunk: 0, kind: hole_kind::FILL, offset: 0x8, size: 8, tomb: false },
+        );
+        let text = mortar_layout::order::text_category(b".text");
+        let rows = region_rows(&m).expect("the rows");
+        assert_eq!(
+            rows.iter().filter(|r| r.0 == FileId(1)).copied().collect::<Vec<_>>(),
+            vec![(FileId(1), region(text, 0, 0, 0x58))],
+            "one region, as the full link's"
+        );
+        m.regions = rows;
+        assert_eq!(regions_check(&m), Ok(()), "the freed tail is the region's");
+        // A `Fill` hole past the region's last section's end and not its
+        // slack is still no region's.
+        let mut b = m.clone();
+        b.holes.insert(
+            2,
+            HoleRow { chunk: 0, kind: hole_kind::FILL, offset: 0x58, size: 4, tomb: false },
+        );
+        let e = regions_check(&b).expect_err("a stray hole");
+        assert!(e.contains("is no region's slack"), "{e}");
     }
 }
 
