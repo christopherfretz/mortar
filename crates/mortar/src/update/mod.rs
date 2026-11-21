@@ -2145,6 +2145,7 @@ fn front_two(
     let resolve = || IncrReason::UpdateNotImplemented(Some(Unimplemented::Resolve));
     let why: std::cell::RefCell<Option<Refusal>> = std::cell::RefCell::new(None);
     let made: std::cell::RefCell<Option<Hooked>> = std::cell::RefCell::new(None);
+    let hook_time = std::cell::Cell::new(std::time::Duration::ZERO);
     let hook = |cx: &crate::front::Replay<'_, '_>| -> Result<mortar_core::layout::Layout, String> {
         let fail = |r: Refusal| {
             let s = r.1.clone();
@@ -2166,7 +2167,10 @@ fn front_two(
                 _ => return fail((resolve(), format!("P-5: front 2's file {} is not", file.0))),
             }
         }
-        match hooked(view, stored, cx, planned, out) {
+        let at = std::time::Instant::now();
+        let got = hooked(view, stored, cx, planned, out);
+        hook_time.set(at.elapsed());
+        match got {
             Ok((lu, h)) => {
                 *made.borrow_mut() = Some(h);
                 Ok(lu)
@@ -2176,6 +2180,9 @@ fn front_two(
     };
     let r = image_link(ctx, cwd, Some(&hook), |f| {
         steps.mark("front2");
+        // The clock: the hook (judge, debug_placed, identity',
+        // materialize) as its own lap.
+        steps.split("front2-hook", hook_time.get());
         let mut h = made.borrow_mut().take().ok_or_else(|| {
             changed::record("P-5: front 2 ran without its replay hook: (image)");
             image()
