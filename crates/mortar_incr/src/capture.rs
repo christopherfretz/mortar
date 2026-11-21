@@ -985,6 +985,9 @@ pub struct Rows5 {
     iterations: u32,
     /// `DEBUG_STRS` (WP-247, [`debug_str_rows`]).
     debug_strs: Vec<crate::update::rows::DebugStrRow>,
+    /// `MERGE_DEFS` (WP-275, [`merge_def_rows`]): each with its section's
+    /// capture id; [`state5_rows`] gives `local`.
+    merge_defs: Vec<(u32, crate::update::rows::MergeDefRow)>,
     /// `SYMTAB_KEYS` (WP-262): per `SYMBOLS` row, its key's global entry
     /// (`NONE`: none), and the global area it is checked against
     /// ([`symtab_keys_check`]).
@@ -1851,6 +1854,249 @@ fn regions_check(m: &crate::update::testing::MemoryState) -> Result<(), String> 
     Ok(())
 }
 
+/// `CHUNK_UNITS` of a state (WP-275 §2.2, P-275a): a pure function of
+/// its own rows. Per `Body` chunk its units in offset order: one per
+/// `REGIONS` row (`unit` 0, `local` its position in the file's `REGIONS`
+/// range), and one per placed section of a `Body` chunk that no region
+/// covers (`unit` 1, `local` its position in the file's `SECTIONS`
+/// range; NOBITS and zero-size included). A region covers the sections
+/// [`region_rows`] makes its members: those of a hole-tolerant allocated
+/// chunk whose own output section is the chunk's. Ties at one offset by
+/// (`FILES.rank`, `unit`, `local`); `seq` is `k << 32` for the chunk's
+/// k-th unit (k = 1, 2, ...: the compaction's numbering). O(sections +
+/// regions) and a sort.
+///
+/// # Errors
+/// A row that names a missing chunk, file or output section, or a region
+/// in a chunk that is not `Body`.
+pub fn chunk_unit_rows(
+    m: &crate::update::testing::MemoryState,
+) -> Result<Vec<crate::update::rows::ChunkUnitRow>, String> {
+    use crate::update::rows::{ChunkUnitRow, unit_kind};
+    use mortar_layout::slack::{Class, class};
+    let body = tag_byte(ChunkTag::Body);
+    let text = |s: Str| {
+        m.strings
+            .get(s.off as usize..(s.off as usize).saturating_add(s.len as usize))
+            .ok_or_else(|| "CHUNK_UNITS: a string past STRINGS".to_owned())
+    };
+    // Per chunk: `Body`, and hole-tolerant (REGIONS covers it).
+    let mut kinds: Vec<(bool, bool)> = Vec::with_capacity(m.chunks.len());
+    for c in &m.chunks {
+        let tolerant = c.tag == body && c.sh_flags & mortar_elf::consts::SHF_ALLOC != 0 && {
+            let o =
+                m.outsecs.get(c.out as usize).ok_or("CHUNK_UNITS: a body chunk's OUTSECS row")?;
+            class(text(o.name)?, c.sh_flags) == Class::Tolerant
+        };
+        kinds.push((c.tag == body, tolerant));
+    }
+    let rank = |f: u32| {
+        m.files.get(f as usize).map(|r| r.rank).ok_or_else(|| format!("CHUNK_UNITS: FILES row {f}"))
+    };
+    // (chunk, offset, rank, unit, local, file)
+    let mut found: Vec<(u32, u64, u64, u8, u32, u32)> = Vec::new();
+    let mut next = vec![0u32; m.files.len()];
+    for &(f, r) in &m.regions {
+        let local = next.get_mut(f.0 as usize).ok_or_else(|| format!("REGIONS: file {}", f.0))?;
+        let at = *local;
+        *local += 1;
+        if !kinds.get(r.chunk as usize).is_some_and(|k| k.0) {
+            return Err(format!(
+                "CHUNK_UNITS: file {}'s region {at} is in chunk {}, not a Body chunk",
+                f.0, r.chunk
+            ));
+        }
+        found.push((r.chunk, r.offset, rank(f.0)?, unit_kind::REGION, at, f.0));
+    }
+    let mut next = vec![0u32; m.files.len()];
+    for s in m.sections.iter().filter(|s| s.file != NONE) {
+        let local =
+            next.get_mut(s.file as usize).ok_or_else(|| format!("SECTIONS: file {}", s.file))?;
+        let at = *local;
+        *local += 1;
+        if s.place_chunk == NONE {
+            continue;
+        }
+        let c = m.chunks.get(s.place_chunk as usize).ok_or("CHUNK_UNITS: a section's chunk")?;
+        let (is_body, tolerant) = kinds[s.place_chunk as usize];
+        if !is_body || (tolerant && u32::from(s.out) == c.out + 1) {
+            continue;
+        }
+        found.push((s.place_chunk, s.place_offset, rank(s.file)?, unit_kind::SECTION, at, s.file));
+    }
+    found.sort_unstable();
+    let mut out = Vec::with_capacity(found.len());
+    let (mut k, mut last) = (0u64, None);
+    for (chunk, _, _, unit, local, file) in found {
+        k = if last == Some(chunk) { k + 1 } else { 1 };
+        last = Some(chunk);
+        out.push(ChunkUnitRow { chunk, seq: k << 32, file, local, unit, tomb: false });
+    }
+    Ok(out)
+}
+
+/// `incr_state check` (WP-275 rulings item 6): the state's live
+/// `CHUNK_UNITS` rows, per chunk in `seq` order, against
+/// [`chunk_unit_rows`] of the same state's `SECTIONS` and `REGIONS`.
+/// `Ok`: the number of rows compared.
+///
+/// # Errors
+/// The first difference, naming the chunk, the unit's position in it and
+/// both rows (the stored one by its `seq`); or the derivation's error.
+pub fn chunk_units_check(m: &crate::update::testing::MemoryState) -> Result<usize, String> {
+    use crate::update::rows::ChunkUnitRow;
+    let want = chunk_unit_rows(m)?;
+    let mut have: Vec<&ChunkUnitRow> = m.chunk_units.iter().filter(|r| !r.tomb).collect();
+    have.sort_by_key(|r| (r.chunk, r.seq));
+    let show = |r: &ChunkUnitRow| format!("file {} unit {} local {}", r.file, r.unit, r.local);
+    let (mut k, mut last) = (0usize, None);
+    for i in 0..have.len().max(want.len()) {
+        let (a, b) = (have.get(i).copied(), want.get(i));
+        let chunk = a.or(b).map_or(NONE, |r| r.chunk);
+        k = if last == Some(chunk) { k + 1 } else { 1 };
+        last = Some(chunk);
+        let same = |a: &ChunkUnitRow, b: &ChunkUnitRow| {
+            (a.chunk, a.file, a.unit, a.local) == (b.chunk, b.file, b.unit, b.local)
+        };
+        match (a, b) {
+            (Some(a), Some(b)) if same(a, b) => {}
+            (Some(a), Some(b)) => {
+                return Err(format!(
+                    "CHUNK_UNITS: chunk {}'s unit {k} (seq {:#x}): stored {}, derived {} \
+                     (derived chunk {})",
+                    a.chunk,
+                    a.seq,
+                    show(a),
+                    show(b),
+                    b.chunk
+                ));
+            }
+            (Some(a), None) => {
+                return Err(format!(
+                    "CHUNK_UNITS: chunk {}'s unit {k} (seq {:#x}): stored {}, derived none",
+                    a.chunk,
+                    a.seq,
+                    show(a)
+                ));
+            }
+            (None, Some(b)) => {
+                return Err(format!(
+                    "CHUNK_UNITS: chunk {}'s unit {k}: stored none, derived {}",
+                    b.chunk,
+                    show(b)
+                ));
+            }
+            (None, None) => {}
+        }
+    }
+    Ok(have.len())
+}
+
+/// `MERGE_DEFS` of a full link (WP-275 §2.4, P-275a): per live file's
+/// `MENTIONS` row of def kind section whose section is `Merge` (a named
+/// global's definition, every file's, not only the winner's), the piece
+/// the full link's `named_piece` gives `st_value` (`mortar_merge`'s
+/// `refs::named_symbol`: the piece holding byte `v`, the last one when
+/// `v` is the section's size), its fragment's `FRAGS` key (`hash`: the
+/// live fragments' from `hash`, a collected one's read as `frag_hash`
+/// reads it) and the merge class. Returned with the section's capture id
+/// (its `SECTIONS` row) for [`state5_rows`] to turn into the file's
+/// position. A definition the split gives no piece (outside the section,
+/// a section without pieces or output section) has no row: counted in the
+/// second value.
+///
+/// # Errors
+/// A file whose symbol table cannot be read again, a section without
+/// index, a piece without fragment.
+fn merge_def_rows(
+    link: &Link<'_, '_>,
+    extra: &Link5<'_>,
+    files5: &[File5<'_>],
+    hash: &[Option<[u8; 16]>],
+) -> Result<(Vec<(u32, crate::update::rows::MergeDefRow)>, usize), String> {
+    use crate::format::def_kind;
+    use crate::update::rows::MergeDefRow;
+    use mortar_core::resolution::SectionKind;
+    let (res, split) = (link.resolution, link.split);
+    let merge_row: HashMap<u32, usize> =
+        split.merge_of.iter().enumerate().map(|(row, m)| (m.section.0, row)).collect();
+    let mut out = Vec::new();
+    let mut skipped = 0usize;
+    let mut buf = Vec::new();
+    for (n, f) in files5.iter().enumerate() {
+        let file = FileId(n as u32);
+        let mut table = None;
+        for (k, m) in f.mentions.iter().enumerate() {
+            if m.kind != def_kind::SECTION
+                || res
+                    .sections
+                    .get(SectionId(m.section))
+                    .is_none_or(|r| r.kind != SectionKind::Merge)
+            {
+                continue;
+            }
+            let s = SectionId(m.section);
+            let bad = || format!("MERGE_DEFS: file {}'s symbol table", file.0);
+            if table.is_none() {
+                let Reader::Object(object) = link.inputs.files[file].reader else {
+                    return Err(bad());
+                };
+                table = Some((object.symbols().map_err(|_| bad())?.ok_or_else(bad)?, object));
+            }
+            let Some((symbols, object)) = &table else { return Err(bad()) };
+            let index = mortar_elf::symbol::SymbolIndex(f.first_global + k as u32);
+            let v = symbols.get(index).map_err(|_| bad())?.st_value;
+            let (_, sh) = res.sh_index(s).ok_or("MERGE_DEFS: a section without index")?;
+            let size = object.section(sh).map_err(|_| bad())?.size();
+            let (Some(out_sec), Some(&row)) = (link.assignment.out(s), merge_row.get(&s.0)) else {
+                skipped += 1;
+                continue;
+            };
+            // `refs::named_symbol`
+            let piece = match v.cmp(&size) {
+                std::cmp::Ordering::Greater => None,
+                std::cmp::Ordering::Equal => {
+                    split.merge_pieces(s).filter(|p| p.len > 0).map(|span| {
+                        let last = (span.start + span.len - 1) as usize;
+                        let start = u64::from(split.piece_off[last]);
+                        (split.piece_frag[last], v - start, span.len - 1)
+                    })
+                }
+                std::cmp::Ordering::Less => u32::try_from(v)
+                    .ok()
+                    .and_then(|v32| split.merge_piece_at(s, v32))
+                    .map(|p| (split.piece_frag[p.piece as usize], u64::from(p.within), p.ordinal)),
+            };
+            let Some((frag, within, ordinal)) = piece else {
+                skipped += 1;
+                continue;
+            };
+            let h = match hash.get(frag.0 as usize) {
+                Some(Some(h)) => *h,
+                _ => frag_hash(link, frag, &mut buf).ok_or("MERGE_DEFS: a fragment's bytes")?,
+            };
+            out.push((
+                s.0,
+                MergeDefRow {
+                    file: file.0,
+                    local: 0,
+                    value: v,
+                    out: out_sec.0,
+                    class: extra.classes.get(row).ok_or("a merged section without class")?.word(),
+                    hash: h,
+                    within: u32::try_from(within).map_err(|_| "MERGE_DEFS: a piece over 4 GiB")?,
+                    ordinal,
+                    tomb: false,
+                },
+            ));
+        }
+    }
+    // Aliases at one value: one row (the same piece).
+    out.sort_by_key(|(s, r)| (r.file, *s, r.value));
+    out.dedup_by_key(|(s, r)| (r.file, *s, r.value));
+    Ok((out, skipped))
+}
+
 /// One file's part of [`rows5`], with keys as `SymbolId`s.
 #[derive(Default)]
 struct File5<'s> {
@@ -2256,6 +2502,9 @@ fn rows5(
     }
     out.frag_uses.sort_unstable_by_key(|(f, r)| (f.0, *r));
     out.frag_uses.dedup();
+    // ---- MERGE_DEFS (WP-275 §2.4).
+    let merge_skipped;
+    (out.merge_defs, merge_skipped) = merge_def_rows(link, extra, &files5, &hash)?;
     // ---- FILES: LAZY, the eh columns, `first_global`.
     let eh = extra.eh.map_err(|why| format!("no .eh_frame ranges: {why}"))?;
     out.files = files5
@@ -2318,6 +2567,7 @@ fn rows5(
         ),
         format!("MENTIONS {} (positional)", out.mentions.len()),
         format!("FRAGS {} FRAG_USE {}", out.frags.len(), out.frag_uses.len()),
+        format!("MERGE_DEFS {} (no piece: {merge_skipped})", out.merge_defs.len()),
         format!("SLOTS {} (refs 0: {zero})", out.slot_refs.len()),
         format!(
             "GROUPS {} COMMONS {} COPIES {}",
@@ -2531,6 +2781,24 @@ pub fn state5_rows(
     // REGIONS (WP-264): the full link's regions, from its stored placement.
     m.regions = region_rows(&m)?;
     regions_check(&m)?;
+    // CHUNK_UNITS and MERGE_DEFS (WP-275): the units from the rows above;
+    // each definition's section as its position in the file's range.
+    m.chunk_units = chunk_unit_rows(&m)?;
+    let mut first: Vec<Option<u32>> = vec![None; m.files.len()];
+    for (i, s) in m.sections.iter().enumerate() {
+        if let Some(x @ None) = first.get_mut(s.file as usize) {
+            *x = Some(u32::try_from(i).map_err(|_| "SECTIONS over 2^32")?);
+        }
+    }
+    for (s, mut r) in rows.merge_defs {
+        let row = m.sections.get(s as usize).filter(|x| x.file == r.file);
+        let start = first.get(r.file as usize).copied().flatten();
+        let (Some(_), Some(start)) = (row, start) else {
+            return Err(format!("MERGE_DEFS: section {s} is not file {}'s", r.file));
+        };
+        r.local = s - start;
+        m.merge_defs.push(r);
+    }
     if rows.slot_refs.len() != m.slots.len() {
         return Err("SLOTS: the rows are not this state's".into());
     }

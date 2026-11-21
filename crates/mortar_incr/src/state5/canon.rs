@@ -179,6 +179,12 @@ pub fn canon_of(m: &MemoryState) -> Result<Canon, StateError> {
         // judged against the output, not for equality (WP-228 R-2.3):
         // here sorted by key for the comparisons that want it
         (kind::DEBUG_STRS, sorted(&n.debug_strs, s)?),
+        // WP-275 §2.2: `seq` renumbered by `normalize` (k << 32 in the
+        // order kept), so two states that differ only in `seq` compare
+        // equal and a reorder differs; `file` and `local` are the
+        // normalized file's position and its range position
+        (kind::CHUNK_UNITS, sorted(&n.chunk_units, s)?),
+        (kind::MERGE_DEFS, sorted(&n.merge_defs, s)?),
     ];
     Ok(Canon { tables })
 }

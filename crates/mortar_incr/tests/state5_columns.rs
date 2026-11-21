@@ -17,9 +17,9 @@ use mortar_incr::state5::columns::{COLUMNS, To, references};
 use mortar_incr::state5::{self, TABLES, compact, read, write};
 use mortar_incr::update::diags::{DiagRef, DiagRow, Subject};
 use mortar_incr::update::rows::{
-    CommonRow, CopyRow, EdgeRow, FileRow, FileTable, FragRow, FragUseRow, GroupRow, HoleRow,
-    KeyRefRow, MentionRow, RegionRow, ResolvedRow, SlotRow, SymbolRow, SymtabKeyRow, edge_kind,
-    sym_kind,
+    ChunkUnitRow, CommonRow, CopyRow, EdgeRow, FileRow, FileTable, FragRow, FragUseRow, GroupRow,
+    HoleRow, KeyRefRow, MentionRow, MergeDefRow, RegionRow, ResolvedRow, SlotRow, SymbolRow,
+    SymtabKeyRow, edge_kind, sym_kind, unit_kind,
 };
 use mortar_incr::update::testing::MemoryState;
 use mortar_incr::update::view::StatePatch;
@@ -82,6 +82,16 @@ fn os(m: &MemoryState, o: u32) -> Option<String> {
 }
 fn live_secs(m: &MemoryState) -> impl Iterator<Item = &SectionRow> {
     m.sections.iter().filter(|r| r.file != NONE)
+}
+/// File `f`'s section at `local` in its `SECTIONS` range (WP-275).
+fn local_sec(m: &MemoryState, f: u32, local: u32) -> Option<String> {
+    let r = m.sections.iter().filter(|r| r.file == f).nth(local as usize)?;
+    Some(format!("sec:{:?}:{}", fl(m, r.file), lossy(&bytes(m, r.name))))
+}
+/// File `f`'s region at `local` in its `REGIONS` range (WP-275).
+fn local_region(m: &MemoryState, f: u32, local: u32) -> Option<String> {
+    let (_, r) = m.regions.iter().filter(|(g, _)| g.0 == f).nth(local as usize)?;
+    Some(format!("reg:{:?}:{:?}/{}/{}", fl(m, f), os(m, r.out), r.category, r.ordinal))
 }
 
 type Reader = fn(&MemoryState) -> Vec<Option<String>>;
@@ -318,6 +328,31 @@ fn readers() -> BTreeMap<(u32, &'static str), Reader> {
             .collect()
     });
     r.insert((kind::FRAG_USE, "out"), |m| m.frag_uses.iter().map(|(_, x)| os(m, x.out)).collect());
+    r.insert((kind::CHUNK_UNITS, "chunk"), |m| {
+        m.chunk_units.iter().filter(|x| !x.tomb).map(|x| ch(m, x.chunk)).collect()
+    });
+    r.insert((kind::CHUNK_UNITS, "file"), |m| {
+        m.chunk_units.iter().filter(|x| !x.tomb).map(|x| fl(m, x.file)).collect()
+    });
+    r.insert((kind::CHUNK_UNITS, "local"), |m| {
+        m.chunk_units
+            .iter()
+            .filter(|x| !x.tomb)
+            .map(|x| match x.unit {
+                unit_kind::REGION => local_region(m, x.file, x.local),
+                _ => local_sec(m, x.file, x.local),
+            })
+            .collect()
+    });
+    r.insert((kind::MERGE_DEFS, "file"), |m| {
+        m.merge_defs.iter().filter(|x| !x.tomb).map(|x| fl(m, x.file)).collect()
+    });
+    r.insert((kind::MERGE_DEFS, "local"), |m| {
+        m.merge_defs.iter().filter(|x| !x.tomb).map(|x| local_sec(m, x.file, x.local)).collect()
+    });
+    r.insert((kind::MERGE_DEFS, "out"), |m| {
+        m.merge_defs.iter().filter(|x| !x.tomb).map(|x| os(m, x.out)).collect()
+    });
     r
 }
 
@@ -516,6 +551,35 @@ fn every_reference() -> MemoryState {
         m.groups.push(GroupRow { signature, file: f, tomb: false });
         m.commons.push(CommonRow { key: 0, file: f, size: 8, align: 8, tomb: false });
         m.copies.push(CopyRow { key: g(f), file: f, index: 2, size: 16, typ: 1, tomb: false });
+        // WP-275: the file's region (in chunk (f + 1) % 2) and its second
+        // section (in chunk 1) as units; seq values not yet `k << 32`
+        m.chunk_units.push(ChunkUnitRow {
+            chunk: (f + 1) % 2,
+            seq: 7 + u64::from(f),
+            file: f,
+            local: 0,
+            unit: unit_kind::REGION,
+            tomb: false,
+        });
+        m.chunk_units.push(ChunkUnitRow {
+            chunk: 1,
+            seq: 100 - u64::from(f),
+            file: f,
+            local: 1,
+            unit: unit_kind::SECTION,
+            tomb: false,
+        });
+        m.merge_defs.push(MergeDefRow {
+            file: f,
+            local: 0,
+            value: 4 * u64::from(f),
+            out: f % 2,
+            class: 0x8000_0001,
+            hash: [f as u8 + 1; 16],
+            within: f,
+            ordinal: 2 * f,
+            tomb: false,
+        });
         let hash = [f as u8 + 1; 16];
         m.frags.push(FragRow {
             out: f % 2,
@@ -895,9 +959,218 @@ fn chunk_members_survive_the_patch_and_the_compaction() {
         write::encode(&compact::normalize(&bad).expect("n")).expect("the writer does not judge");
     assert!(read::decode(&b).is_err(), "a FileHeader chunk with a member count decodes");
     // VERSION 11 (no `CHUNKS.members`) is refused by name.
-    assert_eq!(state5::VERSION, 12);
+    assert_eq!(state5::VERSION, 13);
     let mut old = bytes.clone();
     old[8..12].copy_from_slice(&11u32.to_le_bytes());
     let e = read::decode(&old).expect_err("a version-11 state decodes");
     assert!(format!("{e:?}").contains("format version 11"), "{e:?}");
+}
+
+// ---- WP-275: CHUNK_UNITS and MERGE_DEFS (VERSION 13) -----------------------------
+
+/// Per chunk, its live units in key order: (chunk, file path, unit, what
+/// `local` names).
+fn unit_list(m: &MemoryState) -> Vec<(u32, Option<String>, u8, Option<String>)> {
+    let mut v: Vec<&ChunkUnitRow> = m.chunk_units.iter().filter(|r| !r.tomb).collect();
+    v.sort_by_key(|r| (r.chunk, r.seq));
+    v.iter()
+        .map(|r| {
+            let named = match r.unit {
+                unit_kind::REGION => local_region(m, r.file, r.local),
+                _ => local_sec(m, r.file, r.local),
+            };
+            (r.chunk, fl(m, r.file), r.unit, named)
+        })
+        .collect()
+}
+
+/// Per chunk, its live units' `seq`s in key order.
+fn seqs(m: &MemoryState) -> Vec<(u32, u64)> {
+    let mut v: Vec<(u32, u64)> =
+        m.chunk_units.iter().filter(|r| !r.tomb).map(|r| (r.chunk, r.seq)).collect();
+    v.sort_unstable();
+    v
+}
+
+/// The live `MERGE_DEFS` rows by identity, sorted.
+fn merge_list(m: &MemoryState) -> Vec<String> {
+    let mut v: Vec<String> = m
+        .merge_defs
+        .iter()
+        .filter(|r| !r.tomb)
+        .map(|r| {
+            format!(
+                "{:?} {:?} v{} {:?} {:#x} {:02x?} {} {}",
+                fl(m, r.file),
+                local_sec(m, r.file, r.local),
+                r.value,
+                os(m, r.out),
+                r.class,
+                &r.hash[..2],
+                r.within,
+                r.ordinal
+            )
+        })
+        .collect();
+    v.sort();
+    v
+}
+
+/// The live row of `chunk` at its `k`-th place (1-based).
+fn unit_at(m: &MemoryState, chunk: u32, k: usize) -> ChunkUnitRow {
+    let mut v: Vec<&ChunkUnitRow> =
+        m.chunk_units.iter().filter(|r| !r.tomb && r.chunk == chunk).collect();
+    v.sort_by_key(|r| r.seq);
+    *v[k - 1]
+}
+
+// spec: WP-275 §2.2, §2.4, §3 (P-275a): both tables survive normalize,
+// encode and decode, an in-place PATCH that inserts a unit by midpoint
+// between two rows, tombstones one and rewrites a `local` (and a
+// `MERGE_DEFS` delete and insert), and the compaction after it (`seq`
+// renumbered `k << 32`, the order kept); a VERSION 12 state is refused
+// `state-version`
+#[test]
+#[allow(clippy::many_single_char_names)]
+fn chunk_units_and_merge_defs_survive_the_patch_and_the_compaction() {
+    let m = every_reference();
+    let bytes = write::encode(&compact::normalize(&m).expect("n")).expect("encode");
+    let base = read::decode(&bytes).expect("decode");
+    assert_eq!(unit_list(&base), unit_list(&m), "encode, decode: the units in their order");
+    assert_eq!(merge_list(&base), merge_list(&m), "encode, decode: MERGE_DEFS");
+    // chunk 0: f1's region; chunk 1: f0's and f2's regions, then the
+    // second sections of f2, f1, f0 (`seq` 98, 99, 100)
+    let k32 = |k: u64| k << 32;
+    assert_eq!(
+        seqs(&base),
+        [(0, k32(1)), (1, k32(1)), (1, k32(2)), (1, k32(3)), (1, k32(4)), (1, k32(5))],
+        "normalize renumbers seq"
+    );
+    let order: Vec<(Option<String>, u8)> =
+        unit_list(&base).into_iter().map(|(_, f, u, _)| (f, u)).collect();
+    let f = |i: u32| Some(format!("f:f{i}.o"));
+    assert_eq!(
+        order,
+        [(f(1), 0), (f(0), 0), (f(2), 0), (f(2), 1), (f(1), 1), (f(0), 1)],
+        "the order kept"
+    );
+    // The PATCH: in chunk 1 a unit inserted between its 2nd and 3rd rows
+    // (f0's first section, the midpoint `seq`), its 4th row (f1's
+    // section) tombstoned, its 5th row's `local` rewritten (f0's second
+    // section to its first);
+    // MERGE_DEFS: one row deleted, one inserted.
+    let mut p = StatePatch::default();
+    let (a, b) = (unit_at(&base, 1, 2), unit_at(&base, 1, 3));
+    let f0 = unit_at(&base, 1, 1).file;
+    let mid = ChunkUnitRow {
+        chunk: 1,
+        seq: a.seq.midpoint(b.seq),
+        file: f0,
+        local: 0,
+        unit: unit_kind::SECTION,
+        tomb: false,
+    };
+    p.chunk_units.put.push(mid);
+    let gone = unit_at(&base, 1, 4);
+    p.chunk_units.delete.push(gone);
+    let moved = unit_at(&base, 1, 5);
+    p.chunk_units.put.push(ChunkUnitRow { local: 0, ..moved });
+    let dead = *base.merge_defs.iter().find(|r| r.file == f0).expect("f0's row");
+    p.merge_defs.delete.push(dead);
+    p.merge_defs.put.push(MergeDefRow { local: 1, value: 3, ordinal: 9, ..dead });
+    let mut want = base.clone();
+    compact::apply(&mut want, &p, base.frags.len()).expect("apply");
+    let expect = [
+        (f(1), 0, "reg"),
+        (f(0), 0, "reg"),
+        (f(2), 0, "reg"),
+        (f(0), 1, ".text.f0.0"),
+        (f(2), 1, ".text.f2.1"),
+        (f(0), 1, ".text.f0.0"),
+    ];
+    let named = |m: &MemoryState| -> Vec<(Option<String>, u8, String)> {
+        unit_list(m)
+            .into_iter()
+            .map(|(_, f, u, n)| {
+                let n = n.expect("names a row");
+                let n = if u == 0 {
+                    "reg".to_owned()
+                } else {
+                    n.rsplit(':').next().expect("name").to_owned()
+                };
+                (f, u, n)
+            })
+            .collect()
+    };
+    let expect: Vec<(Option<String>, u8, String)> =
+        expect.iter().map(|(f, u, n)| (f.clone(), *u, (*n).to_owned())).collect();
+    assert_eq!(named(&want), expect, "apply");
+    let view = read::open_bytes(bytes.clone()).expect("open");
+    let plan = state5::plan_patch(&view, &p).expect("plan");
+    assert!(!plan.compacts(), "the patch fits in place: {}", plan.reason());
+    let out = base.stat.iter().rfind(|r| r.tag == stat_tag::OUTPUT).expect("output").clone();
+    let patched = write::patched_bytes(&bytes, &plan, &out).expect("in place");
+    let after = read::decode(&patched).expect("decode");
+    assert_eq!(named(&after), expect, "the patch in place");
+    assert_eq!(merge_list(&after), merge_list(&want), "MERGE_DEFS: the patch in place");
+    assert!(merge_list(&after).iter().any(|r| r.contains("v3 ")), "the inserted MERGE_DEFS row");
+    assert_eq!(after.merge_defs.iter().filter(|r| !r.tomb).count(), 3, "one deleted, one put");
+    assert!(
+        seqs(&after).iter().any(|&(c, s)| c == 1 && s % (1 << 32) != 0),
+        "the inserted unit's midpoint seq"
+    );
+    // The compaction: seq renumbered `k << 32`, the order kept.
+    let compacted = view_of(&compact::normalize(&after).expect("normalize"));
+    assert_eq!(named(&compacted), expect, "the compaction written");
+    assert_eq!(merge_list(&compacted), merge_list(&want), "MERGE_DEFS: the compaction");
+    assert_eq!(
+        seqs(&compacted),
+        [(0, k32(1)), (1, k32(1)), (1, k32(2)), (1, k32(3)), (1, k32(4)), (1, k32(5))],
+        "the compaction renumbers seq"
+    );
+    // VERSION 12 (neither table) is refused `state-version`.
+    assert_eq!(state5::VERSION, 13);
+    let mut old = bytes.clone();
+    old[8..12].copy_from_slice(&12u32.to_le_bytes());
+    let e = read::decode(&old).expect_err("a version-12 state decodes");
+    assert_eq!(e.reason(), "state-version", "{e:?}");
+    assert!(format!("{e:?}").contains("format version 12"), "{e:?}");
+}
+
+// spec: WP-275 §2.2 (`canon`: `seq` is forgotten), IN-78: two states that
+// differ only in `CHUNK_UNITS.seq` have one canon (`incr_state canon` and
+// `compare`); two that differ in a chunk's order do not
+#[test]
+#[allow(clippy::many_single_char_names)]
+fn incr_state_canon_is_seq_blind_and_a_reorder_differs() {
+    let m = every_reference();
+    let mut other = m.clone();
+    for r in &mut other.chunk_units {
+        r.seq = r.seq * 1000 + 17;
+    }
+    let canon = |m: &MemoryState| {
+        state5::canon(&write::encode(&compact::normalize(m).expect("n")).expect("encode"))
+            .expect("canon")
+    };
+    let stored = mortar_core::incr::MemoryLayout::default();
+    let p_u = mortar_core::incr::StoredLayout::new(&stored);
+    let (a, b) = (canon(&m), canon(&other));
+    assert!(state5::compare(&a, &b, &p_u).is_empty(), "seq alone differs");
+    // the uncompacted states' canon (seq as written) too
+    let raw = |m: &MemoryState| state5::canon(&write::encode(m).expect("encode")).expect("canon");
+    assert!(state5::compare(&raw(&m), &raw(&other), &p_u).is_empty(), "seq alone, uncompacted");
+    // chunk 1's last two units swapped: a reorder
+    let mut swapped = m.clone();
+    let mut v: Vec<usize> =
+        (0..swapped.chunk_units.len()).filter(|&i| swapped.chunk_units[i].chunk == 1).collect();
+    v.sort_by_key(|&i| swapped.chunk_units[i].seq);
+    let (x, y) = (v[v.len() - 2], v[v.len() - 1]);
+    let s = swapped.chunk_units[x].seq;
+    swapped.chunk_units[x].seq = swapped.chunk_units[y].seq;
+    swapped.chunk_units[y].seq = s;
+    let d = state5::compare(&a, &canon(&swapped), &p_u);
+    assert!(
+        !d.is_empty() && d.iter().all(|d| d.kind == kind::CHUNK_UNITS),
+        "a reorder differs, in CHUNK_UNITS only: {d:?}"
+    );
 }

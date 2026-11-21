@@ -17,9 +17,9 @@ use mortar_core::{ChunkId, FileId, OutSecId, SectionId, SymbolId};
 
 use super::diags::DiagRow;
 use super::rows::{
-    CommonRow, CopyRow, DebugStrRow, EdgeRow, FileIndexRow, FileRow, FragRow, FragUseRow, GroupRow,
-    HoleRow, IndexRow, KeyRefRow, MentionRow, MetaRow, NameRow, OdrClassRow, OdrRefRow, RegionRow,
-    ResolvedRow, SlotRow, SymbolRow, SymtabKeyRow, SymtabRow,
+    ChunkUnitRow, CommonRow, CopyRow, DebugStrRow, EdgeRow, FileIndexRow, FileRow, FragRow,
+    FragUseRow, GroupRow, HoleRow, IndexRow, KeyRefRow, MentionRow, MergeDefRow, MetaRow, NameRow,
+    OdrClassRow, OdrRefRow, RegionRow, ResolvedRow, SlotRow, SymbolRow, SymtabKeyRow, SymtabRow,
 };
 use super::view::{Rows, StateRows, StateView};
 use crate::format::{
@@ -76,6 +76,10 @@ pub struct MemoryState {
     /// `DEBUG_STRS` (kind 57; WP-228 R-2, WP-247): by `(out, hash)`, no
     /// tomb. [`MemoryState::debug_str`] answers from these rows.
     pub debug_strs: Vec<DebugStrRow>,
+    /// `CHUNK_UNITS` (kind 58; WP-275 §2.2): by `(chunk, seq)`.
+    pub chunk_units: Vec<ChunkUnitRow>,
+    /// `MERGE_DEFS` (kind 59; WP-275 §2.4): by `(file, local, value)`.
+    pub merge_defs: Vec<MergeDefRow>,
     pub symbols: Vec<SymbolRow>,
     pub resolved: Vec<ResolvedRow>,
     pub symtab_keys: Vec<SymtabKeyRow>,
@@ -440,6 +444,8 @@ impl StateRows for &MemoryState {
             kind::DIAGS => self.diags.len(),
             kind::NAMES => self.names.len(),
             kind::COPIES => self.copies.len(),
+            kind::CHUNK_UNITS => self.chunk_units.len(),
+            kind::MERGE_DEFS => self.merge_defs.len(),
             _ => 0,
         };
         n as u64

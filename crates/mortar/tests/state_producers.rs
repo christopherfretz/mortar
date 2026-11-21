@@ -923,3 +923,275 @@ fn the_carried_member_count_is_the_full_links() {
     }
     assert!(ran == 6 || !mortar_testutil::tools_required(), "{ran} of 6 comparisons ran");
 }
+
+// ---- WP-275 (P-275a): CHUNK_UNITS and MERGE_DEFS from the full link --------------
+
+/// The text of a `Str` of `m`.
+fn text(m: &mortar_incr::update::testing::MemoryState, s: mortar_incr::format::Str) -> &[u8] {
+    &m.strings[s.off as usize..(s.off + s.len) as usize]
+}
+
+/// A state as the full link's capture wrote it (`<out>.state5`), whole.
+fn decoded(line: &update::Line, out: &str) -> mortar_incr::update::testing::MemoryState {
+    let bytes = std::fs::read(line.dir.join(format!("{out}.state5"))).expect("the state");
+    mortar_incr::state5::read::decode(&bytes).expect("the state decodes")
+}
+
+// spec: WP-275 §2.2, §3 (P-275a): for a full link, `CHUNK_UNITS` is the
+// index derived from every file's `SECTIONS`/`REGIONS` (the reference
+// here: today's O(sections) walk, each placed section of a `Body` chunk
+// either inside a region of its file in that chunk, by offset, or a unit
+// of its own), in offset order; per in-file `Body` chunk the unit-1 rows
+// plus the sections of its unit-0 regions under `is_clip_member` are
+// `CHUNKS.members`; `incr_state check`'s comparison passes; and the
+// full link's state, set to VERSION 12, is refused `state-version` by
+// the next update
+#[test]
+#[allow(clippy::many_single_char_names)]
+fn the_chunk_units_are_the_derived_index() {
+    use mortar_incr::update::rows::unit_kind;
+    let mut ran = 0;
+    for line in lines(&[]) {
+        let label = line.label.clone();
+        let args = line.args(&["wp255d_m2", "wp255d_m1"]);
+        line.archive(&["m1.o", "m2.o"]);
+        let view = state(&line, &args, "full");
+        let m = decoded(&line, "full");
+        let n = mortar_incr::capture::chunk_units_check(&m).expect("incr_state check passes");
+        assert_eq!(n, m.chunk_units.len(), "{label}: every row compared");
+        assert!(m.chunk_units.iter().all(|r| !r.tomb), "{label}: no tombstone in a fresh state");
+        // The reference: per chunk, every placed section in a `Body`
+        // chunk, inside a region of its own file there or not.
+        let body = 3u8;
+        let mut first = vec![u32::MAX; m.files.len()];
+        for (i, s) in m.sections.iter().enumerate() {
+            if s.file != u32::MAX && first[s.file as usize] == u32::MAX {
+                first[s.file as usize] = i as u32;
+            }
+        }
+        let mut reg_first = vec![usize::MAX; m.files.len()];
+        for (i, (f, _)) in m.regions.iter().enumerate() {
+            if reg_first[f.0 as usize] == usize::MAX {
+                reg_first[f.0 as usize] = i;
+            }
+        }
+        // (chunk) -> [(offset, file, unit, local)]
+        let mut want: std::collections::BTreeMap<u32, Vec<(u64, u32, u8, u32)>> =
+            std::collections::BTreeMap::new();
+        for (i, (f, r)) in m.regions.iter().enumerate() {
+            let local = (i - reg_first[f.0 as usize]) as u32;
+            want.entry(r.chunk).or_default().push((r.offset, f.0, unit_kind::REGION, local));
+        }
+        let inside = |s: &mortar_incr::format::SectionRow| {
+            m.regions.iter().any(|(f, r)| {
+                f.0 == s.file
+                    && r.chunk == s.place_chunk
+                    && r.offset <= s.place_offset
+                    && s.place_offset + s.size <= r.offset + r.capacity
+            })
+        };
+        let (mut in_regions, mut alone) = (0usize, 0usize);
+        for (i, s) in m.sections.iter().enumerate() {
+            if s.file == u32::MAX || s.place_chunk == u32::MAX {
+                continue;
+            }
+            if m.chunks[s.place_chunk as usize].tag != body {
+                continue;
+            }
+            if inside(s) {
+                in_regions += 1;
+                continue;
+            }
+            alone += 1;
+            let local = i as u32 - first[s.file as usize];
+            want.entry(s.place_chunk).or_default().push((
+                s.place_offset,
+                s.file,
+                unit_kind::SECTION,
+                local,
+            ));
+        }
+        let mut have: std::collections::BTreeMap<u32, Vec<(u64, u32, u8, u32)>> =
+            std::collections::BTreeMap::new();
+        let mut rows: Vec<_> = m.chunk_units.iter().collect();
+        rows.sort_by_key(|r| (r.chunk, r.seq));
+        let offset_of = |r: &mortar_incr::update::rows::ChunkUnitRow| match r.unit {
+            unit_kind::REGION => m.regions[reg_first[r.file as usize] + r.local as usize].1.offset,
+            _ => m.sections[(first[r.file as usize] + r.local) as usize].place_offset,
+        };
+        for r in &rows {
+            have.entry(r.chunk).or_default().push((offset_of(r), r.file, r.unit, r.local));
+        }
+        for (c, v) in &have {
+            assert!(
+                v.windows(2).all(|w| w[0].0 <= w[1].0),
+                "{label}: chunk {c}'s units are not in offset order"
+            );
+            assert_eq!(m.chunks[*c as usize].tag, body, "{label}: chunk {c} is not Body");
+        }
+        let sorted = |mut x: std::collections::BTreeMap<u32, Vec<(u64, u32, u8, u32)>>| {
+            for v in x.values_mut() {
+                v.sort_unstable();
+            }
+            x
+        };
+        let (h, w) = (sorted(have), sorted(want));
+        for c in h.keys().chain(w.keys()).collect::<std::collections::BTreeSet<_>>() {
+            assert_eq!(h.get(c), w.get(c), "{label}: chunk {c}: CHUNK_UNITS against the reference");
+        }
+        // CHUNKS.members: the unit-1 rows plus the sections of the unit-0
+        // regions, under `is_clip_member`.
+        let rows_of = mortar_incr::state5::LayoutOf { view: &view };
+        let chunks = mortar_core::incr::LayoutRows::chunks(&rows_of).expect("the chunks");
+        let outsecs = m.outsecs.len() as u64;
+        let mut counted = vec![0u32; m.chunks.len()];
+        for s in m.sections.iter().filter(|s| s.file != u32::MAX && s.place_chunk != u32::MAX) {
+            let c = s.place_chunk as usize;
+            if m.chunks[c].tag != body {
+                continue;
+            }
+            let facts = mortar_incr::format::section_facts(s, outsecs).expect("the facts");
+            let chunk = &chunks.iter().find(|(id, _)| id.0 as usize == c).expect("the chunk").1;
+            if mortar_image::clip_plan::is_clip_member(
+                facts.kept,
+                facts.kind.is_placed(),
+                !facts.collected,
+                false,
+                s.sh_type,
+                s.size,
+                chunk,
+            ) {
+                counted[c] += 1;
+            }
+        }
+        let mut compared = 0;
+        for (c, r) in m.chunks.iter().enumerate() {
+            if r.tag == body && (r.members > 0 || counted[c] > 0) {
+                compared += 1;
+                assert_eq!(
+                    counted[c],
+                    r.members,
+                    "{label}: chunk {c} {}: the units' clip members against CHUNKS.members",
+                    String::from_utf8_lossy(text(&m, r.name))
+                );
+            }
+        }
+        let units0 = m.chunk_units.iter().filter(|r| r.unit == unit_kind::REGION).count();
+        eprintln!(
+            "[p275a] {label}: CHUNK_UNITS {} rows ({units0} regions, {} sections; {in_regions} \
+             sections in regions, {alone} alone); {compared} chunks' members compared",
+            m.chunk_units.len(),
+            m.chunk_units.len() - units0
+        );
+        assert!(units0 > 0 && alone > 0 && compared > 0, "{label}: both kinds of unit");
+        // VERSION 12 (no CHUNK_UNITS, no MERGE_DEFS) on disk: the next
+        // update refuses it `state-version` (and links in full).
+        let at = line.dir.join("full.mortar-state");
+        let mut disk = std::fs::read(&at).expect("the state");
+        assert_eq!(&disk[..8], b"MORTARSR", "{label}: the written state's magic");
+        assert_eq!(disk[8..12], mortar_incr::state5::VERSION.to_le_bytes(), "{label}: VERSION");
+        assert_eq!(mortar_incr::state5::VERSION, 13);
+        disk[8..12].copy_from_slice(&12u32.to_le_bytes());
+        std::fs::write(&at, disk).expect("the state");
+        let mut a = support::with_output(&args, &line.dir.join("full"));
+        a.extend(
+            ["--incremental=update", "--incremental-state", "full.mortar-state"]
+                .map(std::ffi::OsString::from),
+        );
+        let second = mortar::invoke_in("mortar", &a, &line.dir);
+        let report = format!("{:?}\n{}", second.outcome, second.incremental);
+        assert!(report.contains("state-version"), "{label}: {report}");
+        ran += 1;
+    }
+    assert!(ran == 2 || !mortar_testutil::tools_required(), "{ran} of 2 links");
+}
+
+/// A file with named globals in `.rodata.str1.1` (at a string's start
+/// and inside one) and in `.rodata.cst4` (at a constant and at the
+/// section's end), and one whose weak copy of the constant differs.
+const MD1: &str = "__asm__(\".section .rodata.str1.1,\\\"aMS\\\",%progbits,1\\n\"\n\
+    \"\\t.asciz \\\"p275 first\\\"\\n\\t.globl p275_str\\np275_str:\\n\\t.asciz \\\"p275 hello\\\"\\n\"\n\
+    \"\\t.ascii \\\"p275 \\\"\\n\\t.globl p275_mid\\np275_mid:\\n\\t.asciz \\\"middle\\\"\\n\"\n\
+    \"\\t.section .rodata.cst4,\\\"aM\\\",%progbits,4\\n\\t.p2align 2\\n\\t.long 0x2751\\n\"\n\
+    \"\\t.globl p275_cst\\np275_cst:\\n\\t.long 0x2752\\n\\t.globl p275_end\\np275_end:\\n\\t.text\\n\");\n\
+    extern const char p275_str[], p275_mid[], p275_end[];\nextern const int p275_cst;\n\
+    int p275_md1(int x) { return p275_str[x] + p275_mid[x] + p275_cst + (p275_end - p275_str); }\n";
+const MD2: &str = "__asm__(\".section .rodata.cst4,\\\"aM\\\",%progbits,4\\n\\t.p2align 2\\n\"\n\
+    \"\\t.weak p275_cst\\np275_cst:\\n\\t.long 0x2753\\n\\t.text\\n\");\n\
+    extern const int p275_cst;\nint p275_md2(int x) { return p275_cst + x; }\n";
+
+// spec: WP-275 §2.4, §3 (P-275a): one `MERGE_DEFS` row per live file's
+// named definition in a `Merge` section, every file's (the weak copy's
+// too, not only the winner's): its `(within, ordinal)` the full link's
+// `named_piece` (`refs::named_symbol` over the link's own split), its
+// hash the `FRAGS` key of the piece's bytes, a live piece's key a
+// `FRAGS` row of the same output section and class
+/// (file, section, value, ordinal, within, the piece's bytes)
+type Want = (&'static str, &'static str, u64, u32, u32, Vec<u8>);
+
+#[test]
+#[allow(clippy::many_single_char_names)]
+fn merge_defs_are_the_full_links_pieces() {
+    let mut ran = 0;
+    for line in lines(&[("md1", "c", MD1), ("md2", "c", MD2)]) {
+        let label = line.label.clone();
+        let args = line.args(&["wp255d_m2", "wp255d_m1", "p275_md1", "p275_md2"]);
+        line.archive(&["m1.o", "m2.o", "md1.o", "md2.o"]);
+        let view = state(&line, &args, "full");
+        let m = decoded(&line, "full");
+        let store = support::store();
+        let f = whole(&line, &args, &store);
+        // (file, section, value, ordinal, within, the piece's bytes)
+        let le = |v: u32| v.to_le_bytes().to_vec();
+        let want: [Want; 5] = [
+            ("md1.o", ".rodata.str1.1", 11, 1, 0, b"p275 hello\0".to_vec()),
+            ("md1.o", ".rodata.str1.1", 27, 2, 5, b"p275 middle\0".to_vec()),
+            ("md1.o", ".rodata.cst4", 4, 1, 0, le(0x2752)),
+            ("md1.o", ".rodata.cst4", 8, 1, 4, le(0x2752)),
+            ("md2.o", ".rodata.cst4", 0, 0, 0, le(0x2753)),
+        ];
+        let mut first = vec![u32::MAX; m.files.len()];
+        for (i, s) in m.sections.iter().enumerate() {
+            if s.file != u32::MAX && first[s.file as usize] == u32::MAX {
+                first[s.file as usize] = i as u32;
+            }
+        }
+        let ours: Vec<u32> = ["md1.o", "md2.o"].iter().map(|n| member(&view, n).0).collect();
+        let rows: Vec<_> = m.merge_defs.iter().filter(|r| ours.contains(&r.file)).collect();
+        assert_eq!(rows.len(), want.len(), "{label}: md1's and md2's rows: {rows:?}");
+        for (file, sec, value, ordinal, within, bytes) in &want {
+            let what = format!("{label} {file} {sec} value {value}");
+            let fid = member(&view, file);
+            let found: Vec<_> = rows
+                .iter()
+                .filter(|r| {
+                    let s = &m.sections[(first[r.file as usize] + r.local) as usize];
+                    r.file == fid.0 && text(&m, s.name) == sec.as_bytes() && r.value == *value
+                })
+                .collect();
+            assert_eq!(found.len(), 1, "{what}: one row");
+            let r = found[0];
+            assert_eq!((r.ordinal, r.within), (*ordinal, *within), "{what}: the piece");
+            assert_eq!(r.hash, mortar_digest::l128(bytes), "{what}: the FRAGS key of its bytes");
+            // the link's own named_piece
+            let nf = same_file(&f, &view, fid);
+            let s = mortar_core::SectionId(f.resolution.section_base[nf].start.0 + r.local);
+            let row = &m.sections[(first[r.file as usize] + r.local) as usize];
+            let p = mortar_merge::refs::named_symbol(&f.merge.split, s, row.size, r.value)
+                .expect("the link's piece");
+            assert_eq!(
+                (u64::from(r.within), r.ordinal),
+                (p.within, p.ordinal),
+                "{what}: the link's named_piece"
+            );
+            let frag = f.merge.split.frags[p.frag];
+            assert_eq!(frag.size as usize, bytes.len(), "{what}: the link's fragment");
+            // a live piece: its key is a FRAGS row of the same out, class
+            let live = m.frags.iter().any(|x| (x.out, x.class, x.hash) == (r.out, r.class, r.hash));
+            assert!(live || *file == "md2.o", "{what}: no FRAGS row of its key");
+            eprintln!("[p275a] {what}: ordinal {ordinal} within {within}, FRAGS row: {live}");
+        }
+        ran += 1;
+    }
+    assert!(ran == 2 || !mortar_testutil::tools_required(), "{ran} of 2 links");
+}

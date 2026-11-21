@@ -21,9 +21,10 @@ use mortar_core::{ChunkId, FileId, OutSecId, SectionId, SymbolId};
 
 use super::diags::DiagRow;
 use super::rows::{
-    CommonRow, CopyRow, DebugStrRow, EdgeRow, FileIndexRow, FileRow, FragRow, FragUseRow, GroupRow,
-    HoleRow, IndexRow, KeyRefRow, LocalRange, MentionRow, MetaRow, NameRow, OdrClassRow, OdrRefRow,
-    RegionRow, ResolvedRow, SlotRow, SymbolRow, SymtabKeyRow, SymtabRow,
+    ChunkUnitRow, CommonRow, CopyRow, DebugStrRow, EdgeRow, FileIndexRow, FileRow, FragRow,
+    FragUseRow, GroupRow, HoleRow, IndexRow, KeyRefRow, LocalRange, MentionRow, MergeDefRow,
+    MetaRow, NameRow, OdrClassRow, OdrRefRow, RegionRow, ResolvedRow, SlotRow, SymbolRow,
+    SymtabKeyRow, SymtabRow,
 };
 use crate::format::{
     ChunkRow, DefinedRow, LayoutRow, OutSecRow, PatchRow, ProbeRow, RedirectRow, SectionRow,
@@ -685,6 +686,12 @@ pub struct StatePatch {
     /// (`state-corrupt` class), never a deletion. Applied to the state by
     /// WP-247; nothing reads it before then.
     pub debug_strs: KeyEdits<DebugStrRow>,
+    /// `CHUNK_UNITS` (kind 58; WP-275 §2.2): written by P-275d; empty
+    /// until then (an update re-captures).
+    pub chunk_units: KeyEdits<ChunkUnitRow>,
+    /// `MERGE_DEFS` (kind 59; WP-275 §2.4): written by P-275d; empty
+    /// until then.
+    pub merge_defs: KeyEdits<MergeDefRow>,
     // key-parallel
     /// `SYMBOLS`: a set never changes a row's `option` bit (U-2 keeps the
     /// stored one; seam 6, ruling 2); an appended row's is `false` (every

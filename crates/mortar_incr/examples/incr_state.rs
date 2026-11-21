@@ -8,6 +8,7 @@
 //! incr_state size <state> [<format-4 state> <mortar version string>]
 //! incr_state strings <format-4 state> <mortar version string> <path suffix>...
 //! incr_state rows <state> <TABLE>...
+//! incr_state check <state>
 //! ```
 //!
 //! `convert` writes the format-5 state of a format-4 one (the full link's
@@ -17,8 +18,13 @@
 //! sizes and, given the format-4 state, the ratio (U-2's 1.15 gate); `rows`
 //! prints the decoded rows of the tables named (`CHUNKS`, `PATCHES`,
 //! `REDIRECTS`, `SECTIONS`, `FILES`, `SYMBOLS`, `HOLES`, `OUTSECS`), one
-//! per line, for the lane's island judge (WP-272). Every command refuses a
-//! format-5 state whose updating flag is set.
+//! per line, for the lane's island judge (WP-272); `check` re-derives
+//! `CHUNK_UNITS` from the state's own `SECTIONS` and `REGIONS`
+//! (`capture::chunk_unit_rows`, the full link's rule) and compares it with
+//! the stored rows (WP-275 rulings item 6, the lane's `units` column):
+//! `check: CHUNK_UNITS <n> rows equal the derived index` and exit 0, or the
+//! first difference named and exit 1. Every command refuses a format-5
+//! state whose updating flag is set.
 
 use std::process::ExitCode;
 
@@ -520,11 +526,24 @@ fn run(args: &[String]) -> Result<ExitCode, String> {
             rows(path, tables)?;
             Ok(ExitCode::SUCCESS)
         }
+        ["check", path] => {
+            let m = read::decode(&load5(path)?).map_err(|e| format!("{path}: {e}"))?;
+            match mortar_incr::capture::chunk_units_check(&m) {
+                Ok(n) => {
+                    println!("check: CHUNK_UNITS {n} rows equal the derived index");
+                    Ok(ExitCode::SUCCESS)
+                }
+                Err(e) => {
+                    println!("check: FAIL {e}");
+                    Ok(ExitCode::FAILURE)
+                }
+            }
+        }
         ["strings", path4, version, suffixes @ ..] => {
             strings_growth(path4, version, suffixes)?;
             Ok(ExitCode::SUCCESS)
         }
-        _ => Err("usage: incr_state convert <4> <out> <version> | canon <s> | compare <a> <b> | size <s> | size <4> <version> | rows <s> <TABLE>..."
+        _ => Err("usage: incr_state convert <4> <out> <version> | canon <s> | compare <a> <b> | size <s> | size <4> <version> | rows <s> <TABLE>... | check <s>"
             .to_owned()),
     }
 }

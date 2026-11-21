@@ -59,7 +59,7 @@ const V: To = To::Value;
 const S: To = To::Strings;
 
 /// The columns of every table of [`super::TABLES`], in its order.
-pub const COLUMNS: [(u32, &[Column]); 38] = [
+pub const COLUMNS: [(u32, &[Column]); 40] = [
     (kind::META, &[c("version", 8, S), c("...", 188, V)]),
     (kind::STAT, &[c("tag..pad", 8, V), c("path", 8, S), c("dev..hash", 64, V), c("fstype", 8, S)]),
     (
@@ -221,6 +221,34 @@ pub const COLUMNS: [(u32, &[Column]); 38] = [
     // `out` is the class (`.debug_str`, `.debug_line_str`), not an
     // `OUTSECS` row; `offset` is in the output section.
     (kind::DEBUG_STRS, &[c("out", 1, V), c("hash", 8, V), c("offset", 4, V)]),
+    // WP-275 §2.2: `local` is a position in the file's range of the table
+    // `unit` names; `seq` is the order, renumbered by the compaction.
+    (
+        kind::CHUNK_UNITS,
+        &[
+            c("chunk", 4, To::Chunks),
+            c("seq", 8, V),
+            c("file", 4, To::Files),
+            c(
+                "local",
+                4,
+                To::ByKind("unit 0: the file's REGIONS position; unit 1: its SECTIONS position"),
+            ),
+            c("unit..tomb", 2, V),
+        ],
+    ),
+    // WP-275 §2.4: `class` and `hash` are the `FRAGS` key's (a key, no row
+    // number).
+    (
+        kind::MERGE_DEFS,
+        &[
+            c("file", 4, To::Files),
+            c("local", 4, To::ByKind("the file's SECTIONS position")),
+            c("value", 8, V),
+            c("out", 4, To::OutSecs),
+            c("class..tomb", 29, V),
+        ],
+    ),
 ];
 
 /// The listed references: `(table, column)` of every column that names a
