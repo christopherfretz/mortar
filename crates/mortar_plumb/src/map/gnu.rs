@@ -263,7 +263,10 @@ fn entry(
         });
         return Ok(());
     }
-    if name == "COMMON" {
+    // A `COMMON` row of the discarded block is an input section named
+    // `COMMON` that `--gc-sections` removed (WP-210, WP-203's finding):
+    // GNU ld lists no common symbol there.
+    if name == "COMMON" && block != Block::Discarded {
         map.chunks.push(Chunk {
             kind: ChunkKind::Common,
             name: spec.to_string(),

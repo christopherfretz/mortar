@@ -1,0 +1,12 @@
+-m
+aarch64linux
+-static
+-z
+max-page-size=4096
+-o
+gc-a64.mold
+--gc-sections
+startg-a64.o
+vn-a64.o
+vg-a64.o
+-Map=gc-a64.mold.map

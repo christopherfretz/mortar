@@ -1,0 +1,9 @@
+-m
+aarch64linux
+-static
+-z
+max-page-size=4096
+-o
+st-a64.mold
+main-a64.o
+libs-a64.a

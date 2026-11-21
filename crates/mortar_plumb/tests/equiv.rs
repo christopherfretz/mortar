@@ -216,9 +216,14 @@ impl Pair {
     /// `X`: the link with `pad.o` after `main.o`, `pad.o` out of the map,
     /// its ranges holes holding their fill.
     fn update(&self, extra: &[&str]) -> Link {
-        let mut x = self.link(&["main.o", "pad.o", "a.o", "b.o"], extra);
+        self.update_with("pad.o", extra)
+    }
+
+    /// [`Pair::update`] with `pad` in `pad.o`'s place.
+    fn update_with(&self, pad: &str, extra: &[&str]) -> Link {
+        let mut x = self.link(&["main.o", pad, "a.o", "b.o"], extra);
         x.map.incremental = true;
-        for p in drop_file(&mut x.map, "pad.o").into_iter().filter(|p| p.size > 0) {
+        for p in drop_file(&mut x.map, pad).into_iter().filter(|p| p.size > 0) {
             let (name, addr, _, _) = x
                 .secs
                 .iter()
@@ -782,12 +787,15 @@ fn p_e6_non_alloc_tiling() {
 // §6.9 P-E6 (WP-268, G-5b's case): a non-allocated section with `merged`
 // records is not tiled. `.debug_str` holds a string nothing names
 // (`gone_wp268`, an edit's dead local): X's map states it `dead ...
-// strings`. ACCEPTED (before WP-268: two P-E6 findings, the bytes before
-// and after the dead range). The dead line one byte short of the NUL:
-// X's own P-I6 (§6.8 still judges a merged section's dead lines). The
-// same string with no line: ACCEPTED, and by no check: §6.9 does not
-// judge a `merged` section's strings beyond what its references reach
-// (§5.6), and no reference reaches this one.
+// strings`, and F, the full link of the edited inputs, has no such
+// string (modelled: F's copy zeroed). ACCEPTED (before WP-268: two P-E6
+// findings, the bytes before and after the dead range). The dead line
+// one byte short of the NUL: X's own P-I6 (§6.8 still judges a merged
+// section's dead lines).
+// WP-210 (WP-252's gap (ii)): outside its dead lines, X's strings are
+// F's, as a set. REJECTED: the same string with no dead line (before
+// WP-210 ACCEPTED by no check: a stray string), a stray byte in a live
+// string, and a dead line over a string F holds.
 #[test]
 fn p_e6_merged_nonalloc_is_not_tiled() {
     for arch in archs() {
@@ -813,13 +821,20 @@ fn p_e6_merged_nonalloc_is_not_tiled() {
             });
         };
         let mut x = p.update(&[]);
-        let mut f = p.link(&["main.o", "a.o", "b.o"], &[]);
+        let mut held = p.link(&["main.o", "a.o", "b.o"], &[]);
         merged(&mut x);
-        merged(&mut f);
-        let (_, size, off) = x.sec(".debug_str");
-        let body = &x.output[off as usize..(off + size) as usize];
-        let at = body.windows(11).position(|w| w == b"gone_wp268\0").unwrap() as u64;
-        assert!(at > 0, "{arch:?}: {body:x?}");
+        merged(&mut held);
+        let find = |l: &Link, w: &[u8]| {
+            let (_, size, off) = l.sec(".debug_str");
+            let body = &l.output[off as usize..(off + size) as usize];
+            let at = body.windows(w.len()).position(|v| v == w).unwrap() as u64;
+            (at, off as usize + at as usize)
+        };
+        let (at, _) = find(&x, b"gone_wp268\0");
+        assert!(at > 0, "{arch:?}");
+        let mut f = held.clone();
+        let (_, o) = find(&f, b"gone_wp268\0");
+        f.output[o..o + 10].fill(0);
         let dead = |len: u64| DeadRange {
             section: ".debug_str".into(),
             offset: at,
@@ -839,8 +854,58 @@ fn p_e6_merged_nonalloc_is_not_tiled() {
             !xs.is_empty() && xs.iter().all(|l| l.starts_with("P-I6 ") && l.contains("NUL")),
             "{arch:?}: {xs:#?}"
         );
-        let (pe, xs, _) = p.equiv_sides(&x, &f);
-        assert!(pe.is_empty() && xs.is_empty(), "{arch:?}: {pe:#?} {xs:#?}");
+        // No dead line: a string F lacks.
+        let (pe, _, _) = p.equiv_sides(&x, &f);
+        assert!(has(&pe, "P-E6", "\"gone_wp268\" (outside every dead line)"), "{arch:?}: {pe:#?}");
+        // A stray byte in a live string.
+        let mut m = x.clone();
+        m.map.dead.push(dead(11));
+        let (_, o) = find(&m, b"keep_wp268\0");
+        m.output[o + 1] = b'x';
+        let (pe, _, _) = p.equiv_sides(&m, &f);
+        assert!(has(&pe, "P-E6", "\"kxep_wp268\""), "{arch:?}: {pe:#?}");
+        // A dead line over a string the full link holds.
+        let mut m = x.clone();
+        m.map.dead.push(dead(11));
+        let (pe, _, _) = p.equiv_sides(&m, &held);
+        assert!(
+            has(&pe, "P-E6", "string \"gone_wp268\" is not in the update's"),
+            "{arch:?}: {pe:#?}"
+        );
+    }
+}
+
+// §6.9 P-E6 (WP-210, WP-252's gap (i)): an `SHF_MERGE|SHF_STRINGS`
+// non-allocated section with no map line at all holds F's bytes, like
+// any section no unit holds. X as built: ACCEPTED; a byte of X's
+// `.debug_str` changed: REJECTED (before WP-210 passed over).
+#[test]
+fn p_e6_merged_strings_with_no_line_hold_f_bytes() {
+    for arch in archs() {
+        let sec = if arch == Arch::Aarch64 { "%progbits" } else { "@progbits" };
+        let extra =
+            format!("\t.section .debug_str,\"MS\",{sec},1\n\t.asciz \"nol_wp210\"\n\t.text\n");
+        let Some(p) = assemble(arch, "e6n", "", &extra, &[]) else { return };
+        let bare = |l: &mut Link| {
+            let s = SectionRef::Name(".debug_str".into());
+            l.map.placed.retain(|q| q.section != s);
+            l.map.nonalloc.retain(|q| q.out != ".debug_str" && q.section != s);
+        };
+        let mut x = p.update(&[]);
+        let mut f = p.link(&["main.o", "a.o", "b.o"], &[]);
+        bare(&mut x);
+        bare(&mut f);
+        let (pe, _, _) = p.equiv_sides(&x, &f);
+        assert!(pe.is_empty(), "{arch:?}: {pe:#?}");
+        let (_, size, off) = x.sec(".debug_str");
+        let body = &x.output[off as usize..(off + size) as usize];
+        let at = body.windows(10).position(|v| v == b"nol_wp210\0").unwrap();
+        x.output[off as usize + at] = b'N';
+        let (pe, _, _) = p.equiv_sides(&x, &f);
+        assert!(
+            has(&pe, "P-E6", ".debug_str, which no unit holds, differs from the full link's"),
+            "{arch:?}: {pe:#?}"
+        );
     }
 }
 
@@ -935,6 +1000,123 @@ fn p_e5_eh_frame_hdr() {
         let (pe, _, _) = p.equiv(&m, &f);
         assert!(has(&pe, "P-E5", ".eh_frame_hdr"), "{arch:?}: {pe:#?}");
     }
+}
+
+// §6.9 P-E2/P-E4 (WP-210, the short `EhPad` acceptance pinned): an
+// FDE of X longer than F's by 4, 8 or 12 bytes (mortar absorbs a short
+// pad into the record before it, `spec/incr.md`) whose absorbed bytes
+// are `DW_CFA_nop` is ACCEPTED. Hand-made from a.o's FDE (its last four
+// bytes are its augmentation length and three `DW_CFA_nop`s, all 0):
+// F's piece made 4 shorter, so X's is 4 longer. REJECTED: an absorbed
+// byte made 1 (P-E4 "absorbed bytes"); 16 longer (P-E2 "has size").
+// AArch64 only, as `p_e5_eh_frame_hdr`: on x86-64 GNU ld rewrites the
+// records (its map cannot be split into mortar's per-record pieces:
+// "P-E4 a unit's bytes cannot be read on one side" on the plain pair).
+#[test]
+fn p_e2_p_e4_short_eh_pad_is_accepted() {
+    {
+        let arch = Arch::Aarch64;
+        let cfi = "\t.cfi_startproc\n\tnop\n\t.cfi_endproc\n";
+        let Some(p) = assemble(arch, "ehpad", "", cfi, &[]) else { return };
+        let x = p.eh_pieces(p.update(&[]));
+        let f = p.eh_pieces(p.link(&["main.o", "a.o", "b.o"], &[]));
+        let (pe, _, _) = p.equiv(&x, &f);
+        assert!(pe.is_empty(), "{arch:?}: {pe:#?}");
+        let fi = f.map.files.iter().position(|q| q.path == "a.o").unwrap() as u32;
+        // a.o's FDE: its last piece in .eh_frame (the CIE is first).
+        let fde = |l: &Link| -> usize {
+            let fi = l.map.files.iter().position(|q| q.path == "a.o").unwrap() as u32;
+            l.map
+                .placed
+                .iter()
+                .enumerate()
+                .filter(|(_, q)| q.file == fi && q.section == SectionRef::Name(".eh_frame".into()))
+                .max_by_key(|(_, q)| q.input_offset)
+                .unwrap()
+                .0
+        };
+        let (k, kx) = (fde(&f), fde(&x));
+        assert_eq!(f.map.placed[k].file, fi);
+        let (ax, zx) = (x.map.placed[kx].addr, x.map.placed[kx].size);
+        let tail = x.off(ax + zx - 4);
+        assert_eq!(x.output[tail..tail + 4], [0; 4], "{arch:?}: the FDE ends in four 0 bytes");
+        let shorter = |n: u64| {
+            let mut g = f.clone();
+            g.map.placed[k].size -= n;
+            g
+        };
+        let (pe, _, _) = p.equiv(&x, &shorter(4));
+        assert!(pe.is_empty(), "{arch:?}: 4 absorbed DW_CFA_nop bytes: {pe:#?}");
+        let mut m = x.clone();
+        m.output[tail + 3] = 1;
+        let (pe, _, _) = p.equiv(&m, &shorter(4));
+        assert!(has(&pe, "P-E4", "absorbed bytes are not DW_CFA_nop"), "{arch:?}: {pe:#?}");
+        let (pe, _, _) = p.equiv(&x, &shorter(16));
+        assert!(has(&pe, "P-E2", "has size"), "{arch:?}: 16 bytes: {pe:#?}");
+    }
+}
+
+// §6.8 P-I5, P-I3 and §6.9 P-E5 (WP-210, the `DeadSlot` hole in a GOT
+// pinned): X's GOT keeps a slot an update freed (padg.o's reference to
+// `bvar`, out of X's map, its slot after avar's), zeroed and declared a
+// `hole` of `.got`, the `.got` chunk covering the live slot only; F has
+// no such slot. ACCEPTED, each side clean. REJECTED: the slot left
+// holding bvar's address (X's own P-I5: a hole's bytes are its fill),
+// and the slot not declared a hole (P-E5: X's word has no match in F).
+// A hole INSIDE the chunk's range makes the chunk its container (§6.8
+// IN-60's coverage): the live slots then need lines of their own, or
+// they are P-I1 (measured: `[g, +8) of '.got' is covered by no line`).
+#[test]
+fn p_e5_dead_got_slot_hole_is_accepted() {
+    let arch = Arch::X86_64;
+    let seq = "\taddq avar@GOTPCREL(%rip), %rax\n";
+    let Some(p) = assemble(arch, "deadgot", seq, "", &["-mrelax-relocations=no"]) else {
+        return;
+    };
+    let asm = arch.tool("as").unwrap();
+    std::fs::write(
+        p.dir.join("padg.s"),
+        "\t.text\n\taddq bvar@GOTPCREL(%rip), %rax\n\t.fill 32,1,0xcc\n",
+    )
+    .unwrap();
+    run(p.dir.path(), &asm, &["padg.s", "-o", "padg.o", "-mrelax-relocations=no"]);
+    let mut p = p;
+    p.files.push(("padg.o".into(), std::fs::read(p.dir.join("padg.o")).unwrap()));
+    let raw = p.update_with("padg.o", &[]);
+    let f = p.link(&["main.o", "a.o", "b.o"], &[]);
+    // bvar's slot: the .got word that holds its address.
+    let (g, gz, _) = raw.sec(".got");
+    let bvar = raw.symbol("bvar");
+    let slot = (0..gz / 8)
+        .map(|i| g + i * 8)
+        .find(|&a| {
+            let o = raw.off(a);
+            u64::from_le_bytes(raw.output[o..o + 8].try_into().unwrap()) == bvar
+        })
+        .expect("bvar's GOT slot");
+    let hole = DeadRange { section: ".got".into(), offset: slot - g, size: 8, kind: None, line: 0 };
+    assert_eq!(slot, g + gz - 8, "bvar's slot is the last");
+    let mut x = raw.clone();
+    let o = x.off(slot);
+    x.output[o..o + 8].fill(0);
+    x.map.dead.push(hole);
+    for c in x.map.chunks.iter_mut().filter(|c| c.name == ".got") {
+        c.size -= 8;
+    }
+    let (pe, xs, fs) = p.equiv(&x, &f);
+    assert!(pe.is_empty() && xs == 0 && fs == 0, "{pe:#?} X {xs} F {fs}");
+    let mut m = x.clone();
+    let o = m.off(slot);
+    m.output[o..o + 8].copy_from_slice(&bvar.to_le_bytes());
+    let (_, xs, _) = p.equiv_sides(&m, &f);
+    assert!(xs.iter().any(|g| g.starts_with("P-I5 ")), "the slot not zeroed: {xs:#?}");
+    let mut m = x.clone();
+    let o = m.off(slot);
+    m.output[o..o + 8].copy_from_slice(&bvar.to_le_bytes());
+    m.map.dead.retain(|d| d.section != ".got");
+    m.map.chunks = raw.map.chunks.clone();
+    let (pe, _, _) = p.equiv(&m, &f);
+    assert!(has(&pe, "P-E5", "the .got word"), "the slot no hole: {pe:#?}");
 }
 
 // §9.4 for `--equiv`: truncations and byte flips of X's output, X's and

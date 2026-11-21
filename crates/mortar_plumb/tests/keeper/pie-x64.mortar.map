@@ -1,0 +1,42 @@
+mortar-map 2
+file 0 main-x64.o
+file 1 lib-x64.a m1-x64.o 68
+file 2 lib-x64.a m2-x64.o 3dc
+place 0 1 1259 7
+place 0 3 2348 0
+place 0 4 2348 0
+place 1 2 1260 1
+place 1 5 1261 6
+place 1 3 2348 0
+place 1 4 2348 0
+place 2 2 1267 10
+place 2 4 2348 0
+place 2 5 2348 0
+discard 2 6 comdat
+chunk synthetic .interp 200 1c
+chunk synthetic .gnu.hash 220 1c
+chunk synthetic .dynsym 240 18
+chunk synthetic .dynstr 258 1
+chunk synthetic .dynamic 2278 d0
+chunk synthetic .symtab - 90
+chunk synthetic .strtab - 30
+chunk synthetic .shstrtab - 60
+chunk synthetic .comment - d
+chunk synthetic .pad.relro 2348 cb8
+output pie
+interp /lib64/ld-linux-x86-64.so.2
+bind lazy
+relro on
+arg -pie
+arg -dynamic-linker
+arg /lib64/ld-linux-x86-64.so.2
+arg -z
+arg max-page-size=4096
+arg -o
+arg pie-x64.mortar
+arg main-x64.o
+arg lib-x64.a
+arg --as-needed
+arg libh-x64.so
+arg --mortar-map=pie-x64.mortar.map
+end

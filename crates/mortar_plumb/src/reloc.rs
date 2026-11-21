@@ -499,6 +499,10 @@ pub(crate) struct MadeLocal {
     pub(crate) exec: bool,
 }
 
+/// A group of GOT references and the slots it was verified through:
+/// `(kind, object, symbol, addend, slots)` (§6.8 P-I8, WP-210).
+pub(crate) type SlotUse = (Slot, usize, u32, i64, Vec<u64>);
+
 /// The engine's state over one verification.
 pub(crate) struct Engine<'a, 'b> {
     pub(crate) image: &'b Image<'a>,
@@ -521,6 +525,10 @@ pub(crate) struct Engine<'a, 'b> {
     /// The static TLS block, or why TP offsets cannot be judged (§4.7).
     pub(crate) tls: Result<Option<TlsBlock>, &'static str>,
     got_groups: BTreeMap<(Slot, usize, u32, i64), Group>,
+    /// The GOT slots each group of references was verified through,
+    /// `(kind, object, symbol, addend, slots)`, kept only when the map has
+    /// `slot` records to judge them against (§6.8 P-I8, WP-210).
+    pub(crate) slot_use: Option<Vec<SlotUse>>,
     /// Output words a specified rewriting changed that no relocation
     /// record covers (W12's last word): S12 accepts them (§6.2).
     pub(crate) rewritten_words: std::collections::BTreeSet<u64>,
@@ -645,6 +653,10 @@ pub(crate) struct Engine<'a, 'b> {
     /// when the caller could read the line's files: names the line
     /// mentions (§6.5 Y5, WP-246).
     pub(crate) roots: Vec<String>,
+    /// The line's `-T` scripts, when the caller read the line (§6.5 Y5's
+    /// closed set, WP-210): what they assign and name, `None` inside when
+    /// one could not be read; `None` for a line without one.
+    pub(crate) script_names: Option<crate::inset::LineScripts>,
 }
 
 /// The words §5.7a adds to R5 when the field holds what the reference
@@ -1048,6 +1060,7 @@ impl<'a, 'b> Engine<'a, 'b> {
             cache,
             tls: TlsBlock::of(image),
             got_groups: BTreeMap::new(),
+            slot_use: None,
             rewritten_words: std::collections::BTreeSet::new(),
             piece_groups: BTreeMap::new(),
             shared_merge: shared_merge(objs),
@@ -1094,6 +1107,7 @@ impl<'a, 'b> Engine<'a, 'b> {
             lsda_starts: None,
             caller_line: None,
             roots: Vec::new(),
+            script_names: None,
         };
         e.build_iplt();
         e
@@ -3235,7 +3249,7 @@ impl<'a, 'b> Engine<'a, 'b> {
                 groups.values().flat_map(|g| g.members.iter().map(|m| m.0.rec.p)).collect();
             crate::equiv::index_places(self, &wanted);
         }
-        for ((_, goi, gsym, _), g) in groups {
+        for ((kind, goi, gsym, addend), g) in groups {
             let key = |p: &Pending| (p.rec.p, p.rec.def.r_type);
             if g.unpaired() {
                 self.got_unpaired(&g);
@@ -3245,6 +3259,11 @@ impl<'a, 'b> Engine<'a, 'b> {
             let cands = g.candidates_from(self.got);
             let valid: Vec<u64> =
                 cands.iter().copied().filter(|&c| self.slot_ok(c, want)).collect();
+            if let Some(u) = self.slot_use.as_mut()
+                && !valid.is_empty()
+            {
+                u.push((kind, goi, gsym, addend, valid.clone()));
+            }
             let mut held: Option<(u64, crate::equiv::Tally)> = None;
             for (pend, _) in &g.members {
                 // §6.9 (P-E4): the outcome of the member before, now known.

@@ -1,0 +1,7 @@
+-static
+-z
+max-page-size=4096
+-o
+st-x64.bfd
+main-x64.o
+libs-x64.a

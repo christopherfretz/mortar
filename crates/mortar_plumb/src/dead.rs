@@ -721,6 +721,13 @@ pub(crate) fn check(e: &mut Engine<'_, '_>, map: &Map) {
     named_by_tables(image, &set, &ends, &places, &mut out);
     crate::deaddwarf::check(image, e.objs, map, &set, &mut out);
     e.cov.decisions = crate::symfill::check(image, map, &set, &mut out);
+    if !map.decisions.is_empty() {
+        let line = crate::decide::check(e, map, &set, &mut out);
+        if let Some(d) = e.cov.decisions.as_mut() {
+            d.push_str("; ");
+            d.push_str(&line);
+        }
+    }
     e.findings.append(&mut out);
 }
 
@@ -904,8 +911,7 @@ fn fill(image: &Image<'_>, set: &DeadSet, out: &mut Vec<Finding>) {
                 }
             },
             Some(DeadKind::Strings) => match image.bytes(r.start, len) {
-                Some(b) if b.last() == Some(&0) => None,
-                Some(_) => Some((6, "the range does not end with a string's NUL".into())),
+                Some(b) => strings_range(image, r, b).err().map(|m| (6, m)),
                 None if sh.sh_type == SHT_NOBITS => None,
                 None => Some((6, "its bytes are not in the output's file image".into())),
             },
@@ -916,6 +922,69 @@ fn fill(image: &Image<'_>, set: &DeadSet, out: &mut Vec<Finding>) {
             out.push(finding(n, format!("{}: {m}", r.describe(image))).at(r.start));
         }
     }
+}
+
+/// P-I6 for a `strings` range `r` holding `b` (IN-3a check 2, L-147,
+/// S-24, S-27; WP-210). The range ends with a NUL. Where the section's
+/// character size `E` (`sh_entsize`; 1 in a non-allocated section whose
+/// `sh_entsize` is 0: DWARF's strings are bytes) is at least its
+/// `sh_addralign`, no fragment there is preceded by padding (S-27), so
+/// the range is whole strings of `E`-byte characters, each ending with a
+/// NUL character, and no two equal (a merged section holds each string
+/// once): a zeroed or partly zeroed dead piece of more than one
+/// character is a finding. Not judged further: `.strtab` (IN-49a: its
+/// region slack is zeros), a section aligned above `E` (padding is zero
+/// characters) and an allocated one with `sh_entsize` 0 (mixed
+/// classes): there the NUL end only.
+pub(crate) fn strings_range(image: &Image<'_>, r: &Range, b: &[u8]) -> Result<(), String> {
+    if b.last() != Some(&0) {
+        return Err("the range does not end with a string's NUL".into());
+    }
+    let s = &image.sections[r.sec];
+    let sh = &s.shdr;
+    let e = match sh.sh_entsize {
+        0 if sh.sh_flags & SHF_ALLOC == 0 => 1,
+        0 => return Ok(()),
+        e => e,
+    };
+    if s.name == ".strtab" || sh.sh_addralign > e || e > 16 {
+        return Ok(());
+    }
+    let off = r.start - sh.sh_addr;
+    let len = b.len() as u64;
+    if !off.is_multiple_of(e) || !len.is_multiple_of(e) {
+        return Err(format!(
+            "the range is not whole {e}-byte characters of the section (sh_entsize {e})"
+        ));
+    }
+    let e = e as usize;
+    let mut seen: BTreeSet<&[u8]> = BTreeSet::new();
+    let mut from = 0usize;
+    for (i, c) in b.chunks(e).enumerate() {
+        if c.iter().any(|&x| x != 0) {
+            continue;
+        }
+        let at = i * e;
+        let piece = &b[from..at];
+        if !seen.insert(piece) {
+            let what = if piece.is_empty() {
+                "an empty string (a NUL character that ends no string)".to_string()
+            } else {
+                format!("the string {:?}", String::from_utf8_lossy(piece))
+            };
+            return Err(format!(
+                "{what} at {:#x} is in the range twice: a merged section holds each string once \
+                 (L-147, S-24) and is aligned at its character size, so it has no padding \
+                 (S-27); a dead piece keeps its bytes (IN-3a check 3)",
+                r.start + from as u64
+            ));
+        }
+        from = at + e;
+    }
+    if from != b.len() {
+        return Err(format!("the range does not end with a NUL character ({e} bytes)"));
+    }
+    Ok(())
 }
 
 /// The return-address register of IN-34a's padding CIE.

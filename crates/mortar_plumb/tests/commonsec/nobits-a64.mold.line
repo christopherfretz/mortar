@@ -1,0 +1,10 @@
+-m
+aarch64linux
+-static
+-z
+max-page-size=4096
+-o
+nobits-a64.mold
+start-a64.o
+vn-a64.o
+-Map=nobits-a64.mold.map

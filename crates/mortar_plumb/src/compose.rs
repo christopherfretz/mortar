@@ -35,7 +35,7 @@ use crate::a64::{Field, Op};
 use crate::equiv::{Form, Trace};
 use crate::image::Image;
 use crate::locate::{Obj, Place};
-use crate::map::{Format, Map};
+use crate::map::Map;
 use crate::reloc::Engine;
 use crate::relocatable as rel;
 use crate::report::{CompCoverage, Finding, Report, Rule};
@@ -49,7 +49,8 @@ pub struct Link<'a> {
     pub output: &'a [u8],
     pub src: &'a dyn Source,
     pub map: &'a Map,
-    /// The linker's words, for a reference's map (§14.1 "The line").
+    /// The caller's line (§14.1 "The line"): read first for every
+    /// format; without it, a mortar map's `arg` records.
     pub line: Option<Vec<String>>,
 }
 
@@ -132,14 +133,10 @@ fn alias_thin(side: &mut Side<'_>, thin: &[(String, String, String)], line: Opti
     side.by_key = side.keys.iter().enumerate().map(|(i, k)| (k.clone(), i)).collect();
 }
 
-/// The words of a link's line: mortar's `arg` records, else the caller's.
+/// The words of a link's line (§14.1, §3.2a; WP-210): the caller's, for
+/// every format, else mortar's `arg` records.
 fn words(l: &Link<'_>) -> Option<Vec<String>> {
-    if l.map.format == Format::Mortar {
-        (!l.map.args.is_empty())
-            .then(|| l.map.args.iter().map(|w| String::from_utf8_lossy(w).into_owned()).collect())
-    } else {
-        l.line.clone()
-    }
+    crate::relocatable::line_words(l.map, l.line.as_deref())
 }
 
 // ---- the -r model (stage R's) ----
@@ -1130,7 +1127,12 @@ fn item2_order(cx: &mut Cx<'_, '_>) {
     };
     for (name, a) in dl {
         let Some(b) = vl.remove(&name) else { continue };
+        // The order of the pieces both links hold (WP-210): a piece of
+        // one side only (a section the `-r` made, A120's `COMMON`) is
+        // item 2's or no finding, not an order.
         let (a, b) = (first(a), first(b));
+        let a: Vec<Unit> = a.iter().copied().filter(|u| b.contains(u)).collect();
+        let b: Vec<Unit> = b.iter().copied().filter(|u| a.contains(u)).collect();
         if let Some(k) = (0..a.len().min(b.len())).find(|&k| a[k] != b[k]) {
             cx.out.push(p1(format!(
                 "P-P1 the pieces of {name} are in another order through -r: {} is piece {k} in the direct link, {} through -r",

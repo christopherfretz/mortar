@@ -1,0 +1,18 @@
+mortar-map 2
+file 0 eh-x64.o
+piece 0 6 0 4000e8 14
+piece 0 6 14 4000fc 14
+place 0 4 401114 4
+discard 0 5 gc
+chunk synthetic .eh_frame 4000e8 2c
+chunk synthetic .symtab - 138
+chunk synthetic .strtab - 77
+chunk synthetic .shstrtab - 34
+chunk synthetic .comment - d
+arg -static
+arg --gc-sections
+arg -o
+arg eh-x64
+arg eh-x64.o
+arg --mortar-map=eh-x64.map
+end

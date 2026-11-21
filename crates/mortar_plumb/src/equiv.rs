@@ -16,8 +16,8 @@ use std::fmt::Write as _;
 
 use mortar_elf::Machine;
 use mortar_elf::consts::{
-    ET_DYN, PT_TLS, SHF_ALLOC, SHF_MERGE, SHF_STRINGS, SHN_ABS, SHN_COMMON, SHN_UNDEF, SHT_NOBITS,
-    SHT_NOTE, STB_GLOBAL, STB_GNU_UNIQUE, STB_WEAK, STT_FILE, STT_SECTION, STT_TLS,
+    ET_DYN, PT_TLS, SHF_ALLOC, SHN_ABS, SHN_COMMON, SHN_UNDEF, SHT_NOBITS, SHT_NOTE, STB_GLOBAL,
+    STB_GNU_UNIQUE, STB_WEAK, STT_FILE, STT_SECTION, STT_TLS,
 };
 use mortar_elf::{SectionIndex, SymbolIndex, SymbolSection};
 
@@ -472,7 +472,7 @@ fn run_side<'a>(
     map: &'a Map,
 ) -> Result<Side<'a>, Report> {
     let Ok(image) = Image::read(output) else {
-        let mut r = crate::verify_static_in(output, store, m, map, None, &[]);
+        let mut r = crate::verify_static_in(output, store, m, map, None, &[], None);
         crate::read_errors(store, &mut r);
         return Err(r);
     };
@@ -2016,9 +2016,12 @@ fn rest(x: &Side<'_>, f: &Side<'_>, out: &mut Vec<Finding>) {
         }
         let Some(b) = img.section_data(i) else { continue };
         // A section with `merged` records is not tiled (WP-268): no map
-        // lists its pieces, its `dead` lines are §6.8's (P-I2, P-I6), its
-        // other bytes the strings its references reach (§5.6).
+        // lists its pieces, its `dead` lines are §6.8's (P-I2, P-I6). Its
+        // other bytes are F's strings, each once (WP-210).
         if x.map.nonalloc.iter().any(|n| n.out == c.name && n.offset.is_none()) {
+            if let Some(m) = merged_strings(x, f, i, b) {
+                out.push(finding(6, m));
+            }
             continue;
         }
         let units: Vec<(u64, u64)> = x
@@ -2030,9 +2033,8 @@ fn rest(x: &Side<'_>, f: &Side<'_>, out: &mut Vec<Finding>) {
             .chain(x.map.dead.iter().filter(|d| d.section == c.name).map(|d| (d.offset, d.size)))
             .collect();
         if units.is_empty() {
-            if c.shdr.sh_flags & (SHF_MERGE | SHF_STRINGS) == (SHF_MERGE | SHF_STRINGS) {
-                continue;
-            }
+            // WP-210: a merged-strings section with no line at all too
+            // (WP-268 passed it over).
             if f.sec_bytes(&c.name) != Some(b) {
                 out.push(finding(
                     6,
@@ -2064,6 +2066,92 @@ fn rest(x: &Side<'_>, f: &Side<'_>, out: &mut Vec<Finding>) {
         }
     }
     let _ = SectionIndex(0);
+}
+
+/// The non-empty strings of `b` outside the `dead` lines of `side`'s map
+/// in section `name`, split at NUL characters of `e` bytes; a string
+/// cut short by a dead line or the end is kept with what it holds.
+fn strings_outside<'b>(side: &Side<'_>, name: &str, b: &'b [u8], e: usize) -> Vec<(u64, &'b [u8])> {
+    let mut dead: Vec<(u64, u64)> = side
+        .map
+        .dead
+        .iter()
+        .filter(|d| d.section == name)
+        .map(|d| (d.offset, d.offset.saturating_add(d.size)))
+        .collect();
+    dead.sort_unstable();
+    let mut segs = Vec::new();
+    let mut at = 0u64;
+    for (o, z) in dead {
+        if o > at {
+            segs.push((at, o));
+        }
+        at = at.max(z);
+    }
+    segs.push((at, b.len() as u64));
+    let mut out = Vec::new();
+    for (a, z) in segs {
+        let (a, z) = (a as usize, (z as usize).min(b.len()));
+        if a >= z {
+            continue;
+        }
+        let mut from = a;
+        let mut k = a;
+        while k < z {
+            let end = (k + e).min(z);
+            if b[k..end].iter().all(|&v| v == 0) && end - k == e {
+                if k > from {
+                    out.push((from as u64, &b[from..k]));
+                }
+                from = end;
+            }
+            k = end;
+        }
+        if from < z {
+            out.push((from as u64, &b[from..z]));
+        }
+    }
+    out
+}
+
+/// P-E6 for a non-allocated section with `merged` records (WP-210,
+/// closing WP-268's gap): outside `X`'s `dead` lines, the non-empty
+/// strings of `X`'s section `i` (bytes `b`) are `F`'s, as a set (outside
+/// `F`'s own `dead` lines), and none twice. A stray byte inside a string,
+/// or one that joins or splits strings, makes a string `F` lacks.
+fn merged_strings(x: &Side<'_>, f: &Side<'_>, i: usize, b: &[u8]) -> Option<String> {
+    let c = &x.image.sections[i];
+    let name = c.name.as_str();
+    let e = usize::try_from(c.shdr.sh_entsize).ok().filter(|&e| (1..=16).contains(&e)).unwrap_or(1);
+    let Some(fb) = f.sec_bytes(name) else {
+        return Some(format!("{name} has merged strings and the full link has no {name}"));
+    };
+    let xs = strings_outside(x, name, b, e);
+    let fs: BTreeSet<&[u8]> = strings_outside(f, name, fb, e).into_iter().map(|(_, s)| s).collect();
+    let show = |s: &[u8]| {
+        let t = String::from_utf8_lossy(&s[..s.len().min(48)]).into_owned();
+        if s.len() > 48 { format!("{t:?}...") } else { format!("{t:?}") }
+    };
+    let mut seen: BTreeSet<&[u8]> = BTreeSet::new();
+    for (o, s) in &xs {
+        if !fs.contains(s) {
+            return Some(format!(
+                "{name} offset {o:#x}: the string {} (outside every dead line) is not one of the full link's {name} strings",
+                show(s)
+            ));
+        }
+        if !seen.insert(s) {
+            return Some(format!(
+                "{name} offset {o:#x}: the string {} is there twice outside the dead lines (a merged section holds each once)",
+                show(s)
+            ));
+        }
+    }
+    let missing = fs.iter().find(|s| !seen.contains(*s))?;
+    Some(format!(
+        "{name}: the full link's string {} is not in the update's, outside its dead lines",
+        show(missing)
+    ))
 }
 
 #[cfg(test)]

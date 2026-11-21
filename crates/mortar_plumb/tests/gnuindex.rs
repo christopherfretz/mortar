@@ -195,17 +195,28 @@ fn wp251_set_left_out_of_plain_output_is_m10() {
 /// map's word is not taken alone, the output is judged as a plain one
 /// and the four sets left out are M10 (none under `--gdb-index`, whose
 /// own row, S-G6, drops them). The negations keep the mode: clean.
+/// A line with `-r` is stage R's (§14.1's line, mortar's `arg` records
+/// too; WP-210): P-P9 names the `ET_EXEC` output, and no M10 of §10.
 #[test]
 fn wp251_map_word_against_the_line_is_plain() {
-    let cases: [(&[&str], &[&str]); 6] = [
+    let cases: [(&[&str], &[&str]); 5] = [
         (&["--incremental=full"], &[]),
         (&[], &["--no-incremental"]),
         (&[], &["--sort-common"]),
         (&[], &["--gdb-index"]),
         (&[], &["--compress-debug-sections=zlib"]),
-        (&[], &["-r"]),
     ];
     for arch in ARCHES {
+        let mut l = load(arch, "inc");
+        l.line(&[], &["-r"]);
+        let rep = l.verify();
+        assert!(
+            rep.with_rule("P-P9")
+                .any(|f| f.message.contains("not ET_REL; the map or the line says -r")),
+            "{arch} -r: {:#?}",
+            all(&rep)
+        );
+        assert_eq!(m10(&rep).iter().filter(|m| m.contains(LEFT_OUT)).count(), 0, "{arch} -r");
         for (drop, add) in cases {
             let mut l = load(arch, "inc");
             l.line(drop, add);

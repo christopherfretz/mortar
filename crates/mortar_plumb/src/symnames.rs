@@ -26,6 +26,7 @@ use mortar_elf::consts::{
 };
 
 use crate::hasher::{HashMap, HashSet};
+use crate::inset::LineScripts;
 use crate::locate::Place;
 use crate::map::{Format, Map};
 use crate::opts::{Discard, Options};
@@ -175,7 +176,7 @@ struct Want {
 type Key = (String, u8, u8, u64, u64);
 
 /// Why an input local is not judged (Y6's coverage, by name).
-const NJ_EH_FRAME: &str = "locals of .eh_frame (S-50 drops some by relocation)";
+const NJ_EH_FRAME: &str = "locals of .eh_frame S-50 gives no value (outside the section, inside a removed record a relocation names, or the map gives no records)";
 const NJ_EMPTY: &str = "labels of empty sections without a record (S-123)";
 const NJ_MERGED: &str = "locals of sections merged without pieces";
 const NJ_UNKNOWN: &str = "locals of sections whose place the map does not give";
@@ -185,6 +186,89 @@ const NJ_FILE_UNLISTED: &str =
     "STT_FILE names of files the map does not list (lld, mold: every section collected)";
 const NJ_LINE: &str = "every local: the link's -x/-X options are not known";
 const NJ_FOREIGN: &str = "every local: Y6's rules are mortar's (S-76, S-83; GNU ld inserts an STT_FILE per object and an unnamed one, drops crtbegin's __TMC_LIST__; mold makes every global local, A9)";
+
+/// What S-76 and S-50 make of a local of an input `.eh_frame`.
+enum EhLocal {
+    /// Kept, at this value.
+    Value(u64),
+    /// Not in `.symtab`.
+    Dropped,
+    /// Not judged ([`NJ_EH_FRAME`]).
+    NotJudged,
+}
+
+/// S-76 and S-50 under mortar's map (§6.5 Y6, WP-210): the local `idx` at
+/// offset `r` of input `.eh_frame` `k` of object `oi`, named `name`. A
+/// mapping symbol (`$x`, `$d`, `$x.…`, `$d.…`) is kept at its record's
+/// output place exactly when the record is kept; any other local takes
+/// S-50's value (rules 1 to 3, [`Engine::eh_frame_value`]), but one in
+/// the interior of a removed record that no relocation refers to is
+/// dropped (rule 4).
+fn eh_local(e: &Engine<'_, '_>, oi: usize, k: usize, idx: u32, r: u64, name: &str) -> EhLocal {
+    let o = &e.objs[oi];
+    let sec = &o.secs[k];
+    // No piece (`Absent`): every record of the section is removed (a
+    // terminator alone, FDEs all dead); S-50 still values its labels.
+    let pieces: &[crate::locate::Piece] = match &sec.place {
+        Place::Pieces(ps) => ps,
+        Place::Absent => &[],
+        Place::Discarded => return EhLocal::Dropped,
+        _ => return EhLocal::NotJudged,
+    };
+    let mapping =
+        name == "$x" || name == "$d" || name.starts_with("$x.") || name.starts_with("$d.");
+    let value = |r: u64| e.eh_frame_value(oi, k, r).map_or(EhLocal::NotJudged, EhLocal::Value);
+    if let Some(p) = pieces.iter().find(|p| p.input_offset <= r && r < p.input_offset + p.size) {
+        // Rule 2; rule 1 (`r = 0`: the output's start) for any but a
+        // mapping symbol, which follows its record.
+        if r == 0 && !mapping {
+            return value(0);
+        }
+        return EhLocal::Value(p.addr + (r - p.input_offset));
+    }
+    if mapping {
+        return EhLocal::Dropped;
+    }
+    let size = sec.shdr.sh_size;
+    if r > size {
+        return EhLocal::NotJudged;
+    }
+    if r == 0 || r == size || record_starts(&o.data(k)).contains(&r) {
+        return value(r);
+    }
+    // Rule 4: inside a removed record. A relocation through the symbol
+    // would have refused the link.
+    let named =
+        o.secs.iter().filter_map(|s| s.relocs).any(|rs| {
+            o.records(rs).is_some_and(|recs| recs.iter().any(|&(_, sym, _, _)| sym == idx))
+        });
+    if named { EhLocal::NotJudged } else { EhLocal::Dropped }
+}
+
+/// The offsets of the records of `.eh_frame` contents `b` (32- and 64-bit
+/// lengths; a zero length word is a 4-byte terminator).
+#[allow(clippy::many_single_char_names)] // a record walk: offset, length, size
+fn record_starts(b: &[u8]) -> Vec<u64> {
+    let mut v = Vec::new();
+    let mut o = 0usize;
+    while o + 4 <= b.len() {
+        let n = u32::from_le_bytes([b[o], b[o + 1], b[o + 2], b[o + 3]]);
+        v.push(o as u64);
+        let size = if n == 0xffff_ffff {
+            let Some(w) = b.get(o + 4..o + 12) else { break };
+            let mut a = [0u8; 8];
+            a.copy_from_slice(w);
+            usize::try_from(u64::from_le_bytes(a)).ok().and_then(|x| x.checked_add(12))
+        } else {
+            (n as usize).checked_add(4)
+        };
+        match size {
+            Some(z) if z > 0 => o += z,
+            _ => break,
+        }
+    }
+    v
+}
 
 /// The options that decide which locals are kept: mortar's `arg` records,
 /// or the caller's line.
@@ -254,65 +338,81 @@ pub(crate) fn locals(e: &mut Engine<'_, '_>, map: &Map, fs: &mut Vec<Finding>) {
                         skip(NJ_UNKNOWN, None, name);
                         continue;
                     };
-                    if sec.is_eh_frame(o.elf.machine()) && eh_out.is_some() {
-                        skip(NJ_EH_FRAME, eh_index, name);
-                        continue;
-                    }
-                    match &sec.place {
-                        Place::Whole(a) => {
-                            let v = a.wrapping_add(s.st_value);
-                            let at = if sec.alloc() {
-                                Where::Alloc(*a, a.wrapping_add(sec.shdr.sh_size))
-                            } else {
-                                Where::NonAlloc
-                            };
-                            (v, at, false)
-                        }
-                        Place::Pieces(ps) => {
-                            let r = s.st_value;
-                            let p = ps
-                                .iter()
-                                .find(|p| p.input_offset <= r && r < p.input_offset + p.size)
-                                .or_else(|| {
-                                    (r == sec.shdr.sh_size)
-                                        .then(|| ps.iter().find(|p| p.input_offset + p.size == r))
-                                        .flatten()
-                                });
-                            // S-76: with no piece its fragment is not live.
-                            let Some(p) = p else {
+                    if sec.is_eh_frame(o.elf.machine())
+                        && let Some((ea, ez)) = eh_out
+                    {
+                        // S-76, S-50 (WP-210): a local of an input
+                        // `.eh_frame`, kept at S-50's value or dropped.
+                        match eh_local(e, oi, k, i.0, s.st_value, &name) {
+                            EhLocal::Value(v) => (v, Where::Alloc(ea, ea + ez), false),
+                            EhLocal::Dropped => {
                                 dropped += 1;
                                 continue;
-                            };
-                            let at = if sec.alloc() {
-                                Where::Alloc(p.addr, p.addr + p.size)
-                            } else {
-                                Where::NonAlloc
-                            };
-                            (p.addr + (r - p.input_offset), at, true)
+                            }
+                            EhLocal::NotJudged => {
+                                skip(NJ_EH_FRAME, eh_index, name);
+                                continue;
+                            }
                         }
-                        Place::Discarded => {
-                            dropped += 1;
-                            continue;
-                        }
-                        Place::Absent
-                            if map.format == Format::Mortar && !sec.empty_unrecorded() =>
-                        {
-                            // §4.4 step 0: no place, so not in the output
-                            // (S-76; P-1).
-                            dropped += 1;
-                            continue;
-                        }
-                        Place::Absent if sec.empty_unrecorded() => {
-                            skip(NJ_EMPTY, None, name);
-                            continue;
-                        }
-                        Place::Merged => {
-                            skip(NJ_MERGED, None, name);
-                            continue;
-                        }
-                        Place::Absent | Place::Rewritten | Place::Ambiguous => {
-                            skip(NJ_UNKNOWN, None, name);
-                            continue;
+                    } else {
+                        match &sec.place {
+                            Place::Whole(a) => {
+                                let v = a.wrapping_add(s.st_value);
+                                let at = if sec.alloc() {
+                                    Where::Alloc(*a, a.wrapping_add(sec.shdr.sh_size))
+                                } else {
+                                    Where::NonAlloc
+                                };
+                                (v, at, false)
+                            }
+                            Place::Pieces(ps) => {
+                                let r = s.st_value;
+                                let p = ps
+                                    .iter()
+                                    .find(|p| p.input_offset <= r && r < p.input_offset + p.size)
+                                    .or_else(|| {
+                                        (r == sec.shdr.sh_size)
+                                            .then(|| {
+                                                ps.iter().find(|p| p.input_offset + p.size == r)
+                                            })
+                                            .flatten()
+                                    });
+                                // S-76: with no piece its fragment is not live.
+                                let Some(p) = p else {
+                                    dropped += 1;
+                                    continue;
+                                };
+                                let at = if sec.alloc() {
+                                    Where::Alloc(p.addr, p.addr + p.size)
+                                } else {
+                                    Where::NonAlloc
+                                };
+                                (p.addr + (r - p.input_offset), at, true)
+                            }
+                            Place::Discarded => {
+                                dropped += 1;
+                                continue;
+                            }
+                            Place::Absent
+                                if map.format == Format::Mortar && !sec.empty_unrecorded() =>
+                            {
+                                // §4.4 step 0: no place, so not in the output
+                                // (S-76; P-1).
+                                dropped += 1;
+                                continue;
+                            }
+                            Place::Absent if sec.empty_unrecorded() => {
+                                skip(NJ_EMPTY, None, name);
+                                continue;
+                            }
+                            Place::Merged => {
+                                skip(NJ_MERGED, None, name);
+                                continue;
+                            }
+                            Place::Absent | Place::Rewritten | Place::Ambiguous => {
+                                skip(NJ_UNKNOWN, None, name);
+                                continue;
+                            }
                         }
                     }
                 }
@@ -543,14 +643,16 @@ fn unexplained(e: &mut Engine<'_, '_>, map: &Map, fs: &mut Vec<Finding>) {
     let image = e.image;
     let machine = image.header.e_machine;
     let opts = options(e, map);
-    let script = opts.as_ref().is_some_and(|o| o.script);
-    let dynsym = dynsym_names(image);
+    // A `-T` script: mortar's options (it accepts the option), or the
+    // line's `-T` words the caller read (every format, WP-210).
+    let script = opts.as_ref().is_some_and(|o| o.script) || e.script_names.is_some();
+    let dynsym = dynsym_entries(image);
     // A name `.dynsym` has (stage 3 judges it against the shared objects:
     // an import, a copy and its aliases), with or without GNU ld's
     // `@VERSION` suffix.
     let dynamic = |n: &str| {
-        dynsym.contains(n.as_bytes())
-            || n.split_once('@').is_some_and(|(b, _)| dynsym.contains(b.as_bytes()))
+        dynsym.contains_key(n.as_bytes())
+            || n.split_once('@').is_some_and(|(b, _)| dynsym.contains_key(b.as_bytes()))
     };
     // The bases of the inputs' versioned definitions (`foo` of `foo@@V`).
     let mut versioned: HashSet<String> = HashSet::default();
@@ -572,9 +674,20 @@ fn unexplained(e: &mut Engine<'_, '_>, map: &Map, fs: &mut Vec<Finding>) {
             kept.push(n);
             continue;
         }
+        // A `-T` script may assign the name: when the verifier read every
+        // script of the line, only the names they assign (WP-210).
         if script {
-            kept.push(format!("{n} (the line has a script)"));
-            continue;
+            match &e.script_names {
+                Some(LineScripts::Read(s)) if s.assigned.contains(&n) => {
+                    kept.push(format!("{n} (the line's script assigns it)"));
+                    continue;
+                }
+                Some(LineScripts::Read(_)) => {}
+                Some(LineScripts::Unread) | None => {
+                    kept.push(format!("{n} (the line has a script the verifier did not read)"));
+                    continue;
+                }
+            }
         }
         // With no line (a foreign map read alone) a `--defsym` the line
         // gave is not known: GNU ld's map does not record it.
@@ -583,6 +696,30 @@ fn unexplained(e: &mut Engine<'_, '_>, map: &Map, fs: &mut Vec<Finding>) {
             continue;
         }
         if dynamic(&n) {
+            // Stage 3 judges the `.dynsym` entry (P-D5); the `.symtab`
+            // entry is the same symbol: one `.dynsym` entry of the name
+            // (or of its base before `@`) has its value, defined or a
+            // canonical PLT entry's (WP-210).
+            let base = n.split_once('@').map_or(n.as_str(), |(b, _)| b);
+            let ds = dynsym.get(n.as_bytes()).or_else(|| dynsym.get(base.as_bytes()));
+            let ds = ds.map_or(&[][..], Vec::as_slice);
+            for out in image.symbols.iter().filter(|o| o.name == n) {
+                let v = out.sym.st_value;
+                if ds.iter().any(|&(dv, defined)| dv == v && (defined || dv != 0)) {
+                    continue;
+                }
+                let at: Vec<String> = ds.iter().map(|(dv, _)| format!("{dv:#x}")).collect();
+                let mut f = y(
+                    5,
+                    format!(
+                        ".symtab entry {} ('{n}') is at {v:#x}, but .dynsym's '{base}' is at {} (§6.5 Y5: the one symbol of the name)",
+                        out.index,
+                        at.join(", ")
+                    ),
+                );
+                f.found = Some(v);
+                fs.push(named(f.at(v), &n));
+            }
             continue;
         }
         // `foo@@V`: lld's and mold's `.symtab` name it `foo` (Y3's
@@ -630,7 +767,11 @@ fn unexplained(e: &mut Engine<'_, '_>, map: &Map, fs: &mut Vec<Finding>) {
         }
     }
     let mut mentioned: HashSet<&[u8]> = HashSet::default();
-    for n in line_names.iter().chain(&e.roots) {
+    let script_mentions = match &e.script_names {
+        Some(LineScripts::Read(s)) => s.mentioned.as_slice(),
+        _ => &[],
+    };
+    for n in line_names.iter().chain(&e.roots).chain(script_mentions) {
         mentioned.insert(n.as_bytes());
     }
     for o in e.objs {
@@ -681,14 +822,15 @@ fn unexplained(e: &mut Engine<'_, '_>, map: &Map, fs: &mut Vec<Finding>) {
     e.cov.linker_defined_not_judged.extend(unmentioned);
 }
 
-/// The names of the output's `.dynsym`, if it has one.
-fn dynsym_names<'a>(image: &crate::image::Image<'a>) -> HashSet<&'a [u8]> {
-    let mut v = HashSet::default();
+/// The output's `.dynsym`, if it has one: per name, each entry's value
+/// and whether it is defined.
+fn dynsym_entries<'a>(image: &crate::image::Image<'a>) -> HashMap<&'a [u8], Vec<(u64, bool)>> {
+    let mut v: HashMap<&'a [u8], Vec<(u64, bool)>> = HashMap::default();
     let Ok(t) = mortar_elf::SectionTable::parse(image.data, &image.header) else { return v };
     if let Ok(Some(d)) = t.find_symbol_table(mortar_elf::consts::SHT_DYNSYM) {
         for (_, s) in d.iter() {
             if let Ok(n) = d.name(&s) {
-                v.insert(n);
+                v.entry(n).or_default().push((s.st_value, s.st_shndx != SHN_UNDEF));
             }
         }
     }

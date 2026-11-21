@@ -114,7 +114,11 @@ pub(crate) fn comdat_dropped_in<'o, 'a: 'o>(
 /// the object before it in `FileId` order. A map that lists
 /// files in another order (lld's lists them where their first section is
 /// placed: an object with no `.eh_frame` after one that has one) then
-/// keeps the same copy as the link did.
+/// keeps the same copy as the link did. Objects of one rank (one
+/// archive's members) keep `objs`' order, the map's: GNU ld's and lld's
+/// list members in extraction order, the copy they keep; mold's and
+/// mortar's in archive order (mortar's `FileId`, §6.1), theirs (measured
+/// in WP-210, `tests/keeper.rs`; `spec/plumb.md` §5.7a).
 pub(crate) fn comdat_dropped_ranked<'o, 'a: 'o>(
     objs: &[&'o Obj<'a>],
     rank: impl Fn(&Obj<'a>) -> Option<usize>,

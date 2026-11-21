@@ -114,6 +114,10 @@ pub(crate) struct Sec {
     pub entsize: u64,
     /// The file bytes (empty for `SHT_NOBITS`).
     pub data: Vec<u8>,
+    /// An input `SHF_COMPRESSED` section read by its compression header
+    /// (§14.7, WP-210): `size` and `align` are the header's `ch_size` and
+    /// `ch_addralign`, `data` is empty (stage R has no decompression).
+    pub compressed: bool,
 }
 
 impl Sec {
@@ -452,9 +456,56 @@ pub(crate) struct Opts {
     pub binary: BTreeSet<String>,
     /// The input words in line order.
     pub inputs: Vec<String>,
+    /// The line's options whose class at `-r` is `acts` (the mirror's
+    /// column, [`crate::opts::AtR`]) and that [`READ_AT_R`] does not hold,
+    /// by first spelling, once each (§14.6, WP-210).
+    pub unread_acts: Vec<String>,
 }
 
+/// The options whose class at `-r` is `acts` that §14.1 reads, or whose
+/// effect stage R takes from the map (§14.6, WP-210): `-o` names the
+/// output; `--require-defined` extracts as `-u` does (the map lists the
+/// members); the `--incremental` family is IN-12's warning, a plain `-r`.
+/// Every other `acts` option of a line (`-T`, `--defsym`) changes the
+/// output in a way no rule here models.
+pub(crate) const READ_AT_R: &[&str] = &[
+    "-o",
+    "-r",
+    "-Ur",
+    "-e",
+    "-d",
+    "-s",
+    "-S",
+    "-x",
+    "--build-id",
+    "--force-group-allocation",
+    "-b",
+    "--unique",
+    "-u",
+    "--require-defined",
+    "--incremental",
+    "--incremental-state",
+    "--incremental-report",
+    "--incremental-write",
+    "--incremental-sync",
+    "--incremental-verify",
+    "--incremental-changed",
+    "-z execstack",
+    "-z noexecstack",
+];
+
 impl Opts {
+    /// Records `id` (a row's first spelling, or `-z kw`) when it acts at
+    /// `-r` and §14.1 does not read it.
+    fn note_acts(&mut self, t: &crate::opts::Table, id: &str) {
+        if t.at_r(id) == Some(crate::opts::AtR::Acts)
+            && !READ_AT_R.contains(&id)
+            && !self.unread_acts.iter().any(|u| u == id)
+        {
+            self.unread_acts.push(id.to_string());
+        }
+    }
+
     pub(crate) fn read(words: Option<&[String]>) -> Opts {
         let Some(words) = words else { return Opts::default() };
         let t = crate::opts::Table::get();
@@ -472,43 +523,49 @@ impl Opts {
                     }
                     o.inputs.push(word);
                 }
-                crate::opts::Word::Opt { id, value, .. } => match id {
-                    "-r" | "-Ur" => o.relocatable = true,
-                    "-d" => o.define_common = true,
-                    "-s" => {
-                        o.strip_all = true;
-                        o.strip_debug = true;
-                    }
-                    "-S" => o.strip_debug = true,
-                    "-x" => o.discard_all = true,
-                    "-u" => o.undefined.extend(value),
-                    "-e" => o.entry = value,
-                    "--build-id" => {
-                        o.build_id = match value.as_deref() {
-                            Some("none") => None,
-                            Some(v) => Some(v.to_string()),
-                            None => Some("default".into()),
-                        };
-                    }
-                    "--no-build-id" => o.build_id = None,
-                    "--unique" => {
-                        let u = o.unique.get_or_insert_with(Vec::new);
-                        match value {
-                            Some(p) => u.push(p),
-                            None => u.clear(),
+                crate::opts::Word::Opt { id, value, .. } => {
+                    o.note_acts(t, id);
+                    match id {
+                        "-r" | "-Ur" => o.relocatable = true,
+                        "-d" => o.define_common = true,
+                        "-s" => {
+                            o.strip_all = true;
+                            o.strip_debug = true;
                         }
+                        "-S" => o.strip_debug = true,
+                        "-x" => o.discard_all = true,
+                        "-u" => o.undefined.extend(value),
+                        "-e" => o.entry = value,
+                        "--build-id" => {
+                            o.build_id = match value.as_deref() {
+                                Some("none") => None,
+                                Some(v) => Some(v.to_string()),
+                                None => Some("default".into()),
+                            };
+                        }
+                        "--no-build-id" => o.build_id = None,
+                        "--unique" => {
+                            let u = o.unique.get_or_insert_with(Vec::new);
+                            match value {
+                                Some(p) => u.push(p),
+                                None => u.clear(),
+                            }
+                        }
+                        "--force-group-allocation" => o.force_group = true,
+                        "--allow-multiple-definition" => o.muldefs = true,
+                        "-b" => binary = value.as_deref() == Some("binary"),
+                        _ => {}
                     }
-                    "--force-group-allocation" => o.force_group = true,
-                    "--allow-multiple-definition" => o.muldefs = true,
-                    "-b" => binary = value.as_deref() == Some("binary"),
-                    _ => {}
-                },
-                crate::opts::Word::Z { kw, .. } => match kw {
-                    "execstack" => o.execstack = Some(true),
-                    "noexecstack" => o.execstack = Some(false),
-                    "muldefs" => o.muldefs = true,
-                    _ => {}
-                },
+                }
+                crate::opts::Word::Z { kw, .. } => {
+                    o.note_acts(t, &format!("-z {kw}"));
+                    match kw {
+                        "execstack" => o.execstack = Some(true),
+                        "noexecstack" => o.execstack = Some(false),
+                        "muldefs" => o.muldefs = true,
+                        _ => {}
+                    }
+                }
                 crate::opts::Word::Unknown => {}
             }
             i += used.max(1);
@@ -939,13 +996,27 @@ fn consumed(s: &Sec) -> bool {
 pub(crate) fn applies(output: &[u8], map: &Map, line: Option<&[String]>) -> bool {
     let et_rel =
         output.len() >= 18 && &output[..4] == b"\x7fELF" && output[16] == 1 && output[17] == 0;
-    et_rel || map.rel.is_some() || (map.format != Format::Mortar && Opts::read(line).relocatable)
+    et_rel || map.rel.is_some() || Opts::read(line_words(map, line).as_deref()).relocatable
+}
+
+/// The line stage R reads (§14.1, §3.2a; WP-210): the caller's when it
+/// gives one, for every format, else a mortar map's `arg` records. A
+/// mortar map always has a line (its records); `None` only for a
+/// reference's map read without the caller's.
+pub(crate) fn line_words(map: &Map, line: Option<&[String]>) -> Option<Vec<String>> {
+    match line {
+        Some(l) => Some(l.to_vec()),
+        None if map.format == Format::Mortar => {
+            Some(map.args.iter().map(|w| String::from_utf8_lossy(w).into_owned()).collect())
+        }
+        None => None,
+    }
 }
 
 /// Verifies a `-r` output (§14): the output's bytes, the inputs the map
-/// names (through `src`), the map, and the caller's context (a
-/// reference's line in `ctx.line`; mortar's map has its own `arg`
-/// records). Never panics; what it cannot read is a finding (O1, I1, I2).
+/// names (through `src`), the map, and the caller's context (the
+/// caller's line in `ctx.line`, read first for every format; without
+/// it, mortar's map has its own `arg` records: [`line_words`]). Never panics; what it cannot read is a finding (O1, I1, I2).
 /// The input set (§3.8) is not judged here: [`crate::verify_with`] and
 /// [`crate::verify_from`] add it, as for every output kind.
 pub fn verify(output: &[u8], src: &dyn Source, map: &Map, ctx: &Ctx<'_>) -> Report {
@@ -1057,12 +1128,7 @@ fn with_rv<R>(
     k: impl FnOnce(&mut Rv<'_>) -> R,
 ) -> (Report, Option<R>) {
     let src = store.src();
-    let words: Option<Vec<String>> = if map.format == Format::Mortar {
-        (!map.args.is_empty())
-            .then(|| map.args.iter().map(|w| String::from_utf8_lossy(w).into_owned()).collect())
-    } else {
-        line.map(<[String]>::to_vec)
-    };
+    let words = line_words(map, line);
     let opts = Opts::read(words.as_deref());
     let mut report = Report::default();
     // P-P9 and P-P7's header fields are judged on the header as written;
@@ -1071,7 +1137,7 @@ fn with_rv<R>(
     let not_rel = bytes.len() >= 18 && &bytes[..4] == b"\x7fELF" && bytes[16..18] != [1, 0];
     if not_rel {
         let kind = u16::from_le_bytes([bytes[16], bytes[17]]);
-        let said = if map.format == Format::Mortar { "output relocatable" } else { "-r" };
+        let said = if map.rel.is_some() { "output relocatable" } else { "-r" };
         report.findings.push(Finding::new(
             Rule::Rel(9),
             format!("the output is e_type {kind}, not ET_REL; the map or the line says {said}"),
@@ -1088,7 +1154,9 @@ fn with_rv<R>(
             Rule::Rel(9),
             format!("the output is ET_REL and the map says {kind}"),
         ));
-    } else if map.format != Format::Mortar && opts.known && !opts.relocatable {
+    } else if opts.known && !opts.relocatable {
+        // The line of §14.1 (the caller's first, every format; WP-210):
+        // a caller's line without `-r` for mortar's output too.
         report.findings.push(Finding::new(
             Rule::Rel(9),
             "the output is ET_REL and the line has no -r, -i, --relocatable or -Ur",
@@ -1133,7 +1201,11 @@ fn with_rv<R>(
         cov: RelCoverage::default(),
         raw: output.to_vec(),
     };
-    run(&mut rv);
+    if rv.opts.unread_acts.is_empty() {
+        run(&mut rv);
+    } else {
+        unread_acts(&mut rv);
+    }
     let r = k(&mut rv);
     let mut report = std::mem::take(&mut rv.report);
     report.coverage.relocatable = Some(rv.cov.clone());
@@ -1233,6 +1305,7 @@ fn read_inputs(
                 }
             }
         };
+        let elf = uncompress_geometry(elf, &f.to_string(), report);
         // A path the line names n times is n inputs (a foreign map names
         // it once; its rows come copy after copy).
         let positions: Vec<usize> = if map.format != Format::Mortar && f.member.is_none() {
@@ -1271,6 +1344,39 @@ fn read_inputs(
     ins
 }
 
+/// An input's `SHF_COMPRESSED` sections (§14.7, WP-210 item (b)): the
+/// compression header (`Elf64_Chdr`/`Elf32_Chdr`) gives the section's
+/// size and alignment as the link sees them, so its place, alignment and
+/// extent are judged; its bytes are not read (no decompression), so
+/// they, a REL record's implicit addend and a target inside them that is
+/// a merged string are not judged, by name (`compressed`). A header that
+/// does not fit is an I2 finding.
+fn uncompress_geometry(mut elf: Elf, file: &str, report: &mut Report) -> Elf {
+    let c64 = elf.h.class64;
+    for s in &mut elf.secs {
+        if s.flags & SHF_COMPRESSED == 0 || s.nobits() {
+            continue;
+        }
+        let hdr = if c64 {
+            rd(&s.data, 8, 8).zip(rd(&s.data, 16, 8))
+        } else {
+            rd(&s.data, 4, 4).zip(rd(&s.data, 8, 4))
+        };
+        let Some((size, align)) = hdr else {
+            report.findings.push(Finding::new(
+                Rule::InputUnreadable,
+                format!("{file}:({}): SHF_COMPRESSED without a whole compression header", s.name),
+            ));
+            continue;
+        };
+        s.size = size;
+        s.align = align;
+        s.data = Vec::new();
+        s.compressed = true;
+    }
+    elf
+}
+
 /// The rules, in order: the places, the drops, then P-P5 (which gives
 /// P-P3 the record map), P-P2, P-P3, P-P4, P-P6, P-P7, P-P8, P-P10,
 /// P-P11.
@@ -1300,6 +1406,28 @@ fn run(rv: &mut Rv<'_>) {
     container(rv);
     notes(rv);
     sections(rv);
+}
+
+/// §14.6 (WP-210): the line holds an option that acts at `-r` and that
+/// §14.1 does not read (`-T`, `--defsym`): no rule of P-P2 to P-P11 runs
+/// (each could judge what the option changed), every input record is
+/// counted not checked, `options-unknown`, and the summary names the
+/// options.
+fn unread_acts(rv: &mut Rv<'_>) {
+    let mut n = 0u64;
+    for f in 0..rv.ins.len() {
+        for s in 1..rv.ins[f].elf.secs.len() {
+            n += rv.ins[f]
+                .elf
+                .relocs_of(s)
+                .iter()
+                .map(|&rs| rv.ins[f].elf.rels(rs).len() as u64)
+                .sum::<u64>();
+        }
+    }
+    rv.report.coverage.records += n;
+    rv.report.coverage.add_not_checked(Reason::OptionsUnknown, n);
+    rv.cov.unread_acts = rv.opts.unread_acts.clone();
 }
 
 // ---- the places (§14.2) ----
@@ -1788,6 +1916,15 @@ type Field = (u64, u8, u64, Option<Vec<u64>>, u32);
 fn content(rv: &mut Rv<'_>) {
     for f in 0..rv.ins.len() {
         for s in 1..rv.ins[f].elf.secs.len() {
+            // §14.7 (WP-210): a compressed input's bytes, placed whole or
+            // merged, are not judged, by name.
+            if rv.ins[f].elf.secs[s].compressed
+                && matches!(rv.places[f][s], Place::Whole { .. } | Place::Merged { .. })
+            {
+                let n = rv.ins[f].sname(s);
+                rv.cov.compressed.push(n);
+                continue;
+            }
             let Place::Whole { out, off } = rv.places[f][s] else { continue };
             let sec = &rv.ins[f].elf.secs[s];
             let Some(o) = rv.out.secs.get(out as usize) else { continue };
@@ -2087,6 +2224,19 @@ pub(crate) fn records(rv: &mut Rv<'_>) {
                     rv.report.coverage.records += 1;
                     let at = off + r.offset;
                     let cands = rv.out_recs.get(&(out, at)).cloned().unwrap_or_default();
+                    if rv.needs_compressed_bytes(f, s, r, &t) {
+                        // §14.7 (WP-210): its verdict needs bytes stage R
+                        // does not decompress; the output record of its
+                        // type at the place is consumed.
+                        if let Some(&c) =
+                            cands.iter().find(|c| !rv.used[c] && rv.out_rels[&c.0][c.1].ty == r.ty)
+                        {
+                            rv.used.insert(c, true);
+                            rv.matched.insert(c, (f, rs, ri));
+                        }
+                        rv.report.coverage.add_not_checked(Reason::Compressed, 1);
+                        continue;
+                    }
                     if drops_record(&sname, sflags, &t) {
                         // §14.3 drops it: the field holds the tombstone
                         // (P-P2), or a per-linker record stands at it.
@@ -2135,6 +2285,24 @@ pub(crate) fn records(rv: &mut Rv<'_>) {
 }
 
 impl Rv<'_> {
+    /// Whether record `r` of input `f`'s section `s` (target `t`) needs
+    /// the bytes of an `SHF_COMPRESSED` section (§14.7, WP-210): a REL
+    /// record in one (its implicit addend), or a merged-string target in
+    /// one.
+    fn needs_compressed_bytes(&self, f: usize, s: usize, r: &Rel, t: &Tgt) -> bool {
+        let secs = &self.ins[f].elf.secs;
+        if r.addend.is_none() && secs.get(s).is_some_and(|x| x.compressed) {
+            return true;
+        }
+        matches!(t, Tgt::Merged(..))
+            && self.ins[f]
+                .elf
+                .syms
+                .get(r.sym as usize)
+                .and_then(|y| secs.get(y.shndx as usize))
+                .is_some_and(|x| x.compressed)
+    }
+
     /// Matches input record `r` (index `ri` of `f`'s relocation section
     /// `rs`, applying to section `s`) at output place `(out, at)`.
     #[allow(clippy::too_many_arguments)]

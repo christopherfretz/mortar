@@ -151,16 +151,23 @@ fn verify_kind(
         if missing.is_empty() {
             // The line's roots, read with its files (an implicit script's
             // `EXTERN`): names the line mentions (§6.5 Y5, WP-246).
-            let roots: Vec<String> = line_words(map, ctx)
-                .map(|w| {
-                    Line::parse(&w, ctx.files)
-                        .root_names()
-                        .into_iter()
-                        .map(str::to_string)
-                        .collect()
-                })
+            let read = line_words(map, ctx).map(|w| Line::parse(&w, ctx.files));
+            let roots: Vec<String> = read
+                .as_ref()
+                .map(|l| l.root_names().into_iter().map(str::to_string).collect())
                 .unwrap_or_default();
-            let r = crate::verify_static_in(output, store, m, map, ctx.line.as_deref(), &roots);
+            // The names the line's `-T` scripts assign (§6.5 Y5, WP-210).
+            let scripts =
+                read.as_ref().and_then(|l| crate::inset::scripts_of(&l.scripts, ctx.files));
+            let r = crate::verify_static_in(
+                output,
+                store,
+                m,
+                map,
+                ctx.line.as_deref(),
+                &roots,
+                scripts,
+            );
             return (r, staged);
         }
         let mut report = Report::default();
@@ -506,6 +513,7 @@ fn judge(
     engine.set_defsym(defsym.clone());
     engine.set_keeper_line(ctx.line.as_deref());
     engine.roots = line.root_names().into_iter().map(str::to_string).collect();
+    engine.script_names = crate::inset::scripts_of(&line.scripts, ctx.files);
     engine.shared = sets.is_some();
     // M10's export roots (WP-147): the shared set's one derivation, or an
     // executable's `-E` without a script (WP-149) or `--dynamic-list`

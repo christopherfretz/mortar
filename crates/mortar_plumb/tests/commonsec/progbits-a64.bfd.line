@@ -1,0 +1,8 @@
+-static
+-z
+max-page-size=4096
+-o
+progbits-a64.bfd
+start-a64.o
+vp-a64.o
+-Map=progbits-a64.bfd.map

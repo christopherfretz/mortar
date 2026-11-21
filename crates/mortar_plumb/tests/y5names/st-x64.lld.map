@@ -1,0 +1,25 @@
+             VMA              LMA     Size Align Out     In      Symbol
+               0                0   4001c8     1 . = 0x400000 + SIZEOF_HEADERS
+          4001c8           4001c8       10     1 .text
+          4001c8           4001c8       10     1         st-x64.o:(.text)
+          4001c8           4001c8        0     1                 _start
+          4001d8           4001d8      e28     1 . = ALIGN ( 0x1000 )
+          401000           401000        8     8 .got
+          401000           401000        8     8         <internal>:(.got)
+          401008           401008        8     1 .data
+          401008           401008        8     1         st-x64.o:(.data)
+          401010           401010        0     1 my_end = .
+          401010           401010        0     1 my_abs = 0x1234
+          401010           401010        0     1 my_free = 0x10
+          401010           401010       18     8 .got.plt
+          401010           401010       18     8         <internal>:(.got.plt)
+          401028           401028        0     1 .bss
+          401028           401028        0     1         st-x64.o:(.bss)
+               0                0       1a     1 .comment
+               0                0       1a     1         <internal>:(.comment)
+               0                0       90     8 .symtab
+               0                0       90     8         <internal>:(.symtab)
+               0                0       43     1 .shstrtab
+               0                0       43     1         <internal>:(.shstrtab)
+               0                0       34     1 .strtab
+               0                0       34     1         <internal>:(.strtab)

@@ -1,0 +1,8 @@
+-static
+-z
+max-page-size=4096
+-o
+dotx-a64.lld
+start-a64.o
+vx-a64.o
+-Map=dotx-a64.lld.map

@@ -330,7 +330,7 @@ fn decisions(image: &Image<'_>, map: &Map, out: &mut Vec<Finding>) -> Option<Str
     let mut line = String::new();
     let _ = write!(
         line,
-        "decision records: {} read; region judged (place only), symblock judged (place, names); capacity, order, slot, redirect, frag not judged",
+        "decision records: {} read; region judged (place only), symblock judged (place, names), capacity, order, slot, redirect, frag judged (P-I8); not judged: the ordinals' creation order, the capacities' amounts, a slot no live reference uses beyond its place, frag identity order",
         d.len()
     );
     Some(line)
