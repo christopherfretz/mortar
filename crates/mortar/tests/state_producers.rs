@@ -423,8 +423,13 @@ fn diags_hold_no_warning_today() {
         // lost today; it is the update that is lost. (Nothing changed:
         // refused before the front, by the reason printed.)
         assert!(shown(&same).contains("update-not-implemented"), "{label}: {}", shown(&same));
+        // WP-267 P-5: front 1 is off the real path; the front-free U4
+        // (P-1's rows) refuses the changed member `(resolve)` before any
+        // front runs, and a front that runs refuses `(diags)` as before.
+        // Either way the update is refused by name and no warning is lost.
         assert!(
-            shown(&one).contains("update-not-implemented (diags)"),
+            shown(&one).contains("update-not-implemented (diags)")
+                || shown(&one).contains("update-not-implemented (resolve)"),
             "{label}: the changed file's update: {}",
             shown(&one)
         );
