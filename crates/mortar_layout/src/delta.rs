@@ -1177,6 +1177,15 @@ impl<'b, 'c> Update<'b, 'c> {
         Ok(())
     }
 
+    /// The alignment a growth step keeps: the largest of the chunks that
+    /// follow in the `PT_LOAD`, and the page when the grown chunk or one
+    /// that follows is RELRO.
+    fn step_align(&self, relro: bool, followers: &[ChunkId], page: u64) -> u64 {
+        let relro = relro || followers.iter().any(|&f| self.chunks[f].relro);
+        let a = followers.iter().map(|&f| 1u64 << self.chunks[f].align.min(63)).max().unwrap_or(1);
+        if relro { a.max(page) } else { a }
+    }
+
     /// Item 3: a chunk grown past its capacity takes a growth step; every
     /// later chunk of its `PT_LOAD` moves by it.
     fn growth(&mut self) -> Result<(), IncrReason> {
@@ -1198,15 +1207,7 @@ impl<'b, 'c> Update<'b, 'c> {
                     .get(&out)
                     .map_or(0, |v| v.iter().map(|&x| self.chunks[x].size).sum());
                 let followers = &members[k + 1..];
-                let relro = ch.relro || followers.iter().any(|&f| self.chunks[f].relro);
-                let mut a = followers
-                    .iter()
-                    .map(|&f| 1u64 << self.chunks[f].align.min(63))
-                    .max()
-                    .unwrap_or(1);
-                if relro {
-                    a = a.max(page);
-                }
+                let a = self.step_align(ch.relro, followers, page);
                 // L-9 (P3-1, WP-262 C): the last chunk of a `PT_LOAD` that
                 // takes memory ends the segment's memory, which must be a
                 // section's end; the full link gives it no slack (L-87's
