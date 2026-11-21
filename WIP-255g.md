@@ -47,5 +47,7 @@ Stopped by the operator's quota pause, 2026-11-19 15:36Z. Everything below is co
 ## Done in the continuation (2026-11-21)
 - The lane before (22664067) and after (branch, TEMPORARY instrumentation, reverted, tree clean): both 584 PASS, 0 FAIL, tools 0. The `(layout)` split, the count check on 105 S2 hops (0 refused) and the bench are in `spec/landed/incr/WP-255g.md` "Evidence". Logs: `.build/target-wp-145/w255g2/{lanes,bench}.log`, `{before,after}-findings.txt`.
 
+- The gate on e93228b7 (`.build/target-wp-145/w255g2/gate.log`): fmt, both clippies, `ci --quick` `[ci] ok`, incr-update 584 PASS 0 FAIL, linktest 0 FAIL, census 716 pass 0 fail, static-identical 0 differ. Its first run found fmt/clippy in 255g2's files (e356d60e) and `symtab_rows.rs` `version_10_state_is_refused` still asserting VERSION 11 (e93228b7, the VERSION bump's forced edit).
+
 ## Next
-1. The gate once on the final tree: `.build/target-wp-145/w255g2/gate.sh` (final line `GATE FINAL done`), then the hand-back.
+- Nothing of 255g2's. Wiring `check_member_counts` in `shadow_255e` is 255e4's (the line is in the hand-back).
