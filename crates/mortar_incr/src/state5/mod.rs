@@ -32,10 +32,10 @@ use crate::format::{
 };
 use crate::update::diags::{DiagRef, DiagRow, Subject};
 use crate::update::rows::{
-    CommonRow, CopyRow, DebugStrRow, EdgeRow, FileIndexRow, FileRow, FileTable, FragRow,
-    FragUseRow, GroupRow, HoleRow, IndexRow, KeyRefRow, LocalRange, MentionRow, MetaRow, NameRow,
-    RegionRow, ResolvedRow, RowRange, SlotRow, SymbolRow, SymtabKeyRow, SymtabRow, key_ref_flags,
-    sym_kind,
+    ChunkUnitRow, CommonRow, CopyRow, DebugStrRow, EdgeRow, FileIndexRow, FileRow, FileTable,
+    FragRow, FragUseRow, GroupRow, HoleRow, IndexRow, KeyRefRow, LocalRange, MentionRow,
+    MergeDefRow, MetaRow, NameRow, RegionRow, ResolvedRow, RowRange, SlotRow, SymbolRow,
+    SymtabKeyRow, SymtabRow, key_ref_flags, sym_kind,
 };
 use crate::update::view::Rows;
 
@@ -76,7 +76,11 @@ pub const MAGIC: [u8; 8] = *b"MORTARSR";
 /// `state-version`). 12 since WP-255g (`CHUNKS.members` written by the
 /// full link's capture: a version-11 state holds no count, which c2b-3's
 /// check would read as an empty chunk; it is refused, `state-version`).
-pub const VERSION: u32 = 12;
+/// 13 since WP-275 (`CHUNK_UNITS` and `MERGE_DEFS` written by the full
+/// link's capture: a version-12 state holds neither, which the member
+/// index would read as a chunk without units and `named_piece` as a
+/// definition without a piece; it is refused, `state-version`).
+pub const VERSION: u32 = 13;
 /// The header's size.
 pub const HEADER: usize = 80;
 /// A directory entry's size.
@@ -104,7 +108,8 @@ pub enum Class {
 /// `FILES` eh columns and `FRAG_USE`, 56, in their place); `FILE_INDEX`'s
 /// `EhRecords` range is always empty in format 5. `DEBUG_STRS` (57,
 /// WP-228 R-2, seam 8; WP-247) is key-keyed with no tomb, as `NAMES`.
-pub const TABLES: [(u32, Class, usize); 38] = [
+/// `CHUNK_UNITS` (58) and `MERGE_DEFS` (59): WP-275, key-keyed.
+pub const TABLES: [(u32, Class, usize); 40] = [
     (kind::META, Class::Whole, MetaRow::WIDTH),
     (kind::STAT, Class::AppendOnly, <StatRow as Rec>::WIDTH),
     (kind::FILES, Class::AppendOnly, FileRow::WIDTH),
@@ -143,6 +148,8 @@ pub const TABLES: [(u32, Class, usize); 38] = [
     (kind::COPIES, Class::KeyKeyed, CopyRow::WIDTH),
     (kind::FRAG_USE, Class::FileKeyed, FragUseRow::WIDTH),
     (kind::DEBUG_STRS, Class::KeyKeyed, DebugStrRow::WIDTH),
+    (kind::CHUNK_UNITS, Class::KeyKeyed, ChunkUnitRow::WIDTH),
+    (kind::MERGE_DEFS, Class::KeyKeyed, MergeDefRow::WIDTH),
 ];
 
 /// The file-keyed tables of format 5 ([`FileTable::ALL`] without
@@ -181,6 +188,8 @@ pub fn name(k: u32) -> &'static str {
         kind::NAMES => "NAMES",
         kind::COPIES => "COPIES",
         kind::DEBUG_STRS => "DEBUG_STRS",
+        kind::CHUNK_UNITS => "CHUNK_UNITS",
+        kind::MERGE_DEFS => "MERGE_DEFS",
         k => kind::name(k),
     }
 }
@@ -842,6 +851,48 @@ impl Rec for CopyRow {
     }
 }
 
+/// `CHUNK_UNITS` (kind 58; WP-275 §2.2): `chunk`, `seq`, `file`,
+/// `local`, `unit` (0 a region, 1 an input section; another value
+/// refused), the tomb: 22 bytes. No offset (§2.3).
+impl Rec for ChunkUnitRow {
+    const WIDTH: usize = 22;
+    fn put(&self, w: &mut W<'_>) {
+        w.u32(self.chunk).u64(self.seq).u32(self.file).u32(self.local).u8(self.unit);
+        w.u8(u8::from(self.tomb));
+    }
+    fn get(r: &mut R<'_>) -> Self {
+        let (chunk, seq, file, local, unit) = (r.u32(), r.u64(), r.u32(), r.u32(), r.u8());
+        Self { chunk, seq, file, local, unit, tomb: tomb(r) }
+    }
+    fn ok(&self) -> bool {
+        self.unit <= crate::update::rows::unit_kind::SECTION
+    }
+}
+
+/// `MERGE_DEFS` (kind 59; WP-275 §2.4): `file`, `local`, `value`, `out`,
+/// `class`, `hash` (the `FRAGS` key), `within`, `ordinal`, the tomb: 49
+/// bytes.
+impl Rec for MergeDefRow {
+    const WIDTH: usize = 49;
+    fn put(&self, w: &mut W<'_>) {
+        w.u32(self.file).u32(self.local).u64(self.value).u32(self.out).u32(self.class);
+        w.bytes(&self.hash).u32(self.within).u32(self.ordinal).u8(u8::from(self.tomb));
+    }
+    fn get(r: &mut R<'_>) -> Self {
+        Self {
+            file: r.u32(),
+            local: r.u32(),
+            value: r.u64(),
+            out: r.u32(),
+            class: r.u32(),
+            hash: r.h(),
+            within: r.u32(),
+            ordinal: r.u32(),
+            tomb: tomb(r),
+        }
+    }
+}
+
 impl Rec for KeyRefRow {
     const WIDTH: usize = 14;
     fn put(&self, w: &mut W<'_>) {
@@ -1114,6 +1165,8 @@ keyed!(FragRow, (u32, u32, Hash16), |x| (x.out, x.class, x.hash));
 keyed!(HoleRow, (u32, u64), |x| (x.chunk, x.offset));
 keyed!(CommonRow, (u32, u32), |x| (x.key, x.file));
 keyed!(CopyRow, (u32, u32, u32), |x| (x.key, x.file, x.index));
+keyed!(ChunkUnitRow, (u32, u64), |x| (x.chunk, x.seq));
+keyed!(MergeDefRow, (u32, u32, u64), |x| (x.file, x.local, x.value));
 
 impl Keyed for GroupRow {
     type K = (Vec<u8>, u32);

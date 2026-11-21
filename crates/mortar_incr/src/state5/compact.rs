@@ -85,6 +85,8 @@ pub fn apply(m: &mut MemoryState, p: &StatePatch, frags_aux: usize) -> Rows<()> 
     keyed(&mut m.holes, &p.holes, s, 0, |_| {})?;
     keyed(&mut m.commons, &p.commons, s, 0, |_| {})?;
     keyed(&mut m.copies, &p.copies, s, 0, |_| {})?;
+    keyed(&mut m.chunk_units, &p.chunk_units, s, 0, |_| {})?;
+    keyed(&mut m.merge_defs, &p.merge_defs, s, 0, |_| {})?;
     keyed(&mut m.names, &p.names, s, 0, |_| {})?;
     if !p.debug_strs.delete.is_empty() {
         return Err(corrupt("DEBUG_STRS: the patch deletes a row (an update only puts them)"));
@@ -681,6 +683,59 @@ pub fn normalize(m: &MemoryState) -> Result<MemoryState, StateError> {
         n.copies.push(crate::update::rows::CopyRow { key: sym(r.key)?, file: file(r.file)?, ..*r });
     }
     n.holes = m.holes.iter().filter(|r| !r.tomb).copied().collect();
+    // CHUNK_UNITS and MERGE_DEFS (WP-275): tombstones dropped, files
+    // mapped (a file's `SECTIONS` and `REGIONS` ranges keep their order,
+    // so `local` stays); a unit's `seq` renumbered `k << 32` (k = 1, 2,
+    // ... per chunk) in the order kept (§2.2).
+    let mut sections_of = vec![0u32; m.files.len()];
+    for r in m.sections.iter().filter(|r| r.file != NONE) {
+        if let Some(c) = sections_of.get_mut(r.file as usize) {
+            *c += 1;
+        }
+    }
+    let mut regions_of = vec![0u32; m.files.len()];
+    for (f, _) in &m.regions {
+        if let Some(c) = regions_of.get_mut(f.0 as usize) {
+            *c += 1;
+        }
+    }
+    let range_of = |unit: u8, f: u32| {
+        let v =
+            if unit == crate::update::rows::unit_kind::REGION { &regions_of } else { &sections_of };
+        v.get(f as usize).copied().unwrap_or(0)
+    };
+    let mut units: Vec<&crate::update::rows::ChunkUnitRow> =
+        m.chunk_units.iter().filter(|r| !r.tomb).collect();
+    units.sort_by_key(|r| (r.chunk, r.seq));
+    let mut k = 0u64;
+    let mut last = None;
+    for r in units {
+        if r.chunk as usize >= m.chunks.len() {
+            return Err(bad(&format!("CHUNK_UNITS: CHUNKS row {}", r.chunk)));
+        }
+        if r.local >= range_of(r.unit, r.file) {
+            return Err(bad(&format!(
+                "CHUNK_UNITS: file {}'s unit {} at {}",
+                r.file, r.unit, r.local
+            )));
+        }
+        k = if last == Some(r.chunk) { k + 1 } else { 1 };
+        last = Some(r.chunk);
+        n.chunk_units.push(crate::update::rows::ChunkUnitRow {
+            file: file(r.file)?,
+            seq: k << 32,
+            ..*r
+        });
+    }
+    for r in m.merge_defs.iter().filter(|r| !r.tomb) {
+        if r.out as usize >= m.outsecs.len() || r.local >= range_of(1, r.file) {
+            return Err(bad(&format!(
+                "MERGE_DEFS: file {}'s section {} (output section {})",
+                r.file, r.local, r.out
+            )));
+        }
+        n.merge_defs.push(crate::update::rows::MergeDefRow { file: file(r.file)?, ..*r });
+    }
     for d in m.diags.iter().filter(|d| !d.tomb) {
         let mut subjects = Vec::with_capacity(d.subjects.len());
         for x in &d.subjects {

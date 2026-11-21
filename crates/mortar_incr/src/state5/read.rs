@@ -39,10 +39,10 @@ use crate::format::{
 };
 use crate::update::diags::DiagRow;
 use crate::update::rows::{
-    CommonRow, CopyRow, DebugStrRow, EdgeRow, FileIndexRow, FileRow, FileTable, FragRow,
-    FragUseRow, GroupRow, HoleRow, IndexRow, KeyRefRow, MentionRow, MetaRow, NameRow, OdrClassRow,
-    OdrRefRow, RegionRow, ResolvedRow, SlotRow, SymbolRow, SymtabKeyRow, SymtabRow, file_flags,
-    sym_kind,
+    ChunkUnitRow, CommonRow, CopyRow, DebugStrRow, EdgeRow, FileIndexRow, FileRow, FileTable,
+    FragRow, FragUseRow, GroupRow, HoleRow, IndexRow, KeyRefRow, MentionRow, MergeDefRow, MetaRow,
+    NameRow, OdrClassRow, OdrRefRow, RegionRow, ResolvedRow, SlotRow, SymbolRow, SymtabKeyRow,
+    SymtabRow, file_flags, sym_kind,
 };
 use crate::update::testing::MemoryState;
 use crate::update::view::{Rows, StateRows, StateView};
@@ -792,6 +792,8 @@ pub(crate) fn decode_core(c: &Core) -> Rows<MemoryState> {
         copies: c.all(kind::COPIES)?,
         names: c.all(kind::NAMES)?,
         debug_strs: c.all(kind::DEBUG_STRS)?,
+        chunk_units: c.all(kind::CHUNK_UNITS)?,
+        merge_defs: c.all(kind::MERGE_DEFS)?,
         ..MemoryState::default()
     };
     let strings = &m.strings;
@@ -814,6 +816,8 @@ pub(crate) fn decode_core(c: &Core) -> Rows<MemoryState> {
     check_sorted::<DiagRaw>(c, kind::DIAGS, &raw, s)?;
     check_sorted::<NameRow>(c, kind::NAMES, &m.names, s)?;
     check_sorted::<DebugStrRow>(c, kind::DEBUG_STRS, &m.debug_strs, s)?;
+    check_sorted::<ChunkUnitRow>(c, kind::CHUNK_UNITS, &m.chunk_units, s)?;
+    check_sorted::<MergeDefRow>(c, kind::MERGE_DEFS, &m.merge_defs, s)?;
     // The file-keyed tables: per live file its range; ranges in bounds and
     // not overlapping (IN-18d).
     let extent = |t: FileTable| c.entry(t.kind()).rows;

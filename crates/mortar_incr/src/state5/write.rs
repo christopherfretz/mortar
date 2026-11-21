@@ -317,6 +317,8 @@ pub fn encode(m: &MemoryState) -> Result<Vec<u8>, StateError> {
         (kind::COPIES, keyed_body(&sorted(&m.copies, s)?.0)),
         (kind::FRAG_USE, fu_body),
         (kind::DEBUG_STRS, keyed_body(&debug_strs)),
+        (kind::CHUNK_UNITS, keyed_body(&sorted(&m.chunk_units, s)?.0)),
+        (kind::MERGE_DEFS, keyed_body(&sorted(&m.merge_defs, s)?.0)),
     ];
     debug_assert!(bodies.iter().zip(TABLES).all(|((k, _), t)| *k == t.0));
     Ok(assemble(&mut bodies, m.plan_hash, 0))
@@ -961,6 +963,8 @@ fn plan_in_place(core: &Arc<Core>, p: &StatePatch) -> Plan<InPlace> {
     ed.keyed(kind::HOLES, &p.holes, false)?;
     ed.keyed(kind::COMMONS, &p.commons, false)?;
     ed.keyed(kind::COPIES, &p.copies, false)?;
+    ed.keyed(kind::CHUNK_UNITS, &p.chunk_units, false)?;
+    ed.keyed(kind::MERGE_DEFS, &p.merge_defs, false)?;
     if !(p.odr_classes.put.is_empty()
         && p.odr_classes.delete.is_empty()
         && p.odr_refs.put.is_empty()

@@ -807,6 +807,70 @@ pub struct DebugStrRow {
     pub offset: u32,
 }
 
+/// [`ChunkUnitRow::unit`]: what `local` names.
+pub mod unit_kind {
+    /// A region: `local` is its position in the file's `REGIONS` range.
+    pub const REGION: u8 = 0;
+    /// An input section: `local` is its position in the file's
+    /// `SECTIONS` range.
+    pub const SECTION: u8 = 1;
+}
+
+/// `CHUNK_UNITS` (kind 58, key-keyed by `(chunk, seq)`; WP-275 §2.2,
+/// P-275a): per `Body` chunk its units in offset order, 22 bytes. A
+/// hole-tolerant allocated chunk has one unit per `REGIONS` row placed in
+/// it ([`unit_kind::REGION`]); every placed section of a `Body` chunk that
+/// no region of its file covers has one ([`unit_kind::SECTION`]; NOBITS
+/// and zero-size included). Ties at one offset: by (`FILES.rank`, `unit`,
+/// `local`). No offset column (§2.3): the order is `seq`'s, which the
+/// compaction renumbers `k << 32` (k = 1, 2, ...), an insert taking the
+/// midpoint of its neighbours. Written by capture
+/// ([`crate::capture::chunk_unit_rows`]); read by P-275c's member index
+/// and WP-270's re-pack.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct ChunkUnitRow {
+    /// The `CHUNKS` row: the key's first part.
+    pub chunk: u32,
+    /// The unit's order in the chunk: the key's second part.
+    pub seq: u64,
+    /// The `FILES` row.
+    pub file: u32,
+    /// The unit's position in the file's `REGIONS` (unit 0) or `SECTIONS`
+    /// (unit 1) range.
+    pub local: u32,
+    /// [`unit_kind`].
+    pub unit: u8,
+    pub tomb: bool,
+}
+
+/// `MERGE_DEFS` (kind 59, key-keyed by `(file, local, value)`; WP-275
+/// §2.4, P-275a): one row per named definition (its `MENTIONS` row, def
+/// kind section) of a live file in a `Merge` section, every file's, not
+/// only the winner's: the piece the full link's `named_piece` gives the
+/// value. 49 bytes. Written by capture; read by P-275b's
+/// `StoredRows::named_piece`.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct MergeDefRow {
+    /// The `FILES` row: the key's first part.
+    pub file: u32,
+    /// The section's position in the file's `SECTIONS` range: the key's
+    /// second part.
+    pub local: u32,
+    /// The definition's `st_value`: the key's third part.
+    pub value: u64,
+    /// The section's `OUTSECS` row.
+    pub out: u32,
+    /// The merge class word (`FRAGS.class`).
+    pub class: u32,
+    /// The `FRAGS` key of the piece's fragment.
+    pub hash: Hash16,
+    /// `PieceRef::within`.
+    pub within: u32,
+    /// `PieceRef::ordinal`.
+    pub ordinal: u32,
+    pub tomb: bool,
+}
+
 /// `META` (kind 1, whole; IN-18c, IN-77c, IN-76a): format 4's columns with
 /// the build id inline, plus the boot id, `output-synced`, the compaction
 /// count and the symbol tables' sizes (W-1's clone probe, neither written
@@ -923,6 +987,11 @@ mod tests {
         assert_eq!(debug_str, 13);
         let copy = 4 + 4 + 4 + 8 + 1 + 1 + 2; // key, file, index, size, typ, tomb, pad
         assert_eq!(copy, 24);
+        let chunk_unit = 4 + 8 + 4 + 4 + 1 + 1; // chunk, seq, file, local, unit, tomb
+        assert_eq!(chunk_unit, 22);
+        // file, local, value, out, class, hash, within, ordinal, tomb
+        let merge_def = 4 + 4 + 8 + 4 + 4 + 16 + 4 + 4 + 1;
+        assert_eq!(merge_def, 49);
         // FILES' format-5 columns after format 4's: rank, round, the four
         // eh columns, stack, properties (WP-239, WP-243, seam 6)
         let files_added = 8 + 4 + 4 * 4 + 1 + 8;
@@ -979,6 +1048,19 @@ mod tests {
         let GroupRow { signature: _, file: _, tomb: _ } = GroupRow::default();
         let CommonRow { key: _, file: _, size: _, align: _, tomb: _ } = CommonRow::default();
         let CopyRow { key: _, file: _, index: _, size: _, typ: _, tomb: _ } = CopyRow::default();
+        let ChunkUnitRow { chunk: _, seq: _, file: _, local: _, unit: _, tomb: _ } =
+            ChunkUnitRow::default();
+        let MergeDefRow {
+            file: _,
+            local: _,
+            value: _,
+            out: _,
+            class: _,
+            hash: _,
+            within: _,
+            ordinal: _,
+            tomb: _,
+        } = MergeDefRow::default();
     }
 
     // spec: WP-238 "Step 2" S1 and F4 (every `edge_kind` names its target

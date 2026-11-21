@@ -187,6 +187,14 @@ pub mod kind {
     /// section, 13-byte rows (IN-56; WP-228 R-2, seam 8). An accelerator,
     /// never trusted: every hit is checked against the output's bytes.
     pub const DEBUG_STRS: u32 = 57;
+    /// Key-keyed by `(chunk, seq)`: per `Body` chunk its units in offset
+    /// order, a region (`unit` 0) or an input section (`unit` 1), 22-byte
+    /// rows with no offset (WP-275 §2.2; P-275a).
+    pub const CHUNK_UNITS: u32 = 58;
+    /// Key-keyed by `(file, local, value)`: per live file's named
+    /// definition in a `Merge` section, its piece (`FRAGS` key, within,
+    /// ordinal), 49-byte rows (WP-275 §2.4; P-275a).
+    pub const MERGE_DEFS: u32 = 59;
     /// The number of tables of versions 3 and 4.
     pub const COUNT: u32 = 28;
 
@@ -239,6 +247,8 @@ pub mod kind {
             COPIES => "COPIES",
             FRAG_USE => "FRAG_USE",
             DEBUG_STRS => "DEBUG_STRS",
+            CHUNK_UNITS => "CHUNK_UNITS",
+            MERGE_DEFS => "MERGE_DEFS",
             _ => kind.checked_sub(1).and_then(|i| FIRST.get(i as usize)).copied().unwrap_or("?"),
         }
     }
