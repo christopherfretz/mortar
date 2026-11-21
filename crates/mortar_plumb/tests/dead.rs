@@ -484,6 +484,48 @@ fn in3_stale_bytes_in_holes_are_rejected() {
     }
 }
 
+// P-I6 (IN-3a check 2 and 3, L-147, S-24, S-27; WP-210): a dead string
+// piece keeps its bytes. GNU ld's `.rodata` here holds `.rodata.str1.1`
+// only (character size 1, aligned at 1: no padding), so the `strings`
+// range over "deadstr" is one whole string; zeroed, or partly zeroed,
+// it reads as empty strings, which a merged section holds once: REJECTED.
+// A range of distinct strings is ACCEPTED, the same string twice is not.
+// The same for a non-allocated `.debug_str` range.
+#[test]
+fn in3a_zeroed_dead_string_pieces_are_rejected() {
+    for arch in archs() {
+        let Some((_dir, b)) = build(arch) else { return };
+        let base = b.judge();
+        let a = b.sec(".rodata").addr + b.sec(".rodata").size - 8;
+        assert_eq!(&b.output[b.at(".rodata", a)..][..8], b"deadstr\0", "{arch:?}");
+        for (case, bytes, bad) in [
+            ("zeroed", &b"\0\0\0\0\0\0\0\0"[..], true),
+            ("partly zeroed", b"dea\0\0\0\0\0", true),
+            ("one string twice", b"abc\0abc\0", true),
+            ("distinct strings", b"ab\0cd\0e\0", false),
+            ("one empty string", b"abcdef\0\0", false),
+        ] {
+            let mut m = b.clone();
+            m.patch(".rodata", a, bytes);
+            if bad {
+                expect(arch, case, &base, &m, "P-I6", "in the range twice");
+            } else {
+                assert!(added(&base, &m).is_empty(), "{arch:?} {case}: {:#?}", added(&base, &m));
+            }
+        }
+    }
+    for arch in debug_archs() {
+        let Some((_dir, b)) = build_clang5(arch) else { return };
+        let base = b.judge();
+        let at = string_at(&b, ".debug_str", "helper");
+        let mut m = b.clone();
+        let o = m.sec(".debug_str").offset as usize + at as usize;
+        m.output[o..o + 6].fill(0);
+        m.dead(".debug_str", at, 7, DeadKind::Strings);
+        expect(arch, "zeroed .debug_str", &base, &m, "P-I6", "in the range twice");
+    }
+}
+
 #[test]
 fn in60_unlisted_hole_and_bad_lines_are_rejected() {
     for arch in archs() {

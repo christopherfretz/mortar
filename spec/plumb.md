@@ -3789,7 +3789,29 @@ with symbol 0, all aimed at one word (the scratch word, dyn.md §14);
 after it, `R_*_NONE` with symbol 0 (or such a `RELATIVE`).
 
 **Well formed (IN-3a check 2; P-I6).** A `strings` range ends with a
-NUL. A `cie` range is whole CIEs (`CIE_id` 0, version 1 or 3), nothing
+NUL. **Whole and distinct strings (WP-210).** IN-3a check 3 keeps a dead
+string piece's bytes; what the output alone can show of a piece zeroed
+instead is judged here. Let `E` be the section's character size
+(`sh_entsize`; 1 in a non-allocated section whose `sh_entsize` is 0:
+DWARF's strings are bytes). In a section aligned at most at `E`
+(`sh_addralign` ≤ `E`), other than `.strtab`, no fragment is preceded by
+padding (`spec/synth.md` S-27: padding exists only before a fragment
+aligned above `E`), so a `strings` range is whole strings: its offset
+and size multiples of `E`, each string ending with a NUL character (`E`
+zero bytes), and **no two equal**, an empty string (a NUL character that
+ends no string) included, since a merged section holds each string
+once (S-24, `spec/layout.md` L-147: fragments are unique by content in
+their class). A dead piece of more than one character zeroed, or partly
+zeroed, reads as the empty string twice: P-I6. Not judged further, the
+NUL end only: `.strtab` (IN-49a: the zeros of its region slack), a
+section aligned above `E` (S-27's padding is zero characters, which a
+zeroed string cannot be told from) and an allocated section with
+`sh_entsize` 0 (several classes); and anywhere a piece rewritten with
+other bytes that still end with a NUL (the bytes it keeps are the
+previous output's, which the verifier does not read; the frag records
+of §3.2 name live fragments only). On the lane every `strings` range is
+in `.debug_str` (aligned at 1). `tests/dead.rs`
+`in3a_zeroed_dead_string_pieces_are_rejected`. A `cie` range is whole CIEs (`CIE_id` 0, version 1 or 3), nothing
 else. In the debug sections:
 
 - `neutral`, a sequence of the section's forms tiling the range, each
