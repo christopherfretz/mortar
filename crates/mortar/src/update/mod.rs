@@ -1598,6 +1598,69 @@ fn chunk_name(f: &crate::front::Front<'_>, x: u64) -> String {
     "no chunk".to_owned()
 }
 
+/// WP-255e5: the lane's hop of this update (`<scenario.config>/h<i>`,
+/// from the `MORTAR_INCR_DIRTY` path the lane gives the subject), so a
+/// findings line names its hop; empty outside the lane.
+fn hop_label() -> String {
+    let Some(p) = std::env::var_os("MORTAR_INCR_DIRTY") else { return String::new() };
+    let p = Path::new(&p);
+    let hop = p.parent();
+    let label = hop.and_then(Path::parent).and_then(Path::file_name);
+    match (label, hop.and_then(Path::file_name)) {
+        (Some(l), Some(h)) => {
+            format!(" | hop {}/{}", l.to_string_lossy(), h.to_string_lossy())
+        }
+        _ => String::new(),
+    }
+}
+
+/// WP-255e5 item 1: a FINDING's rows and bytes at file offset `at_file`: the
+/// holes of front 2's placement and of the delta that hold it (kind,
+/// chunk range), and the previous output's bytes from `at_file` up to the next
+/// zero (at most 48).
+fn hole_evidence(
+    front: &crate::front::Front<'_>,
+    delta: &mortar_core::incr::LayoutDelta,
+    stored: &mortar_core::incr::StoredLayout<'_>,
+    out: &std::fs::File,
+    at_file: u64,
+) -> String {
+    use std::fmt::Write as _;
+    let pl = &front.layout.placement;
+    let Some((id, chunk)) = pl.chunks.iter().find(|(_, ch)| {
+        ch.in_file() && ch.offset <= at_file && at_file < ch.offset + ch.size.max(ch.capacity)
+    }) else {
+        return "; no chunk".into();
+    };
+    let at = at_file - chunk.offset;
+    let mut line = format!("; chunk {} {:?} at {at:#x}:", id.0, chunk.kind);
+    for h in pl.holes.iter().filter(|h| h.chunk == id && h.offset <= at && at < h.offset + h.size) {
+        let _ =
+            write!(line, " front 2 hole {:?} [{:#x},{:#x});", h.kind, h.offset, h.offset + h.size);
+    }
+    if let Ok(hs) = delta.holes_of(stored, id) {
+        for h in hs.iter().filter(|h| h.offset <= at && at < h.offset + h.size) {
+            let _ = write!(
+                line,
+                " delta hole {:?} [{:#x},{:#x});",
+                h.kind,
+                h.offset,
+                h.offset + h.size
+            );
+        }
+    }
+    let mut buf = [0u8; 48];
+    if std::os::unix::fs::FileExt::read_exact_at(out, &mut buf, at_file).is_ok() {
+        let len = buf.iter().position(|&v| v == 0).unwrap_or(buf.len());
+        let _ = write!(
+            line,
+            " previous output at {at_file:#x}: {:?}",
+            String::from_utf8_lossy(&buf[..len])
+        );
+    }
+    line
+}
+
 /// The first offset where the outputs of `a` and `b` (each the previous
 /// output with its ranges over it) differ, with `a`'s and `b`'s bytes.
 fn first_output_difference(
@@ -1832,10 +1895,19 @@ fn shadow_255e(
     units.sort_by_key(|u| u.section);
     units.dedup_by_key(|u| u.section);
     let pl = &f.layout.placement;
+    // WP-255e5 item 2: `.eh_frame` is not given whole: `refill`'s own
+    // `.eh_frame` ranges (`LayoutDelta::eh`: a rewritten file's range, or
+    // the whole chunk) and `patch_eh` (the unchanged records' PC-relative
+    // fields, when code moved) cover it; S1 judges it.
+    let eh_frame = mortar_synth::chunks::SynthKind::EhFrame.name(false);
     let chunks: Vec<RefillChunk> = pl
         .chunks
         .iter()
-        .filter(|(_, c)| !matches!(c.kind, ChunkKind::Body(_)))
+        .filter(|(_, c)| match c.kind {
+            ChunkKind::Body(_) => false,
+            ChunkKind::Synthetic(s) => s.name != eh_frame,
+            _ => true,
+        })
         .map(|(chunk, _)| RefillChunk { chunk, reasons: 0 })
         .collect();
     let n_units = units.len();
@@ -1961,23 +2033,34 @@ fn shadow_255e(
             m
         };
         let (all, merged, planned) = (union(all), union(clips), union(planned));
+        let dead = match dead_pieces(
+            pl.holes.iter().chain(&df.holes),
+            |c| pl.chunks.get(c).copied(),
+            stored,
+        ) {
+            Ok(d) => d,
+            Err(e) => return format!("{s1} | clip plan: refused: L-147's dead pieces: {e}"),
+        };
+        let dead = &dead[..];
         let s2_of = |merged: &[std::ops::Range<u64>]| match mortar_image::link::refill_clip_plan(
             l,
             merged,
             |_| {},
         ) {
             Ok(fill) => {
-                let diff = fill_difference(&fill, &c, out);
+                let (diff, kept) = fill_difference(&fill, &c, out, dead);
                 match diff {
                     None => format!(
-                        "clip plan: equal ({} ranges, {} bytes)",
+                        "clip plan: equal ({} ranges, {} bytes{})",
                         merged.len(),
-                        merged.iter().map(|r| r.end - r.start).sum::<u64>()
+                        merged.iter().map(|r| r.end - r.start).sum::<u64>(),
+                        l147(kept)
                     ),
                     Some((x, a, b)) => format!(
                         "finding: 255e shadow: clip plan: first difference at {x:#x} ({}, C' \
-                             refill {a:#04x}, clip plan {b:#04x})",
-                        chunk_name(f, x)
+                             refill {a:#04x}, clip plan {b:#04x}){}",
+                        chunk_name(f, x),
+                        hole_evidence(f, df, stored, out, x)
                     ),
                 }
             }
@@ -2046,7 +2129,7 @@ fn shadow_255e(
             }
         };
         let s3 = shadow_s3(view, stored, f, l, set, s3_clips, &c, out);
-        format!("{s1} | {s2} | {s3}")
+        format!("{s1} | {s2} | {s3}{}", hop_label())
     });
     match r {
         Ok(line) => line,
@@ -2099,33 +2182,98 @@ fn shadow_s3(
     format!("S3: {values} | S3 {bytes}")
 }
 
+/// WP-255e5 item 1: the dead string pieces of the update's output
+/// (`DeadFragment` holes, L-147 / IN-3a item 3: their bytes are left as
+/// written) as `(file range, the previous output's offset of the same
+/// bytes)`: the `holes` given (S2: front 2's placement's and the delta's;
+/// S3: the state delta's), each in its `Merged` chunk (`chunk`), the old bytes in the stored `Merged` chunk of the same
+/// output section header (`refill`'s `keep_dead_fragments`, the step it
+/// takes after the image's fill; a clip plan's fill is the image's).
+fn dead_pieces<'h>(
+    holes: impl Iterator<Item = &'h mortar_core::layout::Hole>,
+    chunk: impl Fn(mortar_core::ChunkId) -> Option<mortar_core::layout::Chunk>,
+    stored: &mortar_core::incr::StoredLayout<'_>,
+) -> Result<Vec<(std::ops::Range<u64>, u64)>, String> {
+    use mortar_core::layout::{ChunkKind, HoleKind};
+    let mut dead: Vec<mortar_core::layout::Hole> =
+        holes.filter(|h| h.kind == HoleKind::DeadFragment).copied().collect();
+    if dead.is_empty() {
+        return Ok(Vec::new());
+    }
+    dead.sort_by_key(|h| (h.chunk, h.offset, h.size));
+    dead.dedup();
+    let old = stored.chunks().map_err(|e| e.report())?;
+    let mut out = Vec::with_capacity(dead.len());
+    for h in &dead {
+        let c = chunk(h.chunk).ok_or_else(|| format!("dead piece in no chunk {}", h.chunk.0))?;
+        if !matches!(c.kind, ChunkKind::Merged(_)) || !c.in_file() {
+            return Err(format!("dead piece in chunk {}, not an in-file merged chunk", h.chunk.0));
+        }
+        let mut was = old.iter().filter(|(_, o)| {
+            matches!(o.kind, ChunkKind::Merged(_)) && o.shndx.is_some() && o.shndx == c.shndx
+        });
+        let (Some((_, o)), None) = (was.next(), was.next()) else {
+            return Err(format!("dead piece in chunk {}: no one stored merged chunk", h.chunk.0));
+        };
+        out.push((c.offset + h.offset..c.offset + h.offset + h.size, o.offset + h.offset));
+    }
+    out.sort_by_key(|d| d.0.start);
+    Ok(out)
+}
+
+/// The words a comparison line gives the dead-piece bytes it took from
+/// the previous output (none: nothing).
+fn l147(kept: u64) -> String {
+    if kept == 0 {
+        String::new()
+    } else {
+        format!("; L-147: {kept} bytes of dead string pieces from the previous output")
+    }
+}
+
 /// The first byte where `fill`'s jobs differ from C''s output `c` (the
 /// previous output `out` with `c`'s ranges over it), skipping the build
-/// id's descriptor (I-73: the fill's zeros; S1 judges the build id).
+/// id's descriptor (I-73: the fill's zeros; S1 judges the build id), and
+/// the number of bytes of `dead` ([`dead_pieces`]) the jobs hold. A byte
+/// of a dead string piece is not the fill's: the update writes the
+/// previous output's byte there after the fill (L-147, `refill`'s
+/// `keep_dead_fragments`), so the fill's byte is replaced by that one
+/// (read at the piece's stored place) before the comparison.
 /// A failed read of `out` gives 0: a (false) finding, never a silent
 /// equality.
 fn fill_difference(
     fill: &mortar_image::link::ClipFill,
     c: &mortar_image::update::Refill,
     out: &std::fs::File,
-) -> Option<(u64, u8, u8)> {
+    dead: &[(std::ops::Range<u64>, u64)],
+) -> (Option<(u64, u8, u8)>, u64) {
+    let read = |x: u64| {
+        let mut b = [0u8; 1];
+        std::os::unix::fs::FileExt::read_exact_at(out, &mut b, x).map_or(0, |()| b[0])
+    };
     let starts: Vec<u64> = c.ranges.iter().map(|r| r.offset).collect();
+    let mut kept = 0u64;
     for (j, bytes) in &fill.jobs {
         for (i, &v) in bytes.iter().enumerate() {
             let x = j.start + i as u64;
             if fill.clip.sealed.as_ref().is_some_and(|r| r.contains(&x)) {
                 continue;
             }
-            let want = refill_byte(c, &starts, x).unwrap_or_else(|| {
-                let mut b = [0u8; 1];
-                std::os::unix::fs::FileExt::read_exact_at(out, &mut b, x).map_or(0, |()| b[0])
-            });
+            let k = dead.partition_point(|d| d.0.start <= x);
+            let v = match k.checked_sub(1).map(|k| &dead[k]) {
+                Some((r, old)) if r.contains(&x) => {
+                    kept += 1;
+                    read(old + (x - r.start))
+                }
+                _ => v,
+            };
+            let want = refill_byte(c, &starts, x).unwrap_or_else(|| read(x));
             if v != want {
-                return Some((x, want, v));
+                return (Some((x, want, v)), kept);
             }
         }
     }
-    None
+    (None, kept)
 }
 
 /// WP-255e4 items 1 and 3: S3's BYTES. The member index read from the
@@ -2265,9 +2413,19 @@ fn s3_bytes(
         }
         let Some(x) = pl.chunks.get(id) else { continue };
         if (k.offset, k.size, k.capacity) != (x.offset, x.size, x.capacity) {
+            // WP-255e5 item 3: the tables' rows on both sides (the stored
+            // `SYMTAB` tables, front 2's `.symtab` plan's).
+            let tables = match (stored.symtab_tables(), f.synth.symtab.as_ref()) {
+                (Ok((area, t)), Some(p)) => format!(
+                    "; stored SYMTAB area {area:?} tables {t:?}; front 2's plan tables {:?}",
+                    p.incr_tables()
+                ),
+                (Err(e), _) => format!("; stored SYMTAB: {}", e.report()),
+                (_, None) => "; front 2 has no .symtab plan".to_owned(),
+            };
             return format!(
-                "bytes: refused: chunk {} ({}): the delta's (offset, size, capacity) {:#x?}, \
-                 front 2's {:#x?}; {index_line}",
+                "bytes: refused: chunk {} ({}): the delta's (offset, size, capacity) {:x?}, \
+                 front 2's {:x?}{tables}; {index_line}",
                 id.0,
                 chunk_name(f, x.offset),
                 (k.offset, k.size, k.capacity),
@@ -2311,6 +2469,11 @@ fn s3_bytes(
             Err(e) => return format!("bytes: refused: holes_of chunk {}: {}", id.0, e.report()),
         }
     }
+    // L-147's dead string pieces from the state's holes (the delta's).
+    let dead = match dead_pieces(holes.iter().map(|h| &h.0), |c| chunks.get(c).copied(), stored) {
+        Ok(d) => d,
+        Err(e) => return format!("bytes: refused: L-147's dead pieces: {e}"),
+    };
     let abbrev = match mortar_image::layout_plan::abbrev_offset(&pl.holes, &pl.chunks) {
         Ok(a) => a,
         Err(e) => return format!("bytes: refused: the abbreviation offset: {e:?}"),
@@ -2454,13 +2617,14 @@ fn s3_bytes(
         }
         (_, Err(Err(e))) => format!("finding: S3 bytes: fill failed: {e:?}; {index_line}"),
         (None, Ok(_)) => format!("finding: S3 bytes: the edit hook did not run; {index_line}"),
-        (Some(Ok(())), Ok(fill)) => match fill_difference(&fill, c, out) {
-            None => format!(
-                "bytes: equal ({} ranges, {} bytes); {index_line}",
+        (Some(Ok(())), Ok(fill)) => match fill_difference(&fill, c, out, &dead) {
+            (None, kept) => format!(
+                "bytes: equal ({} ranges, {} bytes{}); {index_line}",
                 clips.len(),
-                clips.iter().map(|r| r.end - r.start).sum::<u64>()
+                clips.iter().map(|r| r.end - r.start).sum::<u64>(),
+                l147(kept)
             ),
-            Some((x, a, b)) => format!(
+            (Some((x, a, b)), _) => format!(
                 "finding: S3 bytes: first difference at {x:#x} ({}, C' refill {a:#04x}, state \
                  plan {b:#04x}); {index_line}",
                 chunk_name(f, x)
