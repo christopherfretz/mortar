@@ -891,7 +891,8 @@ fn chunk_members_survive_the_patch_and_the_compaction() {
     let mut bad = base.clone();
     bad.chunks[1].tag = 0;
     bad.chunks[1].members = 1;
-    let b = write::encode(&compact::normalize(&bad).expect("n")).expect("the writer does not judge");
+    let b =
+        write::encode(&compact::normalize(&bad).expect("n")).expect("the writer does not judge");
     assert!(read::decode(&b).is_err(), "a FileHeader chunk with a member count decodes");
     // VERSION 11 (no `CHUNKS.members`) is refused by name.
     assert_eq!(state5::VERSION, 12);

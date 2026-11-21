@@ -1352,11 +1352,13 @@ fn front_delta(
     };
     // WP-255g: `CHUNKS.members` carried by `d`, by CHUNKS row, in the
     // front's chunk ids (empty: none given).
-    let n = if d.members.is_empty() { 0 } else { l.placement.chunks.len() as usize };
-    let mut members = vec![None; n];
-    for (row, &m) in d.members.iter().enumerate() {
-        let c = ids.chunk(ChunkId(row as u32), "D-4 members")?;
-        *members.get_mut(c.0 as usize).ok_or_else(|| image("D-4 members: a chunk past the front's".into()))? = m;
+    let len = if d.members.is_empty() { 0 } else { l.placement.chunks.len() as usize };
+    let mut members = vec![None; len];
+    for (row, &count) in d.members.iter().enumerate() {
+        let chunk = ids.chunk(ChunkId(row as u32), "D-4 members")?;
+        *members
+            .get_mut(chunk.0 as usize)
+            .ok_or_else(|| image("D-4 members: a chunk past the front's".into()))? = count;
     }
     Ok(LayoutDelta {
         members,

@@ -472,8 +472,7 @@ fn delta_of(
                     let key = match s.key.kind() {
                         SymKind::Global(g) => {
                             let k = &f.inputs.symbols[g];
-                            let Ok(Some(id)) =
-                                old.find_key(k.name, k.version.unwrap_or_default())
+                            let Ok(Some(id)) = old.find_key(k.name, k.version.unwrap_or_default())
                             else {
                                 return Err("a key new to the update (TEST-ONLY path)".into());
                             };
@@ -521,7 +520,7 @@ fn members_against(
     assert_eq!(d.members.len(), rows.len(), "one carried count per stored chunk");
     let (mut bad, mut n) = (Vec::new(), 0);
     for (row, c) in rows.iter().enumerate() {
-        let k = key(c, old.string(c.name).expect("name").to_vec());
+        let k = key(c, old.string(c.name).expect("name").clone());
         let carried = d.members[row];
         let want = new.get(&k).copied();
         if carried.is_some() || want.is_some_and(|w| w > 0) {
@@ -563,7 +562,8 @@ fn the_carried_member_count_is_the_full_links() {
             std::fs::copy(line.dir.join(from), line.dir.join("m1.o")).expect("the old m1.o");
             line.archive(&["m1.o", "m2.o"]);
             let old = state(&line, &args, "old");
-            let stored: Vec<u32> = old.chunks().expect("CHUNKS").iter().map(|c| c.members).collect();
+            let stored: Vec<u32> =
+                old.chunks().expect("CHUNKS").iter().map(|c| c.members).collect();
             assert!(stored.iter().sum::<u32>() > 0, "{label}: the full link wrote counts");
             std::fs::copy(line.dir.join(to), line.dir.join("m1.o")).expect("the new m1.o");
             line.archive(&["m1.o", "m2.o"]);

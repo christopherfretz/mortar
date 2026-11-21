@@ -764,7 +764,9 @@ fn residue_is_not_seen(arch: Arch) {
     // c2b-3 from the STATE (WP-255g): the same link in incremental mode
     // writes `CHUNKS.members`, the count the update reads.
     let mut inc = args.clone();
-    inc.extend(["--incremental=full", "--incremental-state", "out.mortar-state"].map(OsString::from));
+    inc.extend(
+        ["--incremental=full", "--incremental-state", "out.mortar-state"].map(OsString::from),
+    );
     let path = dir.join("out.state5");
     let state5 = mortar::incremental::State5 { path: path.clone(), collide: false, rows: None };
     let inv = mortar::invoke_state5("mortar", &inc, dir.path(), state5);
@@ -807,7 +809,8 @@ fn residue_is_not_seen(arch: Arch) {
             // The state's row of a chunk: the one at its offset and size.
             let count = |k: mortar_core::ChunkId| {
                 let c = &chunks[k];
-                let mut rows = state.chunks.iter().filter(|r| r.offset == c.offset && r.size == c.size);
+                let mut rows =
+                    state.chunks.iter().filter(|r| r.offset == c.offset && r.size == c.size);
                 let (Some(r), None) = (rows.next(), rows.next()) else { return None };
                 Some(r.members as usize)
             };
