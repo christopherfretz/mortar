@@ -340,6 +340,13 @@ fn changed_rows_refuse_by_name() {
 /// One mortar run of `args` (output `out`, `extra` after), findings into
 /// `findings`.
 fn link(line: &Line, args: &[String], extra: &[&str], findings: &Path) {
+    let o = link_status(line, args, extra, findings);
+    assert!(o.0, "{}: mortar {extra:?}: {}", line.label, o.1);
+}
+
+/// One link: (success, stderr). `--incremental=update` takes the update
+/// whatever `small-output` says (U1), so no testhook is needed.
+fn link_status(line: &Line, args: &[String], extra: &[&str], findings: &Path) -> (bool, String) {
     let mut a = with_output(args, &line.dir.join("u"));
     a.extend(extra.iter().map(OsString::from));
     let mut c = Command::new(MORTAR);
@@ -347,7 +354,7 @@ fn link(line: &Line, args: &[String], extra: &[&str], findings: &Path) {
     c.env_remove("SOURCE_DATE_EPOCH").env("MORTAR_UPDATE_FINDINGS", findings);
     c.env("MORTAR_INCR_SMALL_OUTPUT", "0");
     let o = run_with(&mut c, b"", Duration::from_mins(2));
-    assert!(o.success(), "{}: mortar {extra:?}: {}", line.label, o.stderr_text());
+    (o.success(), o.stderr_text())
 }
 
 // spec: WP-267 §4 P-1 (`changed_rows_equal_the_fronts`), §6 R-1: on the
@@ -361,13 +368,22 @@ fn changed_rows_equal_the_fronts() {
         let findings = line.dir.join("findings.txt");
         let one = |a: &[String], hop: usize| -> String {
             std::fs::write(&findings, b"").expect("findings");
-            link(&line, a, &["--incremental"], &findings);
+            let (ok, err) = link_status(&line, a, &["--incremental=update"], &findings);
+            // The real path may refuse by name (`=update` then fails, where
+            // `--incremental` falls back): the shadow has run before it.
+            assert!(ok || err.contains("update-not-implemented ("), "{}: {err}", line.label);
             let lines = std::fs::read_to_string(&findings).expect("findings");
             let p1: Vec<&str> =
                 lines.lines().filter(|l| l.starts_with("P-1") || l.contains(" P-1 ")).collect();
             eprintln!("{}: hop {hop}: {p1:?}", line.label);
             assert_eq!(p1.len(), 1, "{}: hop {hop}: one P-1 line: {lines}", line.label);
-            p1[0].to_owned()
+            let p1 = p1[0].to_owned();
+            if !ok {
+                // What `--incremental`'s fall-back would have written: the
+                // next hop's state.
+                link(&line, a, &["--incremental=full"], &findings);
+            }
+            p1
         };
         link(&line, &args, &["--incremental=full"], &findings);
         for (hop, text) in [(1, P1_V1), (2, P1_V0), (3, P1_V1)] {
