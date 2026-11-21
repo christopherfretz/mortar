@@ -721,7 +721,9 @@ struct FrontOne {
     check: Option<bool>,
     prime: Option<Result<(), String>>,
     judged: Option<(Vec<String>, String)>,
-    /// `materialize_on` of front 1's final delta (the identity case's too).
+    /// `materialize_on` of front 1's final delta (the identity case's too),
+    /// with its islands re-planned by front 1's own front
+    /// ([`replanned_on`], WP-288).
     materialized:
         Option<Result<(mortar_core::layout::Layout, mortar_core::incr::LayoutDelta), String>>,
     debug: Option<DebugShadow>,
@@ -1144,12 +1146,17 @@ fn reference_of(
         // WP-267 P-5: front 1's materialization on every hop (the
         // identity case's too), for the shadow's comparison.
         if let Some(h) = &p.hook {
-            one.materialized = Some(match &p.materialized {
+            // WP-288: then taken by front 1's own front, as front 2 takes
+            // its own (WP-273's re-plan of the islands, `replanned_on`).
+            let materialized = match &p.materialized {
                 Some(Ok((lu, df))) => Ok((lu.clone(), df.clone())),
                 Some(Err((r, w))) => Err(format!("{w}: {}", r.report())),
                 None => materialize_on(view, &stored, f, &h.d, &h.inputs.changes)
                     .map_err(|(r, w)| format!("{w}: {}", r.report())),
-            });
+            };
+            one.materialized = Some(
+                materialized.and_then(|(lu, df)| replanned_on(ctx, cwd, lu).map(|lu| (lu, df))),
+            );
             one.debug = h.debug.as_ref().map(|x| DebugShadow {
                 plan: x.plan.clone(),
                 before: x.before.clone(),
@@ -2009,6 +2016,43 @@ fn materialize_on(
     changes: &[mortar_core::incr::SectionChange<'_>],
 ) -> Result<(mortar_core::layout::Layout, mortar_core::incr::LayoutDelta), Refusal> {
     materialize_in_hook(view, stored, &front_view(f), d, changes)
+}
+
+/// WP-288: front 1's materialized layout `lu` as a front of front 1's own
+/// takes it (`lu` replayed; never front 2's layout): WP-273's re-plan of
+/// the islands at `lu`'s addresses (`front::replan_islands`) and the
+/// symbol tables resized to the re-planned patches (`tables_resized`),
+/// as front 2's front does with its own materialized layout (and as the
+/// old path's front 2 did with front 1's, before P-5). A layout with no
+/// island is its own answer: the re-plan gives an island-less placement
+/// its rows back unchanged and resizes nothing. Findings only (front 1's
+/// shadow): a plain link and the update itself never call it.
+///
+/// # Errors
+/// The front's diagnostics, rendered (a re-plan refusal among them).
+fn replanned_on(
+    ctx: &Ctx<'_>,
+    cwd: &Path,
+    lu: mortar_core::layout::Layout,
+) -> Result<mortar_core::layout::Layout, String> {
+    use mortar_core::layout::ChunkKind;
+    if !lu.placement.chunks.iter().any(|(_, c)| matches!(c.kind, ChunkKind::Patches(_))) {
+        return Ok(lu);
+    }
+    let hook = |_: &crate::front::Replay<'_, '_>| Ok(lu.clone());
+    let diag = Collector::new(ctx.policy);
+    let env =
+        crate::front::Env { cwd, pool: ctx.pool, replay: Some(&hook), slack: true, state5: true };
+    let mut timer = crate::timing::Timer::new(false);
+    let front = crate::front::front(ctx.plan.clone(), env, ctx.store, &diag, &mut timer);
+    let report = diag.finish();
+    match front {
+        Some(f) if report.diagnostics().is_empty() => Ok(f.layout),
+        _ => {
+            let text = report.render(&mortar_diag::Style::plain("mortar"));
+            Err(format!("front 1's re-plan: {}", text.trim_end().replace('\n', " | ")))
+        }
+    }
 }
 
 /// `materialize` of the state-id delta `d` (with its section changes)
