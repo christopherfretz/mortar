@@ -14,10 +14,10 @@ Brief: `/Volumes/AgentWork/mortar-helper/briefs/wp-225-m2b5b.md`; ruling
 - w10_local_to_global lane bytes before/after in the scratch
   (`.build/target-wp-155/w2b5b/w10-{before,after}-bytes.txt`).
 
-## Next
-- The gate once on the final tree (`w2b5b/gate.sh`), then the record
-  section "M2b-5b" in `spec/landed/incr/WP-225.md`, hops-after table
-  against M2b-5's `final-hops.txt` (210 taken).
+## State
+- Gate green on 0d95e313 (table in the record, "M2b-5b"); lane 210 taken,
+  the same set as M2b-5's. Handed back; nothing pending.
 
 ## Resume
-- Scratch `/Volumes/AgentWork/mortar-helper/.build/target-wp-155/w2b5b`.
+- Scratch `/Volumes/AgentWork/mortar-helper/.build/target-wp-155/w2b5b`
+  (logs: gate.log, final-hops.txt, final-findings.txt, w10-*-bytes.txt).
