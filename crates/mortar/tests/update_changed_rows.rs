@@ -596,6 +596,11 @@ fn changed_rows_drawn_in_member_refused_by_name() {
         // are not the stored hash's, refused by name.
         line.compile("p1cm", "c", P1C_M_EDITED);
         line.archive(&["p1cm.o"]);
+        // A new store, as the update's own process has: one store is one
+        // link's snapshot and keeps a file's bytes by (dev, inode), and the
+        // re-created `lib2.a` may get the old inode back (the hosted
+        // runners do), which would hand back the old member's bytes.
+        let store = support::store();
         let mut cache = FrontCache::new(&store, pool(), &line.dir);
         let r = changed_files_drawn_in(&s0, &mut cache, &[c], &[d, m], &[], &plan, &line.dir);
         match r {
