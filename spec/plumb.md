@@ -37,7 +37,7 @@ i386 fit.
 | x | x86-64 and i386 tables (§4.5) | `machine` |
 | G (WP-098) | `.gdb_index`: gdb's format for every producer (P-G1–P-G5) and synth.md §17 for mortar's (P-G6–P-G9), §6.10. `.debug_names` is not judged | — |
 | R (M4-r; RL-5, WP-185; P-P1: RL-6, WP-186) | Relocatable outputs (`-r`, `ET_REL`): every input section and relocation once, the symbol table, `.eh_frame`, groups, the header, the container, the notes, every section header (§14, P-P2-P-P11, accepted by P-P9; `mortar_plumb::relocatable::verify`); the final program through `-r` against the direct link, on two final links (P-P1, `mortar_plumb::compose::compose`) | — |
-| I (M7, WP-091) | An incremental link's holes and dead ranges, for a mortar map that claims them (`incremental`, `hole`, `dead`, §3.2): IN-60's coverage of every allocated section and IN-3a's three checks on every range (§6.8, P-I1–P-I6), and the `.symtab` blocks its decision records state (P-I7, WP-268). `--equiv` (incr.md IN-62) is not started | — |
+| I (M7, WP-091) | An incremental link's holes and dead ranges, for a mortar map that claims them (`incremental`, `hole`, `dead`, §3.2): IN-60's coverage of every allocated section and IN-3a's three checks on every range (§6.8, P-I1–P-I6), the `.symtab` blocks its decision records state (P-I7, WP-268), and its other decision records against the output (P-I8, WP-210). `--equiv` (incr.md IN-62) is not started | — |
 
 On the reference corpus, a stage-1 report may give only the stage-2
 reasons in "not checked" (§9.1).
@@ -395,16 +395,24 @@ at entry 0 (the blocks follow it), one whose `<count>` exceeds its
 one `<file>` (or of `-`), and two blocks that share an entry of
 `[<first>, <first> + <capacity>)` or a byte of their regions. A
 `symblock` in place is then judged against the output's `.symtab` and
-`.strtab`, its entries and their names (§6.8, P-I7). **Nothing else of
-these records is judged** by the verifier: not the capacities, the
-order, the slots' addresses, the redirects, the fragments' offsets, nor
-whether a block's `<capacity>` and `<strtab-cap>` are IN-49a's sizes,
-nor its `<file>` against the file its entries came from (an entry
-carries no file, an `STT_FILE` name is not a path), nor the records'
-order (H-1's (d) compares them with the state, IN-78); the coverage line
-counts them (`decision records: n read; region judged (place only),
-symblock judged (place, names); capacity, order, slot, redirect, frag
-not judged`, §7.2). The
+`.strtab`, its entries and their names (§6.8, P-I7). The `capacity`,
+`order`, `slot`, `redirect` and `frag` records are judged against the
+output's bytes and the map (§6.8, P-I8; WP-210, V-3). **Not judged** by
+the verifier, since only the linker's state holds the answer: the
+ordinals' creation order, the capacities' amounts (the bound and the
+reserve's room are judged), a slot no live reference uses beyond its
+place and key (and, in an output without `PT_DYNAMIC`, its word), the
+identity order of `frag` records, whether a block's `<capacity>` and
+`<strtab-cap>` are IN-49a's sizes, a block's `<file>` against the file
+its entries came from (an entry carries no file, an `STT_FILE` name is
+not a path), and the records' order (H-1's (d) compares them with the
+state, IN-78); the coverage line counts and names them (`decision
+records: n read; region judged (place only), symblock judged (place,
+names), capacity, order, slot, redirect, frag judged (P-I8); not judged:
+the ordinals' creation order, the capacities' amounts, a slot no live
+reference uses beyond its place, frag identity order; P-I8: …`, §7.2;
+until WP-210 it read `capacity, order, slot, redirect, frag not
+judged`). The
 `slot` form with two fields after the word is `tls-ld`'s only (the
 module slot has no key): another `<kind>` there is a `MapError`. No record name collides with another record of this
 format (§3.2's grammar) or with the formats of §3.4-§3.6 (each read
@@ -3775,6 +3783,96 @@ Not judged: the sizes of `<capacity>` and `<strtab-cap>`, a block's
 `<file>`, the records' order (§3.2). Tests: `tests/symfill.rs`
 `p_i2_p_i7_symbol_blocks` (WP-268).
 
+**The other decision records against the output (P-I8; WP-210, V-3).**
+The update builds on `capacity`, `order`, `slot`, `redirect` and
+`frag` (`spec/image.md` I-78a; `spec/incr.md` IN-78): a record the
+output contradicts is a stale datum the next update would inherit.
+What the output and the map show of each (`src/decide.rs`), in a map
+that says `incremental`, each sentence a finding of P-I8 naming the
+record's map line:
+
+1. `capacity`: its `<out>` names one output section; `<size>` ≤
+   `<capacity>`; an allocated section's chunk has an address and lies
+   in `[sh_addr, sh_addr + sh_size)`, a non-allocated one has `-`. Two
+   chunks of a section with one `<ordinal>` are a finding.
+2. `order`: one per output section that has chunks (none for a section
+   without), a permutation of its chunks' ordinals. In that order an
+   allocated section's chunks ascend without sharing a byte, the first
+   at `sh_addr`, the last ending at `sh_addr + sh_size`; the reserve
+   `[addr + size, addr + capacity)` of each holds no other chunk and no
+   byte of another allocated section (IN-33: the reserve is the chunk's
+   own room to grow); a non-allocated section's chunks hold at most
+   `sh_size` bytes in all, exactly `sh_size` when there is one. A TLS
+   `NOBITS` section's addresses overlay what follows it: its chunks are
+   judged by sentence 1 and its order, not its reserves.
+3. Every live item the map places (`place`, `piece`, `chunk` records
+   with a size) in an allocated section that has `capacity` records lies
+   inside one chunk's `[addr, addr + size)` (I-78a: `size` is what the
+   chunk holds; an item past it is outside every chunk the update
+   knows). The first eight are named, then a count.
+4. `slot`: a GOT kind's address is `room` bytes (the word; two words
+   for `tls-gd`, `tls-desc`, `tls-ld`) of a `.got*` section with bytes;
+   a `plt` or `iplt` address is in executable code. One record per kind
+   and key (a version suffix `@v` aside: the references' keys are input
+   symbols), and one key per GOT address.
+5. Every GOT slot a live reference is verified through (§5.5, R4: the
+   engine's own derivation from the relocated field, not the record)
+   is its key's record of that kind: the reference's key (a global by
+   name, a local by the map's file id and its symbol-table index, the
+   module for `tls-ld`) has a record, and its address is the slot the
+   reference uses. A reference with an addend is not keyed (the slot is
+   of the symbol plus the addend). A used slot no record states is a
+   finding ("no slot record states it", eight named, then a count).
+6. A `got` or `got-tprel` slot of a global no live reference is
+   verified through (its references relaxed, §5.3, or none), in an
+   output without `PT_DYNAMIC` (no loader writes its word): its word is
+   its key's value: 0 for an undefined name, an IPLT entry of the
+   resolver for an IFUNC (§4.8), `st_value` for other data and code,
+   the `TPREL` of the TLS symbol for `got-tprel`; a `got` slot of a TLS
+   symbol is not judged by its word.
+7. An `iplt` record's address is an IPLT entry of its key's resolver
+   (§4.8; the output's `.symtab` names the IFUNC, global or demoted,
+   `STT_GNU_IFUNC`); a `plt` record's address is a PLT entry whose slot
+   has a `JUMP_SLOT` record naming the key.
+8. `redirect`: its `<addr>` is a `chunk thunk` or `chunk patch`
+   record's address; the site's section is placed (`place`) and
+   `<offset>` is inside it; the branch at the site reaches `<addr>`
+   (AArch64: `B`/`BL` at the site; x86-64: the `rel32` field at the
+   site, the relocation's place, plus 4); one record per site.
+9. `frag`: its `<out>` names one output section; its bytes at
+   `<offset>` (a string to its NUL character, `entsize` bytes, of its
+   class's `entsize`; or `entsize` bytes of a constant) have the L128
+   hash `<hash>` (image.md I-114, `src/buildid.rs`); its address is a
+   multiple of its class's alignment; it lies inside the section's
+   merged chunk (`capacity … m`; a non-allocated section's chunk at the
+   sum of the sizes before it in `order`); it lies in no dead range
+   (§6.8 above). The first eight are named, then a count.
+
+Not judged, by name, since only the linker's state holds the answer
+(the coverage line lists them): the ordinals' creation order (`ChunkId`
+order: the output shows file order, which `order` gives); the
+capacities' amounts (IN-33's policy, the bound `size ≤ capacity` and the
+reserve's room judged); a slot no live reference is verified through,
+beyond its place and key, in an output with `PT_DYNAMIC` or of a local
+key or a TLS pair kind (its word is the loader's or the TLS runtime's);
+the identity order of several `frag` records of one fragment (`FragId`
+order). A `frag` of a live fragment is judged; that every live fragment
+has one is not (the merged section's strings are P-E6's, §6.9).
+
+Coverage: `P-I8: capacity N, order N, slot N (J by a live reference,
+their word or their entry, U by place and key only), redirect N, frag
+N` after the `decision records` line's names. The real corpus (WP-210,
+the kept outputs of `cargo xtask incr-update --keep`, 1,410 links of
+49 scenarios, kiln and GCC, AArch64 and x86-64): 0 findings; capacity
+37,155, order 32,976, slot 114,070 (114,052 judged by a reference, a
+word or an entry, 18 by place and key only), redirect 0 (no output of
+the lane has a thunk or a patch), frag 1,209,393. Tests:
+`tests/decide.rs` (mortar's own link of a GOT, IFUNC, TLS and
+merged-string program, AArch64 and x86-64: accepted with every slot
+judged; each sentence's mutation of the map or the output a P-I8
+finding alone), `tests/symfill.rs`
+`p_i8_decision_records_against_the_output` (capacity and order).
+
 **Fill (IN-3a check 3; P-I5).** The file slack `hole` of `.symtab` or
 `.strtab` (above) holds zero bytes. An allocated `hole` holds its section's
 fill: `UDF #0` (zero words) in AArch64 code, `0xcc` in x86 code, zero
@@ -3920,9 +4018,11 @@ else. In the debug sections:
 7. The decision records (§3.2, `spec/image.md` I-78a): only each
    `region`'s place inside its output section, two regions of a
    section that meet, and a `symblock`'s place (P-I2, WP-222, WP-268)
-   and its entries and names (P-I7, WP-268) are judged here; the rest
-   is H-1's (`spec/incr.md` IN-79 (d)), named in the coverage line as
-   not judged. `spec/image.md` I-78a still says "region judged" only
+   and its entries and names (P-I7, WP-268), and since WP-210 the
+   `capacity`, `order`, `slot`, `redirect` and `frag` records against
+   the output (P-I8, above) are judged here; what only the state holds
+   (P-I8's "Not judged") is H-1's (`spec/incr.md` IN-79 (d)), named in
+   the coverage line as not judged. `spec/image.md` I-78a still says "region judged" only
    and "each `symblock` within `.symtab`'s local area": a sentence
    there is the supervisor's (WP-222's record, F-2; WP-268's).
 
@@ -4441,7 +4541,7 @@ A finding has:
 
 - the rule id: `O1`, `S1`–`S21`, `I1`, `I2`, `M1`–`M12` (M11, M12: §3.8), `R1`–`R9`, `T1`,
   `Y1`–`Y5`, `E1`–`E5`, `F1`–`F5` (§4.8), `P1`–`P2` (§6.6), `B1` (§6.7),
-  `C1`–`C6` (§5.10), `P-D1`–`P-D13` (§12), `P-I1`–`P-I7` (§6.8; P-I7 WP-268), `P-M1`–`P-M3` (§13), `P-P1`–`P-P11` (§14; P-P2–P-P11 RL-5, WP-185; P-P1 RL-6, WP-186), `P-E1`–`P-E6`
+  `C1`–`C6` (§5.10), `P-D1`–`P-D13` (§12), `P-I1`–`P-I8` (§6.8; P-I7 WP-268, P-I8 WP-210), `P-M1`–`P-M3` (§13), `P-P1`–`P-P11` (§14; P-P2–P-P11 RL-5, WP-185; P-P1 RL-6, WP-186), `P-E1`–`P-E6`
   (§6.9; a side's finding there carries its side, `X:` or `F:`) or
   `P-G1`–`P-G9` (§6.10);
 - the output address, if it has one;
@@ -4499,8 +4599,14 @@ what it read and did not judge (`equiv not judged: ...`, §6.9: a
 common's `<file>` a map does not state, a side's fillers under another
 linker's section symbols), and for a map with decision records (§3.2)
 `decision records: n read; region judged (place only), symblock judged
-(place, names); capacity, order, slot, redirect, frag not judged`
-(WP-268; before it `region, symblock judged (place only)`). A plain map's lines
+(place, names), capacity, order, slot, redirect, frag judged (P-I8); not
+judged: the ordinals' creation order, the capacities' amounts, a slot no
+live reference uses beyond its place, frag identity order; P-I8:
+capacity N, order N, slot N (J by a live reference, their word or their
+entry, U by place and key only), redirect N, frag N` (WP-210, §6.8; before
+it `…, symblock judged (place, names); capacity, order, slot, redirect,
+frag not judged`, WP-268; before that `region, symblock judged (place
+only)`). A plain map's lines
 gain no word (WP-222). A stripped dynamic output
 (no `.symtab`; WP-164) adds one line, a `-r` output its `relocatable`
 and `composition` lines (§14.6), `stripped output (no .symtab),
@@ -8058,11 +8164,19 @@ and P-P4 judge it as an ELF input of that one section and those three
 symbols; I2 does not apply to it. A foreign map's row for it is read as
 any `.data` row of that file.
 
-**The line.** mortar's map: its `arg` records (§3.2a). A reference's:
-the caller's line, as stage 3 reads it (`--line`, the link-test lane's
-ld words). Without a line the clauses that need an option are not
-judged (`options unknown`) and the others run as if the line had none of
-C-R3's options. The line's options stage R reads: `-d`/`-dc`/`-dp`,
+**The line** is §3.2a's, for every format (WP-210 item (a); WP-201's
+rule): the caller's line when the caller gives one, as stage 3 reads it
+(`--line`, the `--inputs-from` response file, the link-test lane's ld
+words), else a mortar map's `arg` records. A mortar output always has
+a line: a mortar map has at least one `arg` record (§3.2a; the reader
+refuses one without), so "no line" exists only for a reference's map
+the caller gives no line with. Whether stage R applies (P-P9) reads the
+same line. Until WP-210 stage R read a mortar map's `arg` records only
+and ignored the caller's line, against §3.2a: a map whose records
+dropped, added or changed an option moved stage R's verdict (M9 judges
+the records themselves whatever the caller gives). Without a line the
+clauses that need an option are not judged (`options unknown`) and the
+others run as if the line had none of C-R3's options. The line's options stage R reads: `-d`/`-dc`/`-dp`,
 `-s`, `-S`, `-x`, `-u`, `-e`, `--build-id[=STYLE]`/`--no-build-id`,
 `-z execstack`/`-z noexecstack` (the last of the two), `--unique` and
 `--unique=PATTERN`, `--force-group-allocation`, `--allow-multiple-definition`
@@ -8431,10 +8545,13 @@ are the text of each finding (`{…}` a field).
   final, which refuses `.ctors`) and `compx` (two C++ COMDAT objects),
   `-r` by GNU ld and lld, finals by GNU ld, lld and mortar: judged, no
   finding, but one cell: lld's `-r` of `compc` final-linked by mortar
-  has the finding "P-P1 ... COMMON (type 0x8, flags 0x3) through -r"
-  (mortar's final link makes lld's input section `COMMON` an orphan:
-  WP-203, a linker gap; the test expects it by name and fails when it
-  flips).
+  had the finding "P-P1 ... COMMON (type 0x8, flags 0x3) through -r"
+  (mortar's final link made lld's input section `COMMON` an orphan:
+  WP-203, a linker gap). Since WP-210 (item 4) the test is written for
+  WP-203's linker: that cell has no finding, like every other, and its
+  mutant `WP-203: the COMMON orphan kept (.bss named COMMON)` (V's
+  `.bss`, where WP-203 places the section, named `COMMON`) is caught by
+  item 1 with that text. On a linker without WP-203 the cell fails.
   Measured by WP-232 (`crates/mortar_plumb/tests/compose.rs`): RL-7's
   `r-kernel-style-m` and `r-kernel-style` (static, mortar's final):
   their 36 findings each were the verifier's, not the rule's: item 3
@@ -9039,8 +9156,10 @@ name omitted) counts as a judged symbol, not a record.
   input section `COMMON` (A120: `NOBITS`, `WA`, align 8, the commons'
   size); GNU ld and lld put it in `.bss` at the final link, mortar's
   final link makes it an orphan output section `COMMON`, which P-P1
-  item 1 reports. P-P1 is unchanged; the composition test expects the
-  finding by name until WP-203 lands.
+  item 1 reports. P-P1 is unchanged. The composition test expected the
+  finding by name until WP-210 wrote the cell for WP-203's linker (no
+  finding, and a mutant that keeps the orphan: §14.5's cell list); the
+  two packages merge in one batch.
 
 ### 14.9 The corpus
 

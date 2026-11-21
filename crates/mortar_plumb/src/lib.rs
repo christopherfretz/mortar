@@ -16,6 +16,7 @@ pub mod compose;
 mod content;
 pub mod dead;
 mod deaddwarf;
+mod decide;
 mod defsym;
 mod dyncheck;
 mod dynfields;
@@ -368,6 +369,9 @@ pub(crate) fn run_engine(
     }
     engine.finish_ifunc();
     engine.check_landing_pads();
+    if map.claims_coverage() && !map.decisions.slots.is_empty() {
+        engine.slot_use = Some(Vec::new());
+    }
     engine.finish_got();
     engine.finish_pieces();
     prof::mark("finish ifunc, landing pads, got, pieces");

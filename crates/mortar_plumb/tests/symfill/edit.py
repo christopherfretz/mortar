@@ -26,6 +26,8 @@
 #               shared ones), and `<file>` on every `common` (the file of
 #               a-<arch>.o).
 #   plain       the map's `incremental` line removed (and no slack lines).
+#   (`decisions`' capacity and order records are true of the output:
+#   P-I8, WP-210.)
 # Mutations, one sentence each (tests/symfill.rs names the rule):
 #   filler-after-info   one more filler at the end, after the globals
 #   near=<field>        the first filler differs in <field>: st_name,
@@ -38,6 +40,15 @@
 #   strtab-named        the global afun's st_name names the old name
 #   strtab-nonul        the old name's dead line leaves its NUL out
 #   region-out          the region runs one byte past .text's end
+#   decisions-bad       one slot of each GOT form, a redirect and a frag
+#                       record, none true of the output (no GOT, no thunk,
+#                       no merged chunk), each P-I8 (WP-210)
+#   cap-size            .text's chunk: capacity one below its size
+#   cap-shift           .text's chunk 16 bytes into the section
+#   cap-reserve         .text's reserve runs 8 bytes into the next section
+#   cap-short           .text's chunk 4 bytes short of its last item's end
+#   order-perm          `order .text 1` (no chunk 1)
+#   order-missing       no `order .text`
 #   region-none         the region names `.nosuch`
 #   region-overlap      a second region of .text meets the first
 #   symblock-past       the last symbol block runs past sh_info
@@ -233,14 +244,36 @@ def main():
             extra.append(f'region 0 {out} 0 {a + cap // 4:x} {cap // 2:x}')
         else:
             extra.append(f'region {afile} {out} 0 {a:x} {cap:x}')
-        extra.append(f'capacity .text 0 b0 {a:x} {z:x} {z:x}')
-        extra.append('capacity .symtab 1 s - 0 0')
-        extra.append('order .text 0')
-        extra.append(f'slot got afun {a:x}')
-        extra.append(f'slot tls-gd {afile} 3 {a:x}')
-        extra.append(f'slot tls-ld {a:x}')
-        extra.append(f'redirect {afile} 1 4 {a:x}')
-        extra.append('frag .comment 30,1,1 0123456789abcdef0123456789abcdef 0')
+        # P-I8 (WP-210): the records are true of the output; their
+        # mutations below.
+        nxt = min(x[3] for x in shdrs if x[2] & 2 and x[3] >= a + z and x[5] > 0)
+        cz, ccap, ca = z, z, a
+        if 'cap-size' in flags:
+            ccap = z - 1
+        if 'cap-shift' in flags:
+            ca = a + 16
+        if 'cap-reserve' in flags:
+            ccap = nxt - a + 8
+        if 'cap-short' in flags:
+            # The chunk ends 4 bytes inside the last item placed in it.
+            ends = [int(l.split()[3], 16) + int(l.split()[4], 16)
+                    for l in lines if l.startswith('place ')
+                    and a <= int(l.split()[3], 16) < a + z]
+            cz = max(ends) - a - 4
+        extra.append(f'capacity .text 0 b0 {ca:x} {cz:x} {ccap:x}')
+        sym_size = st[5]
+        extra.append(f'capacity .symtab 0 s - {sym_size:x} {sym_size + slack1:x}')
+        if 'order-perm' in flags:
+            extra.append('order .text 1')
+        elif 'order-missing' not in flags:
+            extra.append('order .text 0')
+        extra.append('order .symtab 0')
+        if 'decisions-bad' in flags:
+            extra.append(f'slot got afun {a:x}')
+            extra.append(f'slot tls-gd {afile} 3 {a:x}')
+            extra.append(f'slot tls-ld {a:x}')
+            extra.append(f'redirect {afile} 1 4 {a:x}')
+            extra.append('frag .comment 30,1,1 0123456789abcdef0123456789abcdef 0')
         def fid(name):
             if name is None:
                 return '-'

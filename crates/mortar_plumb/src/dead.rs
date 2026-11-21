@@ -721,6 +721,13 @@ pub(crate) fn check(e: &mut Engine<'_, '_>, map: &Map) {
     named_by_tables(image, &set, &ends, &places, &mut out);
     crate::deaddwarf::check(image, e.objs, map, &set, &mut out);
     e.cov.decisions = crate::symfill::check(image, map, &set, &mut out);
+    if !map.decisions.is_empty() {
+        let line = crate::decide::check(e, map, &set, &mut out);
+        if let Some(d) = e.cov.decisions.as_mut() {
+            d.push_str("; ");
+            d.push_str(&line);
+        }
+    }
     e.findings.append(&mut out);
 }
 
@@ -945,7 +952,7 @@ pub(crate) fn strings_range(image: &Image<'_>, r: &Range, b: &[u8]) -> Result<()
     }
     let off = r.start - sh.sh_addr;
     let len = b.len() as u64;
-    if off % e != 0 || len % e != 0 {
+    if !off.is_multiple_of(e) || !len.is_multiple_of(e) {
         return Err(format!(
             "the range is not whole {e}-byte characters of the section (sh_entsize {e})"
         ));

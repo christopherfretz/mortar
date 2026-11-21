@@ -148,11 +148,11 @@ fn in49a_shape_is_accepted() {
         assert_eq!(
             r.coverage.decisions.as_deref(),
             Some(
-                "decision records: 12 read; region judged (place only), symblock judged (place, names); capacity, order, slot, redirect, frag not judged"
+                "decision records: 8 read; region judged (place only), symblock judged (place, names), capacity, order, slot, redirect, frag judged (P-I8); not judged: the ordinals' creation order, the capacities' amounts, a slot no live reference uses beyond its place, frag identity order; P-I8: capacity 2, order 2, slot 0 (0 by a live reference, their word or their entry, 0 by place and key only), redirect 0, frag 0"
             ),
             "{arch}"
         );
-        assert!(r.summary().contains("decision records: 12 read"), "{arch}");
+        assert!(r.summary().contains("decision records: 8 read"), "{arch}");
         let f = edit::<&str>(arch, "f", &[]).unwrap();
         let e = equiv(&x, &f);
         assert!(
@@ -316,6 +316,61 @@ fn p_i2_decision_records() {
         rejected_alone(arch, &with(&["region-out"]), "P-I2", "is not inside '.text'");
         rejected_alone(arch, &with(&["region-none"]), "P-I2", "names 0 output sections");
         rejected_alone(arch, &with(&["region-overlap"]), "P-I2", "meets the region of line");
+    }
+}
+
+// §6.8 P-I8 (WP-210): the decision records against the output. The
+// shape's `capacity` and `order` records are true (ACCEPTED, above); each
+// mutation is REJECTED by P-I8 alone: a chunk's size above its capacity,
+// a chunk off the section's start, a reserve into the next section, a
+// chunk short of the section's end (and the items past it), an order
+// that is not a permutation, a section with chunks and no order; and
+// records naming what the output does not have: a slot outside a GOT, a
+// redirect to no patch, a frag of no merged chunk with the wrong hash.
+// Before WP-210 every one passed (the records were read, not judged).
+#[test]
+fn p_i8_decision_records_against_the_output() {
+    for arch in ARCHS {
+        rejected_with(arch, &["cap-size"], "P-I8", &["size 0x", "above its capacity"]);
+        rejected_with(
+            arch,
+            &["cap-shift"],
+            "P-I8",
+            &["outside the section", "the first chunk of .text in order is at"],
+        );
+        rejected_with(arch, &["cap-reserve"], "P-I8", &["of chunk 0 of .text holds bytes of"]);
+        rejected_with(
+            arch,
+            &["cap-short"],
+            "P-I8",
+            &["the last chunk of .text in order ends at", "is in no chunk's size of its section"],
+        );
+        rejected_with(
+            arch,
+            &["order-perm"],
+            "P-I8",
+            &["is not a permutation of its chunks' ordinals"],
+        );
+        rejected_with(
+            arch,
+            &["order-missing"],
+            "P-I8",
+            &["capacity: .text has chunks and no order record"],
+        );
+        rejected_with(
+            arch,
+            &["decisions-bad"],
+            "P-I8",
+            &[
+                "slot got 'afun': 0x",
+                "is not 8 bytes of a GOT section",
+                "slot tls-gd local 3 of file",
+                "is not 16 bytes of a GOT section",
+                "slot tls-ld the module",
+                "is no chunk thunk or chunk patch record's address",
+                "frag .comment 30,1,1",
+            ],
+        );
     }
 }
 
