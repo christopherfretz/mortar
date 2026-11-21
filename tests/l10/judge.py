@@ -911,6 +911,12 @@ def _state(v, x, hop):
 # duty under (d0) holds out STRINGS: canon's pool holds the strings the
 # rows name (IN-78's canon names a string by its bytes, in its row)
 DUTY_NOT_A_ROW = ('STRINGS',)
+# PROPOSED (P-275a, for the supervisor's ruling): CHUNK_UNITS (58) is a
+# pure function of the same state's SECTIONS and REGIONS, which duty
+# judges; `units` (incr_state check) judges that function on every hop,
+# so duty holds it out until IN-78's derived table names it (the spec
+# text is proposed in WP-275's record, section "P-275a")
+DUTY_BY_UNITS = ('CHUNK_UNITS', 58)
 
 
 def _duty(v, x, hop):
@@ -938,9 +944,11 @@ def _duty(v, x, hop):
         v.add('duty', 'FAIL (d0) %s' % res.why)
         return
     held = [d for d in res if d[0] in DUTY_NOT_A_ROW]
-    why = duty.uncovered([d for d in res if d[0] not in DUTY_NOT_A_ROW], hop.causes)
-    v.add('duty', 'pass (S against S\': %d rows differ; not judged: %s)' % (len(res) - len(held), ', '.join(
-        DUTY_NOT_A_ROW)) if why is None else 'FAIL ' + why)
+    units = [d for d in res if d[0] in DUTY_BY_UNITS]
+    why = duty.uncovered([d for d in res if d[0] not in DUTY_NOT_A_ROW + DUTY_BY_UNITS], hop.causes)
+    v.add('duty', 'pass (S against S\': %d rows differ; not judged: %s%s)' % (
+        len(res) - len(held) - len(units), ', '.join(DUTY_NOT_A_ROW),
+        '; CHUNK_UNITS: %d rows, judged by units' % len(units) if units else '') if why is None else 'FAIL ' + why)
 
 
 # ------------------------------------- islands: the state's rows vs bytes --
