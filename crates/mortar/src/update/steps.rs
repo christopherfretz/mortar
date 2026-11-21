@@ -46,6 +46,10 @@ pub(crate) enum ArchFail {
 ///
 /// # Errors
 /// [`ArchFail`].
+#[allow(
+    clippy::result_large_err,
+    reason = "the front's own refusal, by value as the front reports it; an error path only"
+)]
 pub(crate) fn link_arch_of(
     plan: &Plan,
     machine: Machine,
@@ -125,10 +129,11 @@ pub(crate) fn option_names(view: &StateView<'_>, plan: &Plan) -> Result<OptionKe
     for i in 0..rows {
         let r = view.stat(i)?;
         let path = view.string(r.path)?;
-        if r.tag == stat_tag::INPUT && paths.binary_search(&path).is_err() {
-            if let Err(why) = no_directive(&path) {
-                refused.push(format!("{}: {why}", String::from_utf8_lossy(&path)));
-            }
+        if r.tag == stat_tag::INPUT
+            && paths.binary_search(&path).is_err()
+            && let Err(why) = no_directive(&path)
+        {
+            refused.push(format!("{}: {why}", String::from_utf8_lossy(&path)));
         }
     }
     if !refused.is_empty() {
@@ -156,6 +161,9 @@ fn member_path(archive: &[u8], member: &[u8]) -> Vec<u8> {
 /// `EXTERN`, `INCLUDE`, `STARTUP`; `Err(why)` otherwise.
 fn no_directive(path: &[u8]) -> Result<(), String> {
     use std::io::Read;
+    // A script: small (the walk reads it whole too); a bound so a large
+    // file of another kind is not read whole here.
+    const MAX: u64 = 1 << 20;
     use std::os::unix::ffi::OsStrExt;
     let p = std::path::Path::new(std::ffi::OsStr::from_bytes(path));
     let mut file = std::fs::File::open(p).map_err(|e| format!("not read: {e}"))?;
@@ -164,9 +172,6 @@ fn no_directive(path: &[u8]) -> Result<(), String> {
     if head.starts_with(b"\x7fELF") || head == b"!<arch>\n" || head == b"!<thin>\n" {
         return Ok(());
     }
-    // A script: small (the walk reads it whole too); a bound so a large
-    // file of another kind is not read whole here.
-    const MAX: u64 = 1 << 20;
     let mut bytes = head;
     file.take(MAX).read_to_end(&mut bytes).map_err(|e| format!("not read: {e}"))?;
     if bytes.len() as u64 >= MAX {
@@ -250,10 +255,10 @@ fn stored_section(view: &StateView<'_>, cf: &ChangedFiles, s: u32) -> Result<u32
 /// `SECTIONS.place_*`, a kept fragment's `FRAGS.offset`) that is off a
 /// fresh link's because an update keeps stored places (an earlier one:
 /// `s1_section_permute`, `s2_fragment_permute` hop 2; this one, whose
-/// changed file's fragments came in another order: `s2c_gcc_strings` hop
-/// 1) is the stored state's and stays: identity' says identity, the check
-/// over front 1's FRESH capture does not. No O(change) row shows that
-/// history (a datum would).
+/// changed file's fragments came in another order: `s2c_gcc_strings`
+/// hop 1) is the stored state's and stays: identity' says identity, the
+/// check over front 1's FRESH capture does not. No O(change) row shows
+/// that history (a datum would).
 ///
 /// Not judged here (the binding [`identity_check`] does): the merged
 /// visibility and `referenced` of an affected key (`SYMTAB_KEYS`), the
@@ -262,6 +267,7 @@ fn stored_section(view: &StateView<'_>, cf: &ChangedFiles, s: u32) -> Result<u32
 /// # Errors
 /// `Err(why)` is "not identity", never a failure.
 #[allow(clippy::too_many_lines, reason = "IN-78's rows, cause by cause")]
+#[allow(clippy::too_many_arguments, reason = "the update's rows, one per cause")]
 pub(crate) fn identity_prime(
     view: &StateView<'_>,
     stored: &StoredLayout<'_>,
