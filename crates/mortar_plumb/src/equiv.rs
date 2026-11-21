@@ -2015,6 +2015,12 @@ fn rest(x: &Side<'_>, f: &Side<'_>, out: &mut Vec<Finding>) {
             continue;
         }
         let Some(b) = img.section_data(i) else { continue };
+        // A section with `merged` records is not tiled (WP-268): no map
+        // lists its pieces, its `dead` lines are §6.8's (P-I2, P-I6), its
+        // other bytes the strings its references reach (§5.6).
+        if x.map.nonalloc.iter().any(|n| n.out == c.name && n.offset.is_none()) {
+            continue;
+        }
         let units: Vec<(u64, u64)> = x
             .map
             .nonalloc
@@ -2025,9 +2031,6 @@ fn rest(x: &Side<'_>, f: &Side<'_>, out: &mut Vec<Finding>) {
             .collect();
         if units.is_empty() {
             if c.shdr.sh_flags & (SHF_MERGE | SHF_STRINGS) == (SHF_MERGE | SHF_STRINGS) {
-                continue;
-            }
-            if x.map.nonalloc.iter().any(|n| n.out == c.name) {
                 continue;
             }
             if f.sec_bytes(&c.name) != Some(b) {

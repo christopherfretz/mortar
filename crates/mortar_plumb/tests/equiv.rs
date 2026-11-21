@@ -275,6 +275,13 @@ impl Pair {
     /// `equiv(X, F)` through the maps' text form: the P-E findings
     /// (`"<id> <message>"`) and each side's own finding count.
     fn equiv(&self, x: &Link, f: &Link) -> (Vec<String>, usize, usize) {
+        let (pe, xs, fs) = self.equiv_sides(x, f);
+        (pe, xs.len(), fs.len())
+    }
+
+    /// `equiv(X, F)`: the P-E findings and each side's own findings, each
+    /// `"<id> <message>"`.
+    fn equiv_sides(&self, x: &Link, f: &Link) -> (Vec<String>, Vec<String>, Vec<String>) {
         let text = |m: &Map| {
             if m.format != Format::Mortar {
                 return m.clone();
@@ -290,11 +297,11 @@ impl Pair {
             self.files.iter().map(|(p, b)| Input { path: p, bytes: b }).collect();
         let e = mortar_plumb::equiv::check(&x.output, &xm, &f.output, &fm, &inputs);
         let pe = e.findings.iter().map(|g| format!("{} {}", g.rule.id(), g.message)).collect();
-        let side = |r: &mortar_plumb::Report| {
+        let side = |r: &mortar_plumb::Report| -> Vec<String> {
             for g in &r.findings {
                 eprintln!("side finding: {} {}", g.rule.id(), g.message);
             }
-            r.findings.len()
+            r.findings.iter().map(|g| format!("{} {}", g.rule.id(), g.message)).collect()
         };
         (pe, side(&e.x), side(&e.f))
     }
@@ -769,6 +776,70 @@ fn p_e6_non_alloc_tiling() {
             has(&pe, "P-E6", ".myinfo, which no unit holds") || has(&pe, "P-E6", "in no unit"),
             "{arch:?}: {pe:#?}"
         );
+    }
+}
+
+// §6.9 P-E6 (WP-268, G-5b's case): a non-allocated section with `merged`
+// records is not tiled. `.debug_str` holds a string nothing names
+// (`gone_wp268`, an edit's dead local): X's map states it `dead ...
+// strings`. ACCEPTED (before WP-268: two P-E6 findings, the bytes before
+// and after the dead range). The dead line one byte short of the NUL:
+// X's own P-I6 (§6.8 still judges a merged section's dead lines). The
+// same string with no line: ACCEPTED, and by no check: §6.9 does not
+// judge a `merged` section's strings beyond what its references reach
+// (§5.6), and no reference reaches this one.
+#[test]
+fn p_e6_merged_nonalloc_is_not_tiled() {
+    for arch in archs() {
+        let sec = if arch == Arch::Aarch64 { "%progbits" } else { "@progbits" };
+        let extra =
+            format!("\t.section .debug_str,\"MS\",{sec},1\n\t.asciz \"keep_wp268\"\n\t.asciz \"gone_wp268\"\n\t.text\n");
+        let Some(p) = assemble(arch, "e6m", "", &extra, &[]) else { return };
+        // mortar's map gives an `SHF_MERGE` non-alloc input as `merged`
+        // (no offset): it replaces GNU ld's line on both sides.
+        let merged = |l: &mut Link| {
+            let fi = l.map.files.iter().position(|q| q.path == "a.o").unwrap() as u32;
+            let s = SectionRef::Name(".debug_str".into());
+            l.map.placed.retain(|q| !(q.file == fi && q.section == s));
+            l.map.nonalloc.retain(|q| !(q.file == fi && q.section == s));
+            l.map.nonalloc.push(mortar_plumb::map::NonAlloc {
+                file: fi,
+                section: s,
+                out: ".debug_str".into(),
+                offset: None,
+                size: 0,
+                line: 0,
+            });
+        };
+        let mut x = p.update(&[]);
+        let mut f = p.link(&["main.o", "a.o", "b.o"], &[]);
+        merged(&mut x);
+        merged(&mut f);
+        let (_, size, off) = x.sec(".debug_str");
+        let body = &x.output[off as usize..(off + size) as usize];
+        let at = body.windows(11).position(|w| w == b"gone_wp268\0").unwrap() as u64;
+        assert!(at > 0, "{arch:?}: {body:x?}");
+        let dead = |len: u64| DeadRange {
+            section: ".debug_str".into(),
+            offset: at,
+            size: len,
+            kind: Some(mortar_plumb::map::DeadKind::Strings),
+            line: 0,
+        };
+        let mut m = x.clone();
+        m.map.dead.push(dead(11));
+        let (pe, xs, fs) = p.equiv_sides(&m, &f);
+        assert!(pe.is_empty() && xs.is_empty() && fs.is_empty(), "{arch:?}: {pe:#?} {xs:#?}");
+        let mut m = x.clone();
+        m.map.dead.push(dead(10));
+        let (pe, xs, _) = p.equiv_sides(&m, &f);
+        assert!(pe.is_empty(), "{arch:?}: {pe:#?}");
+        assert!(
+            !xs.is_empty() && xs.iter().all(|l| l.starts_with("P-I6 ") && l.contains("NUL")),
+            "{arch:?}: {xs:#?}"
+        );
+        let (pe, xs, _) = p.equiv_sides(&x, &f);
+        assert!(pe.is_empty() && xs.is_empty(), "{arch:?}: {pe:#?} {xs:#?}");
     }
 }
 

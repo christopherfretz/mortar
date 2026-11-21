@@ -4100,10 +4100,17 @@ checks). Beyond the allocated sections, every byte of `X`'s file is: in
 the file header, the program or section header table, a section's file
 image, or zero (file padding; on x86, inside an executable `PT_LOAD`'s
 file image, also `0xcc` and `0x90`, the code fill and the nop padding); a non-allocated output section with
-`nplace` units is tiled by them, `dead` lines of `X`'s map and zero
-alignment padding; a non-allocated section with no unit and no `merged`
+`nplace` units and no `merged` record is tiled by them, `dead` lines of
+`X`'s map and zero alignment padding; **a non-allocated section with
+`merged` records is not tiled** (WP-268, ruled on G-5b's
+`.debug_str`): its `dead` lines are §6.8's (P-I2's admission, P-I6's
+NUL end), its other bytes are the strings its references reach (§5.6
+judges each reference by content); no map lists its pieces one by one,
+so no map could tile it, with or without `nplace` units beside the
+records; a non-allocated section with no unit and no `merged`
 record, other than `.symtab`, `.strtab` and `.shstrtab` (P-E1, P-E3),
-holds the same bytes as `F`'s.
+holds the same bytes as `F`'s (one with `SHF_MERGE|SHF_STRINGS` and no
+line at all is passed over, as before WP-268).
 
 **Item 7**, the diagnostics, is not in the files: the harness compares
 the two links' diagnostics (IN-5, L10; `spec/incr.md` IN-63).
@@ -4791,7 +4798,10 @@ produce a finding that is not a recorded anomaly (`tests/mutation.rs`):
   without it. AArch64, x86-64 and i386 unless named:
   - ACCEPTED: R13 case 1, `X` against `F`, and `X` against itself; a
     `--build-id` pair (the descriptors differ); a non-allocated
-    section of units; a PIE pair (AArch64, x86-64: `-pie
+    section of units; a `merged` `.debug_str` with a `dead ... strings`
+    line, and with the same string and no line (WP-268,
+    `p_e6_merged_nonalloc_is_not_tiled`: not tiled; that dead line one
+    byte short of its NUL is `X`'s P-I6); a PIE pair (AArch64, x86-64: `-pie
     --no-dynamic-linker --export-dynamic`); AArch64 `ADRP`+`ADD` in `F`,
     `NOP`+`ADR` in `X` (W1); x86-64 a GOT kept by `addq S@GOTPCREL`;
   - REJECTED: R13 case 2, `F` of `main.o b.o a.o` (P-E5, `myset` in
