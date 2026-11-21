@@ -1622,7 +1622,7 @@ fn write_link(
     on_phase: &mut dyn FnMut(u16, &str),
     checked: &mut bool,
 ) -> Result<Written, Failed> {
-    with_image(link, path, |img, plan, sealed, steps, members| {
+    with_image(link, path, true, |img, plan, sealed, steps, members| {
         let out = Output::create(path, opts).map_err(|kd| Failed { diagnostics: vec![kd] })?;
         steps.step("create", 0, "");
         let (filled, checks) = fill::write_checked(img, &out, out.shown(), link.pool);
@@ -1704,6 +1704,7 @@ fn write_link(
 fn with_image<T>(
     link: &Link<'_, '_>,
     path: &Path,
+    count_members: bool,
     go: impl FnOnce(
         &Image<'_>,
         &crate::plan::Plan,
@@ -1790,8 +1791,11 @@ fn with_image<T>(
     plan.deferred_order = deferred_orders(link, &plan)?;
     steps.step("plan", plan.rows.len() as u64, "row");
     // WP-255g: `CHUNKS.members` from this plan's model, in incremental
-    // mode only (a plain link counts nothing).
-    let members = if link.options.keep_leaves {
+    // mode only (a plain link counts nothing). WP-255e4 item 2: only for
+    // the caller that stores it (`write_link`); the update's refill paths
+    // do not count (the update's capture counts from its front by the same
+    // rule, `incremental.rs`, so a count here would be thrown away).
+    let members = if count_members && link.options.keep_leaves {
         Some(layout_plan::member_counts(&model).map_err(failed)?)
     } else {
         None
@@ -1889,7 +1893,7 @@ pub struct Refilled {
 /// Every diagnostic of the fill; a fault in a section deferred to fill
 /// (I-14) is an internal error here.
 pub fn refill(link: &Link<'_, '_>, path: &Path, windows: &[u64]) -> Result<Refilled, Failed> {
-    with_image(link, path, |img, plan, sealed, steps, _| {
+    with_image(link, path, false, |img, plan, sealed, steps, _| {
         let w = plan.window;
         let dirty = |j: &std::ops::Range<u64>| {
             let first =
@@ -1966,7 +1970,7 @@ pub(crate) fn refill_ranges(
     link: &Link<'_, '_>,
     ranges: &[std::ops::Range<u64>],
 ) -> Result<Refilled, Failed> {
-    with_image(link, Path::new(""), |img, plan, sealed, steps, _| {
+    with_image(link, Path::new(""), false, |img, plan, sealed, steps, _| {
         let jobs = clip_jobs(plan, ranges);
         let leaf_fn = img.build_id.map_or(mortar_digest::TreeFn::L128, TreeStyle::tree_fn);
         let filled = link.pool.map(jobs.len(), |k| {
@@ -2346,7 +2350,7 @@ pub fn refill_clip_plan_with(
     // are the whole plan's `Synth` units' (a test path's source; an update
     // gives those of the chunk list it fills with).
     let mut built: Option<Result<crate::plan::Plan, crate::clip_plan::ClipError>> = None;
-    let r = with_image(link, Path::new(""), |img, whole, sealed, _, _| {
+    let r = with_image(link, Path::new(""), false, |img, whole, sealed, _, _| {
         let synth: std::collections::BTreeMap<ChunkId, (SynthKind, SynthRow)> = whole
             .synth
             .iter()
