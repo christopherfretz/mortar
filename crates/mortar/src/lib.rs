@@ -210,10 +210,9 @@ pub fn replay_link(
     cwd: &Path,
     state: &mortar_incr::format::State,
 ) -> Invocation {
-    let hook = |link: &mortar_incr::capture::Link<'_, '_>,
-                computed: &mortar_core::layout::Layout| {
-        let keys = mortar_incr::capture::Keys::new(link)?;
-        mortar_incr::capture::replay(link, &keys, state, computed)
+    let hook = |cx: &front::Replay<'_, '_>| {
+        let keys = mortar_incr::capture::Keys::new(&cx.link)?;
+        mortar_incr::capture::replay(&cx.link, &keys, state, cx.computed)
     };
     // WP-225: the replay is format 4's, in the pre-flip layout.
     invoke_with4(prog, args, cwd, Some(&hook), PrintMap::Capture, None, (false, true))
@@ -223,7 +222,7 @@ fn invoke_with(
     prog: &str,
     args: &[OsString],
     cwd: &Path,
-    replay: Option<&front::Replay<'_>>,
+    replay: Option<&front::ReplayHook<'_>>,
     print_to: PrintMap,
     state5: Option<incremental::State5>,
 ) -> Invocation {
@@ -236,7 +235,7 @@ fn invoke_with4(
     prog: &str,
     args: &[OsString],
     cwd: &Path,
-    replay: Option<&front::Replay<'_>>,
+    replay: Option<&front::ReplayHook<'_>>,
     print_to: PrintMap,
     state5: Option<incremental::State5>,
     state4: (bool, bool),

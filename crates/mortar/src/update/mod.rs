@@ -364,16 +364,16 @@ struct Reference {
     reason = "path (A)'s front, U1's view and binding, the step timer"
 )]
 #[allow(clippy::too_many_lines, reason = "U4 to the identity check, in IN-70's order")]
-fn reference_of(
+fn reference_of<'c>(
     session: &Session,
     view: &StateView<'_>,
     detected: &Detected,
     f: &crate::front::Front<'_>,
-    ctx: &Ctx<'_>,
+    ctx: &Ctx<'c>,
     cwd: &Path,
     out: &std::fs::File,
     steps: &mut Steps,
-) -> Result<First, IncrReason> {
+) -> Result<First<'c>, IncrReason> {
     use mortar_core::incr::{LayoutDelta, RefillChunk, RefillSet, StoredLayout};
     let layout = || IncrReason::UpdateNotImplemented(Some(Unimplemented::Layout));
     let image = || IncrReason::UpdateNotImplemented(Some(Unimplemented::Image));
@@ -560,7 +560,8 @@ fn reference_of(
         // translates, judged against front 1 (`debug_judged_moved`).
         if debug || p.debug.is_some() {
             let lu = p.materialized.as_ref().and_then(|m| m.as_ref().ok()).map(|m| &m.0);
-            debug_judged_moved(view, &stored, f, files, p.debug.as_ref(), lu, &refill, out)?;
+            let cx = front_view(f);
+            debug_judged_moved(view, &stored, &cx, files, p.debug.as_ref(), lu, &refill, out)?;
         }
         let what = format!(
             "{}; {flips} sections flip liveness; capture tables differing {tables:?}",
@@ -570,11 +571,13 @@ fn reference_of(
             Some(Ok((lu, df))) => {
                 changed::record(&format!("M2b-3 Part 3: materialized ({what}): front 2"));
                 let shadow = p.shadow;
+                let hook = p.hook.map(|h| HookShadow { files: files.clone(), ..h });
                 Ok(First::Materialized(Box::new(Materialized {
                     l1: f.layout.clone(),
                     lu,
                     df,
                     shadow,
+                    hook,
                 })))
             }
             Some(Err((reason, name))) => {
@@ -611,7 +614,7 @@ fn reference_of(
     debug_judged(
         view,
         &stored,
-        f,
+        &front_view(f),
         files,
         placed.as_ref().and_then(|p| p.debug.as_ref()),
         &refill,
@@ -1074,7 +1077,7 @@ fn eh_why(out: &std::fs::File) -> Option<String> {
 }
 
 /// The delta's placement of the changed files, judged ([`placement`]).
-struct Placed {
+struct Placed<'s> {
     /// The changed sections the delta placed at another offset (or chunk)
     /// than the front's, as `name: update .., full ..` (empty: the full
     /// link's offsets, the identity case's requirement).
@@ -1092,6 +1095,35 @@ struct Placed {
     /// WP-267 P-3: identity' (`steps::identity_prime`) over the update's
     /// own rows: `Ok` identity, `Err` the first row that says not.
     prime: Result<(), String>,
+    /// WP-267 P-2: what front 2's replay hook needs (findings only).
+    hook: Option<HookShadow<'s>>,
+}
+
+/// WP-267 P-2: what front 2's replay hook needs to run `materialize`
+/// ([`materialize_in_hook`]) and the judges over its own tables beside
+/// front 1's, made only when findings are recorded (a plain update pays
+/// nothing for it).
+struct HookShadow<'s> {
+    /// The state-id delta, final: `materialize`'s and `judge`'s input.
+    d: mortar_core::incr::LayoutDelta,
+    /// The changes and pieces `judge` and `materialize` read.
+    inputs: layout_in::LayoutInputs<'s>,
+    cf: mortar_incr::update::view::ChangedFiles,
+    /// The changed files (`debug_judged_moved`'s).
+    files: Vec<FileId>,
+    /// Front 1's `judge` verdict: `differ` and the summary.
+    judged: (Vec<String>, String),
+    /// G-1's plan and front 1's G-4/G-5 verdicts.
+    debug: Option<DebugShadow>,
+}
+
+/// G-1's plan, the delta before `debug_string_frags` added its rows, and
+/// front 1's answers of `debug_runs_judged` and `debug_string_frags`.
+struct DebugShadow {
+    plan: mortar_incr::update::debug::DebugPlan,
+    before: mortar_core::incr::LayoutDelta,
+    runs: usize,
+    frags: String,
 }
 
 /// U6-U7 for the changed files of `cf` (M2b-2b; IN-72): `layout_inputs`,
@@ -1114,11 +1146,11 @@ struct Placed {
 /// gc-3); a `live` that still draws one in is refused `(layout)` by name.
 #[allow(clippy::too_many_arguments, reason = "the update's inputs, each read once")]
 #[allow(clippy::too_many_lines, reason = "U6-U7's producers in order, then the judgement")]
-fn placement(
+fn placement<'s>(
     view: &StateView<'_>,
     stored: &mortar_core::incr::StoredLayout<'_>,
     f: &crate::front::Front<'_>,
-    store: &Store,
+    store: &'s Store,
     cwd: &Path,
     cf: &mortar_incr::update::view::ChangedFiles,
     mut delta: mortar_incr::update::resolve::ResolveDelta,
@@ -1127,7 +1159,7 @@ fn placement(
     previous: &std::fs::File,
     check: bool,
     flips: usize,
-) -> Result<Placed, Why> {
+) -> Result<Placed<'s>, Why> {
     use mortar_core::incr::{FileDemands, LayoutInput};
     use mortar_core::resolution::SectionKind;
     use mortar_elf::SectionIndex;
@@ -1281,12 +1313,17 @@ fn placement(
             ));
         })
         .map_err(Why::Refused)?;
+    let mut debug_shadow = None;
     let debug = if input.debug {
-        Some(debug_placed(view, stored, f, cf, previous, &mut d).map_err(Why::Finding)?)
+        let cx = front_view(f);
+        Some(
+            debug_placed(view, stored, &cx, cf, previous, &mut d, &mut debug_shadow)
+                .map_err(Why::Finding)?,
+        )
     } else {
         None
     };
-    let mut placed = judge(view, stored, f, &inputs, &d).map_err(|what| {
+    let mut placed = judge(view, stored, &front_view(f), &inputs, &d).map_err(|what| {
         Why::Finding(changed::finding_as(
             &format!("M2b-2b placement: {what}"),
             IncrReason::UpdateNotImplemented(Some(Unimplemented::Layout)),
@@ -1315,12 +1352,25 @@ fn placement(
         if changed::recording() {
             placed.shadow = Some(shadow_set(view, stored, cf, &delta, &d));
         }
+        // WP-267 P-2: what front 2's hook runs `materialize` and the
+        // judges on (findings only).
+        if changed::recording() {
+            placed.hook = Some(HookShadow {
+                judged: (placed.differ.clone(), placed.summary.clone()),
+                d,
+                inputs,
+                cf: cf.clone(),
+                files: Vec::new(),
+                debug: debug_shadow,
+            });
+        }
     }
     Ok(placed)
 }
 
 /// `materialize` against front 1's link and computed layout (the front's
-/// side as `incremental::materialize_hop` builds it).
+/// side as `incremental::materialize_hop` builds it): the real path's
+/// value until P-5 (WP-267 P-2 runs [`materialize_in_hook`] beside it).
 fn materialize_on(
     view: &StateView<'_>,
     stored: &mortar_core::incr::StoredLayout<'_>,
@@ -1328,16 +1378,24 @@ fn materialize_on(
     d: &mortar_core::incr::LayoutDelta,
     changes: &[mortar_core::incr::SectionChange<'_>],
 ) -> Result<(mortar_core::layout::Layout, mortar_core::incr::LayoutDelta), Refusal> {
+    materialize_in_hook(view, stored, &front_view(f), d, changes)
+}
+
+/// `materialize` of the state-id delta `d` (with its section changes)
+/// into the ids of the front whose tables `cx` gives: front 2's replay
+/// hook (WP-267 P-2, M-7) or front 1 ([`front_view`]). `cx.eh_runs`'s
+/// error is a refusal `(image)` by name.
+fn materialize_in_hook(
+    view: &StateView<'_>,
+    stored: &mortar_core::incr::StoredLayout<'_>,
+    cx: &crate::front::Replay<'_, '_>,
+    d: &mortar_core::incr::LayoutDelta,
+    changes: &[mortar_core::incr::SectionChange<'_>],
+) -> Result<(mortar_core::layout::Layout, mortar_core::incr::LayoutDelta), Refusal> {
     let image = |what: String| (IncrReason::UpdateNotImplemented(Some(Unimplemented::Image)), what);
-    let link = mortar_incr::capture::Link {
-        inputs: &f.inputs,
-        resolution: &f.resolution,
-        assignment: &f.assignment,
-        split: &f.merge.split,
-    };
-    let keys = mortar_incr::capture::Keys::new(&link).map_err(|e| image(format!("keys: {e}")))?;
-    let classes: Vec<mortar_core::incr::MergeClass> = f
-        .merge
+    let keys =
+        mortar_incr::capture::Keys::new(&cx.link).map_err(|e| image(format!("keys: {e}")))?;
+    let classes: Vec<mortar_core::incr::MergeClass> = cx
         .meta
         .iter()
         .map(|m| mortar_core::incr::MergeClass {
@@ -1346,19 +1404,48 @@ fn materialize_on(
             align: m.align,
         })
         .collect();
-    let eh = eh_files(f).map_err(image)?;
+    let eh = eh_files(cx).map_err(image)?;
     mortar_incr::update::materialize::materialize(
-        view, stored, d, changes, &link, &keys, &f.layout, &classes, &eh,
+        view,
+        stored,
+        d,
+        changes,
+        &cx.link,
+        &keys,
+        cx.computed,
+        &classes,
+        &eh,
     )
 }
 
-/// The front's `.eh_frame` runs as the capture reads them (`Incr5::eh`).
-fn eh_files(f: &crate::front::Front<'_>) -> Result<Vec<mortar_incr::capture::EhFile>, String> {
-    let runs = match f.incr5.as_ref().map(|i| i.eh.as_ref()) {
-        Some(Ok(runs)) => runs,
-        Some(Err(why)) => return Err(format!("no .eh_frame runs: {why}")),
-        None => return Err("no format-5 front data".into()),
+/// A front's tables as the replay hook is given them
+/// ([`crate::front::Replay`]), for a front that ran without a replay (its
+/// layout is the computed one; its `.eh_frame` runs `Incr5::eh`'s).
+fn front_view<'r, 's>(f: &'r crate::front::Front<'s>) -> crate::front::Replay<'r, 's> {
+    let eh_runs = match f.incr5.as_ref().map(|i| i.eh.as_ref()) {
+        Some(Ok(runs)) => Ok(runs.as_slice()),
+        Some(Err(why)) => Err(why.as_str()),
+        None => Err("no format-5 front data"),
     };
+    crate::front::Replay {
+        link: mortar_incr::capture::Link {
+            inputs: &f.inputs,
+            resolution: &f.resolution,
+            assignment: &f.assignment,
+            split: &f.merge.split,
+        },
+        computed: &f.layout,
+        meta: &f.merge.meta,
+        eh_runs,
+    }
+}
+
+/// The front's `.eh_frame` runs as the capture reads them (`Incr5::eh`,
+/// or the hook's `Replay::eh_runs`).
+fn eh_files(
+    cx: &crate::front::Replay<'_, '_>,
+) -> Result<Vec<mortar_incr::capture::EhFile>, String> {
+    let runs = cx.eh_runs.map_err(|why| format!("no .eh_frame runs: {why}"))?;
     Ok(runs
         .iter()
         .map(|r| mortar_incr::capture::EhFile {
@@ -1377,12 +1464,15 @@ type Refusal = mortar_incr::update::materialize::Refusal;
 /// What a non-identity hop's front 1 hands front 2 (R-1): front 1's
 /// computed layout `l1` (front 2's must be it), the materialized layout
 /// `lu` (front ids) and the delta in front ids `df` (D-4).
-struct Materialized {
+struct Materialized<'s> {
     l1: mortar_core::layout::Layout,
     lu: mortar_core::layout::Layout,
     df: mortar_core::incr::LayoutDelta,
     /// WP-255e: C''s refill set (state ids as `(file, index)`).
     shadow: Option<Result<ShadowSet, IncrReason>>,
+    /// WP-267 P-2: what the hook runs `materialize` and the judges on
+    /// (findings only).
+    hook: Option<HookShadow<'s>>,
 }
 
 /// [`refill_capture`]'s answer: the refill, the output's size, the
@@ -1393,9 +1483,9 @@ type Refilled =
 /// Front 1's answer: the identity case's reference, or the non-identity
 /// case's materialized layout for front 2.
 #[allow(clippy::large_enum_variant, reason = "one value per update, moved once")]
-enum First {
+enum First<'s> {
     Identity(Reference),
-    Materialized(Box<Materialized>),
+    Materialized(Box<Materialized<'s>>),
 }
 
 /// **Front 2 of a non-identity hop** (R-1, path (A)'s scaffold; the record
@@ -1421,22 +1511,30 @@ fn front_two(
     ctx: &Ctx<'_>,
     cwd: &Path,
     out: &std::fs::File,
-    m: Materialized,
+    m: Materialized<'_>,
     steps: &mut Steps,
 ) -> Result<Reference, IncrReason> {
     use mortar_core::incr::{RefillChunk, RefillSet, StoredLayout};
     use mortar_incr::update::materialize::{eh_runs_judged, first_difference};
     let image = || IncrReason::UpdateNotImplemented(Some(Unimplemented::Image));
-    let Materialized { l1, lu, df, shadow } = m;
+    let Materialized { l1, lu, df, shadow, hook: p2 } = m;
     let why: std::cell::RefCell<Option<Refusal>> = std::cell::RefCell::new(None);
     let lu = std::cell::RefCell::new(Some(lu));
-    let hook = |_: &mortar_incr::capture::Link<'_, '_>,
-                computed: &mortar_core::layout::Layout|
-     -> Result<mortar_core::layout::Layout, String> {
-        if let Some(what) = first_difference(computed, &l1) {
+    let rows = mortar_incr::state5::LayoutOf { view };
+    let stored = StoredLayout::new(&rows);
+    let hook = |cx: &crate::front::Replay<'_, '_>| -> Result<mortar_core::layout::Layout, String> {
+        // `l1` stays (WP-267 P-2): front 1's `lu` is the real path's until
+        // P-5, and it holds tables copied from front 1's computed layout
+        // (R-A4), so front 2's must be it.
+        if let Some(what) = first_difference(cx.computed, &l1) {
             let s = format!("M2b-3 Part 3: front 2's computed layout is not front 1's: {what}");
             *why.borrow_mut() = Some((image(), s.clone()));
             return Err(s);
+        }
+        // WP-267 P-2 (findings only): `materialize` and the judges over the
+        // hook's tables, against front 1's answers.
+        if let Some(h) = &p2 {
+            hook_shadow(view, &stored, cx, h, lu.borrow().as_ref(), &df, out);
         }
         lu.borrow_mut().take().ok_or_else(|| {
             let s = "M2b-3 Part 3: the replay hook called twice".to_owned();
@@ -1444,11 +1542,9 @@ fn front_two(
             s
         })
     };
-    let rows = mortar_incr::state5::LayoutOf { view };
-    let stored = StoredLayout::new(&rows);
     let r = image_link(ctx, cwd, Some(&hook), |f| {
         steps.mark("front2");
-        let runs = eh_files(f).map_err(|e| {
+        let runs = eh_files(&front_view(f)).map_err(|e| {
             changed::record(&format!("M2b-3 Part 3: front 2: {e}: (image)"));
             image()
         })?;
@@ -1473,6 +1569,10 @@ fn front_two(
             "M2b-3 Part 3: taken: front 2 ({} ranges, {} bytes)",
             refill.counts.ranges, refill.counts.dirty
         ));
+        // WP-267 P-2 (findings only): G-4 over front 2's own bytes.
+        if let Some(h) = &p2 {
+            hook_debug_judged_moved(view, &stored, f, h, &refill, out);
+        }
         // WP-255e: C' in shadow, against front 2's bytes (never written).
         if changed::recording() {
             changed::record(&shadow_255e(
@@ -1505,6 +1605,196 @@ fn front_two(
             ))
         }
         (Err(e), None) => Err(e),
+    }
+}
+
+/// WP-267 P-2 (findings only): G-4 (`debug_judged_moved`) over front 2's
+/// own bytes (its layout is the replayed `lu`) when a changed file has
+/// debug sections; front 1's verdict was `Ok` (front 2 runs after it).
+fn hook_debug_judged_moved(
+    view: &StateView<'_>,
+    stored: &mortar_core::incr::StoredLayout<'_>,
+    f: &crate::front::Front<'_>,
+    h: &HookShadow<'_>,
+    refill: &mortar_image::update::Refill,
+    previous: &std::fs::File,
+) {
+    if !h.cf.files.iter().any(|c| c.debug) && h.debug.is_none() {
+        return;
+    }
+    let plan = h.debug.as_ref().map(|x| &x.plan);
+    let cx = front_view(f);
+    let v =
+        debug_judged_moved(view, stored, &cx, &h.files, plan, Some(&f.layout), refill, previous);
+    changed::record(&match v {
+        Ok(()) => "P-2 judges: agree (debug_judged_moved over front 2's bytes)".to_owned(),
+        Err(e) => format!(
+            "finding: P-2 judges: debug_judged_moved over front 2's bytes: {}; front 1: ok",
+            e.report()
+        ),
+    });
+}
+
+/// WP-267 P-2 in front 2's hook (findings only): `materialize` and the
+/// judges over the hook's tables against front 1's answers (`lu1`, `df1`:
+/// front 1's materialized layout and delta), each line with its lap
+/// (`Instant` reads: the P-2 cost line's).
+fn hook_shadow(
+    view: &StateView<'_>,
+    stored: &mortar_core::incr::StoredLayout<'_>,
+    cx: &crate::front::Replay<'_, '_>,
+    h: &HookShadow<'_>,
+    lu1: Option<&mortar_core::layout::Layout>,
+    df1: &mortar_core::incr::LayoutDelta,
+    previous: &std::fs::File,
+) {
+    if let Some(lu1) = lu1 {
+        let t = std::time::Instant::now();
+        let line = hook_materialize_equals_front_ones(view, stored, cx, h, lu1, df1);
+        let ms = t.elapsed().as_secs_f64() * 1e3;
+        changed::record(&format!("{line} [hook materialize {ms:.2} ms]"));
+    }
+    let t = std::time::Instant::now();
+    let line = hook_judges_agree(view, stored, cx, h, previous);
+    let ms = t.elapsed().as_secs_f64() * 1e3;
+    changed::record(&format!("{line} [hook judges {ms:.2} ms]"));
+}
+
+/// WP-267 P-2, `hook_materialize_equals_front_ones` (findings only): the
+/// hook's `materialize` (front 2's tables, [`materialize_in_hook`]) against
+/// front 1's (`lu1`, `df1`, the real path's): the layouts equal table by
+/// table and the deltas field by field. The line: `P-2: equal (..)` or a
+/// `finding:` naming the first field and both values. The tables
+/// `materialize` copies from the computed layout (`frag_off` as its base,
+/// `symtab_locals`, `sized`, `folds`; review R-A4) agree by construction
+/// when the two computed layouts do: they are no evidence about the update.
+fn hook_materialize_equals_front_ones(
+    view: &StateView<'_>,
+    stored: &mortar_core::incr::StoredLayout<'_>,
+    cx: &crate::front::Replay<'_, '_>,
+    h: &HookShadow<'_>,
+    lu1: &mortar_core::layout::Layout,
+    df1: &mortar_core::incr::LayoutDelta,
+) -> String {
+    use mortar_incr::update::materialize::first_difference;
+    match materialize_in_hook(view, stored, cx, &h.d, &h.inputs.changes) {
+        Err((reason, name)) => format!(
+            "finding: P-2 materialize: the hook refuses ({name}: {}), front 1 materialized",
+            reason.report()
+        ),
+        Ok((lu2, _)) if lu2 != *lu1 => format!(
+            "finding: P-2 materialize: layout: {} (hook, then front 1)",
+            first_difference(&lu2, lu1).unwrap_or_else(|| "unnamed".to_owned())
+        ),
+        Ok((_, df2)) if df2 != *df1 => {
+            format!("finding: P-2 materialize: delta: {}", delta_difference(&df2, df1))
+        }
+        Ok((lu2, df2)) => format!(
+            "P-2: equal (layout: {} chunks, {} sections; delta: {} moved, {} killed, {} frags, \
+             {} holes)",
+            lu2.placement.chunks.len(),
+            lu2.placement.place.len(),
+            df2.moved.len(),
+            df2.killed.len(),
+            df2.frags.len(),
+            df2.holes.len()
+        ),
+    }
+}
+
+/// The first field in which two deltas differ, with both values (the
+/// first `a`, then `b`), cut to 400 characters each.
+fn delta_difference(
+    a: &mortar_core::incr::LayoutDelta,
+    b: &mortar_core::incr::LayoutDelta,
+) -> String {
+    fn cut(s: String) -> String {
+        if s.chars().count() > 400 { s.chars().take(400).chain("..".chars()).collect() } else { s }
+    }
+    macro_rules! fields {
+        ($($n:ident),*) => {$(
+            if a.$n != b.$n {
+                return format!(
+                    concat!(stringify!($n), ": {} vs {}"),
+                    cut(format!("{:?}", a.$n)),
+                    cut(format!("{:?}", b.$n))
+                );
+            }
+        )*};
+    }
+    if a.placement != b.placement {
+        let wrap = |p: &mortar_core::layout::Placement| mortar_core::layout::Layout {
+            placement: p.clone(),
+            ..mortar_core::layout::Layout::default()
+        };
+        let what = mortar_incr::update::materialize::first_difference(
+            &wrap(&a.placement),
+            &wrap(&b.placement),
+        );
+        return format!("placement: {}", what.unwrap_or_else(|| "unnamed".to_owned()));
+    }
+    fields!(
+        files,
+        hole_chunks,
+        moved,
+        killed,
+        revived,
+        holes,
+        regions_opened,
+        growth_steps,
+        eh,
+        frags,
+        slots_appended
+    );
+    "a field not named above".to_owned()
+}
+
+/// WP-267 P-2 (findings only): the judges (`judge`, and with debug
+/// sections `debug_runs_judged` and `debug_string_frags`) run over the
+/// hook's tables (front 2's computed layout), their verdicts against
+/// front 1's. Front 1's verdict binds: front 2 runs only after it said yes,
+/// so a front-2 "no" is a `finding:`. The line: `P-2 judges: agree (..)`.
+fn hook_judges_agree(
+    view: &StateView<'_>,
+    stored: &mortar_core::incr::StoredLayout<'_>,
+    cx: &crate::front::Replay<'_, '_>,
+    h: &HookShadow<'_>,
+    previous: &std::fs::File,
+) -> String {
+    let mut agree: Vec<&str> = Vec::new();
+    let mut not: Vec<String> = Vec::new();
+    match judge(view, stored, cx, &h.inputs, &h.d) {
+        Ok(p) if (&p.differ, &p.summary) == (&h.judged.0, &h.judged.1) => agree.push("judge"),
+        Ok(p) => not.push(format!(
+            "judge: front 2 {:?} ({}), front 1 {:?} ({})",
+            p.differ, p.summary, h.judged.0, h.judged.1
+        )),
+        Err(e) => not.push(format!("judge: front 2 says {e}; front 1 agreed")),
+    }
+    if let Some(x) = &h.debug {
+        match debug_runs_judged(cx, &h.cf, &x.plan) {
+            Ok(n) if n == x.runs => agree.push("debug_runs_judged"),
+            Ok(n) => not.push(format!("debug_runs_judged: front 2 {n} runs, front 1 {}", x.runs)),
+            Err(e) => not.push(format!("debug_runs_judged: front 2 {}; front 1 ok", e.report())),
+        }
+        let mut d2 = x.before.clone();
+        let frags = debug_string_bytes(stored, previous).and_then(|prev| {
+            debug_string_frags(view, stored, cx, &h.cf, &x.plan.strings, &prev, &mut d2)
+        });
+        match frags {
+            Ok(w) if w == x.frags && d2 == h.d => agree.push("debug_string_frags"),
+            Ok(w) if w == x.frags => not.push(format!(
+                "debug_string_frags: the delta: {} (front 2, then front 1)",
+                delta_difference(&d2, &h.d)
+            )),
+            Ok(w) => not.push(format!("debug_string_frags: front 2 '{w}', front 1 '{}'", x.frags)),
+            Err(e) => not.push(format!("debug_string_frags: front 2 {}; front 1 ok", e.report())),
+        }
+    }
+    if not.is_empty() {
+        format!("P-2 judges: agree ({})", agree.join(", "))
+    } else {
+        format!("finding: P-2 judges: {}", not.join("; "))
     }
 }
 
@@ -2721,10 +3011,10 @@ fn facts_into(
 fn judge(
     view: &StateView<'_>,
     stored: &mortar_core::incr::StoredLayout<'_>,
-    f: &crate::front::Front<'_>,
+    cx: &crate::front::Replay<'_, '_>,
     inputs: &layout_in::LayoutInputs<'_>,
     d: &mortar_core::incr::LayoutDelta,
-) -> Result<Placed, String> {
+) -> Result<Placed<'static>, String> {
     use mortar_core::incr::PlaceNow;
     use mortar_elf::SectionIndex;
     let e = |x: IncrReason| x.report();
@@ -2735,11 +3025,12 @@ fn judge(
     for c in &inputs.changes {
         files.push(c.file);
         let name = String::from_utf8_lossy(c.key.name).into_owned();
-        let fid = f
+        let fid = cx
+            .link
             .resolution
             .section_id(c.file, SectionIndex(c.index))
             .ok_or_else(|| format!("section {} {name}: no section of the front", c.index))?;
-        let full = f.layout.placement.place.get(fid).and_then(|p| p.get());
+        let full = cx.computed.placement.place.get(fid).and_then(|p| p.get());
         let now = match d.place_of(stored, c.id).map_err(e)? {
             PlaceNow::Here(p) => p.get(),
             PlaceNow::NotPlaced => None,
@@ -2758,7 +3049,7 @@ fn judge(
         };
         let uchunk =
             d.placement.chunks.get(uc).ok_or_else(|| format!("{name}: no chunk {uc:?}"))?;
-        let fchunk = &f.layout.placement.chunks[fc];
+        let fchunk = &cx.computed.placement.chunks[fc];
         let uout = match uchunk.kind.out() {
             Some(o) => {
                 let row = outsecs.get(o.0 as usize).ok_or_else(|| format!("{name}: OUTSECS"))?;
@@ -2766,7 +3057,7 @@ fn judge(
             }
             None => None,
         };
-        let fout = fchunk.kind.out().map(|o| f.assignment.outsecs[o].name.to_vec());
+        let fout = fchunk.kind.out().map(|o| cx.link.assignment.outsecs[o].name.to_vec());
         if uout != fout {
             return Err(format!(
                 "section {} {name}: output section {:?} in the update, {:?} in the full link",
@@ -2833,7 +3124,15 @@ fn judge(
         d.moved.len(),
         d.growth_steps.len()
     );
-    Ok(Placed { differ, summary, debug: None, materialized: None, shadow: None, prime: Ok(()) })
+    Ok(Placed {
+        differ,
+        summary,
+        debug: None,
+        materialized: None,
+        shadow: None,
+        prime: Ok(()),
+        hook: None,
+    })
 }
 
 /// Whether the differences of the capture against the stored state are
@@ -2974,7 +3273,7 @@ fn write_identity(
 pub fn image_link<T>(
     ctx: &Ctx<'_>,
     cwd: &Path,
-    replay: Option<&crate::front::Replay<'_>>,
+    replay: Option<&crate::front::ReplayHook<'_>>,
     go: impl FnOnce(&crate::front::Front<'_>) -> Result<T, IncrReason>,
 ) -> Result<T, IncrReason> {
     let diag = Collector::new(ctx.policy);
@@ -3266,10 +3565,11 @@ fn debug_strings_reason() -> IncrReason {
 fn debug_placed(
     view: &StateView<'_>,
     stored: &mortar_core::incr::StoredLayout<'_>,
-    f: &crate::front::Front<'_>,
+    cx: &crate::front::Replay<'_, '_>,
     cf: &mortar_incr::update::view::ChangedFiles,
     previous: &std::fs::File,
     d: &mut mortar_core::incr::LayoutDelta,
+    shadow: &mut Option<DebugShadow>,
 ) -> Result<mortar_incr::update::debug::DebugPlan, IncrReason> {
     use mortar_core::inputs::Reader;
     use mortar_core::layout::Place;
@@ -3277,7 +3577,7 @@ fn debug_placed(
     use mortar_incr::update::{debug, split};
     let mut inputs: Vec<(FileId, u8, &[u8])> = Vec::new();
     for c in cf.files.iter().filter(|c| c.debug) {
-        let Some(Reader::Object(o)) = f.inputs.files.get(c.file).map(|x| &x.reader) else {
+        let Some(Reader::Object(o)) = cx.link.inputs.files.get(c.file).map(|x| &x.reader) else {
             return Err(debug_fallback(
                 &format!("file {}: no object of the front", c.file.0),
                 debug_reason(),
@@ -3333,8 +3633,13 @@ fn debug_placed(
             d.placement.place[id] = old.place;
         }
     }
-    let runs = debug_runs_judged(f, cf, &plan)?;
-    let frags = debug_string_frags(view, stored, f, cf, &plan.strings, &prev, d)?;
+    let runs = debug_runs_judged(cx, cf, &plan)?;
+    // WP-267 P-2: the delta `debug_string_frags` starts from (findings).
+    let before = changed::recording().then(|| d.clone());
+    let frags = debug_string_frags(view, stored, cx, cf, &plan.strings, &prev, d)?;
+    if let Some(before) = before {
+        *shadow = Some(DebugShadow { plan: plan.clone(), before, runs, frags: frags.clone() });
+    }
     changed::record(&format!(
         "G-3 debug: placed: {} contributions, {} strings found, {} appended, {} touched chunks; \
          {runs} runs laid as the front's; {frags}",
@@ -3349,13 +3654,13 @@ fn debug_placed(
 /// A live fragment's bytes in the front (its first occurrence's input
 /// section), `None` when they cannot be read.
 fn debug_frag_bytes<'f>(
-    f: &'f crate::front::Front<'_>,
+    cx: &crate::front::Replay<'f, '_>,
     frag: mortar_core::FragId,
 ) -> Option<&'f [u8]> {
     use mortar_core::inputs::Reader;
-    let row = f.merge.split.frags.get(frag)?;
-    let (file, index) = f.resolution.sh_index(row.section)?;
-    let Reader::Object(o) = &f.inputs.files.get(file)?.reader else { return None };
+    let row = cx.link.split.frags.get(frag)?;
+    let (file, index) = cx.link.resolution.sh_index(row.section)?;
+    let Reader::Object(o) = &cx.link.inputs.files.get(file)?.reader else { return None };
     let data = o.section(index).ok()?.data().ok()?;
     let at = usize::try_from(row.offset).ok()?;
     data.get(at..at + usize::try_from(row.size).ok()?)
@@ -3379,7 +3684,7 @@ fn debug_frag_bytes<'f>(
 fn debug_string_frags(
     view: &StateView<'_>,
     stored: &mortar_core::incr::StoredLayout<'_>,
-    f: &crate::front::Front<'_>,
+    cx: &crate::front::Replay<'_, '_>,
     cf: &mortar_incr::update::view::ChangedFiles,
     strings: &mortar_incr::update::debug::DebugStrings,
     prev: &[u8],
@@ -3406,21 +3711,21 @@ fn debug_string_frags(
             chunk_of.insert(class, (o, c.offset, c.size, id));
         }
     }
-    let split = &f.merge.split;
+    let split = &cx.link.split;
     // frag -> (class, the merge class word, offset); the unchanged ones'
     // offsets are looked up below.
     let mut at: mortar_core::hash::HashMap<FragId, Placed> = mortar_core::hash::HashMap::default();
     for (row, merge) in split.merge_of.iter().enumerate() {
-        let Some(out) = f.assignment.out(merge.section) else { continue };
-        let Some(class) = str_class(f.assignment.outsecs[out].name) else { continue };
-        let Some((file, _)) = f.resolution.sh_index(merge.section) else { continue };
+        let Some(out) = cx.link.assignment.out(merge.section) else { continue };
+        let Some(class) = str_class(cx.link.assignment.outsecs[out].name) else { continue };
+        let Some((file, _)) = cx.link.resolution.sh_index(merge.section) else { continue };
         let changed = cf.files.binary_search_by_key(&file, |c| c.file).is_ok();
-        let meta = f.merge.meta.get(row).ok_or_else(debug_reason)?;
+        let meta = cx.meta.get(row).ok_or_else(debug_reason)?;
         let word =
             MergeClass { strings: meta.strings, entsize: meta.entsize, align: meta.align }.word();
         for piece in merge.pieces.start..merge.pieces.start + merge.pieces.len {
             let frag = split.piece_frag[piece as usize];
-            if f.layout.merge.offset(frag).is_none() {
+            if cx.computed.merge.offset(frag).is_none() {
                 continue;
             }
             let mine = if changed {
@@ -3459,7 +3764,7 @@ fn debug_string_frags(
         let Some(&(out, base, size, _)) = chunk_of.get(&class) else {
             return Err(refuse(format!("class {class}: no stored merged chunk")));
         };
-        let bytes = debug_frag_bytes(f, frag)
+        let bytes = debug_frag_bytes(cx, frag)
             .ok_or_else(|| refuse(format!("fragment {}: its bytes", frag.0)))?;
         let off = if let Some(o) = off {
             found += 1;
@@ -3481,7 +3786,7 @@ fn debug_string_frags(
             }
         };
         live.entry(class).or_default().push((off, off + bytes.len() as u64));
-        if f.layout.merge.offset(frag) == Some(off) {
+        if cx.computed.merge.offset(frag) == Some(off) {
             continue;
         }
         d.frags.push(StoredFrag {
@@ -3557,13 +3862,13 @@ fn debug_string_frags(
 fn debug_judged(
     view: &StateView<'_>,
     stored: &mortar_core::incr::StoredLayout<'_>,
-    f: &crate::front::Front<'_>,
+    cx: &crate::front::Replay<'_, '_>,
     files: &[FileId],
     plan: Option<&mortar_incr::update::debug::DebugPlan>,
     refill: &mortar_image::update::Refill,
     previous: &std::fs::File,
 ) -> Result<(), IncrReason> {
-    debug_judge(view, stored, f, files, plan, None, refill, previous, true)
+    debug_judge(view, stored, cx, files, plan, None, refill, previous, true)
 }
 
 /// G-4 (WP-230), the NON-identity case (record "G-4"): G-1's plan is the
@@ -3587,14 +3892,14 @@ fn debug_judged(
 fn debug_judged_moved(
     view: &StateView<'_>,
     stored: &mortar_core::incr::StoredLayout<'_>,
-    f: &crate::front::Front<'_>,
+    cx: &crate::front::Replay<'_, '_>,
     files: &[FileId],
     plan: Option<&mortar_incr::update::debug::DebugPlan>,
     lu: Option<&mortar_core::layout::Layout>,
     refill: &mortar_image::update::Refill,
     previous: &std::fs::File,
 ) -> Result<(), IncrReason> {
-    debug_judge(view, stored, f, files, plan, lu, refill, previous, false)
+    debug_judge(view, stored, cx, files, plan, lu, refill, previous, false)
 }
 
 /// The judgement of [`debug_judged`] (`identity`) and of
@@ -3606,7 +3911,7 @@ fn debug_judged_moved(
 fn debug_judge(
     view: &StateView<'_>,
     stored: &mortar_core::incr::StoredLayout<'_>,
-    f: &crate::front::Front<'_>,
+    cx: &crate::front::Replay<'_, '_>,
     files: &[FileId],
     plan: Option<&mortar_incr::update::debug::DebugPlan>,
     lu: Option<&mortar_core::layout::Layout>,
@@ -3683,10 +3988,11 @@ fn debug_judge(
         }
         Ok(b)
     };
-    let pl = &f.layout.placement;
+    let pl = &cx.computed.placement;
     let chunk_named = |want: &[u8]| {
         pl.chunks.iter().find(|(_, c)| {
-            !c.is_alloc() && c.kind.out().is_some_and(|o| f.assignment.outsecs[o].name == want)
+            !c.is_alloc()
+                && c.kind.out().is_some_and(|o| cx.link.assignment.outsecs[o].name == want)
         })
     };
     let stored_chunk = |want: &[u8]| -> Result<Option<mortar_core::layout::Chunk>, IncrReason> {
@@ -3712,7 +4018,7 @@ fn debug_judge(
         let lc = lu.placement.chunks.iter().find(|(_, c)| {
             !c.is_alloc()
                 && matches!(c.kind, mortar_core::layout::ChunkKind::Merged(o)
-                    if f.assignment.outsecs[o].name == name)
+                    if cx.link.assignment.outsecs[o].name == name)
         });
         let appended =
             plan.strings.appended.get(&class).map(|a| a.2.as_slice()).unwrap_or_default();
@@ -3744,17 +4050,22 @@ fn debug_judge(
         if debug_injected("in56b") && !new.is_empty() {
             new[0] ^= 1;
         }
-        let Some(out) =
-            f.assignment.outsecs.ids().iter().find(|&o| f.assignment.outsecs[o].name == name)
+        let Some(out) = cx
+            .link
+            .assignment
+            .outsecs
+            .ids()
+            .iter()
+            .find(|&o| cx.link.assignment.outsecs[o].name == name)
         else {
             continue;
         };
-        for (frag, row) in f.merge.split.frags.iter() {
-            if f.assignment.out(row.section) != Some(out) {
+        for (frag, row) in cx.link.split.frags.iter() {
+            if cx.link.assignment.out(row.section) != Some(out) {
                 continue;
             }
             let Some(at) = lu.merge.offset(frag) else { continue };
-            let bytes = debug_frag_bytes(f, frag).ok_or_else(debug_reason)?;
+            let bytes = debug_frag_bytes(cx, frag).ok_or_else(debug_reason)?;
             let here = usize::try_from(at).ok().and_then(|a| new.get(a..a + bytes.len()));
             if here != Some(bytes) {
                 return Err(debug_finding(&format!(
@@ -3777,11 +4088,11 @@ fn debug_judge(
     // Each changed file's string where G-1 puts it: at front 1's merge
     // offset in the identity case, at `L_U`'s in the other (G-5: the
     // offset front 2 writes; without `L_U`, not judged).
-    let split = &f.merge.split;
-    let merge = if identity { Some(&f.layout.merge) } else { lu.map(|l| &l.merge) };
+    let split = &cx.link.split;
+    let merge = if identity { Some(&cx.computed.merge) } else { lu.map(|l| &l.merge) };
     let mut strings = 0usize;
     for &file in files.iter().filter(|_| merge.is_some()) {
-        for (id, name, _) in front_sections(f, file) {
+        for (id, name, _) in front_sections(cx, file) {
             let Some(class) = debug::str_class(name) else { continue };
             let Ok(row) = split.merge_of.binary_search_by_key(&id, |m| m.section) else {
                 return Err(debug_finding(&format!(
@@ -3856,7 +4167,7 @@ fn debug_judge(
         let mut replaced = Vec::new();
         for &(file, s, e) in &plan.aranges {
             let mut sets = Vec::new();
-            for (id, name, size) in front_sections(f, file) {
+            for (id, name, size) in front_sections(cx, file) {
                 if name != b".debug_aranges" {
                     continue;
                 }
@@ -3898,7 +4209,7 @@ fn debug_judge(
         let Some((oc, oo)) = o.place.get() else {
             return Err(copy("not placed in the previous output"));
         };
-        let Some(fid) = f.resolution.section_id(o.file, SectionIndex(o.index)) else {
+        let Some(fid) = cx.link.resolution.section_id(o.file, SectionIndex(o.index)) else {
             return Err(copy("no section of the front"));
         };
         let Some((fc, fo)) = pl.place.get(fid).and_then(|p| p.get()) else {
@@ -3963,7 +4274,7 @@ fn debug_judge(
 /// A file with group copies kept in place (R-5 a) is not judged here (the
 /// front's run has the copies among its members). The runs judged.
 fn debug_runs_judged(
-    f: &crate::front::Front<'_>,
+    cx: &crate::front::Replay<'_, '_>,
     cf: &mortar_incr::update::view::ChangedFiles,
     plan: &mortar_incr::update::debug::DebugPlan,
 ) -> Result<usize, IncrReason> {
@@ -3971,7 +4282,7 @@ fn debug_runs_judged(
     if !plan.comdat_in_place.is_empty() {
         return Ok(0);
     }
-    let pl = &f.layout.placement;
+    let pl = &cx.computed.placement;
     let mut judged = 0usize;
     for c in &plan.contributions {
         let Ok(i) = cf.files.binary_search_by_key(&c.file, |x| x.file) else {
@@ -3982,7 +4293,8 @@ fn debug_runs_judged(
         let mut base: Option<(mortar_core::ChunkId, u64)> = None;
         for &(id, at) in &c.members {
             let index = id.0 - first_section;
-            let full = f
+            let full = cx
+                .link
                 .resolution
                 .section_id(c.file, SectionIndex(index))
                 .and_then(|s| pl.place.get(s))
@@ -4066,19 +4378,19 @@ fn debug_injected_plan(
 /// The non-allocated sections of `file`'s object in the front: id, name,
 /// size (nothing for a file that is not an object).
 fn front_sections<'f>(
-    f: &'f crate::front::Front<'_>,
+    cx: &crate::front::Replay<'f, '_>,
     file: FileId,
 ) -> Vec<(mortar_core::SectionId, &'f [u8], u64)> {
     use mortar_core::inputs::Reader;
     use mortar_elf::SectionIndex;
     use mortar_elf::consts::SHF_ALLOC;
-    let Some(Reader::Object(o)) = f.inputs.files.get(file).map(|x| &x.reader) else {
+    let Some(Reader::Object(o)) = cx.link.inputs.files.get(file).map(|x| &x.reader) else {
         return Vec::new();
     };
     let mut out = Vec::new();
     for i in 1..o.section_count() {
         let (Ok(s), Some(id)) =
-            (o.section(SectionIndex(i)), f.resolution.section_id(file, SectionIndex(i)))
+            (o.section(SectionIndex(i)), cx.link.resolution.section_id(file, SectionIndex(i)))
         else {
             continue;
         };
