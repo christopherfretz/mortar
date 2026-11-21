@@ -24,6 +24,10 @@
 //!   (no producer: the capture cannot see the collector's warnings before
 //!   `finish`). The test states what the updates after it print.
 //!
+//! - WP-225 M2b-5b: after a taken update whose `.symtab` spans change,
+//!   the update's map states the output's blocks (the full link's `SYMTAB`
+//!   blocks of the same inputs), not the stored ones.
+//!
 //! (State version 11: `symtab_rows.rs`, `version_10_state_is_refused`.)
 //!
 //! On AArch64 and x86-64.
@@ -426,4 +430,322 @@ fn diags_hold_no_warning_today() {
         );
         assert_eq!((same_w, one_w), (usize::MAX, usize::MAX), "{label}: neither update links");
     }
+}
+
+/// M2b-5b's program (WP-225, the map FINDING of M2b-5's hand-back): `a.o`
+/// a weak `f`, `x.o` a local `f` (made global by an edit: the
+/// `w10_local_to_global` shape), `y.o` one local (grown to five by an
+/// edit, four local objects: a block past its capacity moves the blocks
+/// after it).
+const M5B_MAIN: &str = "#include <stdio.h>\nint f(void);\nint x_value(void);\nint y_value(int);\n\
+    int main(void) { printf(\"%d %d %d\\n\", f(), x_value(), y_value(3)); return 0; }\n";
+const M5B_A: &str = "__attribute__((weak)) int f(void) { return 1; }\n";
+const M5B_X_LOCAL: &str = "static __attribute__((noinline, used)) int f(void) { return 2; }\n\
+    int x_value(void) { return f() + 1; }\n";
+const M5B_X_GLOBAL: &str = "__attribute__((noinline)) int f(void) { return 2; }\n\
+    int x_value(void) { return f() + 1; }\n";
+const M5B_Y_ONE: &str = "static volatile int d1 = 1;\nint y_value(int x) { return x + d1; }\n";
+/// Four more local objects (no code of their own: no new FDE).
+const M5B_Y_FIVE: &str = "static volatile int d1 = 1;\nstatic volatile int d2 = 2;\n\
+    static volatile int d3 = 3;\nstatic volatile int d4 = 4;\nstatic volatile int d5 = 5;\n\
+    int y_value(int x) { return x + d1 + d2 + d3 + d4 + d5; }\n";
+
+/// A `symblock` record's fields after `<file>`, its file as
+/// `(path, member)` (`-` the internal file).
+type Block = ((String, String), [u64; 5]);
+
+/// The program of M2b-5b on one target, by one compiler for `x` and `y`.
+struct M5b {
+    _scratch: mortar_testutil::Scratch,
+    label: String,
+    dir: std::path::PathBuf,
+    args: Vec<String>,
+    /// gcc, or kiln/hod (`MASON_KILN`, `MASON_HOD`) for `x` and `y`.
+    kiln: Option<(std::ffi::OsString, std::ffi::OsString)>,
+    gcc: std::path::PathBuf,
+    triple: &'static str,
+}
+
+impl M5b {
+    fn of(arch: mortar_testutil::target::Arch, kiln: bool) -> Option<Self> {
+        let k = if kiln {
+            Some((std::env::var_os("MASON_KILN")?, std::env::var_os("MASON_HOD")?))
+        } else {
+            None
+        };
+        let label = format!("{} {}", arch.triple(), if kiln { "kiln/hod" } else { "gcc" });
+        let s = mortar_testutil::Scratch::new(&format!("wp225m5b-{}", arch.triple()));
+        let sources = [
+            support::Source { name: "main.c", text: M5B_MAIN },
+            support::Source { name: "a.c", text: M5B_A },
+            support::Source { name: "x.c", text: M5B_X_LOCAL },
+            support::Source { name: "y.c", text: M5B_Y_ONE },
+        ];
+        let cc = arch.gnu("gcc");
+        let Some(b) = support::build_by(&s, &cc, &["-O1"], &sources) else {
+            assert!(!mortar_testutil::tools_required(), "{cc} is required");
+            return None;
+        };
+        let gcc = mortar_testutil::tool(&cc).expect("the compiler");
+        let p = Self {
+            _scratch: s,
+            label,
+            dir: b.dir,
+            args: b.args,
+            kiln: k,
+            gcc,
+            triple: arch.triple(),
+        };
+        p.compile("x", M5B_X_LOCAL);
+        p.compile("y", M5B_Y_ONE);
+        Some(p)
+    }
+
+    /// `<name>.c.o` (the link line's object) from `text`: gcc -O1 as C, or
+    /// kiln/hod as C++ in `extern "C"`.
+    fn compile(&self, name: &str, text: &str) {
+        let obj = self.dir.join(format!("{name}.c.o"));
+        let o = if let Some((kiln, hod)) = &self.kiln {
+            let src = self.dir.join(format!("{name}.cc"));
+            std::fs::write(&src, format!("extern \"C\" {{\n{text}}}\n")).expect("source");
+            let mut c = std::process::Command::new(kiln);
+            c.env("KILN_HOD", hod).arg("-fkiln-backend=hod");
+            c.arg(format!("--target={}", self.triple)).arg("-c").arg(&src).arg("-o").arg(&obj);
+            mortar_testutil::run_with(&mut c, b"", std::time::Duration::from_mins(2))
+        } else {
+            let src = self.dir.join(format!("{name}.c"));
+            std::fs::write(&src, text).expect("source");
+            let args: Vec<std::ffi::OsString> =
+                vec!["-O1".into(), "-c".into(), src.into(), "-o".into(), obj.into()];
+            mortar_testutil::run(&self.gcc, &args)
+        };
+        assert!(o.success(), "{}: {name}: {}", self.label, o.stderr_text());
+    }
+
+    /// mortar on the line with `-o <out>` and `extra`.
+    fn link(&self, out: &str, extra: &[String]) -> mortar_testutil::Outcome {
+        let mut a = support::with_output(&self.args, &self.dir.join(out));
+        a.extend(extra.iter().map(std::ffi::OsString::from));
+        let mut c = std::process::Command::new(env!("CARGO_BIN_EXE_mortar"));
+        c.args(&a).current_dir(&self.dir).env_remove("MORTAR_SCHED_SEED");
+        mortar_testutil::run_with(&mut c, b"", std::time::Duration::from_mins(2))
+    }
+}
+
+/// The `symblock` records of a map, each file by its `file` record.
+fn map_blocks(map: &str) -> Vec<Block> {
+    let mut files = std::collections::HashMap::new();
+    let mut out = Vec::new();
+    for l in map.lines() {
+        let w: Vec<&str> = l.split(' ').collect();
+        match w[0] {
+            "file" => {
+                let member = w.get(3).copied().unwrap_or("").to_owned();
+                files.insert(w[1].to_owned(), (w[2].to_owned(), member));
+            }
+            "symblock" => {
+                let file = if w[1] == "-" {
+                    ("-".to_owned(), String::new())
+                } else {
+                    files.get(w[1]).cloned().unwrap_or_else(|| panic!("no file {}: {l}", w[1]))
+                };
+                let n = |i: usize, radix| u64::from_str_radix(w[i], radix).expect(l);
+                out.push((file, [n(2, 10), n(3, 10), n(4, 10), n(5, 16), n(6, 16)]));
+            }
+            _ => {}
+        }
+    }
+    out.sort();
+    out
+}
+
+/// The `SYMTAB` blocks of a state (the internal file's, then each file's;
+/// not the global area), as the map would state them.
+fn state_blocks(path: &std::path::Path) -> Vec<Block> {
+    use mortar_core::incr::LayoutRows;
+    let view = mortar_incr::state5::read::open_bytes(std::fs::read(path).expect("the state"))
+        .expect("the state opens");
+    let rows = mortar_incr::state5::LayoutOf { view: &view };
+    let files = u32::try_from(view.count(mortar_incr::format::kind::FILES)).expect("FILES");
+    let mut out = Vec::new();
+    for id in 0..files {
+        let Some(b) = rows.symtab_block(mortar_core::FileId(id)).expect("SYMTAB") else {
+            continue;
+        };
+        let file = if id == 0 {
+            ("-".to_owned(), String::new())
+        } else {
+            let r = view.file(mortar_core::FileId(id)).expect("FILES");
+            let s = |x| String::from_utf8_lossy(&view.string(x).expect("a string")).into_owned();
+            (s(r.path), if r.member == 0 { String::new() } else { s(r.member_name) })
+        };
+        let v = [b.first, b.count, b.capacity].map(u64::from);
+        out.push((file, [v[0], v[1], v[2], b.strtab_offset, b.strtab_capacity]));
+    }
+    out.sort();
+    out
+}
+
+/// A `.symtab` entry: its name (from `.strtab`), `st_info`, `st_name`.
+type Entry = (Vec<u8>, u8, u32);
+
+/// An ELF64 output's `.symtab` entries.
+fn symtab_entries(elf: &[u8]) -> Vec<Entry> {
+    let le = |at: usize, n: usize| {
+        elf[at..at + n].iter().rev().fold(0u64, |a, &x| a << 8 | u64::from(x)) as usize
+    };
+    let (shoff, ent, num, strx) = (le(0x28, 8), le(0x3a, 2), le(0x3c, 2), le(0x3e, 2));
+    let names = le(shoff + strx * ent + 24, 8);
+    let range = |name: &[u8]| {
+        (0..num)
+            .find_map(|i| {
+                let at = names + le(shoff + i * ent, 4);
+                let end = at + elf[at..].iter().position(|&b| b == 0).expect("a name");
+                let (o, n) = (le(shoff + i * ent + 24, 8), le(shoff + i * ent + 32, 8));
+                (&elf[at..end] == name).then_some(o..o + n)
+            })
+            .expect("the section")
+    };
+    let (st, ss) = (range(b".symtab"), range(b".strtab"));
+    let strtab = &elf[ss];
+    elf[st]
+        .chunks_exact(24)
+        .map(|e| {
+            let name = u32::from_le_bytes(e[0..4].try_into().expect("4"));
+            let at = name as usize;
+            let end = strtab[at..].iter().position(|&b| b == 0).map_or(strtab.len(), |n| at + n);
+            (strtab[at..end].to_vec(), e[4], name)
+        })
+        .collect()
+}
+
+/// M2b-5b (WP-225; I-78a, IN-49a, IN-78): after a taken update whose
+/// `.symtab` spans change, the update's map states the OUTPUT's blocks:
+/// its `symblock` records are the `SYMTAB` blocks of the incremental-mode
+/// full link of the same inputs (its capture; a full link's map writes no
+/// `symblock`, `decisions_of`), and each block names the output's locals
+/// (every entry of `[first, first + count)` is `STB_LOCAL`, its name in the
+/// block's `.strtab` region). The hops: `x.o`'s local `f` made global
+/// (`w10_local_to_global`: before M2b-5b the map kept `x.o`'s stored block
+/// at the entry that is now a filler), back to local (the block returns),
+/// `y.o`'s locals grown from one to five (past the block's capacity: the
+/// blocks after it move) and back. A hop the update refuses is linked
+/// whole (`--incremental=full`) and not compared; its reason is named.
+/// gcc on AArch64 and x86-64, and kiln/hod objects for `x` and `y` when
+/// `MASON_KILN` and `MASON_HOD` are set (skipped by name otherwise).
+#[test]
+fn the_update_map_states_the_output_symtab_blocks() {
+    use mortar_testutil::target::Arch;
+    let mut taken = Vec::new();
+    let mut refused = Vec::new();
+    for arch in [Arch::Aarch64, Arch::X86_64] {
+        for kiln in [false, true] {
+            let Some(p) = M5b::of(arch, kiln) else {
+                if kiln {
+                    eprintln!("{}: kiln/hod skipped: MASON_KILN or MASON_HOD unset", arch.triple());
+                }
+                continue;
+            };
+            let map = p.dir.join("u.map");
+            let full = |out: &str| {
+                let o = p.link(out, &["--incremental=full".into()]);
+                assert!(o.success(), "{}: the full link {out}: {}", p.label, o.stderr_text());
+            };
+            full("u");
+            let hops = [
+                ("x", M5B_X_GLOBAL, "x local f made global"),
+                ("x", M5B_X_LOCAL, "x global f made local"),
+                ("y", M5B_Y_FIVE, "y grows to five locals"),
+                ("y", M5B_Y_ONE, "y back to one local"),
+            ];
+            for (file, text, what) in hops {
+                p.compile(file, text);
+                let _ = std::fs::remove_file(&map);
+                let mortar_map = format!("--mortar-map={}", map.display());
+                let o = p.link("u", &["--incremental=update".into(), mortar_map]);
+                if !o.success() {
+                    let err = o.stderr_text();
+                    assert!(
+                        err.contains("--incremental=update: cannot update: "),
+                        "{}: {what}: not a named refusal: {err}",
+                        p.label
+                    );
+                    refused.push(format!("{}: {what}: {}", p.label, err.trim()));
+                    full("u");
+                    continue;
+                }
+                full("g");
+                let map_text = std::fs::read_to_string(&map).expect("the update's map");
+                let got = map_blocks(&map_text);
+                let want = state_blocks(&p.dir.join("g.mortar-state"));
+                assert!(!want.is_empty(), "{}: {what}: the full link stores no block", p.label);
+                assert_eq!(got, want, "{}: {what}: the map's blocks are the full link's", p.label);
+                let elf = std::fs::read(p.dir.join("u")).expect("the update's output");
+                let entries = symtab_entries(&elf);
+                let full_elf = std::fs::read(p.dir.join("g")).expect("the full link's output");
+                let full_entries = symtab_entries(&full_elf);
+                let mut outside = Vec::new();
+                for ((path, member), [first, count, _, str_at, str_cap]) in &got {
+                    for i in *first..first + count {
+                        let (name, info, at) = &entries[i as usize];
+                        let shown = String::from_utf8_lossy(name);
+                        let at_full = full_entries.get(i as usize).map(|e| (&e.0, e.1));
+                        assert_eq!(
+                            Some((name, *info)),
+                            at_full,
+                            "{}: {what}: {path}{member} entry {i}: the full link's entry",
+                            p.label
+                        );
+                        if path == "-" {
+                            continue;
+                        }
+                        assert_eq!(info >> 4, 0, "{}: {what}: {path}{member} entry {i}", p.label);
+                        // A name outside the block's `.strtab` region: recorded
+                        // (an AArch64 mapping symbol's shared name).
+                        if !(*str_at..str_at + str_cap).contains(&u64::from(*at)) {
+                            outside.push(format!("{i} {shown} at {at:#x}"));
+                        }
+                    }
+                }
+                // The shape: x.o's block holds `f` exactly when `f` is local.
+                let x_obj = p.dir.join("x.c.o").to_string_lossy().into_owned();
+                let names_of = |path: &str| -> Vec<Vec<u8>> {
+                    got.iter()
+                        .filter(|((p, _), _)| p == path)
+                        .flat_map(|(_, [first, count, ..])| {
+                            (*first..first + count).map(|i| entries[i as usize].0.clone())
+                        })
+                        .collect()
+                };
+                let local_f = if p.kiln.is_some() { &b"_ZL1fv"[..] } else { b"f" };
+                let x_names = names_of(&x_obj);
+                let local = text == M5B_X_LOCAL;
+                if file == "x" {
+                    assert_eq!(
+                        x_names.iter().any(|n| n == local_f),
+                        local,
+                        "{}: {what}: x.o's block {x_names:?}",
+                        p.label
+                    );
+                }
+                let globals_f = entries.iter().filter(|(n, info, _)| n == b"f" && info >> 4 == 1);
+                eprintln!(
+                    "{}: {what}: taken, {} blocks, x.o's {:?}, global f {}, {} names \
+                     outside their block's strings (first: {:?})",
+                    p.label,
+                    got.len(),
+                    x_names.iter().map(|n| String::from_utf8_lossy(n)).collect::<Vec<_>>(),
+                    globals_f.count(),
+                    outside.len(),
+                    outside.first()
+                );
+                taken.push(format!("{}: {what}", p.label));
+            }
+        }
+    }
+    eprintln!("taken {}: {taken:#?}\nrefused {}: {refused:#?}", taken.len(), refused.len());
+    assert!(
+        !mortar_testutil::tools_required() || !taken.is_empty(),
+        "no hop was taken: the comparison never ran: {refused:#?}"
+    );
 }

@@ -396,16 +396,23 @@ fn reference_of(
         .map(|(chunk, _)| RefillChunk { chunk, reasons: 0 })
         .collect();
     let set = RefillSet { chunks, ..RefillSet::default() };
-    // M2b-2d item 8 (M2b-4): a refusal here is named in the findings. On
-    // kiln AArch64's `gc_eh_owner_dies` hop 1 it is `walk_eh`'s (`(eh)`,
-    // `mortar_image/src/update.rs`, the `P` arm): hod's CIEs encode the
-    // personality 0x9c (indirect pcrel sdata8) and the LSDA 0x1c (pcrel
-    // sdata8), and IN-34a's move takes 0x9b and 0x1b only.
+    // M2b-2d item 8 (M2b-4): a refusal here is named in the findings. An
+    // `(eh)` one carries no detail: when the previous output's `.eh_frame`
+    // is what `walk_eh` refuses, its name (a CIE's encoding by its byte,
+    // M2b-5 item 3) is added, read again only on that refusal and only
+    // when findings are recorded.
     let (refill, size, state, map) = refill_capture(
         session, view, &stored, f, ctx, cwd, out, &delta, &set, steps,
     )
     .inspect_err(|e| {
-        changed::record(&format!("M2b-4: front 1's refill or capture: {}", e.report()));
+        let why = if *e == IncrReason::UpdateNotImplemented(Some(Unimplemented::Eh))
+            && changed::recording()
+        {
+            eh_why(out).map(|w| format!(": walk_eh: {w}")).unwrap_or_default()
+        } else {
+            String::new()
+        };
+        changed::record(&format!("M2b-4: front 1's refill or capture: {}{why}", e.report()));
     })?;
     // The identity check (G-3's materialization in the identity case),
     // first: the non-identity case materializes the delta (below).
@@ -567,7 +574,28 @@ fn refill_capture(
     let image = || IncrReason::UpdateNotImplemented(Some(Unimplemented::Image));
     let meta = view.meta()?;
     let leaves = view.leaves()?;
+    // U-5's in-place plan: none on this path. `refill` writes `.symtab`
+    // and `.strtab` from the link `l` (the chunks the set rewrites whole,
+    // R-3), and its `write_symtab` reads only the plan's `moves`,
+    // `remap`, `fillers`, `entries` and `strtab`: never its `blocks`.
     let symtab = mortar_core::incr::SymtabPlan::default();
+    // M2b-5b (FINDING of M2b-5's hand-back; I-78a, IN-49a): the map's
+    // `symblock` records are the OUTPUT's blocks, which are the front's
+    // `.symtab` plan's (`incr_blocks`, the internal file's first: what
+    // the full link's capture stores as `SYMTAB`, IN-78), not the stored
+    // rows of the previous output. The front writes the whole table, so
+    // its plan places every block and a file without one in it has none
+    // (S-74): no stored block stands beside them ([`OutputBlocks`]).
+    // Without a front plan (no `.symtab`), `update_map` reads the stored
+    // rows as before.
+    let blocks = f.synth.symtab.as_ref().and_then(mortar_synth::SymtabPlan::incr_blocks);
+    let map_plan = mortar_core::incr::SymtabPlan {
+        blocks: blocks.clone().unwrap_or_default(),
+        ..mortar_core::incr::SymtabPlan::default()
+    };
+    let output_rows = OutputBlocks(*stored);
+    let map_rows =
+        if blocks.is_some() { mortar_core::incr::StoredLayout::new(&output_rows) } else { *stored };
     let want_map = ctx.plan.bookkeeping.mortar_map.is_some();
     let (refill, size, map) = crate::image::with_link(f, ctx.store, &|_| {}, |l| {
         let u = mortar_image::update::refill(l, delta, &symtab, set, stored, out, &leaves)
@@ -579,7 +607,7 @@ fn refill_capture(
                 }
             })?;
         let map = if want_map {
-            let m = mortar_image::map::update_map(l, delta, stored, &symtab)?;
+            let m = mortar_image::map::update_map(l, delta, &map_rows, &map_plan)?;
             Some(mortar_image::map::render(&m, &f.pool))
         } else {
             None
@@ -632,6 +660,111 @@ fn refill_capture(
     }
     steps.mark("capture");
     Ok((refill, size, state, map))
+}
+
+/// The stored rows as [`refill_capture`]'s `update_map` reads them when
+/// the front has a `.symtab` plan (M2b-5b): every row as stored, except
+/// that no file has a stored `.symtab` block, because the map's plan
+/// gives every block of the output (the front's `incr_blocks`) and a
+/// stored one would state the previous output's table.
+struct OutputBlocks<'a>(mortar_core::incr::StoredLayout<'a>);
+
+impl mortar_core::incr::LayoutRows for OutputBlocks<'_> {
+    fn chunks(
+        &self,
+    ) -> Result<Vec<(mortar_core::ChunkId, mortar_core::layout::Chunk)>, IncrReason> {
+        self.0.chunks()
+    }
+    fn order(&self) -> Result<Vec<mortar_core::ChunkId>, IncrReason> {
+        self.0.order()
+    }
+    fn segments(&self) -> Result<Vec<mortar_core::layout::Segment>, IncrReason> {
+        self.0.segments()
+    }
+    fn outsecs(&self) -> Result<Vec<(mortar_core::OutSecId, Vec<u8>)>, IncrReason> {
+        self.0.outsecs()
+    }
+    fn sections_of(
+        &self,
+        file: FileId,
+    ) -> Result<Vec<mortar_core::incr::StoredSection>, IncrReason> {
+        self.0.sections_of(file)
+    }
+    fn regions_of(&self, file: FileId) -> Result<Vec<mortar_core::incr::StoredRegion>, IncrReason> {
+        self.0.regions_of(file)
+    }
+    fn holes_in(
+        &self,
+        chunk: mortar_core::ChunkId,
+    ) -> Result<Vec<mortar_core::layout::Hole>, IncrReason> {
+        self.0.holes_in(chunk)
+    }
+    fn frags_of(
+        &self,
+        out: mortar_core::OutSecId,
+        class: u32,
+        hash: [u8; 16],
+    ) -> Result<Option<mortar_core::incr::StoredFrag>, IncrReason> {
+        self.0.frags_of(out, class, hash)
+    }
+    fn frag_uses_of(
+        &self,
+        file: FileId,
+    ) -> Result<Vec<mortar_core::incr::StoredFragUse>, IncrReason> {
+        self.0.frag_uses_of(file)
+    }
+    fn eh_range_of(
+        &self,
+        file: FileId,
+    ) -> Result<Option<mortar_core::incr::StoredEhRange>, IncrReason> {
+        self.0.eh_range_of(file)
+    }
+    fn eh_ranges(
+        &self,
+    ) -> Result<Vec<(FileId, u64, mortar_core::incr::StoredEhRange)>, IncrReason> {
+        self.0.eh_ranges()
+    }
+    fn key_refs_of(
+        &self,
+        file: FileId,
+    ) -> Result<Vec<mortar_core::incr::StoredKeyRef>, IncrReason> {
+        self.0.key_refs_of(file)
+    }
+    fn section(
+        &self,
+        id: mortar_core::SectionId,
+    ) -> Result<Option<mortar_core::incr::StoredSection>, IncrReason> {
+        self.0.section(id)
+    }
+    fn slots(&self) -> Result<Vec<mortar_core::incr::StoredSlot>, IncrReason> {
+        self.0.slots()
+    }
+    fn patches(&self) -> Result<Vec<mortar_core::layout::Patch>, IncrReason> {
+        self.0.patches()
+    }
+    fn redirects(&self) -> Result<Vec<mortar_core::layout::Redirect>, IncrReason> {
+        self.0.redirects()
+    }
+    fn sym_place(&self) -> Result<Vec<mortar_core::layout::SymPlace>, IncrReason> {
+        self.0.sym_place()
+    }
+    fn defined(&self) -> Result<Vec<mortar_core::layout::Defined>, IncrReason> {
+        self.0.defined()
+    }
+    fn tls_and_entry(&self) -> Result<(Option<mortar_core::layout::Tls>, Option<u64>), IncrReason> {
+        self.0.tls_and_entry()
+    }
+    fn symtab_block(
+        &self,
+        _: FileId,
+    ) -> Result<Option<mortar_core::incr::SymtabBlock>, IncrReason> {
+        Ok(None)
+    }
+    fn symtab_tables(
+        &self,
+    ) -> Result<(mortar_core::incr::SymtabBlock, mortar_core::incr::SymtabTables), IncrReason> {
+        self.0.symtab_tables()
+    }
 }
 
 /// U6 under `--gc-sections` (gc-lift; IN-71a): `live::live` on the join's
@@ -848,6 +981,19 @@ fn drawn_in(
     Ok((cf, delta, again))
 }
 
+/// Why `walk_eh` refuses the `.eh_frame` of the previous output `out`
+/// (`None`: it does not, or the output is not read): the findings' name
+/// of an `(eh)` refusal (M2b-5 item 3).
+fn eh_why(out: &std::fs::File) -> Option<String> {
+    let len = usize::try_from(out.metadata().ok()?.len()).ok()?;
+    let mut bytes = vec![0u8; len];
+    std::os::unix::fs::FileExt::read_exact_at(out, &mut bytes, 0).ok()?;
+    let o = mortar_elf::Object::parse(&bytes).ok()?;
+    let eh = o.sections().find(|s| s.name().ok() == Some(b".eh_frame".as_slice()))?;
+    let r = eh.file_range().ok()??;
+    mortar_image::update::walk_eh_why(bytes.get(r)?)
+}
+
 /// The delta's placement of the changed files, judged ([`placement`]).
 struct Placed {
     /// The changed sections the delta placed at another offset (or chunk)
@@ -946,33 +1092,20 @@ fn placement(
     };
     let mut demands: Vec<FileDemands> = Vec::with_capacity(cf.files.len());
     let mut defined: Vec<(mortar_core::SymbolId, u32)> = Vec::new();
+    let null = file_split::SectionFact {
+        kind: SectionKind::Null,
+        kept: false,
+        out: None,
+        reloc: SectionIndex(0),
+    };
+    let mut per_file = Vec::with_capacity(cf.files.len());
     for c in &cf.files {
         let ff = cache.get(c.file).ok_or_else(layout_in_lost).map_err(refused)?;
         let facts =
             file_split::changed_facts(ff, view, &f.plan, &delta.keepers).map_err(refused)?;
-        let null = file_split::SectionFact {
-            kind: SectionKind::Null,
-            kept: false,
-            out: None,
-            reloc: SectionIndex(0),
-        };
         let by_index = |i: SectionIndex| facts.get(i.0 as usize).copied().unwrap_or(null);
         let split = file_split::split_of(ff, view, &by_index, &relocs, &f.pool, Some(&delta))
             .map_err(refused)?;
-        let d = file_scan::scan_of_why(
-            f.arch.get(),
-            opts,
-            ff,
-            Some(&facts),
-            &split,
-            view,
-            cf,
-            &options,
-            &delta,
-            live,
-        )
-        .map_err(scan)?;
-        demands.push(d);
         let keys = file_scan::defined_facts(
             opts,
             ff,
@@ -988,12 +1121,32 @@ fn placement(
         for (id, r) in keys {
             defined.push((id, r.map_err(scan)?.pack()));
         }
+        per_file.push((ff, facts, split));
     }
-    demands.sort_by_key(|d| d.file);
     // R-4a: the facts of the keys the changed files define, into their
     // rows of the delta (the `facts: 0` of `defined_row` is never kept),
-    // and judged against the front's capture (key by name).
+    // and judged against the front's capture (key by name). Before the
+    // scans (M2b-5 item 1): a key a drawn-in file defines takes the facts
+    // of that file's walk in every other file's scan (`file_scan`'s F-1).
     facts_into(view, capture, &mut delta, &defined).map_err(Why::Finding)?;
+    for (ff, facts, split) in &per_file {
+        let d = file_scan::scan_of_why(
+            f.arch.get(),
+            opts,
+            ff,
+            Some(facts),
+            split,
+            view,
+            cf,
+            &options,
+            &delta,
+            live,
+        )
+        .map_err(scan)?;
+        demands.push(d);
+    }
+    drop(per_file);
+    demands.sort_by_key(|d| d.file);
     let debug = cf.files.iter().any(|c| c.debug);
     debug_pieces(&inputs.changes, &mut inputs.pieces, debug);
     let input = LayoutInput {

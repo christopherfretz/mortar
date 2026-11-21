@@ -907,19 +907,32 @@ impl Shift {
 
 /// One record of the previous `.eh_frame`: its offset, its length (with
 /// the length word), and for an FDE its CIE's offset; for a CIE whether
-/// its FDEs have an LSDA and where its personality field is.
+/// its FDEs have an LSDA and where its personality field is. The widths
+/// (WP-225 M2b-5 item 3): each PC-relative field IN-34a moves is `sdata4`
+/// or `sdata8` (4 or 8 bytes), as its CIE states.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[allow(
+    clippy::struct_excessive_bools,
+    reason = "one flag per field a CIE states (z, and each width)"
+)]
 pub struct EhRecord {
     pub offset: u64,
     pub len: u64,
     /// `None` for a CIE.
     pub cie: Option<u64>,
-    /// A CIE's: whether its FDEs carry an LSDA (`L`).
+    /// A CIE's (an FDE's: its CIE's): whether its FDEs carry an LSDA (`L`).
     pub lsda: bool,
     /// A CIE's: whether it has `z` augmentation data.
     pub z: bool,
-    /// A CIE's personality field's offset in the section (`P`, 0x9b).
+    /// A CIE's personality field's offset in the section (`P`).
     pub personality: Option<u64>,
+    /// A CIE's (an FDE's: its CIE's): `R` is `sdata8` (an FDE's
+    /// `pc_begin` and `pc_range` are 8 bytes each), else `sdata4`.
+    pub pc8: bool,
+    /// A CIE's (an FDE's: its CIE's): `L` is `sdata8`, else `sdata4`.
+    pub lsda8: bool,
+    /// A CIE's: `P` is `sdata8`, else `sdata4`.
+    pub personality8: bool,
 }
 
 fn uleb(b: &[u8], at: &mut usize) -> Option<u64> {
@@ -936,43 +949,77 @@ fn uleb(b: &[u8], at: &mut usize) -> Option<u64> {
     }
 }
 
-/// The records of `.eh_frame`'s bytes, each CIE's encodings checked: only
-/// `DW_EH_PE_pcrel | sdata4` (0x1b) for `R` and `L` and its indirect form
-/// (0x9b) for `P` are moved (WP-239 R-3); any other, a 64-bit record, or a
-/// malformed one is `update-not-implemented (eh)`.
+/// The width of a field of encoding `enc` that IN-34a moves: a PC-relative
+/// signed field (`DW_EH_PE_pcrel` 0x10 with `sdata4` 0x0b or `sdata8`
+/// 0x0c), direct or `DW_EH_PE_indirect` (0x80: the field holds the
+/// distance to a pointer, which moves with the section that holds it, as
+/// the code does: [`Shift::map`]). `None` for any other encoding.
+fn moved_width(enc: u8) -> Option<usize> {
+    match enc & 0x7f {
+        0x1b => Some(4),
+        0x1c => Some(8),
+        _ => None,
+    }
+}
+
+/// The records of `.eh_frame`'s bytes, each CIE's encodings checked: for
+/// `R`, `L` and `P`, every PC-relative signed encoding (`sdata4` and
+/// `sdata8`, direct and indirect: 0x1b, 0x1c, 0x9b, 0x9c) is moved (WP-239
+/// R-3; WP-225 M2b-5 item 3: hod's CIEs state `P` 0x9c and `L` 0x1c); any
+/// other encoding, a CIE without `R` whose FDEs are named, a 64-bit
+/// record, or a malformed one is `update-not-implemented (eh)`
+/// ([`walk_eh_why`] names which).
 ///
 /// # Errors
 /// `update-not-implemented (eh)`.
 pub fn walk_eh(bytes: &[u8], counts: &mut Counts) -> Result<Vec<EhRecord>, RefillError> {
-    let eh = || not_implemented(Unimplemented::Eh);
+    walk(bytes, counts).map_err(|_| not_implemented(Unimplemented::Eh))
+}
+
+/// Why [`walk_eh`] refuses `bytes` (`None`: it does not), by name: a
+/// CIE's encoding by its byte (`CIE at 0x.. P encoding 0x..`), or the
+/// record that is not walked. The findings' name of `walk_eh`'s
+/// `update-not-implemented (eh)`, which carries no detail.
+#[must_use]
+pub fn walk_eh_why(bytes: &[u8]) -> Option<String> {
+    walk(bytes, &mut Counts::default()).err()
+}
+
+#[allow(
+    clippy::too_many_lines,
+    reason = "one pass over the records, each refusal named where it is found"
+)]
+fn walk(bytes: &[u8], counts: &mut Counts) -> Result<Vec<EhRecord>, String> {
     let mut out: Vec<EhRecord> = Vec::new();
     let mut at = 0usize;
     while at + 4 <= bytes.len() {
+        let bad = |what: &str| format!("the record at {at:#x}: {what}");
         let len = le(bytes, at, 4);
         if len == 0 {
             break;
         }
         if len == 0xffff_ffff {
-            return Err(eh());
+            return Err(bad("a 64-bit record"));
         }
         let end = at + 4 + len as usize;
         if end > bytes.len() || len < 4 {
-            return Err(eh());
+            return Err(bad("its length runs past the section"));
         }
         counts.eh_records += 1;
         let id = le(bytes, at + 4, 4);
         if id == 0 {
+            let malformed = || bad("a malformed CIE");
             let mut p = at + 9;
-            let aug_end = p + bytes[p..end].iter().position(|&b| b == 0).ok_or_else(eh)?;
+            let aug_end = p + bytes[p..end].iter().position(|&b| b == 0).ok_or_else(malformed)?;
             let aug = &bytes[p..aug_end];
             p = aug_end + 1;
             let version = bytes[at + 8];
-            uleb(bytes, &mut p).ok_or_else(eh)?;
-            uleb(bytes, &mut p).ok_or_else(eh)?; // SLEB: the same bytes
+            uleb(bytes, &mut p).ok_or_else(malformed)?;
+            uleb(bytes, &mut p).ok_or_else(malformed)?; // SLEB: the same bytes
             if version == 1 {
                 p += 1;
             } else {
-                uleb(bytes, &mut p).ok_or_else(eh)?;
+                uleb(bytes, &mut p).ok_or_else(malformed)?;
             }
             let mut rec = EhRecord {
                 offset: at as u64,
@@ -981,40 +1028,71 @@ pub fn walk_eh(bytes: &[u8], counts: &mut Counts) -> Result<Vec<EhRecord>, Refil
                 lsda: false,
                 z: false,
                 personality: None,
+                pc8: false,
+                lsda8: false,
+                personality8: false,
             };
+            let mut has_r = false;
             if let Some(rest) = aug.strip_prefix(b"z") {
                 rec.z = true;
-                uleb(bytes, &mut p).ok_or_else(eh)?;
+                uleb(bytes, &mut p).ok_or_else(malformed)?;
                 for &c in rest {
+                    let enc = *bytes.get(p).ok_or_else(malformed)?;
+                    let width = || {
+                        moved_width(enc).ok_or_else(|| {
+                            format!("CIE at {at:#x} {} encoding {enc:#04x}", char::from(c))
+                        })
+                    };
                     match c {
-                        b'R' | b'L' => {
-                            if *bytes.get(p).ok_or_else(eh)? != 0x1b {
-                                return Err(eh());
-                            }
-                            rec.lsda |= c == b'L';
+                        b'R' => {
+                            rec.pc8 = width()? == 8;
+                            has_r = true;
+                            p += 1;
+                        }
+                        b'L' => {
+                            rec.lsda8 = width()? == 8;
+                            rec.lsda = true;
                             p += 1;
                         }
                         b'P' => {
-                            if *bytes.get(p).ok_or_else(eh)? != 0x9b {
-                                return Err(eh());
-                            }
+                            let w = width()?;
                             rec.personality = Some(p as u64 + 1);
-                            p += 5;
+                            rec.personality8 = w == 8;
+                            p += 1 + w;
                         }
                         b'S' => {}
-                        _ => return Err(eh()),
+                        _ => {
+                            return Err(format!(
+                                "CIE at {at:#x}: augmentation {:?}",
+                                String::from_utf8_lossy(aug)
+                            ));
+                        }
                     }
                 }
+                if p > end {
+                    return Err(malformed());
+                }
             } else if !aug.is_empty() {
-                return Err(eh());
+                return Err(format!(
+                    "CIE at {at:#x}: augmentation {:?}",
+                    String::from_utf8_lossy(aug)
+                ));
             }
+            // A CIE without `R`: its FDEs' pointers are `absptr`, not
+            // moved here (refused when an FDE names it).
+            rec.z &= has_r;
             out.push(rec);
         } else {
-            let cie = (at as u64 + 4).checked_sub(id).ok_or_else(eh)?;
-            let c = out.iter().find(|r| r.offset == cie && r.cie.is_none()).ok_or_else(eh)?;
-            // A CIE without `R` (its FDEs absolute): not moved here.
+            let cie = (at as u64 + 4).checked_sub(id).ok_or_else(|| bad("its CIE pointer"))?;
+            let c = out
+                .iter()
+                .find(|r| r.offset == cie && r.cie.is_none())
+                .ok_or_else(|| bad("its CIE pointer"))?;
+            // A CIE without `z` and `R` (its FDEs absolute): not moved here.
             if !c.z {
-                return Err(eh());
+                return Err(format!(
+                    "the FDE at {at:#x}: its CIE at {cie:#x} states no R (FDE encoding absptr)"
+                ));
             }
             out.push(EhRecord {
                 offset: at as u64,
@@ -1023,6 +1101,9 @@ pub fn walk_eh(bytes: &[u8], counts: &mut Counts) -> Result<Vec<EhRecord>, Refil
                 lsda: c.lsda,
                 z: true,
                 personality: None,
+                pc8: c.pc8,
+                lsda8: c.lsda8,
+                personality8: false,
             });
         }
         at = end;
@@ -1032,7 +1113,9 @@ pub fn walk_eh(bytes: &[u8], counts: &mut Counts) -> Result<Vec<EhRecord>, Refil
 
 /// The FDE and CIE fields whose value changes when `.eh_frame` moves from
 /// `old_addr` to `new_addr` and the code by `shift`: `(offset in the
-/// section, the new 4 bytes)`. A value that does not fit is
+/// section, the new 4 bytes)`; an 8-byte field (`sdata8`, M2b-5 item 3)
+/// is two such patches, its low half at the field's offset and its high
+/// half 4 bytes after. A 4-byte value that does not fit is
 /// `update-not-implemented (eh)`.
 ///
 /// # Errors
@@ -1046,14 +1129,30 @@ pub fn patch_eh(
     counts: &mut Counts,
 ) -> Result<Vec<(u64, [u8; 4])>, RefillError> {
     let mut out = Vec::new();
-    let mut field = |off: u64| -> Result<(), RefillError> {
-        let v = le(bytes, off as usize, 4) as u32 as i32;
-        let target = (old_addr + off).wrapping_add(i64::from(v) as u64);
+    let eh = || not_implemented(Unimplemented::Eh);
+    let mut field = |off: u64, wide: bool| -> Result<(), RefillError> {
+        let w = if wide { 8 } else { 4 };
+        if off as usize + w > bytes.len() {
+            return Err(eh());
+        }
+        let v = if wide {
+            le(bytes, off as usize, 8) as i64
+        } else {
+            i64::from(le(bytes, off as usize, 4) as u32 as i32)
+        };
+        let target = (old_addr + off).wrapping_add(v as u64);
         let now = shift.map(target);
         let d = now.wrapping_sub(new_addr + off) as i64;
-        let d = i32::try_from(d).map_err(|_| not_implemented(Unimplemented::Eh))?;
-        if d != v {
-            counts.eh_patched += 1;
+        if d == v {
+            return Ok(());
+        }
+        counts.eh_patched += 1;
+        if wide {
+            let b = d.to_le_bytes();
+            out.push((off, [b[0], b[1], b[2], b[3]]));
+            out.push((off + 4, [b[4], b[5], b[6], b[7]]));
+        } else {
+            let d = i32::try_from(d).map_err(|_| eh())?;
             out.push((off, d.to_le_bytes()));
         }
         Ok(())
@@ -1061,15 +1160,16 @@ pub fn patch_eh(
     for r in records {
         if r.cie.is_none() {
             if let Some(p) = r.personality {
-                field(p)?;
+                field(p, r.personality8)?;
             }
         } else {
-            field(r.offset + 8)?;
+            field(r.offset + 8, r.pc8)?;
             if r.lsda {
-                let mut p = r.offset as usize + 16;
-                let n = uleb(bytes, &mut p).ok_or_else(|| not_implemented(Unimplemented::Eh))?;
-                if n >= 4 {
-                    field(p as u64)?;
+                // `pc_begin` and `pc_range`, then the augmentation length.
+                let mut p = r.offset as usize + 8 + if r.pc8 { 16 } else { 8 };
+                let n = uleb(bytes, &mut p).ok_or_else(eh)?;
+                if n >= if r.lsda8 { 8 } else { 4 } {
+                    field(p as u64, r.lsda8)?;
                 }
             }
         }
