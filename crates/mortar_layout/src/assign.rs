@@ -75,7 +75,7 @@ pub fn matches_prefix(name: &[u8], prefix: &[u8]) -> bool {
 }
 
 /// The output section name of an input section by the name rule (L-44 to
-/// L-46, L-48): a table name, or the input's own name.
+/// L-46, L-48; L-44a's `COMMON`): a table name, or the input's own name.
 #[must_use]
 pub fn output_name<'n>(h: &Header<'n>) -> &'n [u8] {
     // L-45: notes are not merged by name. L-46: each .debug_* is its own.
@@ -85,6 +85,13 @@ pub fn output_name<'n>(h: &Header<'n>) -> &'n [u8] {
     // §8.2: `.preinit_array.*` is an orphan (GNU's script, uniform rule).
     if h.name.starts_with(b".preinit_array.") {
         return h.name;
+    }
+    // L-44a (WP-203): the input section named exactly `COMMON` (lld's
+    // `-r` output of commons, GNU ld's `*(COMMON)`) goes to `.bss`,
+    // whatever its type and flags. No prefix rule: `COMMON.x` is an
+    // orphan, as in GNU ld and lld.
+    if h.name == b"COMMON" {
+        return b".bss";
     }
     for out in NAME_RULE {
         if matches_prefix(h.name, out) {
@@ -672,6 +679,83 @@ mod tests {
         assert_eq!(name(b".preinit_array.5"), b".preinit_array.5", "an orphan (§8.2)");
         assert_eq!(name(b".tm_clone_table"), b".tm_clone_table");
         assert_eq!(name(b"my_section"), b"my_section", "L-48 orphan");
+    }
+
+    // spec: layout.md §8.2 L-44a (WP-203: the input section named exactly
+    // `COMMON` goes to `.bss`, whatever its type and flags; no prefix rule)
+    #[test]
+    fn l44a_common_goes_to_bss() {
+        const WA: u64 = SHF_ALLOC | SHF_WRITE;
+        let name = |n, t, f| output_name(&h(n, t, f));
+        // lld's `-r` output (A120) and the assembly forms measured.
+        assert_eq!(name(b"COMMON", SHT_NOBITS, WA), b".bss");
+        assert_eq!(name(b"COMMON", SHT_PROGBITS, WA), b".bss");
+        assert_eq!(name(b"COMMON", SHT_PROGBITS, SHF_ALLOC), b".bss", "read-only: by name");
+        // TLS and non-allocated ones are named `.bss` too; L-47 refuses
+        // them beside `.bss`'s inputs (`l44a_common_mixtures`).
+        assert_eq!(name(b"COMMON", SHT_NOBITS, WA | SHF_TLS), b".bss");
+        assert_eq!(name(b"COMMON", SHT_PROGBITS, 0), b".bss");
+        // No prefix rule: orphans in GNU ld, lld and mortar.
+        assert_eq!(name(b"COMMON.x", SHT_NOBITS, WA), b"COMMON.x");
+        assert_eq!(name(b"COMMON.y", SHT_PROGBITS, WA), b"COMMON.y");
+        assert_eq!(name(b"COMMONS", SHT_NOBITS, WA), b"COMMONS");
+        assert_eq!(name(b"common", SHT_NOBITS, WA), b"common");
+        assert_eq!(name(b".COMMON", SHT_NOBITS, WA), b".COMMON");
+        // GNU ld's x86-64 `*(LARGE_COMMON)` is not followed without the
+        // flag (lld's orphan); on AArch64 all three make it an orphan.
+        assert_eq!(name(b"LARGE_COMMON", SHT_NOBITS, WA), b"LARGE_COMMON");
+        assert_eq!(name(b"LARGE_COMMON.z", SHT_NOBITS, WA), b"LARGE_COMMON.z");
+        // A note keeps its name (L-45 first).
+        assert_eq!(name(b"COMMON", SHT_NOTE, SHF_ALLOC), b"COMMON");
+    }
+
+    // spec: layout.md §8.1 L-36, §8.2 L-44a (the x86-64 large flag wins
+    // over the name: `.lbss`, whatever the name; on AArch64 the bit means
+    // nothing and `COMMON` goes to `.bss`)
+    #[test]
+    fn l44a_common_and_the_large_flag() {
+        const WA: u64 = SHF_ALLOC | SHF_WRITE;
+        const WAL: u64 = WA | SHF_X86_64_LARGE;
+        let fate = |n, f, m| by_name(&h(n, SHT_NOBITS, f), m).ok();
+        let x = Machine::X86_64;
+        let a = Machine::AArch64;
+        assert_eq!(fate(b"COMMON", WAL, x), Some(Fate::Out(b".lbss")));
+        assert_eq!(fate(b"LARGE_COMMON", WAL, x), Some(Fate::Out(b".lbss")));
+        assert_eq!(fate(b"LARGE_COMMON.z", WAL, x), Some(Fate::Out(b".lbss")));
+        assert_eq!(fate(b"LARGE_COMMON", WA, x), Some(Fate::Out(b"LARGE_COMMON")));
+        assert_eq!(fate(b"COMMON", WA, x), Some(Fate::Out(b".bss")));
+        assert_eq!(fate(b"COMMON", WAL, a), Some(Fate::Out(b".bss")));
+        assert_eq!(fate(b"LARGE_COMMON", WA, a), Some(Fate::Out(b"LARGE_COMMON")));
+        assert_eq!(fate(b"COMMON", WA, Machine::I386), Some(Fate::Out(b".bss")));
+    }
+
+    // spec: layout.md §8.2 L-44a with §8.3 L-47, L-49, L-50, L-61 (in
+    // `.bss` a `COMMON` input mixes like any other: `PROGBITS` makes
+    // `.bss` `PROGBITS`, flags are OR-ed, TLS, non-allocated and
+    // executable ones are refused by name)
+    #[test]
+    fn l44a_common_mixtures() {
+        const WA: u64 = SHF_ALLOC | SHF_WRITE;
+        let bss = h(b".bss", SHT_NOBITS, WA);
+        let mix = |common: Header<'static>, m| {
+            let mut a = Acc::BLANK;
+            let target = Target::of(m);
+            a.add(&bss, &target);
+            a.add(&common, &target);
+            a
+        };
+        for m in [Machine::AArch64, Machine::X86_64] {
+            let a = mix(h(b"COMMON", SHT_NOBITS, WA), m);
+            assert_eq!((a.error.is_none(), a.ty, a.flags), (true, SHT_NOBITS, WA));
+            let a = mix(h(b"COMMON", SHT_PROGBITS, WA), m);
+            assert_eq!((a.error.is_none(), a.ty, a.flags), (true, SHT_PROGBITS, WA));
+            let a = mix(h(b"COMMON", SHT_PROGBITS, SHF_ALLOC), m);
+            assert_eq!((a.error.is_none(), a.ty, a.flags), (true, SHT_PROGBITS, WA));
+            let a = mix(h(b"COMMON", SHT_NOBITS, WA | SHF_TLS), m);
+            assert_eq!(a.error, Some(("non-TLS".into(), "TLS".into())));
+            let a = mix(h(b"COMMON", SHT_PROGBITS, 0), m);
+            assert!(a.error.is_some(), "allocated and non-allocated: section-conflict");
+        }
     }
 
     // spec: layout.md §8.2 L-45, L-46 (notes and .debug_* keep their names)
