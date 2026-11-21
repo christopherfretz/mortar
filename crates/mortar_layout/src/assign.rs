@@ -217,11 +217,18 @@ fn large_output<'n>(h: &Header<'n>) -> Result<&'n [u8], LayoutDiag> {
 /// allocated notes. `spec/live.md` is not written; this is GNU's `KEEP`
 /// set of its default script for the M1 sections.
 fn keep_by_rule(h: &Header<'_>, out: &[u8]) -> bool {
-    h.flags & SHF_GNU_RETAIN != 0
-        || matches!(h.sh_type, SHT_INIT_ARRAY | SHT_FINI_ARRAY | SHT_PREINIT_ARRAY)
+    keep_by_rule_of(h.sh_type, h.flags, out)
+}
+
+/// [`keep_by_rule`] over a section's type, flags and output section name:
+/// the ONE rule, also used by the update's narrow EDGES rows (WP-267 P-1b).
+#[must_use]
+pub fn keep_by_rule_of(sh_type: u32, flags: u64, out: &[u8]) -> bool {
+    flags & SHF_GNU_RETAIN != 0
+        || matches!(sh_type, SHT_INIT_ARRAY | SHT_FINI_ARRAY | SHT_PREINIT_ARRAY)
         || [&b".init"[..], b".fini", b".init_array", b".fini_array", b".preinit_array"]
             .contains(&out)
-        || (h.sh_type == SHT_NOTE && h.flags & SHF_ALLOC != 0)
+        || (sh_type == SHT_NOTE && flags & SHF_ALLOC != 0)
 }
 
 /// Whether the resolution has small commons and large ones (L-88,

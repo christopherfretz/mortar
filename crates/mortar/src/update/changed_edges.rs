@@ -45,9 +45,6 @@ use mortar_core::par::Pool;
 use mortar_core::plan::Plan;
 use mortar_core::resolution::{Def, DropReason, Resolution, SectionKind, SectionRow, SectionState};
 use mortar_core::split::{Split, SplitRow};
-use mortar_elf::consts::{
-    SHF_ALLOC, SHF_GNU_RETAIN, SHT_FINI_ARRAY, SHT_INIT_ARRAY, SHT_NOTE, SHT_PREINIT_ARRAY,
-};
 use mortar_elf::{SectionIndex, SymbolIndex, SymbolSection};
 use mortar_incr::capture;
 use mortar_incr::format::{def_kind, sym_kind};
@@ -176,18 +173,6 @@ fn index_of(
     let key = |k: usize| key_of.get(k).copied();
     let path = format!("file {}", c.file.0);
     capture::index_file_of(&ff.object, &table, arch, &section, &key, &path)
-}
-
-/// `mortar_layout::assign`'s `keep_by_rule` (model §3.4 `keep`: a root of
-/// liveness by rule), over a section's type, flags and output section
-/// name. A COPY: `mortar_layout` keeps it private (WP-267 P-1b asks for
-/// it to be shared); the shadow compares every row this feeds.
-fn keep_by_rule(sh_type: u32, flags: u64, out: &[u8]) -> bool {
-    flags & SHF_GNU_RETAIN != 0
-        || matches!(sh_type, SHT_INIT_ARRAY | SHT_FINI_ARRAY | SHT_PREINIT_ARRAY)
-        || [&b".init"[..], b".fini", b".init_array", b".fini_array", b".preinit_array"]
-            .contains(&out)
-        || (sh_type == SHT_NOTE && flags & SHF_ALLOC != 0)
 }
 
 /// M-5: the file's `EDGES` rows (S1's rows whose source is one of its
@@ -353,7 +338,9 @@ fn edges_of(
         }
         let s = ff.sections.get(k);
         if f.kept
-            && s.is_some_and(|s| keep_by_rule(s.sh_type, s.flags, &names[n].1))
+            && s.is_some_and(|s| {
+                mortar_layout::assign::keep_by_rule_of(s.sh_type, s.flags, &names[n].1)
+            })
             && let Some(x) = a.keep.get_mut(id)
         {
             *x = true;
