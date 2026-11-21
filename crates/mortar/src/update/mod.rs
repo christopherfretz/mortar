@@ -389,8 +389,13 @@ fn reference_of(
     // refusal binds (a link that may have script directives); the option
     // keys and the link's architecture from `META.machine` are judged
     // against the front's (findings only).
-    let options = steps::option_names(view, ctx.plan)?;
+    // NOT binding yet: its "an input that gave no file" test refused 334
+    // lane hops whose front has no directives (a hand-back finding).
     if changed::recording() {
+        let options = match steps::option_names(view, ctx.plan) {
+            Ok(o) => o,
+            Err(_) => mortar_resolve::tables::option_keys(ctx.plan, &[]),
+        };
         let front = mortar_resolve::tables::option_keys(&f.plan, &f.inputs.link.directives);
         let machine = steps::machine_of(view.meta()?.machine);
         let arch = machine.and_then(|m| steps::link_arch_of(ctx.plan, m, true).ok());
@@ -407,7 +412,6 @@ fn reference_of(
             ));
         }
     }
-    drop(options);
     let rows = mortar_incr::state5::LayoutOf { view };
     let stored = StoredLayout::new(&rows);
     let delta = LayoutDelta { files: files.clone(), ..LayoutDelta::default() };
