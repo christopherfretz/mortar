@@ -1,0 +1,16 @@
+# WP-278: the identity case with -g on an object larger than the staged
+# store's resident threshold (a section above 64 KiB of an object above
+# 64 KiB stays on disk). c.o's .debug_info is about 120 KB: under the
+# default store the update reads its unit headers from the file
+# (split::classify_input; at 1bfce906 it was refused `debug-unit-kind:
+# section N: unreadable`, WP-274 §8 item 0). The operator's configuration:
+# static, -g, -ffunction-sections -fdata-sections, --gc-sections.
+# -fdebug-prefix-map=@SRC@ (tests/l10/build.py): one DW_AT_comp_dir in every
+# version, as a real build compiles in one directory.
+proves: an update of a same-size body edit of a -g object whose .debug_info the staged store keeps on disk equals the full link (a), under --gc-sections, its debug sections included
+source: WP-278 (spec/landed/incr/WP-278.md); WP-274 §8 item 0 (protoc main.cc.o refused under the default store)
+edit: c.cc
+link: main.o c.o
+cflags: -g -fdebug-prefix-map=@SRC@=/incr-src -ffunction-sections -fdata-sections
+options: --gc-sections --build-id
+compilers: gcc kiln
