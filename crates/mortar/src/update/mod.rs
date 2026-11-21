@@ -1887,10 +1887,19 @@ fn shadow_255e(
     units.sort_by_key(|u| u.section);
     units.dedup_by_key(|u| u.section);
     let pl = &f.layout.placement;
+    // WP-255e5 item 2: `.eh_frame` is not given whole: `refill`'s own
+    // `.eh_frame` ranges (`LayoutDelta::eh`: a rewritten file's range, or
+    // the whole chunk) and `patch_eh` (the unchanged records' PC-relative
+    // fields, when code moved) cover it; S1 judges it.
+    let eh_frame = mortar_synth::chunks::SynthKind::EhFrame.name(false);
     let chunks: Vec<RefillChunk> = pl
         .chunks
         .iter()
-        .filter(|(_, c)| !matches!(c.kind, ChunkKind::Body(_)))
+        .filter(|(_, c)| match c.kind {
+            ChunkKind::Body(_) => false,
+            ChunkKind::Synthetic(s) => s.name != eh_frame,
+            _ => true,
+        })
         .map(|(chunk, _)| RefillChunk { chunk, reasons: 0 })
         .collect();
     let n_units = units.len();
@@ -2396,9 +2405,19 @@ fn s3_bytes(
         }
         let Some(x) = pl.chunks.get(id) else { continue };
         if (k.offset, k.size, k.capacity) != (x.offset, x.size, x.capacity) {
+            // WP-255e5 item 3: the tables' rows on both sides (the stored
+            // `SYMTAB` tables, front 2's `.symtab` plan's).
+            let tables = match (stored.symtab_tables(), f.synth.symtab.as_ref()) {
+                (Ok((area, t)), Some(p)) => format!(
+                    "; stored SYMTAB area {area:?} tables {t:?}; front 2's plan tables {:?}",
+                    p.incr_tables()
+                ),
+                (Err(e), _) => format!("; stored SYMTAB: {}", e.report()),
+                (_, None) => "; front 2 has no .symtab plan".to_owned(),
+            };
             return format!(
-                "bytes: refused: chunk {} ({}): the delta's (offset, size, capacity) {:#x?}, \
-                 front 2's {:#x?}; {index_line}",
+                "bytes: refused: chunk {} ({}): the delta's (offset, size, capacity) {:x?}, \
+                 front 2's {:x?}{tables}; {index_line}",
                 id.0,
                 chunk_name(f, x.offset),
                 (k.offset, k.size, k.capacity),
