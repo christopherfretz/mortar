@@ -162,13 +162,20 @@ fn front_of<'s>(args: &[OsString], cwd: &Path, store: &'s Store) -> Front<'s> {
     }
 }
 
+/// Each display's file of the link (WP-277: an archive given twice has two
+/// members of one display, one extracted; the link's is the one a warning
+/// names), else its first file.
 fn display_index(f: &Front<'_>) -> BTreeMap<String, FileId> {
-    (0..f.inputs.files.len())
-        .map(|n| {
-            let id = FileId(n);
-            (format!("{:?}", f.inputs.files[id].display()), id)
-        })
-        .collect()
+    let in_link = |id: FileId| f.resolution.file_live[id].is_live();
+    let mut out: BTreeMap<String, FileId> = BTreeMap::new();
+    for n in 0..f.inputs.files.len() {
+        let id = FileId(n);
+        let e = out.entry(format!("{:?}", f.inputs.files[id].display())).or_insert(id);
+        if !in_link(*e) && in_link(id) {
+            *e = id;
+        }
+    }
+    out
 }
 
 /// The reference at `place` as the scan numbers it: section index × 2^32
@@ -356,6 +363,7 @@ fn written_rows_are_the_captures(
             .iter()
             .position(|x| {
                 four_str(x.path) == str_of(r.path)
+                    && x.mention == r.mention
                     && four_str(x.member_name) == str_of(r.member_name)
                     && x.member_ordinal == r.member_ordinal
             })
@@ -419,8 +427,11 @@ fn s(m: &MemoryState, x: Str) -> Vec<u8> {
     m.strings[x.off as usize..(x.off + x.len) as usize].to_vec()
 }
 
-fn identity(m: &MemoryState, r: &FileRow) -> (Vec<u8>, Vec<u8>) {
-    (s(m, r.path), if r.member == 1 { s(m, r.member_name) } else { Vec::new() })
+/// A file's identity (IN-28a: path, mention, member name and ordinal; the
+/// mention tells an archive given twice apart, WP-277).
+fn identity(m: &MemoryState, r: &FileRow) -> (Vec<u8>, Vec<u8>, u32, u32) {
+    let member = if r.member == 1 { s(m, r.member_name) } else { Vec::new() };
+    (s(m, r.path), member, r.mention, r.member_ordinal)
 }
 
 fn live(r: &FileRow) -> bool {
@@ -1020,4 +1031,169 @@ fn many_references_store_a_capped_row() {
         assert_eq!((site[0].refs.len(), site[0].ref_count), (3, 5), "{:?}", site[0]);
         let _ = std::fs::remove_file(&state_path);
     });
+}
+
+/// WP-277's link: `libc.a` and `libw.a` given twice (CMake's archive
+/// cycles); `c.o` (in `libc.a`) calls the warned `foo` (in `libw.a`) when
+/// `warns`, with `k` in its body; `b.o` calls back into `c.o`.
+fn repeated_link(fx: &Fixture<'_>, warns: bool, k: u32) -> Full {
+    // The unchanged files once (an update sees c.o alone change).
+    if !fx.scratch.join("libb.a").exists() {
+        fx.object("main", "int cfun(void);\nint main(void) { return cfun(); }\n");
+        fx.object("w", &warned("foo", "foo is deprecated"));
+        fx.object("b", "int cfun(void);\nint bar(int x) { return x ? x : cfun(); }\n");
+        fx.archive("libw.a", &["w.o"]);
+        fx.archive("libb.a", &["b.o"]);
+    }
+    let call = if warns { "foo(1) + " } else { "" };
+    fx.object(
+        "c",
+        &format!("int foo(int); int bar(int);\nint cfun(void) {{ return {call}bar({k}); }}\n"),
+    );
+    fx.archive("libc.a", &["c.o"]);
+    link(fx, &REPEATED, &[])
+}
+
+const REPEATED: [&str; 6] = ["main.o", "libc.a", "libw.a", "libb.a", "libc.a", "libw.a"];
+
+/// The real update of `repeated_link` (the mortar binary, `--incremental`
+/// over the state of the previous link) against the full link of the same
+/// inputs (`--incremental=full`): the same output bytes and the same
+/// standard error outside the `incremental:` lines; the update's report.
+fn repeated_update(fx: &Fixture<'_>, warns: bool, k: u32) -> String {
+    const MORTAR: &str = env!("CARGO_BIN_EXE_mortar");
+    let at = |out: &str| {
+        let mut args = fx.line(&REPEATED, &[]);
+        let o = args.len() - 1;
+        args[o] = fx.scratch.join(out).into_os_string();
+        args
+    };
+    let words = |o: &mortar_testutil::Outcome| -> String {
+        o.stderr_text().lines().filter(|l| !l.starts_with("incremental:")).collect()
+    };
+    let report = fx.scratch.join("rep.txt");
+    let _ = std::fs::remove_file(&report);
+    let mut x = at("x.out");
+    x.extend(["--incremental".into(), format!("--incremental-report={}", report.display()).into()]);
+    let mut g = at("g.out");
+    g.push("--incremental=full".into());
+    if !fx.scratch.join("x.out.mortar-state").exists() {
+        let mut first = at("x.out");
+        first.push("--incremental=full".into());
+        let o = run(MORTAR, &first);
+        assert!(o.success(), "{}", o.stderr_text());
+        assert!(fx.scratch.join("x.out.mortar-state").exists(), "the state: {}", o.stderr_text());
+    }
+    repeated_link(fx, warns, k);
+    // A testhooks build reaches the update below `small-output`'s bound
+    // (the lane's knob); a release build answers `small-output`.
+    let timeout = std::time::Duration::from_secs(120);
+    let mut cx = std::process::Command::new(MORTAR);
+    cx.args(&x).env("MORTAR_INCR_SMALL_OUTPUT", "0");
+    let ox = mortar_testutil::run_with(&mut cx, &[], timeout);
+    let og = run(MORTAR, &g);
+    assert!(ox.success() && og.success(), "{}\n{}", ox.stderr_text(), og.stderr_text());
+    assert_eq!(words(&ox), words(&og), "the update's standard error");
+    assert!(
+        std::fs::read(fx.scratch.join("x.out")).ok()
+            == std::fs::read(fx.scratch.join("g.out")).ok(),
+        "the update's output is the full link's, byte for byte"
+    );
+    assert!(fx.scratch.join("x.out.mortar-state").exists(), "the update's state");
+    std::fs::read_to_string(&report).unwrap_or_default()
+}
+
+// spec: incr.md IN-75a, input.md §9.1 (WP-277: an archive given twice has
+// two members of one display, the second mention's not extracted; the
+// warning names the extracted one: the state is written, its rows name
+// that member, and an update that changes it drops and recomputes the
+// warning as the full link prints it)
+#[test]
+fn repeated_archive_warning_state_written() {
+    each("repeated-ar", &|fx| {
+        let a = repeated_link(fx, true, 2);
+        assert!(
+            a.stderr.contains("referenced by") && a.stderr.contains("libc.a(c.o)"),
+            "{}",
+            a.stderr
+        );
+        // Two FILES rows of `libc.a(c.o)` (one per mention), one extracted;
+        // the warning's reference is that one's.
+        let c: Vec<usize> = a
+            .state
+            .files
+            .iter()
+            .enumerate()
+            .filter(|(_, r)| s(&a.state, r.path).ends_with(b"/libc.a") && r.member == 1)
+            .map(|(n, _)| n)
+            .collect();
+        assert_eq!(c.len(), 2, "c.o once per mention");
+        let extracted: Vec<usize> =
+            c.iter().copied().filter(|&n| live(&a.state.files[n])).collect();
+        assert_eq!(extracted.len(), 1, "c.o extracted once");
+        let site: Vec<&DiagRow> = a.rows.iter().filter(|r| r.ref_count != 0).collect();
+        assert_eq!(site.len(), 1, "{:?}", a.rows);
+        assert_eq!(site[0].refs.len(), 1);
+        assert_eq!(site[0].refs[0].file.0 as usize, extracted[0], "the extracted c.o's reference");
+        assert_eq!(site[0].key.unit as usize, extracted[0]);
+        replay(&a);
+        // The warned member changed (its call kept): dropped, recomputed.
+        let b = repeated_link(fx, true, 3);
+        let u = Update::new(&a, &b);
+        assert_eq!(u.changed.files.len(), 1, "the extracted c.o alone: {:?}", u.changed.files);
+        assert_eq!(u.changed.files[0].file.0 as usize, extracted[0]);
+        hop(&a, &b, Policy::default());
+        // Its call goes, and comes back.
+        let c2 = repeated_link(fx, false, 3);
+        assert_eq!(c2.stderr, "", "no warning");
+        hop(&b, &c2, Policy::default());
+        let d = repeated_link(fx, true, 3);
+        hop(&c2, &d, Policy::default());
+        // The real update over the state of the first link, against the full link.
+        repeated_link(fx, true, 2);
+        let mut said = Vec::new();
+        for (warns, k) in [(true, 3), (false, 3), (true, 3)] {
+            let rep = repeated_update(fx, warns, k);
+            said.push(rep.lines().next().unwrap_or("").to_owned());
+        }
+        eprintln!("{}: the real updates said {said:?}", fx.arch.name());
+    });
+}
+
+// spec: incr.md IN-75a, input.md §9.1 (WP-277's census: an object given
+// twice, `a.o a.o`, is two files of one display, both in the link; a weak
+// definition, so no duplicate: the warning lists both references, and the
+// state's row stores each by its own file, in the scan's order)
+#[test]
+fn object_given_twice_warning_names_both_files() {
+    each("twice-o", &|fx| {
+        fx.object("main", "int afun(void);\nint main(void) { return afun(); }\n");
+        fx.object("w", &warned("foo", "foo is deprecated"));
+        fx.object("a", "int foo(int);\n__attribute__((weak)) int afun(void) { return foo(1); }\n");
+        fx.archive("libw.a", &["w.o"]);
+        let state_path = fx.scratch.join("twice.mortar-state");
+        let mut args = fx.line(&["main.o", "a.o", "a.o", "libw.a"], &["--incremental=full"]);
+        args.extend(["--incremental-state".into(), state_path.clone().into_os_string()]);
+        let inv = link_run(PROG, &args);
+        let Outcome::Linked { report, .. } = &inv.outcome else { panic!("{:?}", inv.outcome) };
+        let text = report.render(&Style::plain(PROG));
+        assert_eq!(text.matches("referenced by").count(), 2, "{text}");
+        let bytes = std::fs::read(&state_path).unwrap_or_else(|e| panic!("the state: {e}\n{text}"));
+        let m = mortar_incr::state5::read::decode(&bytes).expect("the state decodes");
+        let site: Vec<&DiagRow> = m.diags.iter().filter(|d| d.ref_count != 0).collect();
+        assert_eq!(site.len(), 1, "{:?}", m.diags);
+        let refs = &site[0].refs;
+        assert_eq!((refs.len(), site[0].ref_count), (2, 2), "{refs:?}");
+        assert!(refs[0].file < refs[1].file && refs[0].seq == refs[1].seq, "{refs:?}");
+        for r in refs.iter() {
+            let row = &m.files[r.file.0 as usize];
+            assert!(s_of(&m.strings, row.path).ends_with(b"/a.o") && live(row), "{row:?}");
+        }
+        assert_eq!(site[0].key.unit, refs[0].file.0);
+        let _ = std::fs::remove_file(&state_path);
+    });
+}
+
+fn s_of(strings: &[u8], x: Str) -> &[u8] {
+    &strings[x.off as usize..(x.off + x.len) as usize]
 }

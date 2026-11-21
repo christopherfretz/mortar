@@ -1,0 +1,18 @@
+# WP-277: CMake's archive cycles name an archive twice (clang's link names
+# lib/libLLVMSupport.a and 24 others twice). liby.a and libw.a are given
+# twice: c.o (liby.a) calls foo, which libw.a(w.o) warns about with glibc's
+# link_warning form; b.o (libb.a) calls back into c.o. Each mention is two
+# FILES rows of one display (input.md §9.1), the second mention's member
+# not extracted. Hop 1 changes the warned member (its call kept), hop 3
+# edits a caller (main.c starts calling foo too), hops 2 and 4 undo them.
+proves: a repeated archive does not stop the state (the warning names the extracted member), and an update's standard error equals the full link's on every hop: the referrer's changed member and the caller's new reference are listed as the full link lists them
+source: WP-277 (WP-276 record §1.4-§1.5: `no state written: DIAGS ... not one file of the link` on cxx-large-g)
+edit MEMBER: c.c
+edit CALLER: main.c
+hops: -, MEMBER, -, CALLER, -
+link: main.o liby.a libw.a libb.a liby.a libw.a
+archive liby.a: c.o
+archive libw.a: w.o
+archive libb.a: b.o
+compilers: gcc
+not kiln: C, and glibc's link_warning form (a section name ending in an assembler comment, so `.gnu.warning.<sym>` is not allocated): kiln compiles C++ only
