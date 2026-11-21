@@ -829,9 +829,25 @@ def unfield(t):
     return out.decode('utf-8', 'surrogateescape')
 
 
-# The reasons after which the dry run runs (spec/incr.md IN-10a): a state
-# an update could start from.
-DRY_RUN_REASONS = (None, 'update-not-implemented', 'small-output')
+# The reasons a link knows before any delta (spec/incr.md IN-10a's list,
+# IN-77b's two; `mortar::incremental::dry_run_wanted`): no update could
+# run, and the report names the reason alone. `full` is `--incremental=full`
+# (`full requested`). After every other reason the dry run runs (IN-10a as
+# ruled after WP-272: a fall-back found by or after the delta keeps it, its
+# refill set the oracle's evidence, IN-63b).
+BEFORE_DELTA = ('no-state', 'state-corrupt', 'state-version', 'options-changed', 'output-changed', 'output-torn',
+                'state-busy', 'lock-unavailable', 'full')
+
+
+def judged(reason):
+    """Whether a report with this reason carries a prediction (`None`: no
+    `incremental: full` line, an update's report)."""
+    return reason not in BEFORE_DELTA
+
+
+def full_with_dry_run(reason):
+    """A full link whose report must end in the dry run's `delta end`."""
+    return reason is not None and judged(reason)
 
 
 class Report:
@@ -845,7 +861,8 @@ class Report:
         for line in open(path):
             t = line.split()
             if len(t) >= 3 and t[0] == 'incremental:' and t[1] == 'full':
-                self.reason = t[2].strip('()')
+                # `(name)`, `(name: detail)`, `(update-not-implemented (word))`
+                self.reason = t[2].strip('():')
             if len(t) < 2 or t[0] != 'delta':
                 continue
             if t[1] == 'unit':      # reasons path member shndx name
@@ -1008,7 +1025,7 @@ def ukey(u):
 def judge(F, R, drop, quiet=True):
     """IN-63a: the prediction covers every difference. Returns (ok,
     predicted units of unchanged files, lines)."""
-    if R.reason not in DRY_RUN_REASONS:
+    if not judged(R.reason):
         # the state check sent the link to a full link before any delta
         return True, None, ['full link (%s) before the dry run' % R.reason]
     if R.elided:
@@ -1079,7 +1096,7 @@ def main():
         drops = [set()]
     F = Facts(pos[0], pos[1])
     R = Report(pos[2])
-    if not R.ended and R.reason in DRY_RUN_REASONS[1:]:
+    if not R.ended and full_with_dry_run(R.reason):
         print('RESULT FAIL  (the report has no `delta end`)')
         sys.exit(1)
     fail = False

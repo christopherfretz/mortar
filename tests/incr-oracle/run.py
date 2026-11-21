@@ -273,13 +273,13 @@ def run_pair(args):
         R = oracle.Report(os.path.join(W, 'rep.txt'))
     except Exception as e:  # noqa: BLE001 - reported as the pair's failure
         return (cfg, pair, None, str(e), {})
-    if not R.ended and R.reason in oracle.DRY_RUN_REASONS[1:]:
+    if not R.ended and oracle.full_with_dry_run(R.reason):
         return (cfg, pair, None, 'the report has no `delta end`', {})
     ok, npred, lines = oracle.judge(F, R, set())
     res = {
         'ok': ok, 'differing': F.differing(), 'predicted': npred, 'lines': lines,
         'changed': len(F.changed_units),
-        'fallbacks': R.fallbacks or ([R.reason] if R.reason not in oracle.DRY_RUN_REASONS else []), 'policy': R.policy, 'units': len(R.units), 'holes': len(R.holes),
+        'fallbacks': R.fallbacks or ([R.reason] if not oracle.judged(R.reason) else []), 'policy': R.policy, 'units': len(R.units), 'holes': len(R.holes),
         'chunks': len(R.chunks), 'arch': arch, 'secs': time.time() - t0,
     }
     caught = {}

@@ -945,15 +945,67 @@ fn words(reason: Option<&IncrReason>) -> String {
 }
 
 /// Whether a link whose reason is `reason` computes the dry run when the
-/// report asks for it (`spec/incr.md` IN-10a): only for a state an update
-/// could start from, an updatable one or one below `small-output`'s bound
-/// (a policy decided from the size alone, which `--incremental=update`
-/// does not apply). Every other reason says before the delta that no
-/// update could run, and the report names it alone.
+/// report asks for it (`spec/incr.md` IN-10a, as ruled after WP-272: the
+/// rule is general). A reason known before any delta says that no update
+/// could run, and the report names it alone: IN-10a's list (`no-state`,
+/// `state-corrupt`, `state-version`, `options-changed`, a state of another
+/// target among them, `output-changed`, `output-torn`, `--incremental=full`:
+/// `None`) and the lock's two (IN-77b, before the state is read). Every
+/// other reason is found by or after the delta, or (`small-output`) is a
+/// policy on a state an update could start from: the dry run is kept, its
+/// refill set the oracle's evidence that the fall-back is needed (IN-63b).
+/// The match names every reason, so a new one must be classified here.
+///
+/// Called only on a link in incremental mode that is a full one ([`start`]'s
+/// reason, [`Session::fall_back`], [`Session::finish`]): never on a plain
+/// link (IN-11) nor on a taken update.
 fn dry_run_wanted(reason: Option<&IncrReason>) -> bool {
-    // WP-225: an update's own fall-back by its word (`update-not-implemented
-    // (<word>)`) started from such a state too.
-    matches!(reason, Some(IncrReason::UpdateNotImplemented(_) | IncrReason::SmallOutput(_)))
+    use IncrReason as R;
+    let Some(reason) = reason else {
+        // `--incremental=full`: from scratch whatever the state says.
+        return false;
+    };
+    match reason {
+        // Known before any delta (IN-10a; IN-77b).
+        R::NoState(_)
+        | R::StateCorrupt(_)
+        | R::StateVersion(_)
+        | R::OptionsChanged(_)
+        | R::OutputChanged(_)
+        | R::OutputTorn(_)
+        | R::StateBusy(_)
+        | R::LockUnavailable(_) => false,
+        // A state an update could start from: the policy (IN-10a), the
+        // update's own words (WP-225); then every reason found by or after
+        // the delta (§7's rows; IN-10a, IN-63b).
+        R::SmallOutput(_)
+        | R::UpdateNotImplemented(_)
+        | R::ExtractionChanged(_)
+        | R::ClosureIterated(_)
+        | R::InputsReordered(_)
+        | R::TooMuchChanged(_)
+        | R::ReserveExhausted(_)
+        | R::IslandExhausted(_)
+        | R::TlsLayoutChanged(_)
+        | R::CopySizeChanged(_)
+        | R::LinkOrderMoved(_)
+        | R::SymbolKindChanged(_)
+        | R::SymtabExhausted(_)
+        | R::NewOutputSection(_)
+        | R::PropertyChanged(_)
+        | R::DynamicChanged(_)
+        | R::DebugCompaction(_)
+        | R::DebugNameIndex(_)
+        | R::DebugUnitKind(_)
+        | R::DebugComdatKeeper(_)
+        | R::DebugGrowth(_)
+        | R::DebugStrLimit(_)
+        | R::InputChanged(_)
+        | R::StateCollision(_)
+        | R::StateLimit(_)
+        | R::LayoutChanged(_)
+        | R::ResolutionChanged(_) => true,
+    }
 }
 
 pub(crate) fn check_state(state: &State, plan_hash: [u8; 16], out_path: &Path) -> IncrReason {
@@ -1826,6 +1878,35 @@ pub(crate) fn write_atomically(path: &Path, bytes: &[u8]) -> std::io::Result<()>
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // spec: incr.md IN-10a (as ruled after WP-272: a fall-back found by or
+    // after the delta keeps the dry run, IN-63b), §7's table, IN-77b: every
+    // reason of §7 classified, the IN-10a list and the lock's two alone
+    // without the dry run.
+    #[test]
+    fn dry_run_is_kept_for_every_reason_found_by_or_after_the_delta() {
+        const BEFORE_ANY_DELTA: [&str; 8] = [
+            "no-state",
+            "state-corrupt",
+            "state-version",
+            "options-changed",
+            "output-changed",
+            "output-torn",
+            "state-busy",
+            "lock-unavailable",
+        ];
+        assert!(BEFORE_ANY_DELTA.iter().all(|n| IncrReason::NAMES.contains(n)));
+        for name in IncrReason::NAMES {
+            let r = IncrReason::from_name(name, "").expect(name);
+            assert_eq!(dry_run_wanted(Some(&r)), !BEFORE_ANY_DELTA.contains(&name), "{name}");
+        }
+        for w in mortar_core::incr::Unimplemented::ALL {
+            let r = IncrReason::UpdateNotImplemented(Some(w));
+            assert!(dry_run_wanted(Some(&r)), "update-not-implemented ({})", w.word());
+        }
+        assert!(dry_run_wanted(Some(&IncrReason::ReserveExhausted(".text".into()))));
+        assert!(!dry_run_wanted(None), "--incremental=full");
+    }
 
     // spec: incr.md IN-77c (WP-265: a full link that cannot read the boot
     // id syncs `P` and writes `output-synced` 1, form (a); one that can

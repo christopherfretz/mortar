@@ -812,6 +812,62 @@ fn growth_step_with_debug_is_debug_growth() {
     }
 }
 
+// spec: incr.md IN-10a (as ruled after WP-272: a fall-back found by or
+// after the delta keeps the dry run, its refill set the oracle's evidence,
+// IN-63b) and `--incremental-report`'s row (the dry run's `delta` lines
+// after the reason line; `changed=` the changed files): an AArch64 body
+// that grows past `.text`'s tail reserve falls back `reserve-exhausted`
+// (`.text`'s tail is a patch island's, mortar_layout delta.rs), and the
+// report carries the dry run: `delta unit` lines, among them one of the
+// unchanged file the growth moves (`u.cc`, no `file` reason), `refilled=`
+// the dry run's units and `changed=1`, not the number of inputs. Before
+// the fix the report was the reason line alone (`changed=` every input).
+// Without `-g`; the lane's `drop_delta` wrong subject reads the same lines.
+#[cfg(feature = "testhooks")]
+#[test]
+fn reserve_exhausted_fall_back_keeps_the_dry_run() {
+    let arch = Arch::Aarch64;
+    let c: &'static str = Box::leak(c_cc(7, "scaled").into_boxed_str());
+    // `c.cc` between two units: its growth moves `u.cc`'s sections.
+    let sources = [
+        Source { name: "main.cc", text: MAIN },
+        Source { name: "c.cc", text: c },
+        Source { name: "u.cc", text: U },
+    ];
+    let Some(p) = Prog::with(arch, "dry-run", &[], &[], false, &sources) else { return };
+    // The dry run reads the format-4 side state; no `small-output` bound.
+    let env = [("MORTAR_INCR_STATE4", "1"), ("MORTAR_INCR_SMALL_OUTPUT", "0")];
+    let (ok, err) = p.link_env("o", &["--incremental"], &env);
+    assert!(ok, "the first link: {err}");
+    p.rebuild_c(&c_body(2048), &[]);
+    let rep = p.dir.join("rep.txt");
+    let report = format!("--incremental-report={}", rep.display());
+    let (ok, err) = p.link_env("o", &["--incremental", &report], &env);
+    assert!(ok, "the grown link: {err}");
+    let text = std::fs::read_to_string(&rep).expect("the report");
+    let first = text.lines().next().unwrap_or_default();
+    let head = "incremental: full (reserve-exhausted: .text: its tail is in a patch island chunk) \
+                changed=1 refilled=";
+    assert!(first.starts_with(head), "{first}\n{text}");
+    let refilled: usize = first[head.len()..]
+        .split_whitespace()
+        .next()
+        .and_then(|n| n.parse().ok())
+        .unwrap_or_else(|| panic!("refilled=: {first}"));
+    let units = text.lines().filter(|l| l.starts_with("delta unit ")).count();
+    assert!(units > 0 && units <= refilled, "{units} unit lines, refilled={refilled}\n{text}");
+    assert!(
+        text.lines().any(|l| l.starts_with(&format!("delta refill units={refilled} "))),
+        "refilled={refilled} is not the dry run's count\n{text}"
+    );
+    let moved = text.lines().any(|l| {
+        l.starts_with("delta unit ")
+            && !l.split_whitespace().nth(2).unwrap_or_default().split(',').any(|r| r == "file")
+    });
+    assert!(moved, "no unit of an unchanged file\n{text}");
+    assert_eq!(text.lines().last(), Some("delta end"), "{text}");
+}
+
 /// The R-5 b program: `-g3`, `c.cc` first; both units include `t.h`, so
 /// `c.cc` keeps its macro group `wm4.t.h.*`.
 fn r5b_prog(arch: Arch) -> Option<Prog> {

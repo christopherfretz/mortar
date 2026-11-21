@@ -566,7 +566,7 @@ def _oracle(v, x, base, new, hop=None):
     except Exception as e:  # noqa: BLE001 - a report the oracle cannot read is the subject's failure
         v.add('oracle', 'FAIL the report cannot be read: %s' % e)
         return
-    if not R.ended and R.reason in oracle.DRY_RUN_REASONS[1:]:
+    if not R.ended and oracle.full_with_dry_run(R.reason):
         v.add('oracle', 'FAIL the report has no `delta end`')
         return
     if not R.ended:
