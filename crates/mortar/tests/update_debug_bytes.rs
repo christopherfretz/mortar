@@ -909,7 +909,8 @@ fn update(
     let args: Vec<Vec<u8>> = parsed.args.iter().map(|a| a.as_encoded_bytes().to_vec()).collect();
     let diag = Collector::new(Policy::default());
     let out: RefCell<Option<Result<DebugPlan, String>>> = RefCell::new(None);
-    let hook = |link: &mortar_incr::capture::Link<'_, '_>, _computed: &Layout| {
+    let hook = |cx: &mortar::front::Replay<'_, '_>| {
+        let link = &cx.link;
         let r = (|| -> Result<(Layout, DebugPlan), String> {
             // The files: the new link's are the old one's without the
             // removed ones, in order; the changed ones are `<stem>2.o`.
@@ -1121,7 +1122,7 @@ fn update(
     let env = Env {
         cwd: fx.scratch.path(),
         pool: Pool::new(2),
-        replay: Some(&hook as &mortar::front::Replay<'_>),
+        replay: Some(&hook as &mortar::front::ReplayHook<'_>),
         slack: true,
         state5: false,
     };

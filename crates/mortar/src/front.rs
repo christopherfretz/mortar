@@ -301,7 +301,7 @@ pub struct Env<'e> {
     /// link the command line runs): given the link's tables and its
     /// computed layout, the decision tables to write instead, put in place
     /// before `Layout::validate`.
-    pub replay: Option<&'e Replay<'e>>,
+    pub replay: Option<&'e ReplayHook<'e>>,
     /// An incremental-mode link (`spec/incr.md` IN-30 to IN-34a, IN-50):
     /// layout takes IN-33's slack and `.eh_frame` its per-file CIEs.
     /// `false` in a plain link, which pays nothing for it (L-87).
@@ -315,9 +315,29 @@ pub struct Env<'e> {
     pub state5: bool,
 }
 
-/// The replay hook's function (IN-61).
-pub type Replay<'e> =
-    dyn Fn(&mortar_incr::capture::Link<'_, '_>, &Layout) -> Result<Layout, String> + 'e;
+/// The replay hook's function (IN-61): given the link's tables
+/// ([`Replay`]), the layout to write instead of the computed one.
+pub type ReplayHook<'e> = dyn Fn(&Replay<'_, '_>) -> Result<Layout, String> + 'e;
+
+/// What the replay hook is given (IN-61; WP-267 M-7): the front's tables
+/// at the moment its layout is computed and before it is replaced, so a
+/// hook can translate state ids into the front's (`materialize`) and
+/// judge an update against the front's own answer.
+#[derive(Debug, Clone, Copy)]
+pub struct Replay<'r, 's> {
+    /// The link's tables (identities, the merge split).
+    pub link: mortar_incr::capture::Link<'r, 's>,
+    /// The layout the front computed (its own answer, before the hook's
+    /// replaces it).
+    pub computed: &'r Layout,
+    /// Per `split.merge_of` row: its pieces' merge class (S-13).
+    pub meta: &'r [mortar_merge::merge::MergeMeta],
+    /// Each file's `.eh_frame` range in the front's own plan
+    /// (`EhPlan::file_runs`, as [`Incr5::eh`] gives them), or why there is
+    /// none: two runs of one file, runs that are not contiguous, or a link
+    /// that is not a format-5 one (`Env::state5` off).
+    pub eh_runs: Result<&'r [mortar_synth::eh::EhRun], &'r str>,
+}
 
 impl std::fmt::Debug for Env<'_> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -1223,7 +1243,24 @@ pub fn front<'s>(
                 assignment: &placement_assignment,
                 split: &merge.split,
             };
-            match replay(&link, &layout) {
+            // M-7: the runs of the plan made before the layout (rebuilt
+            // after it only when a replayed list differs), as `Incr5::eh`
+            // gives them in a link without a replay.
+            let runs: Result<Vec<mortar_synth::eh::EhRun>, String> = if state5 {
+                eh_runs.clone().and_then(|()| {
+                    eh.file_runs(&merge_eh)
+                        .map_err(|f| format!("file {} has two .eh_frame runs", f.0))
+                })
+            } else {
+                Err("not a format-5 link: no .eh_frame runs".to_owned())
+            };
+            let cx = Replay {
+                link,
+                computed: &layout,
+                meta: &merge.meta,
+                eh_runs: runs.as_deref().map_err(String::as_str),
+            };
+            match replay(&cx) {
                 Ok(l) => l,
                 Err(e) => {
                     diag.emit(Key::new(90, 0, u64::MAX), internal(format!("replay: {e}")));

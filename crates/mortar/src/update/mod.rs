@@ -1429,10 +1429,8 @@ fn front_two(
     let Materialized { l1, lu, df, shadow } = m;
     let why: std::cell::RefCell<Option<Refusal>> = std::cell::RefCell::new(None);
     let lu = std::cell::RefCell::new(Some(lu));
-    let hook = |_: &mortar_incr::capture::Link<'_, '_>,
-                computed: &mortar_core::layout::Layout|
-     -> Result<mortar_core::layout::Layout, String> {
-        if let Some(what) = first_difference(computed, &l1) {
+    let hook = |cx: &crate::front::Replay<'_, '_>| -> Result<mortar_core::layout::Layout, String> {
+        if let Some(what) = first_difference(cx.computed, &l1) {
             let s = format!("M2b-3 Part 3: front 2's computed layout is not front 1's: {what}");
             *why.borrow_mut() = Some((image(), s.clone()));
             return Err(s);
@@ -2809,7 +2807,7 @@ fn write_identity(
 pub fn image_link<T>(
     ctx: &Ctx<'_>,
     cwd: &Path,
-    replay: Option<&crate::front::Replay<'_>>,
+    replay: Option<&crate::front::ReplayHook<'_>>,
     go: impl FnOnce(&crate::front::Front<'_>) -> Result<T, IncrReason>,
 ) -> Result<T, IncrReason> {
     let diag = Collector::new(ctx.policy);

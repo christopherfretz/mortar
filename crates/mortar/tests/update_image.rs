@@ -143,13 +143,13 @@ impl Fixture {
         assert!(!parsed.failed());
         let store = Store::new(StorePolicy::from_env());
         let diag = Collector::new(Policy::default());
-        let hook = |_: &mortar_incr::capture::Link<'_, '_>, _: &Layout| {
+        let hook = |_: &mortar::front::Replay<'_, '_>| {
             Ok::<Layout, String>(replay.cloned().expect("a replay"))
         };
         let env = Env {
             cwd: self.scratch.path(),
             pool: Pool::new(2),
-            replay: replay.map(|_| &hook as &mortar::front::Replay<'_>),
+            replay: replay.map(|_| &hook as &mortar::front::ReplayHook<'_>),
             slack: true,
             state5: false,
         };

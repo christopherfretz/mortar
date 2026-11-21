@@ -290,8 +290,8 @@ fn run(
     let translated: std::cell::RefCell<Option<(Translation, Positional)>> =
         std::cell::RefCell::new(None);
     let failed: std::cell::RefCell<Option<String>> = std::cell::RefCell::new(None);
-    let hook = |link: &mortar_incr::capture::Link<'_, '_>,
-                computed: &mortar_core::layout::Layout| {
+    let hook = |cx: &crate::front::Replay<'_, '_>| {
+        let (link, computed) = (&cx.link, cx.computed);
         let t0 = std::time::Instant::now();
         let r = (|| {
             let changed_id = link
