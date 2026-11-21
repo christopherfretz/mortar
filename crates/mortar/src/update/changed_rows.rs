@@ -390,8 +390,13 @@ pub(super) fn shadow(
     if !super::changed::recording() {
         return;
     }
-    let line = shadow_line(session, view, detected, f, ctx, cwd).unwrap_or_else(|l| l);
+    let mut p1b = None;
+    let line = shadow_line(session, view, detected, f, ctx, cwd, &mut p1b).unwrap_or_else(|l| l);
     super::changed::record(&line);
+    // WP-267 P-1b: `index` and `edges`, once P-1's rows equal front 1's.
+    super::changed::record(
+        &p1b.unwrap_or_else(|| "P-1b: not compared: P-1's rows are not equal (its line)".into()),
+    );
 }
 
 /// Front 1's capture (the oracle's `FILES` rows), as `refill_capture`
@@ -433,6 +438,7 @@ fn shadow_line(
     f: &crate::front::Front<'_>,
     ctx: &super::Ctx<'_>,
     cwd: &Path,
+    p1b: &mut Option<String>,
 ) -> Result<String, String> {
     use mortar_incr::update::{extract, resolve as res};
     let not = |what: &str, e: &dyn std::fmt::Display| format!("P-1: not compared: {what}: {e}");
@@ -501,25 +507,38 @@ fn shadow_line(
                 let r =
                     facts_after_resolve(view, &cache, &mut mine, &f.plan, f.arch.get(), &d.keepers);
                 post_ms = at.elapsed().as_secs_f64() * 1e3;
-                r.map_err(|e| ("facts_after_resolve", e))
+                r.map(|()| d).map_err(|e| ("facts_after_resolve", e))
             }
             // M-1: a draw-in is an archive member's extraction.
             res::Resolution::DrawIn(_) => Err(("M-1: a draw-in", resolve())),
         }
     })();
     let pre = cmp.n;
-    if let Err((step, e)) = post {
-        return Ok(format!(
-            "P-1: pre equal ({} files, {pre} fields); post refused by name: {step}: {}",
-            my_ids.len(),
-            e.report()
-        ));
-    }
+    let delta = match post {
+        Ok(d) => d,
+        Err((step, e)) => {
+            return Ok(format!(
+                "P-1: pre equal ({} files, {pre} fields); post refused by name: {step}: {}",
+                my_ids.len(),
+                e.report()
+            ));
+        }
+    };
     compare_post(&mut cmp, view, &mine, &oracle, &capture)
         .map_err(|e| not("a string", &e.report()))?;
     if let Some(d) = cmp.diff.first() {
         return Ok(format!("finding: P-1 {d} ({} differ of {} fields)", cmp.diff.len(), cmp.n));
     }
+    *p1b = Some(super::changed_edges::shadow_line(
+        view,
+        &cache,
+        &mut mine,
+        &oracle,
+        &delta,
+        &f.plan,
+        f.arch.get(),
+        &f.pool,
+    ));
     // The laps: `changed_files_of`, U-3's `extract`+`resolve` over its rows
     // (not P-1's code), `facts_after_resolve`.
     Ok(format!(

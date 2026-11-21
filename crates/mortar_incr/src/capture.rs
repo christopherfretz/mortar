@@ -4151,6 +4151,29 @@ pub fn file5_of(
     Ok(out)
 }
 
+/// WP-267 P-1b (M-4): [`FileRows::index`] of ONE live object without the
+/// link (`tables::index_file_of`, the body `index_file` shares): `section`
+/// answers a section index's `(id, kind, kept, relocation section)` (the
+/// update's post-resolve facts), `key(k)` the key of the `k`-th non-local
+/// entry (the caller's numbering), `path` names the file in an error. The
+/// rows are in `index_file`'s order (relocation order per unit).
+///
+/// # Errors
+/// A section or relocation section that cannot be read.
+#[allow(clippy::type_complexity, reason = "the facts' tuple, as `index_file` reads them")]
+pub fn index_file_of(
+    object: &mortar_elf::Object<'_>,
+    table: &mortar_elf::symbol::SymbolTable<'_>,
+    arch: &dyn mortar_arch::Arch,
+    section: &dyn Fn(SectionIndex) -> Option<(u32, mortar_core::resolution::SectionKind, bool, SectionIndex)>,
+    key: &dyn Fn(usize) -> Option<u32>,
+    path: &str,
+) -> Result<Vec<crate::format::IndexRow>, String> {
+    let mut out = Vec::new();
+    crate::tables::index_file_of(object, table, arch, section, key, path, &mut out)?;
+    Ok(out)
+}
+
 /// WP-267 P-1: `SECTIONS`' anchor columns of `anchor` (the capture's own
 /// encoding, `anchor_row`), its name into `strings`.
 pub fn anchor_row_of(strings: &mut Strings, anchor: Anchor<'_>) -> (u8, Str) {

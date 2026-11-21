@@ -20,6 +20,7 @@
 //! U7 (`live::live`, whose `LiveDelta` feeds `SectionChange::live`).
 
 pub mod changed;
+pub mod changed_edges;
 pub mod changed_rows;
 pub mod file_front;
 pub mod file_scan;

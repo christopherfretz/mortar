@@ -15,7 +15,7 @@ use mortar_core::par::Pool;
 
 use mortar_arch::{Arch, DemandClass, Site};
 use mortar_core::FileId;
-use mortar_core::id::{SectionId, SymKey, SymbolId};
+use mortar_core::id::{SymKey, SymbolId};
 use mortar_core::inputs::{Inputs, Reader};
 use mortar_core::resolution::{Def, FileLive, SectionKind};
 use mortar_elf::SymbolSection;
@@ -369,9 +369,11 @@ impl Records<'_> {
     }
 }
 
+/// The records of relocation section `rel` of `object`; bytes that are
+/// not resident are copied by `copy` (the file's range into the buffer;
+/// `false`: not read).
 fn records<'b>(
-    inputs: &Inputs<'_>,
-    file: FileId,
+    copy: &dyn Fn(std::ops::Range<u64>, &mut [u8]) -> bool,
     object: &Object<'b>,
     rel: SectionIndex,
     buf: &'b mut Vec<u8>,
@@ -394,9 +396,9 @@ fn records<'b>(
             let len = usize::try_from(size).map_err(|_| "relocations too large")?;
             buf.clear();
             buf.resize(len, 0);
-            inputs
-                .copy_to(file, offset..offset + size, buf)
-                .map_err(|_| "relocations could not be read".to_owned())?;
+            if !copy(offset..offset + size, buf) {
+                return Err("relocations could not be read".to_owned());
+            }
             let buf: &'b Vec<u8> = buf;
             if rela {
                 Ok(Records::Rela(s.rela_in(buf).map_err(bad)?.records()))
@@ -418,33 +420,87 @@ pub(crate) fn index_file(
     arch: &dyn Arch,
     out: &mut Vec<IndexRow>,
 ) -> Result<(), String> {
+    let res = link.resolution;
+    let map = inputs.sym_map_of(file);
+    let section = |index: SectionIndex| {
+        let id = res.section_id(file, index)?;
+        let row = res.sections.get(id)?;
+        Some((id.0, row.kind, row.is_kept(), row.reloc))
+    };
+    // An undefined entry is first redirected to its definition (`--wrap`).
+    let key = |k: usize, undefined: &dyn Fn() -> bool| {
+        let &id = map.get(k)?;
+        let to = res.redirect.get(id).copied().unwrap_or(id);
+        Some(if to != id && undefined() { to.0 } else { id.0 })
+    };
+    let copy = |range: std::ops::Range<u64>, buf: &mut [u8]| inputs.copy_to(file, range, buf).is_ok();
+    let path = || String::from_utf8_lossy(inputs.files[file].path).into_owned();
+    index_by(object, table, arch, &section, &key, &copy, &path, out)
+}
+
+/// WP-267 P-1b (M-4): [`index_file`] of ONE object without the link (the
+/// same body): `section(i)` answers section index `i`'s
+/// `(id, kind, kept, relocation section)` (the update's post-resolve
+/// facts: `None` for an index the file has no row of), `key(k)` the key
+/// of the `k`-th non-local entry (the caller's numbering; `None`: no
+/// key, the record is skipped as `index_file` skips one the input phase
+/// has no key of). No redirect: the caller refuses `--wrap`. Every byte
+/// is the object's own (a resident object: nothing is copied).
+///
+/// # Errors
+/// A relocation section that cannot be read, named by `path`.
+pub(crate) fn index_file_of(
+    object: &Object<'_>,
+    table: &SymbolTable<'_>,
+    arch: &dyn Arch,
+    section: &dyn Fn(SectionIndex) -> Option<(u32, SectionKind, bool, SectionIndex)>,
+    key: &dyn Fn(usize) -> Option<u32>,
+    path: &str,
+    out: &mut Vec<IndexRow>,
+) -> Result<(), String> {
+    let key = |k: usize, _: &dyn Fn() -> bool| key(k);
+    let copy = |_: std::ops::Range<u64>, _: &mut [u8]| false;
+    index_by(object, table, arch, section, &key, &copy, &|| path.to_owned(), out)
+}
+
+/// The one body of [`index_file`] and [`index_file_of`] (IN-25's rows of
+/// one object): `section` of a section index, `key(k, undefined)` of the
+/// `k`-th non-local entry (`undefined`: whether that entry is, asked only
+/// when the key is redirected), `copy` for bytes that are not resident.
+#[allow(clippy::too_many_arguments)]
+#[allow(clippy::type_complexity, reason = "the two callers' closures")]
+fn index_by(
+    object: &Object<'_>,
+    table: &SymbolTable<'_>,
+    arch: &dyn Arch,
+    section: &dyn Fn(SectionIndex) -> Option<(u32, SectionKind, bool, SectionIndex)>,
+    key: &dyn Fn(usize, &dyn Fn() -> bool) -> Option<u32>,
+    copy: &dyn Fn(std::ops::Range<u64>, &mut [u8]) -> bool,
+    path: &dyn Fn() -> String,
+    out: &mut Vec<IndexRow>,
+) -> Result<(), String> {
     let mut buf = Vec::new();
     let mut data = Vec::new();
     let (buf, data) = (&mut buf, &mut data);
-    let res = link.resolution;
-    let path = || String::from_utf8_lossy(inputs.files[file].path).into_owned();
     let first = table.first_global().0;
-    let map = inputs.sym_map_of(file);
     for i in 1..object.section_count() {
         let index = SectionIndex(i);
-        let Some(id) = res.section_id(file, index) else { continue };
-        let Some(row) = res.sections.get(id) else { continue };
-        if !row.is_kept() {
+        let Some((unit, kind, kept, reloc)) = section(index) else { continue };
+        if !kept {
             continue;
         }
         let sec = object.section(index).map_err(|e| format!("{}: {e}", path()))?;
-        let eh = row.kind == SectionKind::EhFrame;
+        let eh = kind == SectionKind::EhFrame;
         if sec.flags() & SHF_ALLOC == 0 && !eh {
             continue;
         }
-        let unit = id.0;
         if sec.flags() & SHF_LINK_ORDER != 0
             && let Ok(to) = sec.link()
-            && let Some(target) = res.section_id(file, to)
+            && let Some((target, ..)) = section(to)
         {
-            out.push(IndexRow { unit, kind: index_kind::LINK_ORDER, target: target.0 });
+            out.push(IndexRow { unit, kind: index_kind::LINK_ORDER, target });
         }
-        if row.reloc.0 == 0 {
+        if reloc.0 == 0 {
             continue;
         }
         // The section's bytes, which `classify` reads at each record.
@@ -453,13 +509,12 @@ pub(crate) fn index_file(
             Err(mortar_elf::Error::NotResident { offset, size }) => {
                 data.clear();
                 data.resize(usize::try_from(size).map_err(|_| "section too large")?, 0);
-                let ok = inputs.copy_to(file, offset..offset + size, data).is_ok();
+                let ok = copy(offset..offset + size, data);
                 if ok { data } else { &[] }
             }
             Err(_) => &[],
         };
-        let records = records(inputs, file, object, row.reloc, buf)
-            .map_err(|e| format!("{}: {e}", path()))?;
+        let records = records(copy, object, reloc, buf).map_err(|e| format!("{}: {e}", path()))?;
         for r in 0..records.len() {
             let Some((r_offset, r_sym, r_type)) = records.get(r) else { continue };
             let slot = arch
@@ -472,19 +527,14 @@ pub(crate) fn index_file(
                 continue;
             }
             if r_sym >= first {
-                let Some(&id) = map.get((r_sym - first) as usize) else { continue };
-                let to = res.redirect.get(id).copied().unwrap_or(id);
-                let key = if to == id {
-                    id
-                } else {
-                    let undefined = table.get(SymbolIndex(r_sym)).ok().is_some_and(|y| {
+                let undefined = || {
+                    table.get(SymbolIndex(r_sym)).ok().is_some_and(|y| {
                         table.section_of(SymbolIndex(r_sym), &y).ok()
                             == Some(SymbolSection::Undefined)
-                    });
-                    if undefined { to } else { id }
+                    })
                 };
                 // The key's id: `fill` makes it a symbol row.
-                let target = key.0;
+                let Some(target) = key((r_sym - first) as usize, &undefined) else { continue };
                 out.push(IndexRow { unit, kind: index_kind::GLOBAL, target });
                 if slot {
                     out.push(IndexRow { unit, kind: index_kind::SLOT, target });
@@ -493,24 +543,24 @@ pub(crate) fn index_file(
             }
             let Ok(y) = table.get(SymbolIndex(r_sym)) else { continue };
             let target = match table.section_of(SymbolIndex(r_sym), &y) {
-                Ok(SymbolSection::Section(at)) => res.section_id(file, at),
+                Ok(SymbolSection::Section(at)) => section(at),
                 _ => None,
             };
-            let Some(target) = target else {
+            let Some((target, target_kind, ..)) = target else {
                 if slot {
                     out.push(IndexRow { unit, kind: index_kind::LOCAL_SLOT, target: unit });
                 }
                 continue;
             };
             if slot {
-                out.push(IndexRow { unit, kind: index_kind::LOCAL_SLOT, target: target.0 });
+                out.push(IndexRow { unit, kind: index_kind::LOCAL_SLOT, target });
             }
-            if target == SectionId(unit) {
+            if target == unit {
                 continue;
             }
-            let into_eh = res.sections.get(target).is_some_and(|t| t.kind == SectionKind::EhFrame);
+            let into_eh = target_kind == SectionKind::EhFrame;
             let kind = if into_eh { index_kind::EH_FRAME } else { index_kind::SECTION };
-            out.push(IndexRow { unit, kind, target: target.0 });
+            out.push(IndexRow { unit, kind, target });
         }
     }
     Ok(())
