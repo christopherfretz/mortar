@@ -22,6 +22,7 @@ use mortar_plumb::{Format, Input, Map, Report};
 use mortar_testutil::target::Arch;
 use mortar_testutil::{Scratch, run_with, tool};
 
+mod built;
 #[path = "relocatable/ed.rs"]
 mod ed;
 use ed::Ed;
@@ -90,12 +91,10 @@ struct Tools {
     mortar: Option<PathBuf>,
 }
 
-/// mortar's binary next to the test's (`target/<profile>/mortar`), when
-/// the workspace built it.
+/// mortar's binary of this build (`tests/built`): a named skip when it
+/// is absent or stale, a FAIL under `MORTAR_REQUIRE_TOOLS=1` (WP-210).
 fn mortar_bin() -> Option<PathBuf> {
-    let exe = std::env::current_exe().ok()?;
-    let p = exe.parent()?.parent()?.join("mortar");
-    p.is_file().then_some(p)
+    built::mortar_bin("plumb-compose/mortar")
 }
 
 impl Tools {
@@ -418,23 +417,21 @@ fn passes(t: &Tools, dir: &Path, log: &mut String) -> Vec<String> {
                 for m in &f {
                     let _ = writeln!(log, "    {m}");
                 }
-                // WP-203 (the supervisor's ruling, 2026-11-17): mortar's
-                // final link makes lld's `-r` `COMMON` section (A120) an
-                // orphan output section; GNU ld and lld put it in .bss.
-                // P-P1 names it, exactly, and nothing else on that cell;
-                // when WP-203 lands this expectation fails: delete it.
-                let wp203 = rl == L::Lld && fl == L::Mortar && c.name == "compc";
-                let f: Vec<String> = if wp203 {
-                    let (named, rest): (Vec<String>, Vec<String>) = f
-                        .into_iter()
-                        .partition(|m| m.contains(", COMMON (type 0x8, flags 0x3) through -r"));
-                    if named.len() != 1 {
-                        bad.push(format!("{:?} {} -r lld final mortar: WP-203: input section COMMON is no longer an orphan in mortar's final link? (the expected P-P1 finding is not shown)", t.arch, c.name));
-                    }
-                    rest
-                } else {
-                    f
-                };
+                // WP-203's cell (the supervisor's ruling, 2026-11-17;
+                // WP-210 item 4): before WP-203 mortar's final link made
+                // lld's `-r` `COMMON` section (A120) an orphan output
+                // section, which P-P1 named; with WP-203 it is in .bss,
+                // as GNU ld and lld put it, and the cell has no finding
+                // like every other. Its mutant keeps the orphan (V's
+                // .bss named COMMON): still caught.
+                if rl == L::Lld && fl == L::Mortar && c.name == "compc" {
+                    let b = Base { d: &d, v: &v, vout: &vout, r: &r, rpath: &rpath };
+                    let (_, _, mut m) = mutate(dir, &b, WP203_MUTANTS, log);
+                    bad.extend(
+                        m.drain(..)
+                            .map(|x| format!("{:?} {} -r lld final mortar: {x}", t.arch, c.name)),
+                    );
+                }
                 if cov.judged != 1 || !f.is_empty() {
                     bad.push(format!(
                         "{:?} {} -r {} final {}: {f:?}",
@@ -629,6 +626,24 @@ const MUTANTS: &[Mutant] = &[
         expect: "symbol g_data: size",
     },
 ];
+
+/// WP-203's cell (lld's `-r` of compc, mortar's final): the orphan
+/// `COMMON` output section of the base, kept: V's `.bss` (where WP-203
+/// places the `-r` output's `COMMON` section) named `COMMON` again.
+fn m_wp203_orphan(e: &mut Ed, _: &mut String) -> bool {
+    let Some(i) = sec_named(e, ".bss") else { return false };
+    let n = e.add_name("COMMON");
+    let mut sh = e.sh(i);
+    sh.name = n;
+    e.set_sh(i, &sh);
+    true
+}
+
+const WP203_MUTANTS: &[Mutant] = &[Mutant {
+    name: "WP-203: the COMMON orphan kept (.bss named COMMON)",
+    edit: m_wp203_orphan,
+    expect: ", COMMON (type 0x8, flags 0x3) through -r",
+}];
 
 const BUILD_ID_MUTANTS: &[Mutant] = &[
     Mutant { name: "(t3) inside: the build-id descriptor", edit: m_t3_in, expect: "" },
@@ -950,7 +965,7 @@ fn judge_merged(arch: Arch) {
         return;
     };
     if t.mortar.is_none() {
-        eprintln!("skipped: mortar is not built");
+        // `mortar_bin` named the skip (`plumb-compose/mortar`), or failed.
         return;
     }
     let scratch = Scratch::new(&format!("plumb-compose-merged-{}", arch.name()));
@@ -1029,7 +1044,7 @@ fn judge_thin(arch: Arch) {
         return;
     };
     if t.mortar.is_none() {
-        eprintln!("skipped: mortar is not built");
+        // `mortar_bin` named the skip (`plumb-compose/mortar`), or failed.
         return;
     }
     let scratch = Scratch::new(&format!("plumb-compose-thin-{}", arch.name()));
