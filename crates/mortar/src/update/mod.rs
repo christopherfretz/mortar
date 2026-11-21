@@ -223,6 +223,7 @@ fn run_with(
     let stored = mortar_core::incr::StoredLayout::new(&rows);
     let mut seen = Seen::default();
     let real = front_free(&view, &stored, &detected, ctx, cwd, &mut steps).and_then(|planned| {
+        seen.placed = true;
         front_two(
             session,
             &view,
@@ -692,6 +693,8 @@ fn flips_of(
 /// front 2 goes; the layouts only when findings are recorded).
 #[derive(Default)]
 struct Seen {
+    /// The front-free steps placed the changes (front 2 ran).
+    placed: bool,
     /// identity' (in the hook).
     prime: Option<Result<(), String>>,
     /// R-A1 over front 2's capture.
@@ -770,10 +773,21 @@ fn front_one_shadow(
         Err(e) => format!("no ({e})"),
     };
     let (a, b) = (yes(&front1), yes(&taken));
-    changed::record(&if front1.is_ok() == taken.is_ok() {
-        format!("P-5 shadow: agree (outcome: front 1 {a}, front 2 {b}){}", hop_label())
-    } else {
-        format!("finding: P-5 shadow: outcome front 1 {a} front 2 {b}{}", hop_label())
+    // Front 1's "yes" is its steps up to `materialize`; before P-5 front 2
+    // ran after them and could still refuse (its front, its refill, eh).
+    // A refusal of front 2 after the front-free steps placed the changes
+    // is that case; one before (the front-free steps refusing what front
+    // 1 placed) or a hop taken that front 1 refused is a finding.
+    let agree = match (front1.is_ok(), taken.is_ok()) {
+        (true, true) | (false, false) => Some(""),
+        (true, false) if seen.placed => Some(", front 2's own refusal after the placement"),
+        _ => None,
+    };
+    changed::record(&match agree {
+        Some(note) => {
+            format!("P-5 shadow: agree (outcome: front 1 {a}, front 2 {b}{note}){}", hop_label())
+        }
+        None => format!("finding: P-5 shadow: outcome front 1 {a} front 2 {b}{}", hop_label()),
     });
     let mut agree: Vec<&str> = Vec::new();
     let mut not: Vec<String> = Vec::new();
