@@ -286,7 +286,7 @@ fn row_ref(r: u32) -> String {
 /// PATCHES <i> chunk <CHUNKS> kind <u8> offset <hex> symbol <SYMBOLS|-> section <SECTIONS|-> value <hex>
 /// REDIRECTS <i> section <SECTIONS> patch <PATCHES> offset <hex>
 /// SECTIONS <i> file <FILES|-> index <u32|-> ordinal <u32> sh_flags <hex> size <hex> place_chunk <CHUNKS|-> place_offset <hex> name <token>
-/// FILES <i> kind <u8> member <u8> mention <u32> path <token> member_name <token>
+/// FILES <i> kind <u8> member <u8> mention <u32> base <hex> path <token> member_name <token>
 /// SYMBOLS <i> kind <u8> file <FILES|-> ordinal <u32> name <token> version <token>
 /// HOLES <i> chunk <CHUNKS> kind <u8> offset <hex> size <hex>
 /// OUTSECS <i> ordinal <u32> name <token>
@@ -388,10 +388,11 @@ fn rows(path: &str, tables: &[&str]) -> Result<(), String> {
                 for (i, r) in m.files.iter().enumerate() {
                     let _ = writeln!(
                         out,
-                        "FILES {i} kind {} member {} mention {} path {} member_name {}",
+                        "FILES {i} kind {} member {} mention {} base {:x} path {} member_name {}",
                         r.kind,
                         r.member,
                         r.mention,
+                        r.base,
                         s(r.path)?,
                         s(r.member_name)?
                     );

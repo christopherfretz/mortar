@@ -25,6 +25,15 @@ site:
  ret
  .size site, . - site
 
+// a writable section with bytes: a RW segment of .bss alone is refused by
+// eu-elflint ("writable but contains no writable sections"; GNU ld 2.44's
+// output of these objects too)
+ .section .data.word,"aw",@progbits
+ .balign 8
+ .globl word
+word:
+ .quad 1
+
  .section .bss.far,"aw",@nobits
  .balign 16
  .skip 0x200000

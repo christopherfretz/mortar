@@ -62,3 +62,12 @@ canon zeroes, STAT, LEAVES, the link's directory in STRINGS, the
 placement rows on a non-exact hop, the rows seen only as set differences
 (duplicates collapse). `duty` compares canon(S) (h<i>/s.mortar-state, a
 copy taken before X) with canon(S'), STRINGS held out.
+
+`islands` (WP-272): on every hop with a state, `incr_state rows S' ...`
+against the output's bytes: each REDIRECTS row's word at F a branch to its
+patch, each patch's words its form (a 843419 patch's last word `b F+4`, a
+thunk's target its key's), every b/bl into an island named by a REDIRECTS
+row, an island word no PATCHES row covers zero. Input-section addresses
+from the map's `place` records. `n/a` by name off AArch64 and without an
+island. Its self test (island_units, in --self-test and --quick) mutates a
+real link of scenarios/islands_843419.

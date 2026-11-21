@@ -61,6 +61,9 @@ IN-79's checks (hop given), in order (IN79_CHECKS; spec/harness.md
   duty     (d) duty_list_covers_differences (IN-78) under (d0): every row
            in which canon(S) and canon(S') differ is a table of a cause of
            IN-78's derived table (tests/incr-update/duty.py)
+  islands  WP-272: on every hop with a state, the state's PATCHES and
+           REDIRECTS rows and island CHUNKS against the output's bytes
+           (islands_check; n/a by name off AArch64 and without an island)
 and the report's first line is the step's REASON (`update`, or the
 fall-back's name). The lane adds `expect` (expect_full) after a hop of a
 scenario that says `expect-full:`.
@@ -1059,6 +1062,18 @@ def a64_thunk_target(w0, w1, w2, at):
     imm = (((w0 >> 5) & 0x7FFFF) << 2) | ((w0 >> 29) & 3)
     imm = imm - (1 << 21) if imm & (1 << 20) else imm
     return (at & ~0xFFF) + (imm << 12) + ((w1 >> 10) & 0xFFF)
+
+
+def islands_kind(result):
+    """The `islands` verdict by kind for the lane's summary: `pass`,
+    `FAIL`, or `n/a <why>` (the reason's head: `x86-64`, `no island`, ...)."""
+    if result.startswith('pass'):
+        return 'pass'
+    if result.startswith('FAIL'):
+        return 'FAIL'
+    why = result[4:].strip()
+    why = why[1:].split(')')[0] if why.startswith('(') else why
+    return 'n/a ' + why.split(':')[0]
 
 
 def islands_na(rows, elf):

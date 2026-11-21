@@ -326,6 +326,9 @@ class Run:
                 if c == 'state':
                     k = judge.d0_kind(r)
                     res.setdefault('d0', {})[k] = res.setdefault('d0', {}).get(k, 0) + 1
+                if c == 'islands':
+                    k = judge.islands_kind(r)
+                    res.setdefault('islands', {})[k] = res.setdefault('islands', {}).get(k, 0) + 1
             res['hops'].append('hop %d %-14s %s reason=%s%s' % (
                 i, '+'.join(sorted(macros)) or '-', v.line(), reason,
                 '' if fs == 0 else ' (F status %s: %s)' % (fs, _first(ferr))))
@@ -682,6 +685,13 @@ def main(argv):
     log('incr-update: state (d0, WP-267 P-4): %s' % (
         ' '.join('%s:%d' % (k, d0.get(k, 0)) for k in judge.D0_KINDS) if o.get('canon') else
         'not run (no incr_state: the stub, n/a by name)'))
+    isl = {}
+    for r in results:
+        for k, n in r.get('islands', {}).items():
+            isl[k] = isl.get(k, 0) + n
+    log('incr-update: islands (WP-272): pass:%d FAIL:%d n/a:%d (%s)' % (
+        isl.get('pass', 0), isl.get('FAIL', 0), sum(n for k, n in isl.items() if k.startswith('n/a')),
+        ', '.join('%s:%d' % (k[4:], n) for k, n in sorted(isl.items()) if k.startswith('n/a')) or '-'))
     names = {s.name for s, _c, _t in runs}
     log('incr-update: %d scenarios, %d hops: %d PASS, %d FAIL, %d n/a (%s), %d base-was-update; %d runs, '
         '%d not here (scenario: %d, tools: %d); %.0fs' % (
