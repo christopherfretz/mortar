@@ -1,0 +1,11 @@
+-pie
+-dynamic-linker
+/lib/ld-linux-aarch64.so.1
+-z
+max-page-size=4096
+-o
+pie-a64.bfd
+main-a64.o
+lib-a64.a
+--as-needed
+libh-a64.so

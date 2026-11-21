@@ -2558,3 +2558,57 @@ fn s14_7_compressed_inputs_aarch64() {
 fn s14_7_compressed_inputs_x86_64() {
     judge_compressed(Arch::X86_64);
 }
+
+/// §14.6 (WP-210 item (c)): a line with an option whose class at `-r` is
+/// `acts` (the mirror's column) that §14.1 does not read. GNU ld's and
+/// lld's `-r --defsym=wp210_x=0x10` of the C component: no rule runs, no
+/// finding, every input record is `options-unknown`, and the summary
+/// names `--defsym`. Before WP-210 the rules judged the output as if the
+/// option were not there (the defined `wp210_x` no input has).
+fn judge_unread_acts(arch: Arch) {
+    const O: &[&str] = &["-O1", "-fcommon", "-ffunction-sections", "-fdata-sections"];
+    let Some(t) = Tools::find(arch) else { return };
+    let scratch = Scratch::new(&format!("plumb-relacts-{}", arch.name()));
+    let dir = scratch.join("acts");
+    std::fs::create_dir_all(&dir).unwrap();
+    let case = Case {
+        name: "d3-c-defsym".into(),
+        srcs: vec![src(Cc::Gcc, "c1.c", C1, O, "c1.o"), src(Cc::Gcc, "c2.c", C2, O, "c2.o")],
+        inputs: vec!["c1.o", "c2.o"],
+        opts: vec!["--defsym=wp210_x=0x10"],
+    };
+    build(&t, &case, &dir).unwrap_or_else(|e| panic!("{arch:?}: {e}"));
+    for r in [Ref::Bfd, Ref::Lld] {
+        let line = link(&t, r, &case, &dir).unwrap_or_else(|e| panic!("{arch:?}: {e}"));
+        let (rep, _) = verify(r, &case, &dir, line);
+        let fs: Vec<String> =
+            rep.findings.iter().map(|f| format!("{} {}", f.rule.id(), f.message)).collect();
+        assert!(fs.is_empty(), "{arch:?} {}: no rule runs: {fs:#?}", r.name());
+        let s = rep.summary();
+        assert!(
+            s.contains("the line's --defsym acts at -r and is not read"),
+            "{arch:?} {}: the option is named: {s}",
+            r.name()
+        );
+        let c = &rep.coverage;
+        assert!(c.records > 0, "{arch:?} {}: the records are counted: {s}", r.name());
+        assert!(
+            c.not_checked_total() == c.records && s.contains("options-unknown"),
+            "{arch:?} {}: every record options-unknown ({}): {s}",
+            r.name(),
+            c.records
+        );
+    }
+}
+
+// spec: plumb.md §14.6 (WP-210 item (c)) on AArch64.
+#[test]
+fn s14_6_unread_acts_option_aarch64() {
+    judge_unread_acts(Arch::Aarch64);
+}
+
+// spec: plumb.md §14.6 (WP-210 item (c)) on x86-64.
+#[test]
+fn s14_6_unread_acts_option_x86_64() {
+    judge_unread_acts(Arch::X86_64);
+}

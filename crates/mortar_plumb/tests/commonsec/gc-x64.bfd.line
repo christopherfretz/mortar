@@ -1,0 +1,10 @@
+-static
+-z
+max-page-size=4096
+-o
+gc-x64.bfd
+--gc-sections
+startg-x64.o
+vn-x64.o
+vg-x64.o
+-Map=gc-x64.bfd.map

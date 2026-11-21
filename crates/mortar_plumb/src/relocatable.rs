@@ -456,9 +456,56 @@ pub(crate) struct Opts {
     pub binary: BTreeSet<String>,
     /// The input words in line order.
     pub inputs: Vec<String>,
+    /// The line's options whose class at `-r` is `acts` (the mirror's
+    /// column, [`crate::opts::AtR`]) and that [`READ_AT_R`] does not hold,
+    /// by first spelling, once each (§14.6, WP-210).
+    pub unread_acts: Vec<String>,
 }
 
+/// The options whose class at `-r` is `acts` that §14.1 reads, or whose
+/// effect stage R takes from the map (§14.6, WP-210): `-o` names the
+/// output; `--require-defined` extracts as `-u` does (the map lists the
+/// members); the `--incremental` family is IN-12's warning, a plain `-r`.
+/// Every other `acts` option of a line (`-T`, `--defsym`) changes the
+/// output in a way no rule here models.
+pub(crate) const READ_AT_R: &[&str] = &[
+    "-o",
+    "-r",
+    "-Ur",
+    "-e",
+    "-d",
+    "-s",
+    "-S",
+    "-x",
+    "--build-id",
+    "--force-group-allocation",
+    "-b",
+    "--unique",
+    "-u",
+    "--require-defined",
+    "--incremental",
+    "--incremental-state",
+    "--incremental-report",
+    "--incremental-write",
+    "--incremental-sync",
+    "--incremental-verify",
+    "--incremental-changed",
+    "-z execstack",
+    "-z noexecstack",
+];
+
 impl Opts {
+    /// Records `id` (a row's first spelling, or `-z kw`) when it acts at
+    /// `-r` and §14.1 does not read it.
+    fn note_acts(&mut self, t: &crate::opts::Table, id: &str) {
+        if t.at_r(id) == Some(crate::opts::AtR::Acts)
+            && !READ_AT_R.contains(&id)
+            && !self.unread_acts.iter().any(|u| u == id)
+        {
+            self.unread_acts.push(id.to_string());
+        }
+    }
+
     pub(crate) fn read(words: Option<&[String]>) -> Opts {
         let Some(words) = words else { return Opts::default() };
         let t = crate::opts::Table::get();
@@ -476,43 +523,49 @@ impl Opts {
                     }
                     o.inputs.push(word);
                 }
-                crate::opts::Word::Opt { id, value, .. } => match id {
-                    "-r" | "-Ur" => o.relocatable = true,
-                    "-d" => o.define_common = true,
-                    "-s" => {
-                        o.strip_all = true;
-                        o.strip_debug = true;
-                    }
-                    "-S" => o.strip_debug = true,
-                    "-x" => o.discard_all = true,
-                    "-u" => o.undefined.extend(value),
-                    "-e" => o.entry = value,
-                    "--build-id" => {
-                        o.build_id = match value.as_deref() {
-                            Some("none") => None,
-                            Some(v) => Some(v.to_string()),
-                            None => Some("default".into()),
-                        };
-                    }
-                    "--no-build-id" => o.build_id = None,
-                    "--unique" => {
-                        let u = o.unique.get_or_insert_with(Vec::new);
-                        match value {
-                            Some(p) => u.push(p),
-                            None => u.clear(),
+                crate::opts::Word::Opt { id, value, .. } => {
+                    o.note_acts(t, id);
+                    match id {
+                        "-r" | "-Ur" => o.relocatable = true,
+                        "-d" => o.define_common = true,
+                        "-s" => {
+                            o.strip_all = true;
+                            o.strip_debug = true;
                         }
+                        "-S" => o.strip_debug = true,
+                        "-x" => o.discard_all = true,
+                        "-u" => o.undefined.extend(value),
+                        "-e" => o.entry = value,
+                        "--build-id" => {
+                            o.build_id = match value.as_deref() {
+                                Some("none") => None,
+                                Some(v) => Some(v.to_string()),
+                                None => Some("default".into()),
+                            };
+                        }
+                        "--no-build-id" => o.build_id = None,
+                        "--unique" => {
+                            let u = o.unique.get_or_insert_with(Vec::new);
+                            match value {
+                                Some(p) => u.push(p),
+                                None => u.clear(),
+                            }
+                        }
+                        "--force-group-allocation" => o.force_group = true,
+                        "--allow-multiple-definition" => o.muldefs = true,
+                        "-b" => binary = value.as_deref() == Some("binary"),
+                        _ => {}
                     }
-                    "--force-group-allocation" => o.force_group = true,
-                    "--allow-multiple-definition" => o.muldefs = true,
-                    "-b" => binary = value.as_deref() == Some("binary"),
-                    _ => {}
-                },
-                crate::opts::Word::Z { kw, .. } => match kw {
-                    "execstack" => o.execstack = Some(true),
-                    "noexecstack" => o.execstack = Some(false),
-                    "muldefs" => o.muldefs = true,
-                    _ => {}
-                },
+                }
+                crate::opts::Word::Z { kw, .. } => {
+                    o.note_acts(t, &format!("-z {kw}"));
+                    match kw {
+                        "execstack" => o.execstack = Some(true),
+                        "noexecstack" => o.execstack = Some(false),
+                        "muldefs" => o.muldefs = true,
+                        _ => {}
+                    }
+                }
                 crate::opts::Word::Unknown => {}
             }
             i += used.max(1);
@@ -1148,7 +1201,11 @@ fn with_rv<R>(
         cov: RelCoverage::default(),
         raw: output.to_vec(),
     };
-    run(&mut rv);
+    if rv.opts.unread_acts.is_empty() {
+        run(&mut rv);
+    } else {
+        unread_acts(&mut rv);
+    }
     let r = k(&mut rv);
     let mut report = std::mem::take(&mut rv.report);
     report.coverage.relocatable = Some(rv.cov.clone());
@@ -1349,6 +1406,28 @@ fn run(rv: &mut Rv<'_>) {
     container(rv);
     notes(rv);
     sections(rv);
+}
+
+/// §14.6 (WP-210): the line holds an option that acts at `-r` and that
+/// §14.1 does not read (`-T`, `--defsym`): no rule of P-P2 to P-P11 runs
+/// (each could judge what the option changed), every input record is
+/// counted not checked, `options-unknown`, and the summary names the
+/// options.
+fn unread_acts(rv: &mut Rv<'_>) {
+    let mut n = 0u64;
+    for f in 0..rv.ins.len() {
+        for s in 1..rv.ins[f].elf.secs.len() {
+            n += rv.ins[f]
+                .elf
+                .relocs_of(s)
+                .iter()
+                .map(|&rs| rv.ins[f].elf.rels(rs).len() as u64)
+                .sum::<u64>();
+        }
+    }
+    rv.report.coverage.records += n;
+    rv.report.coverage.add_not_checked(Reason::OptionsUnknown, n);
+    rv.cov.unread_acts = rv.opts.unread_acts.clone();
 }
 
 // ---- the places (§14.2) ----

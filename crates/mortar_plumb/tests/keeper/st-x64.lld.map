@@ -1,0 +1,26 @@
+             VMA              LMA     Size Align Out     In      Symbol
+          201158           201158       19     1 .text
+          201158           201158        7     1         main-x64.o:(.text)
+          201158           201158        0     1                 _start
+          20115f           20115f        b     1         libs-x64.a(m2s-x64.o):(.text)
+          20115f           20115f        0     1                 f2
+          20116a           20116a        6     1         libs-x64.a(m2s-x64.o):(.text.g)
+          20116a           20116a        0     1                 g
+          201170           201170        1     1         libs-x64.a(m1-x64.o):(.text)
+          201170           201170        0     1                 f1
+          202171           202171        0     1 .data
+          202171           202171        0     1         main-x64.o:(.data)
+          202171           202171        0     1         libs-x64.a(m2s-x64.o):(.data)
+          202171           202171        0     1         libs-x64.a(m1-x64.o):(.data)
+          202171           202171        0     1 .bss
+          202171           202171        0     1         main-x64.o:(.bss)
+          202171           202171        0     1         libs-x64.a(m2s-x64.o):(.bss)
+          202171           202171        0     1         libs-x64.a(m1-x64.o):(.bss)
+               0                0       1a     1 .comment
+               0                0       1a     1         <internal>:(.comment)
+               0                0       90     8 .symtab
+               0                0       90     8         <internal>:(.symtab)
+               0                0       35     1 .shstrtab
+               0                0       35     1         <internal>:(.shstrtab)
+               0                0       12     1 .strtab
+               0                0       12     1         <internal>:(.strtab)

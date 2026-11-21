@@ -11,7 +11,7 @@ use mortar_elf::consts::{
 use mortar_elf::{Error, Machine, Object, Rel, Rela, SectionIndex, Shdr, SymbolTable};
 
 use crate::image::Image;
-use crate::map::{DiscardReason, Format, Map, MapFile, Placed, SectionRef};
+use crate::map::{ChunkKind, DiscardReason, Format, Map, MapFile, Placed, SectionRef};
 use crate::report::{Finding, Rule, Site};
 use crate::store::{At, Bytes, Resolved, Store};
 
@@ -325,6 +325,47 @@ fn read_obj<'a>(store: &'a Store<'a>, k: usize, file: &MapFile) -> Result<Obj<'a
     })
 }
 
+/// §3.4-§3.6 (WP-210, WP-203's finding): an input section named exactly
+/// `COMMON` (lld's `-r` output of commons, A120; assembly) is listed by
+/// GNU ld, lld and mold as a `COMMON` row of its file, which the readers
+/// take for the file's commons (a `Common` chunk named after the file).
+/// The first such row of its file that holds it places it: under GNU ld
+/// a row of at least its size (GNU ld's `*(COMMON)` puts the section
+/// first and the file's commons after it in one row), under lld and mold
+/// a row of exactly its size (their commons are rows of their own) at an
+/// address of its alignment. Without one it keeps no place.
+fn common_sections(
+    map: &Map,
+    obj_of: &[Option<usize>],
+    names: &[HashMap<String, Vec<usize>>],
+    out: &mut Located<'_>,
+) {
+    let mut claimed = vec![false; map.chunks.len()];
+    for (i, f) in map.files.iter().enumerate() {
+        let Some(oi) = obj_of.get(i).copied().flatten() else { continue };
+        let Some(idx) = names[oi].get("COMMON") else { continue };
+        let label = f.to_string();
+        for &si in idx {
+            let s = &out.objs[oi].secs[si];
+            if !s.alloc() || !matches!(s.place, Place::Absent) {
+                continue;
+            }
+            let (size, align) = (s.shdr.sh_size, s.shdr.sh_addralign.max(1));
+            let pick = map.chunks.iter().enumerate().find(|(k, c)| {
+                !claimed[*k]
+                    && c.kind == ChunkKind::Common
+                    && c.name == label
+                    && c.addr.is_some_and(|a| a % align == 0)
+                    && if map.format == Format::Gnu { c.size >= size } else { c.size == size }
+            });
+            if let Some((k, c)) = pick {
+                claimed[k] = true;
+                out.objs[oi].secs[si].place = Place::Whole(c.addr.unwrap_or(0));
+            }
+        }
+    }
+}
+
 /// Reads the inputs a map names and decides the place of every section
 /// (§3.3).
 #[allow(clippy::too_many_lines)] // the map's records, kind by kind
@@ -392,6 +433,9 @@ pub(crate) fn locate<'a>(
     for p in &map.placed {
         let Some(oi) = obj_of.get(p.file as usize).copied().flatten() else { continue };
         place_one(&mut out, &names[oi], oi, p, image, gnu, cursor.as_mut(), &dropped[oi]);
+    }
+    if map.format != Format::Mortar {
+        common_sections(map, &obj_of, &names, &mut out);
     }
     // mortar's non-alloc records (§3.2): a place in a named output
     // section, or merged into it.

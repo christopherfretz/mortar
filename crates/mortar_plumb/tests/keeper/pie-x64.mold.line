@@ -1,0 +1,13 @@
+-m
+elf_x86_64
+-pie
+-dynamic-linker
+/lib64/ld-linux-x86-64.so.2
+-z
+max-page-size=4096
+-o
+pie-x64.mold
+main-x64.o
+lib-x64.a
+--as-needed
+libh-x64.so

@@ -1,0 +1,27 @@
+               VMA       Size Align Out     In      Symbol
+          0x200000         64     8 EHDR
+          0x200040        448     8 PHDR
+          0x200200          4     8 .eh_frame
+          0x200204         12     4 .eh_frame_hdr
+          0x201210          9     1 .text
+          0x201210          9     1         start-x64.o:(.text)
+          0x201210          0     0                 _start
+          0x201219          0     1         vx-x64.o:(.text)
+          0x202220          8     8 .got
+          0x202228       3544     1 .relro_padding
+          0x203228         80     1 .data
+          0x203228         80     1         start-x64.o:(.data)
+          0x203228          0     0                 refs
+          0x203278          0     1         vx-x64.o:(.data)
+          0x203278         24     8 .got.plt
+          0x203290         16     1 .bss
+          0x203290         16     1         start-x64.o:(.bss)
+          0x2032a0          0     1         vx-x64.o:(.bss)
+          0x2032a0         16     8 COMMON.x
+          0x2032a0         16     8         vx-x64.o:(COMMON.x)
+          0x2032a0          0     0                 cxx
+                 0         37     1 .comment
+                 0        115     1 .shstrtab
+                 0        470     1 .strtab
+                 0       1200     8 .symtab
+                 0        896     8 SHDR

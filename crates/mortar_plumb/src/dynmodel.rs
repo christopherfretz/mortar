@@ -703,8 +703,8 @@ impl Model {
         let mut in_kept: HashSet<String> = HashSet::new();
         // resolve §6.2 (WP-178): a non-local mention defined in a dropped
         // COMDAT copy (the verifier's own keeper, `fate`, in the line's
-        // order) is an undefined
-        // mention of its key with its binding: no definition.
+        // order, among one archive's members the map's: §5.7a, WP-210) is
+        // an undefined mention of its key with its binding: no definition.
         let objs: Vec<&Obj<'a>> = objs.collect();
         // An archive member is ranked by its archive's word (WP-201).
         let dropped = crate::fate::comdat_dropped_ranked(&objs, |o| line.position_of(&o.path));

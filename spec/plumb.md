@@ -812,6 +812,25 @@ each record:
 Tests: `tests/maprec.rs` (§9.2 (e)), `tests/dyn.rs
 s3_3_m8_copy_records_are_the_copies`.
 
+**An input section named `COMMON` (WP-210, WP-203's finding).** An
+allocated input section named exactly `COMMON` (lld's `-r` output of
+commons, A120; assembly) is listed by GNU ld, lld and mold as a `COMMON`
+row of its file (§3.4 to §3.6), which the readers take for the file's
+commons: a `common` chunk named after the file. Under a reference's map
+such a section that no other row places is placed by the first `common`
+chunk of its file, not yet used for one, at an address that is a
+multiple of its `sh_addralign` and of a size at least its `sh_size`
+(GNU ld: `*(COMMON)` lists the section first and the file's commons
+after it in one row) or exactly its `sh_size` (lld, mold: the commons
+are rows of their own; mold's go to `.common`, its section to an orphan
+output section `COMMON`). With no such chunk it keeps no place. Before
+WP-210 every relocation against a symbol of such a section was R5
+("refers to section 'COMMON', which is not in the output") on all
+three references (WP-203's lane steps restricted it by name). mortar's
+map places such a section by its own record. *Test:* `tests/commonsec.rs`
+(`nobits`, `split`: no finding on the three references, AArch64 and
+x86-64).
+
 ### 3.4 GNU ld (`-Map`)
 
 GNU ld's map is a sequence of blocks, each opened by a line at column 0:
@@ -854,8 +873,11 @@ In the last block:
   `LONG`, `QUAD`, `SQUAD` and `FILL`.
 - **Special entries.** An entry whose file is `linker stubs` is a `thunk`
   chunk: veneers and erratum patches go in `.text.stub`. An entry named
-  `COMMON` is a `common` chunk. An entry under `/DISCARD/` is discarded
-  with reason `script`.
+  `COMMON` is a `common` chunk, except under "Discarded input sections",
+  where it is an input section named `COMMON` that `--gc-sections`
+  removed (GNU ld lists no common there; WP-210: before, it was a
+  `common` chunk at address 0, which §3.3's input `COMMON` then placed).
+  An entry under `/DISCARD/` is discarded with reason `script`.
 - **Member spelling.** A file `lib.a(m.o)` is split at the first `(` after
   the last `/`, provided it ends with `)`.
 
@@ -2223,7 +2245,18 @@ archive is read there, WP-201), and an object the line does not name (a
 driver's file) at the rank of the one before it in `FileId` order;
 without a line, `FileId` order. A map's order is not
 the line's: lld's lists a file where its first section is placed, so an
-object without `.eh_frame` comes after a later one with it) is a
+object without `.eh_frame` comes after a later one with it. Members of
+one archive share its rank, so among them the map's order decides
+(WP-210, measured on `tests/keeper/`: an archive [m1, m2] whose members
+both hold group `g`, m2 extracted first. GNU ld and lld keep m2's copy
+and list m2 first, their extraction order; mold and mortar keep m1's
+and list m1 first, the archive's order, for mortar the least `FileId`
+of `spec/resolve.md` §6.1. With h defined in m1's copy only and by an
+`--as-needed` library, GNU ld imports h and makes the library needed,
+mold and mortar define h, lld refuses the link. Each output is clean
+held to its own map's order; the verifier does not choose between the
+two keepers, both are §6.1's "first copy the link reads" for a linker
+that reads members in that order) is a
 *demoted mention* (`spec/resolve.md` §6.2): an undefined mention of its
 key with its binding. When no definition of the key has a place and the
 loader does not bind it (a needed library's definition, or its `COPY`
@@ -6064,6 +6097,45 @@ is accepted from its linker only, never from mortar's map.
   `resolve/comdat-mismatch-strong-demoted-needed.test` (`asn`, AArch64
   and x86-64).
 
+- **A129 (GNU ld, lld; WP-210, WP-203's finding).** When an input
+  section makes `.bss` `SHT_PROGBITS` (an input `COMMON` or `.bss` of
+  type `PROGBITS`; GNU ld warns "section `.bss' type changed to
+  PROGBITS"), GNU ld's `_edata`, `edata`, `__bss_start` and
+  `__bss_start__` stay at its location counter before `.bss` (its script
+  sets them before the `.bss` statement, whatever the section's type),
+  and lld's `__bss_start` is `.bss`'s start (its `_edata` is the end of
+  the `PROGBITS` `.bss`, as Y5 says): between the end of the section
+  below `.bss` and `.bss`'s start. Y5 (layout.md §13.1; mold) takes
+  `_edata` as the end of the non-`NOBITS` data, which the `PROGBITS`
+  `.bss` extends, and `__bss_start` from there. The rule is mortar's
+  and stands: a start-up that zeroes `[__bss_start, _end)` (a
+  freestanding `crt0`) would zero the `PROGBITS` bytes under GNU ld's
+  and lld's values, which are an input's data (WP-203's `vprog.s` holds
+  7 there, `vgc2.s` an address); under Y5's it zeroes nothing it should not. Y5
+  "linker-defined symbol '{name}' has the wrong value". Reproducer:
+  `tests/commonsec.rs` (`progbits`, `split`, AArch64 and x86-64);
+  WP-203's `layout/common-section.test` steps `prog`, `ro`, `nogc` and
+  their variants (GNU ld; the glibc start-up does not reference
+  `__bss_start`, so lld does not define it there).
+- **A130 (GNU ld, AArch64; WP-210, WP-203's finding).** With an
+  orphan writable section after `.bss` (an input `COMMON.x`), GNU ld's
+  `__bss_end__` and `_bss_end__` are the end of `.bss`, before the
+  orphan (its script's `__bss_end__ = .` follows the `.bss` statement;
+  the orphan goes after it), while its `_end` covers the orphan. Y5
+  takes them with `_end` (layout.md §13.1: `end`): mortar's rule stands.
+  Y5 "linker-defined symbol '__bss_end__' has the wrong value".
+  Reproducer: `tests/commonsec.rs` (`dotx`, AArch64); WP-203's `dotx`
+  steps.
+- **A131 (mold; WP-210, WP-203's finding).** mold splits an output
+  section by type: input sections named `COMMON` of types `PROGBITS` and
+  `NOBITS` make two output sections `COMMON`, with `.bss` between them,
+  and its `__start_COMMON`/`__stop_COMMON` (each written twice) bound the
+  last one only; Y5 takes the first. No value is right: no one range
+  bounds both sections. Y5 "linker-defined symbol '__start_COMMON' has
+  the wrong value", and R1 "the relocated field holds the wrong value"
+  on an absolute word naming one (its value). Reproducer: `tests/commonsec.rs` (`split`, AArch64
+  and x86-64); WP-203's `gc` and `nogc` steps.
+
 lld also links a `.hidden` or `.protected` undefined reference that only
 a library defines (writing 0) and drops the library from `DT_NEEDED`:
 that is dyn.md W9, P-D6 (A36's family), declared where a test has it,
@@ -9095,12 +9167,29 @@ on RL-5's question 15): a record whose verdict an option of the line
 decides, when there is no line, is not checked `options-unknown` (its
 output record at the place is consumed, matched or not). Since RL-6 that
 is a record against a common (`-d`/`-dc`/`-dp` decide the target's form:
-a name, or the allocated place). Not yet counted: a line with an option
-whose class at `-r` is "acts" (WP-181 §B, `docs/status/options.md`'s
-"At `-r`" column) that §14.1 does not read; this needs that column in
-the verifier's option mirror (`crates/mortar_plumb/src/opts.rs`, which
-the supervisor regenerates: the `at_r` class of each row). The corpus
-links all have a line, so the term is 0 in the table above. mold's failed
+a name, or the allocated place). **A line with an option that acts
+and is not read (WP-210).** The verifier's option mirror
+(`crates/mortar_plumb/src/opts.rs`, `ACCEPTED`/`REFUSED`) carries each
+row's class at `-r`, `docs/status/options.md`'s "At `-r`" column (WP-181
+§B, cli.md C-R2b): `acts`, `noop`, `final` (as in a final link),
+`conflict` or `refused`; the table test holds it equal to the column.
+§14.1 reads, of the `acts` rows, `-o`, `-r`, `-Ur`, `-e`, `-d`, `-s`,
+`-S`, `-x`, `--build-id`, `--force-group-allocation`, `-b`, `--unique`,
+`-u` and `-z execstack`/`noexecstack`, and takes `--require-defined`
+(extraction, as `-u`: the map lists the members) and the `--incremental`
+family (IN-12: a plain `-r`) as read (`READ_AT_R`). A line holding any
+other `acts` option (today `-T` and `--defsym`, both refused by mortar
+at `-r` until RL-11) is not judged: no rule of P-P2 to P-P11 runs (each
+could judge what the option changed), every input record is not checked
+`options-unknown`, and the summary says "relocatable, not judged: the
+line's {options} acts at -r and is not read (§14.6); every record
+options-unknown". P-P9 and P-P7's header fields are still judged.
+*Test:* `opts.rs s14_6_the_class_at_r`; `tests/relocatable.rs
+s14_6_unread_acts_option_{aarch64,x86_64}` (GNU ld's and lld's `-r
+--defsym=wp210_x=0x10`: no finding, every record `options-unknown`, the
+option named; before WP-210 the rules ran as if the option were absent).
+The corpus links all have a line without such an option, so the term is
+0 in the table above. mold's failed
 records are those of its findings, every one a §10.2 anomaly of §14.9's
 table. GNU ld's `NONE` records
 where it removed an FDE are output records that no input record gives:
@@ -9147,7 +9236,8 @@ name omitted) counts as a judged symbol, not a record.
   `-r` on `-gz=zlib` objects: no finding but lld's A120; a mutant
   `ch_addralign` of 256 in `c1.o`'s `.debug_info` is P-P11's
   "sh_addralign is 1, not 256").
-- `-T` at `-r`: not judged. RL-11 keeps `-T` refused at `-r` unless a
+- `-T` at `-r`: not judged (a line with `-T` is §14.6's unread `acts`
+  option since WP-210: no rule runs). RL-11 keeps `-T` refused at `-r` unless a
   verifier rule for placement by a script at `-r` is written first, in a
   verifier package before it (the supervisor's ruling on WP-180).
 

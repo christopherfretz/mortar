@@ -16,161 +16,163 @@
 //! cannot place is a map that no link of this mortar wrote (M9).
 
 /// The rows of `docs/status/options.md` whose status is not `refused`:
-/// `R <value> <gnu> <spelling>...` with `<value>` `No`, `Next` (a
-/// required value: `=` or the next word) or `Eq` (optional, `=` only)
-/// and `<gnu>` `gnu` for a row GNU ld has (its long names abbreviate,
-/// cli.md §2.4); `Z <keyword> <value>` for a `-z` keyword.
+/// `R <value> <gnu> <at-r> <spelling>...` with `<value>` `No`, `Next` (a
+/// required value: `=` or the next word) or `Eq` (optional, `=` only),
+/// `<gnu>` `gnu` for a row GNU ld has (its long names abbreviate,
+/// cli.md §2.4) and `<at-r>` the row's class at `-r` (its "At `-r`"
+/// column, `spec/cli.md` C-R2b; [`AtR`], WP-210); `Z <keyword> <value>
+/// <at-r>` for a `-z` keyword.
 pub const ACCEPTED: &str = "\
-R Next gnu -o --output
-R No gnu -shared --Bshareable
-R No gnu -pie --pic-executable
-R No gnu -no-pie --no-pic-executable
-R No gnu -r -i --relocatable
-R Next gnu -m
-R Next gnu -e --entry
-R No gnu -Ur
-R No gnu -s --strip-all
-R No gnu -S --strip-debug
-R No gnu --strip-discarded
-R No gnu -x --discard-all
-R No gnu -X --discard-locals
-R No gnu --discard-none
-R Eq gnu --build-id
-R No - --no-build-id
-R Next gnu --compress-debug-sections
-R No gnu --eh-frame-hdr
-R No gnu --no-eh-frame-hdr
-R No gnu --gc-sections
-R No gnu --no-gc-sections
-R No gnu --print-gc-sections
-R No gnu --no-print-gc-sections
-R No gnu --gc-keep-exported
-R No - --gdb-index
-R No - --no-gdb-index
-R No - --no-debug-names
-R Next gnu -l --library
-R No gnu -( --start-group
-R No gnu -) --end-group
-R No - --start-lib
-R No - --end-lib
-R No gnu --as-needed
-R No gnu --no-as-needed
-R No gnu --whole-archive
-R No gnu --no-whole-archive
-R No gnu -Bstatic --dn --non_shared --static
-R No gnu -Bdynamic --dy --call_shared
-R No gnu --no-copy-dt-needed-entries --no-add-needed
-R No gnu --push-state
-R No gnu --pop-state
-R No - --no-dependent-libraries
-R No - --warn-backrefs
-R No - --no-warn-backrefs
-R Next gnu -L --library-path
-R Next gnu --sysroot
-R Next gnu -rpath-link
-R Next gnu --version-script
-R Next gnu --dynamic-list
-R Eq gnu --sort-common --sort_common
-R Next gnu --sort-section
-R Next gnu -u --undefined
-R Next gnu --require-defined
-R Next gnu --defsym
-R Next gnu --wrap
-R Next gnu --export-dynamic-symbol
-R Next gnu --exclude-libs
-R Next gnu -init
-R Next gnu -fini
-R No gnu --undefined-version
-R No gnu --no-undefined-version
-R No gnu -E --export-dynamic
-R No gnu --no-export-dynamic
-R No gnu -Bsymbolic
-R No gnu -Bsymbolic-functions
-R No gnu -Bno-symbolic
-R Next gnu -h -soname
-R Next gnu -rpath
-R Next gnu -I --dynamic-linker
-R No gnu --no-dynamic-linker
-R No gnu --enable-new-dtags
-R No gnu --disable-new-dtags
-R Next gnu --hash-style
-R No gnu --rosegment
-R Next - --error-limit
-R No gnu --fatal-warnings
-R No gnu --no-fatal-warnings
-R No gnu -w --no-warnings
-R Eq - --color-diagnostics
-R No - --no-color-diagnostics
-R No gnu --no-undefined
-R No gnu --allow-multiple-definition
-R No - --no-allow-multiple-definition
-R No gnu --warn-common
-R No - --no-warn-common
-R No gnu --warn-execstack
-R Next - --odr
-R No - --no-odr-check
-R No - --odr-stats
-R No - --odr-check-archives
-R Next - --odr-table
-R Next - --odr-runtime
-R No - --keep-mason-meta
-R No - --detect-odr-violations
-R No gnu --version
-R No gnu -v
-R No gnu -V
-R No gnu --help
-R Next gnu -Map
-R No gnu -M --print-map
-R Eq gnu --verbose
-R Next gnu --dependency-file
-R Eq - --threads
-R Next - --mortar-map
-R No - --time-phases
-R Eq - --incremental
-R No - --no-incremental
-R Next - --incremental-state
-R Eq - --incremental-report
-R Next gnu -plugin
-R Next gnu -plugin-opt
-R No gnu -plugin-save-temps
-R No gnu -flto
-R Next gnu -flto-partition
-R Next gnu -fuse-ld
-R Eq gnu --fix-cortex-a53-843419
-Z now No
-Z lazy No
-Z relro No
-Z norelro No
-Z execstack No
-Z noexecstack No
-Z text No
-Z separate-code No
-Z noseparate-code No
-Z defs No
-Z max-page-size Next
-Z common-page-size Next
-Z sectionheader No
-Z muldefs No
-Z nostart-stop-gc No
-Z initfirst No
-Z interpose No
-Z nodelete No
-Z nodlopen No
-Z origin No
-Z memory-seal No
-Z nomemory-seal No
-R No gnu -EL
-R No gnu -g
-R Next gnu -O
-R No gnu -Qy
-R No gnu -qmagic
-R Next gnu -assert
-R No gnu --map-whole-files
-R No gnu --no-map-whole-files
-R No gnu --no-keep-memory
-R No gnu --reduce-memory-overheads
-R Next gnu --hash-size
-R Next gnu --max-cache-size
+R Next gnu acts -o --output
+R No gnu conflict -shared --Bshareable
+R No gnu conflict -pie --pic-executable
+R No gnu noop -no-pie --no-pic-executable
+R No gnu acts -r -i --relocatable
+R Next gnu noop -m
+R Next gnu acts -e --entry
+R No gnu acts -Ur
+R No gnu acts -s --strip-all
+R No gnu acts -S --strip-debug
+R No gnu noop --strip-discarded
+R No gnu acts -x --discard-all
+R No gnu noop -X --discard-locals
+R No gnu noop --discard-none
+R Eq gnu acts --build-id
+R No - noop --no-build-id
+R Next gnu refused --compress-debug-sections
+R No gnu noop --eh-frame-hdr
+R No gnu noop --no-eh-frame-hdr
+R No gnu refused --gc-sections
+R No gnu noop --no-gc-sections
+R No gnu noop --print-gc-sections
+R No gnu noop --no-print-gc-sections
+R No gnu noop --gc-keep-exported
+R No - refused --gdb-index
+R No - noop --no-gdb-index
+R No - noop --no-debug-names
+R Next gnu noop -l --library
+R No gnu noop -( --start-group
+R No gnu noop -) --end-group
+R No - final --start-lib
+R No - final --end-lib
+R No gnu noop --as-needed
+R No gnu noop --no-as-needed
+R No gnu noop --whole-archive
+R No gnu noop --no-whole-archive
+R No gnu noop -Bstatic --dn --non_shared --static
+R No gnu noop -Bdynamic --dy --call_shared
+R No gnu noop --no-copy-dt-needed-entries --no-add-needed
+R No gnu noop --push-state
+R No gnu noop --pop-state
+R No - noop --no-dependent-libraries
+R No - final --warn-backrefs
+R No - final --no-warn-backrefs
+R Next gnu noop -L --library-path
+R Next gnu final --sysroot
+R Next gnu noop -rpath-link
+R Next gnu noop --version-script
+R Next gnu conflict --dynamic-list
+R Eq gnu noop --sort-common --sort_common
+R Next gnu noop --sort-section
+R Next gnu acts -u --undefined
+R Next gnu acts --require-defined
+R Next gnu acts --defsym
+R Next gnu refused --wrap
+R Next gnu conflict --export-dynamic-symbol
+R Next gnu noop --exclude-libs
+R Next gnu conflict -init
+R Next gnu conflict -fini
+R No gnu noop --undefined-version
+R No gnu noop --no-undefined-version
+R No gnu conflict -E --export-dynamic
+R No gnu noop --no-export-dynamic
+R No gnu conflict -Bsymbolic
+R No gnu conflict -Bsymbolic-functions
+R No gnu noop -Bno-symbolic
+R Next gnu conflict -h -soname
+R Next gnu noop -rpath
+R Next gnu noop -I --dynamic-linker
+R No gnu noop --no-dynamic-linker
+R No gnu conflict --enable-new-dtags
+R No gnu noop --disable-new-dtags
+R Next gnu noop --hash-style
+R No gnu noop --rosegment
+R Next - final --error-limit
+R No gnu final --fatal-warnings
+R No gnu final --no-fatal-warnings
+R No gnu final -w --no-warnings
+R Eq - final --color-diagnostics
+R No - final --no-color-diagnostics
+R No gnu noop --no-undefined
+R No gnu final --allow-multiple-definition
+R No - final --no-allow-multiple-definition
+R No gnu noop --warn-common
+R No - final --no-warn-common
+R No gnu final --warn-execstack
+R Next - final --odr
+R No - final --no-odr-check
+R No - final --odr-stats
+R No - final --odr-check-archives
+R Next - noop --odr-table
+R Next - noop --odr-runtime
+R No - noop --keep-mason-meta
+R No - noop --detect-odr-violations
+R No gnu final --version
+R No gnu final -v
+R No gnu final -V
+R No gnu final --help
+R Next gnu noop -Map
+R No gnu final -M --print-map
+R Eq gnu final --verbose
+R Next gnu final --dependency-file
+R Eq - noop --threads
+R Next - noop --mortar-map
+R No - final --time-phases
+R Eq - acts --incremental
+R No - noop --no-incremental
+R Next - acts --incremental-state
+R Eq - acts --incremental-report
+R Next gnu noop -plugin
+R Next gnu noop -plugin-opt
+R No gnu noop -plugin-save-temps
+R No gnu noop -flto
+R Next gnu noop -flto-partition
+R Next gnu noop -fuse-ld
+R Eq gnu noop --fix-cortex-a53-843419
+Z now No noop
+Z lazy No noop
+Z relro No noop
+Z norelro No noop
+Z execstack No acts
+Z noexecstack No acts
+Z text No noop
+Z separate-code No noop
+Z noseparate-code No noop
+Z defs No noop
+Z max-page-size Next noop
+Z common-page-size Next noop
+Z sectionheader No noop
+Z muldefs No final
+Z nostart-stop-gc No noop
+Z initfirst No noop
+Z interpose No noop
+Z nodelete No noop
+Z nodlopen No noop
+Z origin No noop
+Z memory-seal No refused
+Z nomemory-seal No noop
+R No gnu noop -EL
+R No gnu noop -g
+R Next gnu noop -O
+R No gnu noop -Qy
+R No gnu noop -qmagic
+R Next gnu noop -assert
+R No gnu noop --map-whole-files
+R No gnu noop --no-map-whole-files
+R No gnu noop --no-keep-memory
+R No gnu noop --reduce-memory-overheads
+R Next gnu noop --hash-size
+R Next gnu noop --max-cache-size
 ";
 
 /// The rows of `docs/status/options.md` whose status is `refused`, in
@@ -180,345 +182,372 @@ R Next gnu --max-cache-size
 /// linker's output of a line mortar refused): whether such an option
 /// takes the next word is the table's, as for every row (WP-131, V6).
 pub const REFUSED: &str = "\
-R Next gnu --oformat
-R No gnu -d --dc --dp
-R No gnu --no-define-common
-R No gnu -q --emit-relocs
-R No gnu --no-strip-discarded
-R No gnu -n --nmagic
-R No gnu -N --omagic
-R No gnu --no-omagic
-R No - --no-nmagic
-R Eq gnu --package-metadata
-R Next - --icf
-R No - --no-icf
-R No - --print-icf-sections
-R No - --no-print-icf-sections
-R Next - --keep-unique
-R No - --ignore-data-address-equality
-R No - --ignore-function-address-equality
-R No - --debug-names
-R No gnu --relax
-R No gnu --no-relax
-R No gnu --force-group-allocation
-R No gnu --traditional-format
-R No gnu --embedded-relocs
-R No gnu --force-exe-suffix
-R Next gnu --out-implib
-R No - --execute-only
-R No - --no-execute-only
-R Next - --compress-sections
-R Eq - --separate-debug-file
-R No - --no-separate-debug-file
-R Next gnu -R --just-symbols
-R Next gnu -b --format
-R No gnu --copy-dt-needed-entries --add-needed
-R No gnu --accept-unknown-input-arch
-R No gnu --no-accept-unknown-input-arch
-R No gnu --no-warn-mismatch
-R No gnu --no-warn-search-mismatch
-R Next gnu --remap-inputs-file
-R Next gnu --remap-inputs
-R No - --dependent-libraries
-R No - --fortran-common
-R No - --no-fortran-common
-R Next - --warn-backrefs-exclude
-R Next - --why-extract
-R Next - --print-archive-stats
-R No - --fat-lto-objects
-R No - --no-fat-lto-objects
-R No gnu -nostdlib
-R Next gnu -Y
-R Next - -C --directory
-R Next - --chroot
-R Next gnu -T --script
-R Next gnu --default-script --dT
-R Next gnu -c --mri-script
-R Next gnu --export-dynamic-symbol-list
-R Next gnu --retain-symbols-file
-R Next gnu --section-ordering-file
-R Next - --symbol-ordering-file
-R No - --no-warn-symbol-ordering
-R No - --warn-symbol-ordering
-R Next - --call-graph-ordering-file
-R Next - --call-graph-profile-sort
-R Next - --print-symbol-order
-R Next - --irpgo-profile
-R Next - --bp-startup-sort
-R Next - --bp-compression-sort
-R No - --bp-compression-sort-startup-functions
-R No - --verbose-bp-section-orderer
-R Next gnu --orphan-handling
-R Eq gnu --unique
-R No gnu --enable-non-contiguous-regions
-R No gnu --enable-non-contiguous-regions-warnings
-R No gnu --disable-linker-version
-R No gnu --enable-linker-version
-R No gnu --check-sections
-R No gnu --no-check-sections
-R Eq - --shuffle-sections
-R No - --reverse-sections
-R Next - --randomize-section-padding
-R Next - --undefined-glob
-R Next gnu -y --trace-symbol
-R Next gnu --ignore-unresolved-symbol
-R Eq gnu --demangle
-R No gnu --no-demangle
-R No gnu --default-symver
-R No gnu --default-imported-symver
-R Next gnu --version-exports-section
-R No gnu --disable-multiple-abs-defs
-R No - --gnu-unique
-R No - --no-gnu-unique
-R Next gnu --task-link
-R No - --Bsymbolic-non-weak
-R No - --Bsymbolic-non-weak-functions
-R Next - --pack-dyn-relocs
-R Next gnu -f --auxiliary
-R Next gnu -F --filter
-R Next gnu --audit
-R Next gnu -P --depaudit
-R No gnu -Bgroup
-R No gnu --dynamic-list-data
-R No gnu --dynamic-list-cpp-new
-R No gnu --dynamic-list-cpp-typeinfo
-R No gnu --allow-shlib-undefined
-R No gnu --no-allow-shlib-undefined
-R Next gnu --spare-dynamic-tags
-R Next - --spare-program-headers
-R No - --apply-dynamic-relocs
-R No - --use-android-relr-tags
-R No - --no-use-android-relr-tags
-R No - --android-memtag-heap
-R No - --android-memtag-stack
-R Next - --android-memtag-mode
-R Next gnu -Ttext
-R Next gnu -Tdata
-R Next gnu -Tbss
-R Next gnu -Ttext-segment
-R Next gnu -Trodata-segment
-R Next gnu -Tldata-segment
-R Next gnu --section-start
-R Next gnu --image-base
-R No gnu --no-rosegment
-R No - --xosegment
-R No - --no-xosegment
-R Eq gnu --split-by-file
-R Eq gnu --split-by-reloc
-R Next gnu -G --gpsize
-R No - --optimize-bb-jumps
-R No - --no-optimize-bb-jumps
-R No - --branch-to-branch
-R No - --no-branch-to-branch
-R Next gnu --unresolved-symbols
-R No gnu --warn-unresolved-symbols
-R No gnu --error-unresolved-symbols
-R No gnu --noinhibit-exec --noinhibit_exec
-R Next gnu --error-handling-script
-R No gnu --warn-constructors
-R No gnu --warn-multiple-gp
-R No gnu --warn-once
-R No gnu --warn-section-align
-R No gnu --warn-textrel --warn-shared-textrel
-R No gnu --warn-alternate-em
-R No gnu --warn-execstack-objects
-R No gnu --no-warn-execstack
-R No gnu --error-execstack
-R No gnu --no-error-execstack
-R No gnu --warn-rwx-segments
-R No gnu --no-warn-rwx-segments
-R No gnu --error-rwx-segments
-R No gnu --no-error-rwx-segments
-R No - --warn-ifunc-textrel
-R No - --no-warn-ifunc-textrel
-R No - --vs-diagnostics
-R Next - --why-live
-R No gnu --print-map-discarded
-R No gnu --no-print-map-discarded
-R No gnu --print-map-locals
-R No gnu --no-print-map-locals
-R No gnu --cref
-R No gnu -t --trace
-R Next - --reproduce
-R No - --repro
-R Next - --thread-count
-R No - --no-threads
-R No - --verify
-R Next - --incremental-write
-R Next - --incremental-sync
-R No - --incremental-verify
-R Next - --incremental-changed
-R No gnu --stats
-R No - --perf
-R Eq - --time-trace
-R Next - --time-trace-granularity
-R No gnu --print-memory-usage
-R No gnu --print-output-format
-R No gnu --print-sysroot
-R No gnu --target-help
-R No - --fork
-R No - --no-fork
-R No - --quick-exit
-R No - --no-quick-exit
-R No - --detach
-R No - --no-detach
-R No - --mmap-output-file
-R No - --no-mmap-output-file
-R Next - --rsp-quoting
-R Next - --run
-R Next - --lto
-R Next - --lto-O
-R Next - --lto-CGO
-R Next - --lto-partitions
-R Next - --lto-aa-pipeline
-R Next - --lto-newpm-passes
-R No - --lto-debug-pass-manager
-R No - --lto-emit-asm
-R No - --lto-emit-llvm
-R Next - --lto-sample-profile
-R Next - --lto-cs-profile-file
-R No - --lto-cs-profile-generate
-R No - --lto-whole-program-visibility
-R No - --no-lto-whole-program-visibility
-R No - --lto-pgo-warn-mismatch
-R No - --no-lto-pgo-warn-mismatch
-R Next - --lto-basic-block-sections
-R No - --lto-basic-block-address-map
-R No - --no-lto-basic-block-address-map
-R No - --lto-unique-basic-block-section-names
-R No - --no-lto-unique-basic-block-section-names
-R No - --lto-validate-all-vtables-have-type-infos
-R No - --no-lto-validate-all-vtables-have-type-infos
-R Next - --lto-known-safe-vtables
-R Next - --load-pass-plugin
-R Next - --mllvm
-R Eq - --save-temps
-R Next - --opt-remarks-filename
-R Next - --opt-remarks-format
-R Next - --opt-remarks-passes
-R Next - --opt-remarks-hotness-threshold
-R No - --opt-remarks-with-hotness
-R Next - --thinlto-cache-dir
-R Next - --thinlto-cache-policy
-R Next - --thinlto-jobs
-R Next - --thinlto-single-module
-R Next - --thinlto-distributor
-R Next - --thinlto-distributor-arg
-R Next - --thinlto-remote-compiler
-R Next - --thinlto-remote-compiler-arg
-R Next - --thinlto-remote-compiler-prepend-arg
-R No gnu --fix-cortex-a53-835769
-R No gnu --no-apply-dynamic-relocs
-R No gnu --pic-veneer
-R Next gnu --stub-group-size
-R No gnu --no-enum-size-warning
-R No gnu --no-wchar-size-warning
-R No gnu --no-pipeline-knowledge
-R No gnu --ld-generated-unwind-info
-R No gnu --no-ld-generated-unwind-info
-Z force-bti No
-Z bti-report Eq
-Z pac-plt No
-Z gcs Next
-Z gcs-report Eq
-Z gcs-report-dynamic Next
-Z noextern-protected-data No
-Z indirect-extern-access No
-Z noindirect-extern-access No
-Z dynamic-undefined-weak No
-Z nodynamic-undefined-weak No
-Z call-nop Next
-Z ibtplt No
-Z ibt No
-Z shstk No
-Z cet-report Next
-Z report-relative-reloc No
-Z x86-64-baseline No
-Z x86-64-v2 No
-Z x86-64-v3 No
-Z x86-64-v4 No
-Z isa-level-report Next
-Z noreloc-overflow No
-Z lam-u48 No
-Z lam-u48-report Next
-Z lam-u57 No
-Z lam-u57-report Next
-Z lam-report Next
-Z mark-plt No
-Z nomark-plt No
-Z notext No
-Z undefs No
-Z stack-size Next
-Z pack-relative-relocs No
-Z nopack-relative-relocs No
-Z copyreloc No
-Z nocopyreloc No
-Z combreloc No
-Z nocombreloc No
-Z nosectionheader No
-Z unique-symbol No
-Z nounique-symbol No
-Z globalaudit No
-Z start-stop-gc No
-Z start-stop-visibility Next
-Z global No
-Z unique No
-Z nounique No
-Z loadfltr No
-Z nodefaultlib No
-Z nodump No
-Z common No
-Z nocommon No
-Z dead-reloc-in-nonalloc Next
-Z execute-only-report Next
-Z force-ibt No
-Z hazardplt No
-Z ifunc-noplt No
-Z keep-text-section-prefix No
-Z nokeep-text-section-prefix No
-Z nognustack No
-Z rel No
-Z rela No
-Z retpolineplt No
-Z rodynamic No
-Z separate-loadable-segments No
-Z wxneeded No
-Z lrodata-after-bss No
-Z nolrodata-after-bss No
-Z zicfilp Next
-Z zicfiss Next
-Z zicfilp-unlabeled-report Next
-Z zicfilp-func-sig-report Next
-Z zicfiss-report Next
-Z execstack-if-needed No
-Z rewrite-endbr No
-Z norewrite-endbr No
-R Next gnu -a
-R Next gnu -A --architecture
-R No gnu -EB
-R No gnu --dll-verbose
-R No gnu --ctf-variables
-R No gnu --no-ctf-variables
-R Next gnu --ctf-share-types
-R No - --be8
-R No - --fix-cortex-a8
-R No - --merge-exidx-entries
-R No - --no-merge-exidx-entries
-R No - --target1-abs
-R No - --target1-rel
-R Next - --target2
-R No - --cmse-implib
-R Next - --in-implib
-R No - --relax-gp
-R No - --no-relax-gp
-R No - --pcrel-optimize
-R No - --no-pcrel-optimize
-R No - --toc-optimize
-R No - --no-toc-optimize
-R Eq - --power10-stubs
-R No - --no-power10-stubs
-R Next - --split-stack-adjust-size
+R Next gnu final --oformat
+R No gnu acts -d --dc --dp
+R No gnu final --no-define-common
+R No gnu noop -q --emit-relocs
+R No gnu final --no-strip-discarded
+R No gnu final -n --nmagic
+R No gnu final -N --omagic
+R No gnu final --no-omagic
+R No - final --no-nmagic
+R Eq gnu final --package-metadata
+R Next - refused --icf
+R No - final --no-icf
+R No - final --print-icf-sections
+R No - final --no-print-icf-sections
+R Next - final --keep-unique
+R No - final --ignore-data-address-equality
+R No - final --ignore-function-address-equality
+R No - final --debug-names
+R No gnu refused --relax
+R No gnu noop --no-relax
+R No gnu acts --force-group-allocation
+R No gnu final --traditional-format
+R No gnu final --embedded-relocs
+R No gnu final --force-exe-suffix
+R Next gnu final --out-implib
+R No - final --execute-only
+R No - final --no-execute-only
+R Next - final --compress-sections
+R Eq - final --separate-debug-file
+R No - final --no-separate-debug-file
+R Next gnu final -R --just-symbols
+R Next gnu acts -b --format
+R No gnu final --copy-dt-needed-entries --add-needed
+R No gnu final --accept-unknown-input-arch
+R No gnu final --no-accept-unknown-input-arch
+R No gnu final --no-warn-mismatch
+R No gnu final --no-warn-search-mismatch
+R Next gnu final --remap-inputs-file
+R Next gnu final --remap-inputs
+R No - final --dependent-libraries
+R No - final --fortran-common
+R No - final --no-fortran-common
+R Next - final --warn-backrefs-exclude
+R Next - final --why-extract
+R Next - final --print-archive-stats
+R No - final --fat-lto-objects
+R No - final --no-fat-lto-objects
+R No gnu final -nostdlib
+R Next gnu final -Y
+R Next - final -C --directory
+R Next - final --chroot
+R Next gnu acts -T --script
+R Next gnu final --default-script --dT
+R Next gnu final -c --mri-script
+R Next gnu conflict --export-dynamic-symbol-list
+R Next gnu final --retain-symbols-file
+R Next gnu final --section-ordering-file
+R Next - final --symbol-ordering-file
+R No - final --no-warn-symbol-ordering
+R No - final --warn-symbol-ordering
+R Next - final --call-graph-ordering-file
+R Next - noop --call-graph-profile-sort
+R Next - final --print-symbol-order
+R Next - final --irpgo-profile
+R Next - noop --bp-startup-sort
+R Next - noop --bp-compression-sort
+R No - noop --bp-compression-sort-startup-functions
+R No - final --verbose-bp-section-orderer
+R Next gnu noop --orphan-handling
+R Eq gnu acts --unique
+R No gnu final --enable-non-contiguous-regions
+R No gnu final --enable-non-contiguous-regions-warnings
+R No gnu final --disable-linker-version
+R No gnu final --enable-linker-version
+R No gnu final --check-sections
+R No gnu final --no-check-sections
+R Eq - final --shuffle-sections
+R No - final --reverse-sections
+R Next - final --randomize-section-padding
+R Next - final --undefined-glob
+R Next gnu final -y --trace-symbol
+R Next gnu final --ignore-unresolved-symbol
+R Eq gnu final --demangle
+R No gnu final --no-demangle
+R No gnu final --default-symver
+R No gnu final --default-imported-symver
+R Next gnu final --version-exports-section
+R No gnu final --disable-multiple-abs-defs
+R No - final --gnu-unique
+R No - final --no-gnu-unique
+R Next gnu final --task-link
+R No - conflict --Bsymbolic-non-weak
+R No - conflict --Bsymbolic-non-weak-functions
+R Next - conflict --pack-dyn-relocs
+R Next gnu final -f --auxiliary
+R Next gnu final -F --filter
+R Next gnu final --audit
+R Next gnu final -P --depaudit
+R No gnu final -Bgroup
+R No gnu conflict --dynamic-list-data
+R No gnu conflict --dynamic-list-cpp-new
+R No gnu conflict --dynamic-list-cpp-typeinfo
+R No gnu final --allow-shlib-undefined
+R No gnu final --no-allow-shlib-undefined
+R Next gnu final --spare-dynamic-tags
+R Next - final --spare-program-headers
+R No - final --apply-dynamic-relocs
+R No - final --use-android-relr-tags
+R No - final --no-use-android-relr-tags
+R No - final --android-memtag-heap
+R No - final --android-memtag-stack
+R Next - conflict --android-memtag-mode
+R Next gnu final -Ttext
+R Next gnu final -Tdata
+R Next gnu final -Tbss
+R Next gnu final -Ttext-segment
+R Next gnu final -Trodata-segment
+R Next gnu final -Tldata-segment
+R Next gnu final --section-start
+R Next gnu final --image-base
+R No gnu final --no-rosegment
+R No - final --xosegment
+R No - final --no-xosegment
+R Eq gnu final --split-by-file
+R Eq gnu final --split-by-reloc
+R Next gnu final -G --gpsize
+R No - final --optimize-bb-jumps
+R No - final --no-optimize-bb-jumps
+R No - final --branch-to-branch
+R No - final --no-branch-to-branch
+R Next gnu noop --unresolved-symbols
+R No gnu final --warn-unresolved-symbols
+R No gnu final --error-unresolved-symbols
+R No gnu final --noinhibit-exec --noinhibit_exec
+R Next gnu final --error-handling-script
+R No gnu final --warn-constructors
+R No gnu final --warn-multiple-gp
+R No gnu final --warn-once
+R No gnu final --warn-section-align
+R No gnu final --warn-textrel --warn-shared-textrel
+R No gnu final --warn-alternate-em
+R No gnu final --warn-execstack-objects
+R No gnu final --no-warn-execstack
+R No gnu final --error-execstack
+R No gnu final --no-error-execstack
+R No gnu final --warn-rwx-segments
+R No gnu final --no-warn-rwx-segments
+R No gnu final --error-rwx-segments
+R No gnu final --no-error-rwx-segments
+R No - final --warn-ifunc-textrel
+R No - final --no-warn-ifunc-textrel
+R No - final --vs-diagnostics
+R Next - final --why-live
+R No gnu final --print-map-discarded
+R No gnu final --no-print-map-discarded
+R No gnu final --print-map-locals
+R No gnu final --no-print-map-locals
+R No gnu final --cref
+R No gnu final -t --trace
+R Next - final --reproduce
+R No - final --repro
+R Next - final --thread-count
+R No - final --no-threads
+R No - final --verify
+R Next - acts --incremental-write
+R Next - acts --incremental-sync
+R No - acts --incremental-verify
+R Next - acts --incremental-changed
+R No gnu final --stats
+R No - final --perf
+R Eq - final --time-trace
+R Next - final --time-trace-granularity
+R No gnu final --print-memory-usage
+R No gnu final --print-output-format
+R No gnu final --print-sysroot
+R No gnu final --target-help
+R No - final --fork
+R No - final --no-fork
+R No - final --quick-exit
+R No - final --no-quick-exit
+R No - final --detach
+R No - final --no-detach
+R No - final --mmap-output-file
+R No - final --no-mmap-output-file
+R Next - final --rsp-quoting
+R Next - final --run
+R Next - noop --lto
+R Next - noop --lto-O
+R Next - noop --lto-CGO
+R Next - noop --lto-partitions
+R Next - noop --lto-aa-pipeline
+R Next - noop --lto-newpm-passes
+R No - noop --lto-debug-pass-manager
+R No - noop --lto-emit-asm
+R No - noop --lto-emit-llvm
+R Next - noop --lto-sample-profile
+R Next - noop --lto-cs-profile-file
+R No - noop --lto-cs-profile-generate
+R No - noop --lto-whole-program-visibility
+R No - final --no-lto-whole-program-visibility
+R No - noop --lto-pgo-warn-mismatch
+R No - final --no-lto-pgo-warn-mismatch
+R Next - noop --lto-basic-block-sections
+R No - noop --lto-basic-block-address-map
+R No - final --no-lto-basic-block-address-map
+R No - noop --lto-unique-basic-block-section-names
+R No - final --no-lto-unique-basic-block-section-names
+R No - noop --lto-validate-all-vtables-have-type-infos
+R No - final --no-lto-validate-all-vtables-have-type-infos
+R Next - noop --lto-known-safe-vtables
+R Next - final --load-pass-plugin
+R Next - final --mllvm
+R Eq - final --save-temps
+R Next - final --opt-remarks-filename
+R Next - final --opt-remarks-format
+R Next - final --opt-remarks-passes
+R Next - final --opt-remarks-hotness-threshold
+R No - final --opt-remarks-with-hotness
+R Next - final --thinlto-cache-dir
+R Next - final --thinlto-cache-policy
+R Next - final --thinlto-jobs
+R Next - final --thinlto-single-module
+R Next - final --thinlto-distributor
+R Next - final --thinlto-distributor-arg
+R Next - final --thinlto-remote-compiler
+R Next - final --thinlto-remote-compiler-arg
+R Next - final --thinlto-remote-compiler-prepend-arg
+R No gnu final --fix-cortex-a53-835769
+R No gnu final --no-apply-dynamic-relocs
+R No gnu final --pic-veneer
+R Next gnu final --stub-group-size
+R No gnu final --no-enum-size-warning
+R No gnu final --no-wchar-size-warning
+R No gnu final --no-pipeline-knowledge
+R No gnu final --ld-generated-unwind-info
+R No gnu final --no-ld-generated-unwind-info
+Z force-bti No refused
+Z bti-report Eq noop
+Z pac-plt No noop
+Z gcs Next refused
+Z gcs-report Eq noop
+Z gcs-report-dynamic Next noop
+Z noextern-protected-data No noop
+Z indirect-extern-access No refused
+Z noindirect-extern-access No noop
+Z dynamic-undefined-weak No noop
+Z nodynamic-undefined-weak No noop
+Z call-nop Next noop
+Z ibtplt No noop
+Z ibt No refused
+Z shstk No refused
+Z cet-report Next final
+Z report-relative-reloc No noop
+Z x86-64-baseline No final
+Z x86-64-v2 No refused
+Z x86-64-v3 No refused
+Z x86-64-v4 No refused
+Z isa-level-report Next noop
+Z noreloc-overflow No noop
+Z lam-u48 No refused
+Z lam-u48-report Next final
+Z lam-u57 No refused
+Z lam-u57-report Next final
+Z lam-report Next final
+Z mark-plt No noop
+Z nomark-plt No noop
+Z notext No noop
+Z undefs No noop
+Z stack-size Next refused
+Z pack-relative-relocs No noop
+Z nopack-relative-relocs No noop
+Z copyreloc No final
+Z nocopyreloc No noop
+Z combreloc No noop
+Z nocombreloc No noop
+Z nosectionheader No conflict
+Z unique-symbol No refused
+Z nounique-symbol No noop
+Z globalaudit No noop
+Z start-stop-gc No noop
+Z start-stop-visibility Next noop
+Z global No noop
+Z unique No noop
+Z nounique No noop
+Z loadfltr No noop
+Z nodefaultlib No noop
+Z nodump No noop
+Z common No noop
+Z nocommon No noop
+Z dead-reloc-in-nonalloc Next final
+Z execute-only-report Next noop
+Z force-ibt No final
+Z hazardplt No final
+Z ifunc-noplt No final
+Z keep-text-section-prefix No final
+Z nokeep-text-section-prefix No final
+Z nognustack No final
+Z rel No final
+Z rela No final
+Z retpolineplt No final
+Z rodynamic No final
+Z separate-loadable-segments No final
+Z wxneeded No final
+Z lrodata-after-bss No final
+Z nolrodata-after-bss No final
+Z zicfilp Next final
+Z zicfiss Next final
+Z zicfilp-unlabeled-report Next final
+Z zicfilp-func-sig-report Next final
+Z zicfiss-report Next final
+Z execstack-if-needed No final
+Z rewrite-endbr No final
+Z norewrite-endbr No final
+R Next gnu final -a
+R Next gnu final -A --architecture
+R No gnu final -EB
+R No gnu final --dll-verbose
+R No gnu final --ctf-variables
+R No gnu final --no-ctf-variables
+R Next gnu noop --ctf-share-types
+R No - final --be8
+R No - final --fix-cortex-a8
+R No - final --merge-exidx-entries
+R No - final --no-merge-exidx-entries
+R No - final --target1-abs
+R No - final --target1-rel
+R Next - final --target2
+R No - final --cmse-implib
+R Next - final --in-implib
+R No - final --relax-gp
+R No - final --no-relax-gp
+R No - final --pcrel-optimize
+R No - final --no-pcrel-optimize
+R No - final --toc-optimize
+R No - final --no-toc-optimize
+R Eq - final --power10-stubs
+R No - final --no-power10-stubs
+R Next - final --split-stack-adjust-size
 ";
+
+/// A row's class at `-r` (`docs/status/options.md`'s "At `-r`" column,
+/// `spec/cli.md` C-R2b; plumb.md §14.6, WP-210).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AtR {
+    /// `acts`: the option changes the `-r` output (C-R3), or is refused
+    /// with `-r` until its package lands.
+    Acts,
+    /// `noop`: accepted, no effect (C-R2).
+    Noop,
+    /// `as in a final link`.
+    Final,
+    /// `conflicting-options with -r` (C-R1).
+    Conflict,
+    /// `refused` with `-r` (C-R4, C-R2a).
+    Refused,
+}
+
+fn at_r(s: &str) -> AtR {
+    match s {
+        "acts" => AtR::Acts,
+        "noop" => AtR::Noop,
+        "conflict" => AtR::Conflict,
+        "refused" => AtR::Refused,
+        _ => AtR::Final,
+    }
+}
 
 /// How a row takes its value (cli.md §2.3).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -540,6 +569,7 @@ struct Row {
     gnu: bool,
     /// A row of [`ACCEPTED`] (else of [`REFUSED`]).
     accepted: bool,
+    at_r: AtR,
 }
 
 /// The whole table (WP-131): each spelling's name, without its dashes,
@@ -549,6 +579,8 @@ struct Row {
 pub struct Table {
     names: Vec<(&'static str, Row)>,
     z: Vec<(&'static str, bool, bool)>,
+    /// Each `-z` keyword's class at `-r`, in `z`'s order.
+    z_at_r: Vec<AtR>,
 }
 
 /// What a word of a line is, read by [`Table::word`] (cli.md §2).
@@ -581,18 +613,22 @@ impl Table {
     pub fn get() -> &'static Table {
         static T: std::sync::OnceLock<Table> = std::sync::OnceLock::new();
         T.get_or_init(|| {
-            let mut t = Table { names: Vec::new(), z: Vec::new() };
+            let mut t = Table { names: Vec::new(), z: Vec::new(), z_at_r: Vec::new() };
             for (text, accepted) in [(ACCEPTED, true), (REFUSED, false)] {
                 for line in text.lines() {
                     let w: Vec<&'static str> = line.split(' ').collect();
                     match w.as_slice() {
-                        ["Z", kw, v] => t.z.push((*kw, val(v) != Val::No, accepted)),
-                        ["R", v, gnu, spellings @ ..] if !spellings.is_empty() => {
+                        ["Z", kw, v, r] => {
+                            t.z.push((*kw, val(v) != Val::No, accepted));
+                            t.z_at_r.push(at_r(r));
+                        }
+                        ["R", v, gnu, r, spellings @ ..] if !spellings.is_empty() => {
                             let row = Row {
                                 id: spellings[0],
                                 value: val(v),
                                 gnu: *gnu == "gnu",
                                 accepted,
+                                at_r: at_r(r),
                             };
                             for s in spellings {
                                 t.names.push((s.trim_start_matches('-'), row));
@@ -624,6 +660,16 @@ impl Table {
             }
         }
         v
+    }
+
+    /// The class at `-r` of the row whose first spelling is `id` (a
+    /// [`Word::Opt`]'s), or of `-z` keyword `kw` when `id` is `-z kw`
+    /// ([`Word::Z`]'s, spelled so); `None` for no row (WP-210).
+    pub fn at_r(&self, id: &str) -> Option<AtR> {
+        if let Some(kw) = id.strip_prefix("-z ") {
+            return self.z.iter().position(|z| z.0 == kw).map(|i| self.z_at_r[i]);
+        }
+        self.names.iter().find(|(_, r)| r.id == id).map(|(_, r)| r.at_r)
     }
 
     /// The `-z` keywords: name, takes `=VALUE`, accepted. For tests.
@@ -1134,11 +1180,22 @@ mod tests {
             } else {
                 "Next"
             };
+            // The "At `-r`" column's class (WP-210).
+            let r = [
+                ("acts", "acts"),
+                ("noop", "noop"),
+                ("as in", "final"),
+                ("conflicting", "conflict"),
+                ("refused", "refused"),
+            ]
+            .iter()
+            .find_map(|(p, k)| cells[5].starts_with(p).then_some(*k))
+            .unwrap_or_else(|| panic!("{}: At -r '{}' has no class", spellings[0], cells[5]));
             if let Some(kw) = spellings[0].strip_prefix("-z ") {
-                let _ = writeln!(want, "Z {kw} {v}");
+                let _ = writeln!(want, "Z {kw} {v} {r}");
             } else {
                 let gnu = if cells[2].contains("GNU") { "gnu" } else { "-" };
-                let _ = writeln!(want, "R {v} {gnu} {}", spellings.join(" "));
+                let _ = writeln!(want, "R {v} {gnu} {r} {}", spellings.join(" "));
             }
         }
         assert_eq!(
@@ -1149,6 +1206,29 @@ mod tests {
             REFUSED, refused,
             "REFUSED is not the options table's refused rows; replace it with the right side"
         );
+    }
+
+    // §14.6 (WP-210): the mirror's class at -r, by first spelling and
+    // `-z kw`; every option stage R reads as acting is an `acts` row.
+    #[test]
+    fn s14_6_the_class_at_r() {
+        let t = Table::get();
+        for (id, want) in [
+            ("-T", AtR::Acts),
+            ("--defsym", AtR::Acts),
+            ("-z execstack", AtR::Acts),
+            ("-no-pie", AtR::Noop),
+            ("-pie", AtR::Conflict),
+            ("--gc-sections", AtR::Refused),
+            ("-z gcs", AtR::Refused),
+            ("--warn-backrefs", AtR::Final),
+        ] {
+            assert_eq!(t.at_r(id), Some(want), "{id}");
+        }
+        assert_eq!(t.at_r("--no-such-option"), None);
+        for id in crate::relocatable::READ_AT_R {
+            assert_eq!(t.at_r(id), Some(AtR::Acts), "READ_AT_R's {id} is not an acts row");
+        }
     }
 
     // §3.2a: cli.md §2.4 lets an abbreviation of a GNU long name stand for

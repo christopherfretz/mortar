@@ -581,6 +581,9 @@ pub struct RelCoverage {
     /// Input `SHF_COMPRESSED` sections whose bytes are not judged
     /// (§14.7, WP-210: no decompression), as `{file}:({section})`.
     pub compressed: Vec<String>,
+    /// The line's options that act at `-r` and that stage R does not
+    /// read (§14.6, WP-210): with one, no rule ran.
+    pub unread_acts: Vec<String>,
 }
 
 /// What stage 4 judged (§13.2).
@@ -871,6 +874,13 @@ impl Report {
                     "relocatable, not judged: the bytes of {} compressed input sections (no decompression): {}",
                     r.compressed.len(),
                     r.compressed.join(", ")
+                );
+            }
+            if !r.unread_acts.is_empty() {
+                let _ = writeln!(
+                    s,
+                    "relocatable, not judged: the line's {} acts at -r and is not read (§14.6); every record options-unknown",
+                    r.unread_acts.join(", ")
                 );
             }
         }

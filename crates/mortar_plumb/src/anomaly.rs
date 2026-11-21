@@ -98,6 +98,26 @@ pub fn classify(linker: Format, output: &[u8], f: &Finding) -> Option<&'static s
             "A10: GNU ld gives a label of an empty output section it removes the index of a section that does not hold it",
         );
     }
+    if (bfd || (linker == Format::Lld && sym == "__bss_start"))
+        && y(5)
+        && a129(output, sym, f.found)
+    {
+        return Some(
+            "A129: GNU ld (_edata, __bss_start) and lld (__bss_start) put them at the start of .bss when .bss is PROGBITS, before its bytes",
+        );
+    }
+    if bfd && y(5) && a130(output, sym, f) {
+        return Some(
+            "A130: GNU ld's AArch64 __bss_end__ is the end of .bss, before an orphan writable section it places after .bss",
+        );
+    }
+    // A131 shows as Y5 on the symbols and as R1 on an absolute word
+    // naming one (the word is the symbol's value).
+    if mold && (y(5) || f.rule == Rule::Field) && a131(output, sym, f.found) {
+        return Some(
+            "A131: mold splits output section X by type, and its __start_X/__stop_X bound only the last of them",
+        );
+    }
     if mold && y(5) && sym == "__bss_start" && f.found == Some(0) {
         return Some("A11: mold's __bss_start is 0 when --gc-sections leaves no .bss");
     }
@@ -599,6 +619,83 @@ fn a59(output: &[u8], f: &Finding) -> bool {
             .split('\'')
             .nth(1)
             .is_some_and(|n| crate::shared::SEVEN.contains(&n) && dyn_sym_object(output, n))
+}
+
+/// The allocated section headers of `output`, by name.
+fn alloc_sections(output: &[u8]) -> Vec<(Vec<u8>, mortar_elf::raw::Shdr)> {
+    let Ok(h) = mortar_elf::FileHeader::parse(output) else { return Vec::new() };
+    let Ok(table) = mortar_elf::SectionTable::parse(output, &h) else { return Vec::new() };
+    table
+        .iter()
+        .filter(|s| s.header().sh_flags & mortar_elf::consts::SHF_ALLOC != 0)
+        .filter_map(|s| s.name().ok().map(|n| (n.to_vec(), *s.header())))
+        .collect()
+}
+
+/// A129 (§10.2, WP-210): `_edata`, `edata`, `__bss_start` or
+/// `__bss_start__` where `.bss` is `SHT_PROGBITS`, at a value between the
+/// end of the highest allocated section below `.bss` and `.bss`'s start:
+/// GNU ld's script sets them before the `.bss` statement whatever its
+/// type, where Y5 (layout.md §13.1, lld, mold) takes the end of the
+/// non-`NOBITS` data, which a `PROGBITS` `.bss` extends.
+fn a129(output: &[u8], sym: &str, found: Option<u64>) -> bool {
+    if !matches!(sym, "_edata" | "edata" | "__bss_start" | "__bss_start__") {
+        return false;
+    }
+    let (Some(v), secs) = (found, alloc_sections(output)) else { return false };
+    let Some((_, bss)) = secs.iter().find(|(n, _)| n == b".bss") else { return false };
+    if bss.sh_type != mortar_elf::consts::SHT_PROGBITS {
+        return false;
+    }
+    let below = secs
+        .iter()
+        .map(|(_, x)| x.sh_addr.saturating_add(x.sh_size))
+        .filter(|&e| e <= bss.sh_addr)
+        .max()
+        .unwrap_or(0);
+    (below..=bss.sh_addr).contains(&v)
+}
+
+/// A130 (§10.2, WP-210): on AArch64 `__bss_end__` or `_bss_end__` at the
+/// end of `.bss` (rounded up to 8 at most) below where Y5 wants it, so
+/// an allocated writable section follows `.bss` (GNU ld's orphan, a
+/// `COMMON.x`), which its script's `__bss_end__ = .` after the `.bss`
+/// statement leaves out; `_end` covers it.
+fn a130(output: &[u8], sym: &str, f: &Finding) -> bool {
+    if !matches!(sym, "__bss_end__" | "_bss_end__") {
+        return false;
+    }
+    let (Some(v), Some(want)) = (f.found, f.expected) else { return false };
+    let secs = alloc_sections(output);
+    let Some((_, bss)) = secs.iter().find(|(n, _)| n == b".bss") else { return false };
+    let end = bss.sh_addr.saturating_add(bss.sh_size);
+    let after = secs.iter().any(|(_, x)| {
+        x.sh_flags & mortar_elf::consts::SHF_WRITE != 0 && x.sh_addr >= end && x.sh_size > 0
+    });
+    v < want && (end..=end.next_multiple_of(8)).contains(&v) && after
+}
+
+/// A131 (§10.2, WP-210): `__start_X` or `__stop_X` where two or more
+/// allocated output sections are named X (mold splits X by type: a
+/// `PROGBITS` and a `NOBITS` `COMMON`), at the start (`__stop_X`: the
+/// end) of one of them other than the first, which Y5 takes: no single
+/// range bounds them all.
+fn a131(output: &[u8], sym: &str, found: Option<u64>) -> bool {
+    let (x, start) = match (sym.strip_prefix("__start_"), sym.strip_prefix("__stop_")) {
+        (Some(x), _) => (x, true),
+        (_, Some(x)) => (x, false),
+        _ => return false,
+    };
+    let Some(v) = found else { return false };
+    let named: Vec<mortar_elf::raw::Shdr> = alloc_sections(output)
+        .into_iter()
+        .filter(|(n, _)| n == x.as_bytes())
+        .map(|(_, h)| h)
+        .collect();
+    named.len() > 1
+        && named[1..]
+            .iter()
+            .any(|h| v == if start { h.sh_addr } else { h.sh_addr.saturating_add(h.sh_size) })
 }
 
 /// `.dynsym` defines `name` as `STT_OBJECT` (A59's form).

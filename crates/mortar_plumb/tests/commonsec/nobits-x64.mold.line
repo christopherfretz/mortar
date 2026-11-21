@@ -1,0 +1,10 @@
+-m
+elf_x86_64
+-static
+-z
+max-page-size=4096
+-o
+nobits-x64.mold
+start-x64.o
+vn-x64.o
+-Map=nobits-x64.mold.map

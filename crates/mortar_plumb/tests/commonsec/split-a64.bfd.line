@@ -1,0 +1,9 @@
+-static
+-z
+max-page-size=4096
+-o
+split-a64.bfd
+start-a64.o
+vp-a64.o
+vn-a64.o
+-Map=split-a64.bfd.map

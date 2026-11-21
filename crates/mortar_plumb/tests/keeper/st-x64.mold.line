@@ -1,0 +1,9 @@
+-m
+elf_x86_64
+-static
+-z
+max-page-size=4096
+-o
+st-x64.mold
+main-x64.o
+libs-x64.a

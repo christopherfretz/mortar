@@ -1,0 +1,28 @@
+mortar-map 2
+file 0 main-a64.o
+file 1 libs-a64.a m1-a64.o 68
+file 2 libs-a64.a m2s-a64.o 48c
+place 0 1 4010e8 8
+place 0 3 401108 0
+place 0 4 401108 0
+place 1 2 4010f0 4
+place 1 5 4010f4 8
+place 1 3 401108 0
+place 1 4 401108 0
+place 2 2 4010fc c
+place 2 4 401108 0
+place 2 5 401108 0
+discard 2 6 comdat
+chunk synthetic .symtab - f0
+chunk synthetic .strtab - 30
+chunk synthetic .shstrtab - 2a
+chunk synthetic .comment - d
+arg -static
+arg -z
+arg max-page-size=4096
+arg -o
+arg st-a64.mortar
+arg main-a64.o
+arg libs-a64.a
+arg --mortar-map=st-a64.mortar.map
+end
