@@ -375,8 +375,21 @@ fn symblocks(image: &Image<'_>, map: &Map, out: &mut Vec<Finding>) {
     };
     let strtab_sec = image.sections[t.sec].shdr.sh_link as usize;
     let strtab = image.section_data(strtab_sec).unwrap_or(&[]);
-    let info = u64::from(t.info);
-    let strsize = strtab.len() as u64;
+    // P-I7 only of records all in place: out of place, they state no
+    // blocks to judge the tables against.
+    if let Some(sound) = places(blocks, u64::from(t.info), strtab.len() as u64, out) {
+        entries(image, map, &t, strtab, &sound, out);
+    }
+}
+
+/// §3.2's place of each `symblock` (P-I2): the records when all are in
+/// place.
+fn places<'m>(
+    blocks: &'m [SymBlock],
+    info: u64,
+    strsize: u64,
+    out: &mut Vec<Finding>,
+) -> Option<Vec<&'m SymBlock>> {
     // P-I2: each record's place, alone.
     let mut sound: Vec<&SymBlock> = Vec::new();
     for b in blocks {
@@ -458,11 +471,20 @@ fn symblocks(image: &Image<'_>, map: &Map, out: &mut Vec<Finding>) {
     };
     placed_ok &= meet(|b| (b.first, b.capacity), "entries", out);
     placed_ok &= meet(|b| (b.strtab_off, b.strtab_cap), ".strtab bytes", out);
-    // P-I7 only of records all in place: out of place, they state no
-    // blocks to judge the tables against.
-    if !placed_ok {
-        return;
-    }
+    placed_ok.then_some(sound)
+}
+
+/// §6.8's P-I7: the blocks' entries and names against `.symtab` and
+/// `.strtab`, every record in place.
+fn entries(
+    image: &Image<'_>,
+    map: &Map,
+    t: &Table<'_>,
+    strtab: &[u8],
+    sound: &[&SymBlock],
+    out: &mut Vec<Finding>,
+) {
+    let info = u64::from(t.info);
     let pi7 = |b: &SymBlock, msg: String| {
         finding(
             7,
