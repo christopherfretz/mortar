@@ -1,0 +1,18 @@
+# WP-230 G-5: the operator's configuration (static, -g, -ffunction-sections
+# -fdata-sections, --gc-sections) with --build-id, and a -g growth: hop 1
+# grows c_value, hop 2 renames a local (a .debug_str string appended, the
+# old one dead: L-147), hop 3 adds a declaration (GCC orders c.o's
+# .debug_str afresh), hop 4 shrinks c_value back. Every hop changes sizes
+# or strings: not the identity case (G-4, G-5).
+# -fdebug-prefix-map=@SRC@ (tests/l10/build.py): one DW_AT_comp_dir in every
+# version, as a real build compiles in one directory.
+proves: a -g update that grows, renames a local (a string appended), adds a declaration (strings reordered by the compiler) and shrinks, under --gc-sections, writes G-1's debug placement and IN-56's strings (stored strings kept where they are, dead ones as written) and is equivalent to the full link (a)
+source: WP-230 G-5 (spec/landed/incr/WP-230.md "G-5"); the G-4 tests' c_big hops (crates/mortar/tests/update_debug_join.rs)
+edit GROW: c.cc
+edit RENAME: c.cc
+edit DECL: c.cc
+hops: -, GROW, GROW+RENAME, GROW+RENAME+DECL, RENAME+DECL
+link: main.o c.o u.o
+cflags: -g -fdebug-prefix-map=@SRC@=/incr-src -ffunction-sections -fdata-sections
+options: --gc-sections --build-id
+compilers: gcc kiln

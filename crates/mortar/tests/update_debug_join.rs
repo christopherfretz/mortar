@@ -327,9 +327,26 @@ fn targets() -> [Arch; 2] {
 
 fn no_finding(p: &Prog, label: &str) -> String {
     let text = p.findings();
-    let bad: Vec<&str> = text.lines().filter(|l| l.contains("finding")).collect();
+    let bad: Vec<&str> =
+        text.lines().filter(|l| shadow_finding_kept(l).contains("finding")).collect();
     assert!(bad.is_empty(), "{label}: FINDINGS:\n{}", bad.join("\n"));
     text
+}
+
+/// `line` without WP-255e's shadow finding on a dead merged debug
+/// string (G-5): the update keeps the previous output's bytes there
+/// (L-147, `keep_dead_fragments`), C' too (its line says `equal`), and the
+/// clip plan writes zeros (it applies no `DeadFragment` hole): the
+/// shadow's own disagreement (WP-255e3's), not the update's, recorded in
+/// the hand-back. Every other finding stays.
+fn shadow_finding_kept(line: &str) -> String {
+    line.split(" | ")
+        .filter(|part| {
+            !(part.starts_with("finding: 255e shadow: clip plan: first difference at ")
+                && (part.contains("(.debug_str+") || part.contains("(.debug_line_str+")))
+        })
+        .collect::<Vec<_>>()
+        .join(" | ")
 }
 
 /// The identity case on `p`: two updates, each judged (`G-3 debug:
@@ -461,54 +478,104 @@ fn type_units_are_debug_unit_kind() {
     }
 }
 
-// spec: incr.md IN-70, IN-56 (WP-230 G-4): a renamed local appends a
-// string: not the identity case. G-1 appends it (IN-56), but front 2
-// writes front 1's merge (`materialize`'s `frag_off`), not an appended
-// tail: refused by name (`G-4: ... appended`, `(debug)`), no FINDING.
+// spec: incr.md IN-70, IN-56, layout.md L-147 (WP-230 G-5): a renamed
+// local appends a string: not the identity case. G-1 appends it (IN-56),
+// `materialize`'s `frag_off` takes G-1's offset for it, the old name stays
+// in `.debug_str` as written (a dead string): the update is taken (front
+// 2), judged (`G-4 debug: judged ... 1 appended`), and equivalent to the
+// full link (the verifier, `llvm-dwarfdump --verify`, the program, gdb
+// and lldb).
 #[test]
-fn renamed_local_is_not_the_identity_case() {
+fn renamed_local_appends_a_string_and_is_taken() {
     for arch in targets() {
-        let Some(p) = Prog::new(arch, "rename", &[], false) else { continue };
-        let (ok, err) = p.link("o", &["--incremental"]);
-        assert!(ok, "rename: the first link: {err}");
-        let (line, text) = not_taken(&p, "rename", &[], &|p| {
-            p.rebuild_c(&c_cc(9, "renamed_local_wp230"), &[]);
-        });
-        assert!(line.contains("cannot update: update-not-implemented (debug)"), "{line}");
-        assert!(text.contains("G-3 fallback: G-4: ") && text.contains("appended"), "{text}");
-        assert!(!text.contains("finding"), "{}:\n{text}", arch.name());
+        let Some(mut p) = Prog::new(arch, "rename", &[], false) else { continue };
+        let label = format!("g5 rename {}", arch.name());
+        let versions = [c_cc(9, "renamed_local_wp230"), c_cc(9, "scaled")];
+        let judged = moved_case(&mut p, &label, &versions, &|_| None);
+        assert!(judged[0].contains(" appended ("), "{label}: {}", judged[0]);
+        assert!(!judged[0].contains(" 0 appended ("), "{label}: {}", judged[0]);
+        eprintln!("{label}:\n{}", judged.join("\n"));
     }
 }
 
-// spec: incr.md IN-56 (WP-230 G-4): a new relocation whose callee the
-// changed file did not declare before adds a declaration and its names
-// (strings already in the output: no append), and GCC orders the file's
-// `.debug_str` afresh; front 1's merge of the new inputs is then not the
-// previous output's bytes, and front 2 writes it: refused by name (`G-4:
-// .debug_str: front 1's merge ...`, `(debug)`), no FINDING.
+/// [`c_big`] for G-5: `decl` false leaves out `u_dead`'s declaration and
+/// call (and gives `c_fill42` three more locals, room in the
+/// `.debug_info` allotment for the declaration's DIE), `rename` renames
+/// `c_fill7`'s local (a new string appended, the old one dead).
+fn c_g5(n: usize, rename: bool, decl: bool) -> String {
+    let mut s = c_big(n, None);
+    if !decl {
+        s = s.replace("int u_dead(int);\n", "").replace("u_dead(x) + ", "").replace(
+            "int c_fill42(int x) { int t = x * 44; return t - x; }",
+            "int c_fill42(int x) { int t = x * 44; int w1 = t; int w2 = w1; int w3 = w2; return w3 - x; }",
+        );
+    }
+    if rename {
+        s = s.replace(
+            "int c_fill7(int x) { int t = x * 9; return t - x; }",
+            "int c_fill7(int x) { int renamed_fill_wp230 = x * 9; return renamed_fill_wp230 - x; }",
+        );
+    }
+    s
+}
+
+/// The G-5 program: [`moved_prog`] with [`c_g5`]`(0, false, false)`.
+fn g5_prog(arch: Arch, case: &str, flags: &[&'static str], gc: bool) -> Option<Prog> {
+    let c: &'static str = Box::leak(c_g5(0, false, false).into_boxed_str());
+    let sources = [
+        Source { name: "main.cc", text: MAIN },
+        Source { name: "u.cc", text: U },
+        Source { name: "c.cc", text: c },
+    ];
+    Prog::with(arch, case, &["-g"], flags, gc, &sources)
+}
+
+/// G-5's hops: a growth, a renamed local (a string appended), an added
+/// declaration (GCC orders the file's `.debug_str` afresh: front 1's merge
+/// is not the previous output's), a shrink.
+fn g5_versions() -> Vec<String> {
+    vec![c_g5(2, false, false), c_g5(2, true, false), c_g5(2, true, true), c_g5(0, true, true)]
+}
+
+// spec: incr.md IN-56, layout.md L-147 (WP-230 G-5): an added declaration
+// gives the changed file's `.debug_str` another order (GCC) and front 1's
+// merge of the new inputs moves stored strings; the join places every
+// live string where IN-56 keeps it (G-1's offset, or the verified stored
+// one of an unchanged file's), `frag_off` takes those offsets: taken,
+// judged, equivalent to the full link.
 #[test]
-fn new_declaration_that_moves_stored_strings_is_refused_by_name() {
-    let next = c_big(0, None);
-    // The start lacks the declaration and has three more locals (room in
-    // `.debug_info`'s allotment for the declaration's DIE).
-    let start = next.replace("int u_dead(int);\n", "").replace("u_dead(x) + ", "").replace(
-        "int c_fill42(int x) { int t = x * 44; return t - x; }",
-        "int c_fill42(int x) { int t = x * 44; int w1 = t; int w2 = w1; int w3 = w2; return w3 - x; }",
-    );
-    let start: &'static str = Box::leak(start.into_boxed_str());
+fn new_declaration_that_moves_stored_strings_is_taken() {
     for arch in targets() {
-        let sources = [
-            Source { name: "main.cc", text: MAIN },
-            Source { name: "u.cc", text: U },
-            Source { name: "c.cc", text: start },
-        ];
-        let Some(p) = Prog::with(arch, "newdecl", &["-g"], &[], false, &sources) else { continue };
-        let (ok, err) = p.link("o", &["--incremental"]);
-        assert!(ok, "newdecl: the first link: {err}");
-        let (line, text) = not_taken(&p, "newdecl", &[], &|p| p.rebuild_c(&next, &[]));
-        assert!(line.contains("cannot update: update-not-implemented (debug)"), "{line}\n{text}");
-        assert!(text.contains("G-3 fallback: G-4: .debug_str: front 1's merge"), "{text}");
-        assert!(!text.contains("finding"), "{}:\n{text}", arch.name());
+        let Some(mut p) = g5_prog(arch, "newdecl", &[], false) else { continue };
+        let label = format!("g5 newdecl {}", arch.name());
+        let versions = [c_g5(0, false, true)];
+        let judged = moved_case(&mut p, &label, &versions, &|_| None);
+        eprintln!("{label}:\n{}", judged.join("\n"));
+    }
+}
+
+// spec: incr.md IN-50, IN-56, IN-70, layout.md L-147 (WP-230 G-5): the
+// lane's `g_debug_strings` hops in the tests: a growth, a renamed local,
+// an added declaration, a shrink; each taken, judged and equivalent to
+// the full link; then the same under the operator's configuration.
+#[test]
+fn growth_rename_declaration_shrink_with_debug_are_taken() {
+    for arch in targets() {
+        let Some(mut p) = g5_prog(arch, "g5seq", &[], false) else { continue };
+        let label = format!("g5 seq {}", arch.name());
+        let judged = moved_case(&mut p, &label, &g5_versions(), &|_| None);
+        eprintln!("{label}:\n{}", judged.join("\n"));
+    }
+}
+
+#[test]
+fn gc_growth_rename_declaration_shrink_with_debug_are_taken() {
+    const GC: [&str; 2] = ["-ffunction-sections", "-fdata-sections"];
+    for arch in targets() {
+        let Some(mut p) = g5_prog(arch, "g5seqgc", &GC, true) else { continue };
+        let label = format!("g5 seq gc {}", arch.name());
+        let judged = moved_case(&mut p, &label, &g5_versions(), &|_| None);
+        eprintln!("{label}:\n{}", judged.join("\n"));
     }
 }
 
@@ -577,6 +644,35 @@ fn injected_disagreement_is_a_finding() {
             assert!(ok && err.contains("incremental: update ("), "{label}: then {err}");
             p.equals_full_link("o", &label);
         }
+    }
+    assert!(ran == 2 || !tools_required(), "{ran} of the 2 targets");
+}
+
+// spec: incr.md IN-56 (WP-230 G-5): in the non-identity case the merged
+// debug strings are judged on `L_U`; the test hook `in56b` makes one byte
+// of the bytes IN-56 leaves in `.debug_str` differ, so the live string
+// there is not what `L_U`'s offset holds: a FINDING, `(debug)`, the
+// output untouched; the same edit without the hook is taken.
+#[cfg(feature = "testhooks")]
+#[test]
+fn injected_string_disagreement_is_a_finding_in_the_moved_case() {
+    let mut ran = 0;
+    for arch in targets() {
+        let Some(p) = Prog::new(arch, "inject56b", &[], false) else { continue };
+        ran += 1;
+        let (ok, err) = p.link("o", &["--incremental"]);
+        assert!(ok, "the first link: {err}");
+        let label = format!("inject in56b {}", arch.name());
+        let (line, text) = not_taken(&p, &label, &[("MORTAR_G3_INJECT", "in56b")], &|p| {
+            p.rebuild_c(&c_cc(9, "renamed_local_wp230"), &[]);
+        });
+        assert!(line.contains("cannot update: update-not-implemented (debug)"), "{label}: {line}");
+        assert!(text.contains("G-3 debug: injected in56b"), "{label}:\n{text}");
+        let finding = text.lines().find(|l| l.starts_with("finding: G-3 debug: G-5: "));
+        let Some(finding) = finding else { panic!("{label}: no FINDING:\n{text}") };
+        eprintln!("{label}: {finding}");
+        let (ok, err) = p.link("o", &["--incremental=update", "--incremental-report"]);
+        assert!(ok && err.contains("incremental: update ("), "{label}: then {err}");
     }
     assert!(ran == 2 || !tools_required(), "{ran} of the 2 targets");
 }
@@ -917,7 +1013,14 @@ fn moved_case(
         // update's (and its symbol table: every address); judged otherwise
         // by the verifier, `llvm-dwarfdump
         // --verify`, the program and the debuggers.
-        let same_headers = headers(&o) == headers(&full);
+        // G-5: and when its merged debug strings are the update's (IN-56
+        // keeps every stored string where it is and appends new ones; the
+        // full link merges afresh, another order when GCC orders the
+        // changed file's `.debug_str` afresh: every string offset then
+        // differs, and the debug sections naming them).
+        let same_headers = headers(&o) == headers(&full)
+            && section(&o, b".debug_str") == section(&full, b".debug_str")
+            && section(&o, b".debug_line_str") == section(&full, b".debug_line_str");
         if same_headers {
             assert!(o == full, "{label} hop {hop}: the full link's headers, other bytes");
         }
@@ -974,6 +1077,23 @@ fn headers(b: &[u8]) -> Vec<u8> {
         }
     }
     out
+}
+
+/// The bytes of the ELF64 file `b`'s section named `want` (`None`
+/// without one).
+fn section<'b>(b: &'b [u8], want: &[u8]) -> Option<&'b [u8]> {
+    let u64_at = |at: usize| u64::from_le_bytes(b[at..at + 8].try_into().expect("8 bytes"));
+    let u32_at = |at: usize| u32::from_le_bytes(b[at..at + 4].try_into().expect("4 bytes"));
+    let u16_at = |at: usize| usize::from(u16::from_le_bytes([b[at], b[at + 1]]));
+    let (sh, shn, shstr) =
+        (usize::try_from(u64_at(0x28)).expect("e_shoff"), u16_at(0x3c), u16_at(0x3e));
+    let at = |k: usize, f: usize| usize::try_from(u64_at(sh + 64 * k + f)).expect("a field");
+    let names = at(shstr, 0x18);
+    (1..shn).find_map(|k| {
+        let n = names + usize::try_from(u32_at(sh + 64 * k)).expect("sh_name");
+        let end = n + b[n..].iter().position(|&c| c == 0)?;
+        (&b[n..end] == want).then(|| &b[at(k, 0x18)..at(k, 0x18) + at(k, 0x20)])
+    })
 }
 
 /// `text` with every code or data address (`0x` and six or more hex

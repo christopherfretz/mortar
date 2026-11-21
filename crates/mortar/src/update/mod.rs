@@ -488,7 +488,8 @@ fn reference_of(
         // G-4 (WP-230): G-1's plan, the debug part of what `materialize`
         // translates, judged against front 1 (`debug_judged_moved`).
         if debug || p.debug.is_some() {
-            debug_judged_moved(view, &stored, f, files, p.debug.as_ref(), &refill, out)?;
+            let lu = p.materialized.as_ref().and_then(|m| m.as_ref().ok()).map(|m| &m.0);
+            debug_judged_moved(view, &stored, f, files, p.debug.as_ref(), lu, &refill, out)?;
         }
         let what = format!(
             "{}; {flips} sections flip liveness; capture tables differing {tables:?}",
@@ -2608,6 +2609,12 @@ fn debug_reason() -> IncrReason {
     IncrReason::UpdateNotImplemented(Some(Unimplemented::Debug))
 }
 
+/// G-5 (WP-230): the merged debug strings the non-identity update cannot
+/// write as IN-56 keeps them, `update-not-implemented (debug-strings)`.
+fn debug_strings_reason() -> IncrReason {
+    IncrReason::UpdateNotImplemented(Some(Unimplemented::DebugStrings))
+}
+
 /// G-3, U7 (WP-230; IN-50..IN-57): G-1's steps on the delta `d` that
 /// `delta::layout` gave with `LayoutInput::debug`, in G-1's order:
 /// IN-55/IN-55a on the front's object of each changed file with debug
@@ -2692,15 +2699,211 @@ fn debug_placed(
         }
     }
     let runs = debug_runs_judged(f, cf, &plan)?;
+    let frags = debug_string_frags(view, stored, f, cf, &plan.strings, &prev, d)?;
     changed::record(&format!(
         "G-3 debug: placed: {} contributions, {} strings found, {} appended, {} touched chunks; \
-         {runs} runs laid as the front's",
+         {runs} runs laid as the front's; {frags}",
         plan.contributions.len(),
         plan.strings.hits,
         plan.strings.misses,
         plan.chunks.len()
     ));
     Ok(plan)
+}
+
+/// A live fragment's bytes in the front (its first occurrence's input
+/// section), `None` when they cannot be read.
+fn debug_frag_bytes<'f>(
+    f: &'f crate::front::Front<'_>,
+    frag: mortar_core::FragId,
+) -> Option<&'f [u8]> {
+    use mortar_core::inputs::Reader;
+    let row = f.merge.split.frags.get(frag)?;
+    let (file, index) = f.resolution.sh_index(row.section)?;
+    let Reader::Object(o) = &f.inputs.files.get(file)?.reader else { return None };
+    let data = o.section(index).ok()?.data().ok()?;
+    let at = usize::try_from(row.offset).ok()?;
+    data.get(at..at + usize::try_from(row.size).ok()?)
+}
+
+/// G-5 (WP-230; IN-56, L-147): where every live merged debug string of
+/// the front goes in the new output, as IN-56 keeps them: a string of a
+/// changed file where G-1 puts it (`DebugStrings::output_offset`: its
+/// verified stored offset, or the tail G-1 appended it at); a string of
+/// unchanged files only at its stored offset (`DEBUG_STRS`, an
+/// accelerator: the hit verified against the previous output's bytes,
+/// as `debug::strings` verifies G-1's). Each fragment whose offset is
+/// not front 1's own merge offset goes into `d.frags` (by its identity,
+/// as `delta::layout`'s item 6 lists an allocated one), which
+/// `materialize`'s `frag_off` takes for it; the rest keep the front's
+/// (equal). A fragment two answers place apart, a changed file's string
+/// G-1 has no offset for, or an unchanged file's string with no verified
+/// stored offset is `update-not-implemented (debug-strings)` by name.
+/// Returns the record's words.
+#[allow(clippy::too_many_lines, reason = "the two kinds of string, then the delta's rows")]
+fn debug_string_frags(
+    view: &StateView<'_>,
+    stored: &mortar_core::incr::StoredLayout<'_>,
+    f: &crate::front::Front<'_>,
+    cf: &mortar_incr::update::view::ChangedFiles,
+    strings: &mortar_incr::update::debug::DebugStrings,
+    prev: &[u8],
+    d: &mut mortar_core::incr::LayoutDelta,
+) -> Result<String, IncrReason> {
+    use mortar_core::FragId;
+    use mortar_core::incr::{MergeClass, StoredFrag};
+    use mortar_core::layout::{ChunkKind, Hole, HoleKind};
+    use mortar_incr::update::debug::{str_class, verified};
+    use mortar_incr::update::rows::name_hash;
+    /// A fragment's class, merge class word and offset.
+    type Placed = (u8, u32, Option<u64>);
+    let refuse = |what: String| debug_fallback(&format!("G-5: {what}"), debug_strings_reason());
+    // Per class: the state's output section row and the stored chunk.
+    let names: std::collections::BTreeMap<_, _> = stored.outsecs()?.into_iter().collect();
+    let mut chunk_of: std::collections::BTreeMap<
+        u8,
+        (mortar_core::OutSecId, u64, u64, mortar_core::ChunkId),
+    > = std::collections::BTreeMap::new();
+    for (id, c) in stored.chunks()? {
+        if let ChunkKind::Merged(o) = c.kind
+            && let Some(class) = names.get(&o).and_then(|n| str_class(n))
+        {
+            chunk_of.insert(class, (o, c.offset, c.size, id));
+        }
+    }
+    let split = &f.merge.split;
+    // frag -> (class, the merge class word, offset); the unchanged ones'
+    // offsets are looked up below.
+    let mut at: mortar_core::hash::HashMap<FragId, Placed> = mortar_core::hash::HashMap::default();
+    for (row, merge) in split.merge_of.iter().enumerate() {
+        let Some(out) = f.assignment.out(merge.section) else { continue };
+        let Some(class) = str_class(f.assignment.outsecs[out].name) else { continue };
+        let Some((file, _)) = f.resolution.sh_index(merge.section) else { continue };
+        let changed = cf.files.binary_search_by_key(&file, |c| c.file).is_ok();
+        let meta = f.merge.meta.get(row).ok_or_else(debug_reason)?;
+        let word =
+            MergeClass { strings: meta.strings, entsize: meta.entsize, align: meta.align }.word();
+        for piece in merge.pieces.start..merge.pieces.start + merge.pieces.len {
+            let frag = split.piece_frag[piece as usize];
+            if f.layout.merge.offset(frag).is_none() {
+                continue;
+            }
+            let mine = if changed {
+                let off = u64::from(split.piece_off[piece as usize]);
+                let Some(o) = strings.output_offset(file, class, off) else {
+                    return Err(refuse(format!(
+                        "file {} class {class}: the string at input {off:#x} has no offset of G-1",
+                        file.0
+                    )));
+                };
+                Some(o)
+            } else {
+                None
+            };
+            let entry = at.entry(frag).or_insert((class, word, None));
+            entry.1 = word;
+            match (entry.2, mine) {
+                (Some(was), Some(now)) if was != now => {
+                    return Err(refuse(format!(
+                        "file {} class {class}: one string at {was:#x} and {now:#x}",
+                        file.0
+                    )));
+                }
+                (None, Some(now)) => entry.2 = Some(now),
+                _ => {}
+            }
+        }
+    }
+    let (mut found, mut kept, mut rows) = (0usize, 0usize, 0usize);
+    let mut frags: Vec<(FragId, Placed)> = at.into_iter().collect();
+    frags.sort_unstable_by_key(|x| x.0);
+    // Per class: every live string's range in the new chunk.
+    let mut live: std::collections::BTreeMap<u8, Vec<(u64, u64)>> =
+        std::collections::BTreeMap::new();
+    for (frag, (class, word, off)) in frags {
+        let Some(&(out, base, size, _)) = chunk_of.get(&class) else {
+            return Err(refuse(format!("class {class}: no stored merged chunk")));
+        };
+        let bytes = debug_frag_bytes(f, frag)
+            .ok_or_else(|| refuse(format!("fragment {}: its bytes", frag.0)))?;
+        let off = if let Some(o) = off {
+            found += 1;
+            o
+        } else {
+            let s = bytes.strip_suffix(&[0]).unwrap_or(bytes);
+            match view.debug_str(class, name_hash(s, b""))? {
+                Some(o) if verified(prev, base, size, u64::from(o), s) => {
+                    kept += 1;
+                    u64::from(o)
+                }
+                o => {
+                    return Err(refuse(format!(
+                        "class {class}: a string of unchanged files only ({} bytes) has no \
+                         verified stored offset ({o:?})",
+                        s.len()
+                    )));
+                }
+            }
+        };
+        live.entry(class).or_default().push((off, off + bytes.len() as u64));
+        if f.layout.merge.offset(frag) == Some(off) {
+            continue;
+        }
+        d.frags.push(StoredFrag {
+            out,
+            class: word,
+            hash: mortar_digest::l128(bytes),
+            offset: off,
+            size: u32::try_from(bytes.len()).map_err(|_| debug_reason())?,
+            refs: 1,
+        });
+        rows += 1;
+    }
+    d.frags.sort_by_key(|r| (r.out, r.class, r.hash));
+    // L-147: the stored bytes no live string covers are dead strings,
+    // kept as written (`DeadFragment` holes: the image keeps the previous
+    // output's bytes there, `keep_dead_fragments`; the map states them).
+    let mut dead = (0usize, 0u64);
+    for (class, &(_, _, size, chunk)) in &chunk_of {
+        let mut ranges = live.remove(class).unwrap_or_default();
+        ranges.sort_unstable();
+        let mut holes = Vec::new();
+        let mut end = 0u64;
+        let mut gap = |s: u64, e: u64| {
+            if s < e {
+                holes.push(Hole { chunk, offset: s, size: e - s, kind: HoleKind::DeadFragment });
+            }
+        };
+        for (s, e) in ranges {
+            if s >= size {
+                break;
+            }
+            gap(end, s);
+            end = end.max(e);
+        }
+        gap(end, size);
+        let before = d.holes_of(stored, chunk)?;
+        if holes == before {
+            continue;
+        }
+        dead.0 += holes.len();
+        dead.1 += holes.iter().map(|h| h.size).sum::<u64>();
+        let mut all: Vec<Hole> =
+            d.placement.holes.iter().filter(|h| h.chunk != chunk).copied().collect();
+        all.extend_from_slice(&holes);
+        all.sort_by_key(|h| (h.chunk, h.offset));
+        d.placement.holes = all.into_boxed_slice();
+        d.holes.extend(holes.iter().filter(|h| !before.contains(h)).copied());
+        d.holes.sort_by_key(|h| (h.chunk, h.offset));
+        d.hole_chunks.push(chunk);
+        d.hole_chunks.sort_unstable();
+        d.hole_chunks.dedup();
+    }
+    Ok(format!(
+        "G-5 strings: {found} of changed files at G-1's offsets, {kept} of unchanged files at \
+         their stored offsets, {rows} not at front 1's; {} dead strings ranges ({} bytes)",
+        dead.0, dead.1
+    ))
 }
 
 /// G-3, U9 (WP-230): in the identity case the bytes the update writes are
@@ -2725,7 +2928,7 @@ fn debug_judged(
     refill: &mortar_image::update::Refill,
     previous: &std::fs::File,
 ) -> Result<(), IncrReason> {
-    debug_judge(view, stored, f, files, plan, refill, previous, true)
+    debug_judge(view, stored, f, files, plan, None, refill, previous, true)
 }
 
 /// G-4 (WP-230), the NON-identity case (record "G-4"): G-1's plan is the
@@ -2752,10 +2955,11 @@ fn debug_judged_moved(
     f: &crate::front::Front<'_>,
     files: &[FileId],
     plan: Option<&mortar_incr::update::debug::DebugPlan>,
+    lu: Option<&mortar_core::layout::Layout>,
     refill: &mortar_image::update::Refill,
     previous: &std::fs::File,
 ) -> Result<(), IncrReason> {
-    debug_judge(view, stored, f, files, plan, refill, previous, false)
+    debug_judge(view, stored, f, files, plan, lu, refill, previous, false)
 }
 
 /// The judgement of [`debug_judged`] (`identity`) and of
@@ -2770,6 +2974,7 @@ fn debug_judge(
     f: &crate::front::Front<'_>,
     files: &[FileId],
     plan: Option<&mortar_incr::update::debug::DebugPlan>,
+    lu: Option<&mortar_core::layout::Layout>,
     refill: &mortar_image::update::Refill,
     previous: &std::fs::File,
     identity: bool,
@@ -2814,20 +3019,11 @@ fn debug_judge(
             chunk.0
         )));
     }
-    // IN-56.
+    // IN-56: nothing appended in the identity case (the non-identity
+    // case's appended strings are judged on `L_U` below, G-5).
     if let Some((class, (_, at, bytes))) = plan.strings.appended.iter().next()
-        && !identity
+        && identity
     {
-        return Err(debug_fallback(
-            &format!(
-                "G-4: {} bytes of class {class} debug strings appended at {at:#x} (IN-56): front \
-                 2 writes the full link's merge, not an appended tail",
-                bytes.len()
-            ),
-            debug_reason(),
-        ));
-    }
-    if let Some((class, (_, at, bytes))) = plan.strings.appended.iter().next() {
         return Err(debug_finding(&format!(
             "the identity case, but {} bytes of class {class} strings appended at {at:#x}",
             bytes.len()
@@ -2858,10 +3054,6 @@ fn debug_judge(
             !c.is_alloc() && c.kind.out().is_some_and(|o| f.assignment.outsecs[o].name == want)
         })
     };
-    // IN-56 (G-4): front 2 writes front 1's merge of the debug strings
-    // (`materialize`'s `frag_off`), and IN-56 keeps every stored string
-    // where it is: front 1's merged sections must be the previous output's
-    // bytes.
     let stored_chunk = |want: &[u8]| -> Result<Option<mortar_core::layout::Chunk>, IncrReason> {
         let names: std::collections::BTreeMap<_, _> = stored.outsecs()?.into_iter().collect();
         Ok(stored
@@ -2870,39 +3062,90 @@ fn debug_judge(
             .find(|(_, c)| c.kind.out().and_then(|o| names.get(&o)).is_some_and(|n| n == want))
             .map(|(_, c)| c))
     };
-    let mut merged = 0u64;
-    for name in [&b".debug_str"[..], b".debug_line_str"].iter().filter(|_| !identity) {
-        let (now, was) = (chunk_named(name).map(|(_, c)| *c), stored_chunk(name)?);
-        let same = match (now, was) {
-            (None, None) => true,
-            (Some(n), Some(w)) if n.size == w.size => {
-                let mut prev = vec![0u8; usize::try_from(w.size).map_err(|_| debug_reason())?];
-                std::os::unix::fs::FileExt::read_exact_at(previous, &mut prev, w.offset)
-                    .map_err(|e| IncrReason::OutputChanged(e.to_string()))?;
-                merged += w.size;
-                new_bytes(n.offset, n.size)? == prev
-            }
-            _ => false,
-        };
-        if !same {
-            return Err(debug_fallback(
-                &format!(
-                    "G-4: {}: front 1's merge is not the previous output's bytes (sizes {:?}, \
-                     {:?}): a stored string moves or goes (IN-56: dead strings stay)",
+    // IN-56 (G-5): front 2 writes the merged debug strings at `L_U`'s
+    // offsets (`materialize`'s `frag_off`: the join's, `debug_string_frags`,
+    // where front 1's merge puts a string elsewhere). Judged on `L_U`:
+    // each string chunk is the stored one grown by exactly G-1's appended
+    // bytes, and every live string of it is, at its offset, in the bytes
+    // IN-56 leaves there: the previous output's below the stored size,
+    // G-1's appended ones past it (a difference is a FINDING). Without
+    // `L_U` (`materialize` refused) the hop falls back by that refusal.
+    let mut merged = (0usize, 0usize, 0u64);
+    for (name, class) in [(&b".debug_str"[..], 0u8), (b".debug_line_str", 1)] {
+        let Some(lu) = lu.filter(|_| !identity) else { break };
+        let was = stored_chunk(name)?;
+        let lc = lu.placement.chunks.iter().find(|(_, c)| {
+            !c.is_alloc()
+                && matches!(c.kind, mortar_core::layout::ChunkKind::Merged(o)
+                    if f.assignment.outsecs[o].name == name)
+        });
+        let appended =
+            plan.strings.appended.get(&class).map(|a| a.2.as_slice()).unwrap_or_default();
+        let (w, (_, c)) = match (was, lc) {
+            (None, None) => continue,
+            (Some(w), Some(c)) => (w, c),
+            (w, c) => {
+                return Err(debug_finding(&format!(
+                    "G-5: {}: stored chunk {:?}, L_U's {:?}",
                     String::from_utf8_lossy(name),
-                    now.map(|c| c.size),
-                    was.map(|c| c.size)
-                ),
-                debug_reason(),
-            ));
+                    w.map(|w| w.size),
+                    c.map(|c| c.1.size)
+                )));
+            }
+        };
+        if c.size != w.size + appended.len() as u64 {
+            return Err(debug_finding(&format!(
+                "G-5: {}: L_U's chunk {:#x} bytes, stored {:#x} and G-1 appended {:#x}",
+                String::from_utf8_lossy(name),
+                c.size,
+                w.size,
+                appended.len()
+            )));
         }
+        let mut new = vec![0u8; usize::try_from(w.size).map_err(|_| debug_reason())?];
+        std::os::unix::fs::FileExt::read_exact_at(previous, &mut new, w.offset)
+            .map_err(|e| IncrReason::OutputChanged(e.to_string()))?;
+        new.extend_from_slice(appended);
+        if debug_injected("in56b") && !new.is_empty() {
+            new[0] ^= 1;
+        }
+        let Some(out) =
+            f.assignment.outsecs.ids().iter().find(|&o| f.assignment.outsecs[o].name == name)
+        else {
+            continue;
+        };
+        for (frag, row) in f.merge.split.frags.iter() {
+            if f.assignment.out(row.section) != Some(out) {
+                continue;
+            }
+            let Some(at) = lu.merge.offset(frag) else { continue };
+            let bytes = debug_frag_bytes(f, frag).ok_or_else(debug_reason)?;
+            let here = usize::try_from(at).ok().and_then(|a| new.get(a..a + bytes.len()));
+            if here != Some(bytes) {
+                return Err(debug_finding(&format!(
+                    "G-5: {} string of {} bytes at {at:#x} (stored size {:#x}): L_U's offset holds \
+                     {:?}",
+                    String::from_utf8_lossy(name),
+                    bytes.len(),
+                    w.size,
+                    here.map(|h| String::from_utf8_lossy(h).into_owned())
+                )));
+            }
+            if at < w.size {
+                merged.0 += 1;
+            } else {
+                merged.1 += 1;
+            }
+        }
+        merged.2 += appended.len() as u64;
     }
-    // Each changed file's string where G-1 puts it (after the bytes: in
-    // the non-identity case a merge that is not the previous output's is
-    // refused by name above, so a difference here is G-1's).
+    // Each changed file's string where G-1 puts it: at front 1's merge
+    // offset in the identity case, at `L_U`'s in the other (G-5: the
+    // offset front 2 writes; without `L_U`, not judged).
     let split = &f.merge.split;
+    let merge = if identity { Some(&f.layout.merge) } else { lu.map(|l| &l.merge) };
     let mut strings = 0usize;
-    for &file in files {
+    for &file in files.iter().filter(|_| merge.is_some()) {
         for (id, name, _) in front_sections(f, file) {
             let Some(class) = debug::str_class(name) else { continue };
             let Ok(row) = split.merge_of.binary_search_by_key(&id, |m| m.section) else {
@@ -2914,7 +3157,7 @@ fn debug_judge(
             let span = split.merge_of[row].pieces;
             for p in span.start..span.start + span.len {
                 let (off, frag) = (split.piece_off[p as usize], split.piece_frag[p as usize]);
-                let full = f.layout.merge.offset(frag);
+                let full = merge.and_then(|m| m.offset(frag));
                 let mine = plan.strings.output_offset(file, class, u64::from(off));
                 if full != mine {
                     return Err(debug_finding(&format!(
@@ -3053,14 +3296,17 @@ fn debug_judge(
         let taken = |t: Taken| plan.contributions.iter().filter(|c| c.taken == t).count();
         changed::record(&format!(
             "G-4 debug: judged: {} contributions ({} in place, {} in a dead range, {} at the \
-             tail), {} touched chunks, {strings} strings at \
-             the front's offsets, merged strings {merged} bytes equal, .debug_aranges {aranges} \
-             bytes by construction, {} group copies",
+             tail), {} touched chunks, {strings} strings at L_U's offsets, merged strings: {} \
+             live at stored offsets and {} appended ({} bytes) as IN-56 keeps them, \
+             .debug_aranges {aranges} bytes by construction, {} group copies",
             plan.contributions.len(),
             taken(Taken::InPlace),
             taken(Taken::DeadRange),
             taken(Taken::Tail),
             plan.chunks.len(),
+            merged.0,
+            merged.1,
+            merged.2,
             plan.comdat_in_place.len()
         ));
         return Ok(());
@@ -3133,7 +3379,8 @@ fn debug_runs_judged(
 
 /// G-3b (WP-230; tests, `testhooks` only): whether `MORTAR_G3_INJECT`
 /// names `item`, one of `debug_judged`'s judged items (`in50`, `in56`,
-/// `in54`, `r5a`), whose G-1 answer is then made to differ from the
+/// `in54`, `r5a`; G-5: `in56b`, the bytes IN-56 leaves in a string chunk
+/// in the non-identity case), whose G-1 answer is then made to differ from the
 /// front's by one byte (recorded `G-3 debug: injected <item>`). Always
 /// `false` without the feature: nothing is read.
 fn debug_injected(item: &str) -> bool {
