@@ -498,7 +498,28 @@ fn refill_capture(
     let image = || IncrReason::UpdateNotImplemented(Some(Unimplemented::Image));
     let meta = view.meta()?;
     let leaves = view.leaves()?;
+    // U-5's in-place plan: none on this path. `refill` writes `.symtab`
+    // and `.strtab` from the link `l` (the chunks the set rewrites whole,
+    // R-3), and its `write_symtab` reads only the plan's `moves`,
+    // `remap`, `fillers`, `entries` and `strtab`: never its `blocks`.
     let symtab = mortar_core::incr::SymtabPlan::default();
+    // M2b-5b (FINDING of M2b-5's hand-back; I-78a, IN-49a): the map's
+    // `symblock` records are the OUTPUT's blocks, which are the front's
+    // `.symtab` plan's (`incr_blocks`, the internal file's first: what
+    // the full link's capture stores as `SYMTAB`, IN-78), not the stored
+    // rows of the previous output. The front writes the whole table, so
+    // its plan places every block and a file without one in it has none
+    // (S-74): no stored block stands beside them ([`OutputBlocks`]).
+    // Without a front plan (no `.symtab`), `update_map` reads the stored
+    // rows as before.
+    let blocks = f.synth.symtab.as_ref().and_then(|p| p.incr_blocks());
+    let map_plan = mortar_core::incr::SymtabPlan {
+        blocks: blocks.clone().unwrap_or_default(),
+        ..mortar_core::incr::SymtabPlan::default()
+    };
+    let output_rows = OutputBlocks(*stored);
+    let map_rows =
+        if blocks.is_some() { mortar_core::incr::StoredLayout::new(&output_rows) } else { *stored };
     let want_map = ctx.plan.bookkeeping.mortar_map.is_some();
     let (refill, size, map) = crate::image::with_link(f, ctx.store, &|_| {}, |l| {
         let u = mortar_image::update::refill(l, delta, &symtab, set, stored, out, &leaves)
@@ -510,7 +531,7 @@ fn refill_capture(
                 }
             })?;
         let map = if want_map {
-            let m = mortar_image::map::update_map(l, delta, stored, &symtab)?;
+            let m = mortar_image::map::update_map(l, delta, &map_rows, &map_plan)?;
             Some(mortar_image::map::render(&m, &f.pool))
         } else {
             None
@@ -563,6 +584,111 @@ fn refill_capture(
     }
     steps.mark("capture");
     Ok((refill, size, state, map))
+}
+
+/// The stored rows as [`refill_capture`]'s `update_map` reads them when
+/// the front has a `.symtab` plan (M2b-5b): every row as stored, except
+/// that no file has a stored `.symtab` block, because the map's plan
+/// gives every block of the output (the front's `incr_blocks`) and a
+/// stored one would state the previous output's table.
+struct OutputBlocks<'a>(mortar_core::incr::StoredLayout<'a>);
+
+impl mortar_core::incr::LayoutRows for OutputBlocks<'_> {
+    fn chunks(
+        &self,
+    ) -> Result<Vec<(mortar_core::ChunkId, mortar_core::layout::Chunk)>, IncrReason> {
+        self.0.chunks()
+    }
+    fn order(&self) -> Result<Vec<mortar_core::ChunkId>, IncrReason> {
+        self.0.order()
+    }
+    fn segments(&self) -> Result<Vec<mortar_core::layout::Segment>, IncrReason> {
+        self.0.segments()
+    }
+    fn outsecs(&self) -> Result<Vec<(mortar_core::OutSecId, Vec<u8>)>, IncrReason> {
+        self.0.outsecs()
+    }
+    fn sections_of(
+        &self,
+        file: FileId,
+    ) -> Result<Vec<mortar_core::incr::StoredSection>, IncrReason> {
+        self.0.sections_of(file)
+    }
+    fn regions_of(&self, file: FileId) -> Result<Vec<mortar_core::incr::StoredRegion>, IncrReason> {
+        self.0.regions_of(file)
+    }
+    fn holes_in(
+        &self,
+        chunk: mortar_core::ChunkId,
+    ) -> Result<Vec<mortar_core::layout::Hole>, IncrReason> {
+        self.0.holes_in(chunk)
+    }
+    fn frags_of(
+        &self,
+        out: mortar_core::OutSecId,
+        class: u32,
+        hash: [u8; 16],
+    ) -> Result<Option<mortar_core::incr::StoredFrag>, IncrReason> {
+        self.0.frags_of(out, class, hash)
+    }
+    fn frag_uses_of(
+        &self,
+        file: FileId,
+    ) -> Result<Vec<mortar_core::incr::StoredFragUse>, IncrReason> {
+        self.0.frag_uses_of(file)
+    }
+    fn eh_range_of(
+        &self,
+        file: FileId,
+    ) -> Result<Option<mortar_core::incr::StoredEhRange>, IncrReason> {
+        self.0.eh_range_of(file)
+    }
+    fn eh_ranges(
+        &self,
+    ) -> Result<Vec<(FileId, u64, mortar_core::incr::StoredEhRange)>, IncrReason> {
+        self.0.eh_ranges()
+    }
+    fn key_refs_of(
+        &self,
+        file: FileId,
+    ) -> Result<Vec<mortar_core::incr::StoredKeyRef>, IncrReason> {
+        self.0.key_refs_of(file)
+    }
+    fn section(
+        &self,
+        id: mortar_core::SectionId,
+    ) -> Result<Option<mortar_core::incr::StoredSection>, IncrReason> {
+        self.0.section(id)
+    }
+    fn slots(&self) -> Result<Vec<mortar_core::incr::StoredSlot>, IncrReason> {
+        self.0.slots()
+    }
+    fn patches(&self) -> Result<Vec<mortar_core::layout::Patch>, IncrReason> {
+        self.0.patches()
+    }
+    fn redirects(&self) -> Result<Vec<mortar_core::layout::Redirect>, IncrReason> {
+        self.0.redirects()
+    }
+    fn sym_place(&self) -> Result<Vec<mortar_core::layout::SymPlace>, IncrReason> {
+        self.0.sym_place()
+    }
+    fn defined(&self) -> Result<Vec<mortar_core::layout::Defined>, IncrReason> {
+        self.0.defined()
+    }
+    fn tls_and_entry(&self) -> Result<(Option<mortar_core::layout::Tls>, Option<u64>), IncrReason> {
+        self.0.tls_and_entry()
+    }
+    fn symtab_block(
+        &self,
+        _: FileId,
+    ) -> Result<Option<mortar_core::incr::SymtabBlock>, IncrReason> {
+        Ok(None)
+    }
+    fn symtab_tables(
+        &self,
+    ) -> Result<(mortar_core::incr::SymtabBlock, mortar_core::incr::SymtabTables), IncrReason> {
+        self.0.symtab_tables()
+    }
 }
 
 /// U6 under `--gc-sections` (gc-lift; IN-71a): `live::live` on the join's
