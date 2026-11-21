@@ -148,11 +148,11 @@ fn in49a_shape_is_accepted() {
         assert_eq!(
             r.coverage.decisions.as_deref(),
             Some(
-                "decision records: 10 read; region, symblock judged (place only); capacity, order, slot, redirect, frag not judged"
+                "decision records: 12 read; region judged (place only), symblock judged (place, names); capacity, order, slot, redirect, frag not judged"
             ),
             "{arch}"
         );
-        assert!(r.summary().contains("decision records: 10 read"), "{arch}");
+        assert!(r.summary().contains("decision records: 12 read"), "{arch}");
         let f = edit::<&str>(arch, "f", &[]).unwrap();
         let e = equiv(&x, &f);
         assert!(
@@ -224,7 +224,14 @@ fn near_filler_reported() {
                 rejected_by_equiv(&x, &f, field, "P-E3", &format!("a filler but for its {field}"));
             // A near-filler of st_info 0 is an unnamed NOTYPE local: X
             // alone finds it by Y5 and Y6 (WP-246), naming the entry.
-            let xl = lines(&e.x.findings);
+            // It stands in a block's capacity past its count, where IN-49a
+            // puts fillers: X alone finds it by P-I7 too (WP-268).
+            let mut xl = lines(&e.x.findings);
+            let n = xl.len();
+            xl.retain(|l| {
+                !(l.starts_with("P-I7 ") && l.contains("past its count and not a filler"))
+            });
+            assert_eq!(n - xl.len(), 1, "{arch} {field}: {:#?}", lines(&e.x.findings));
             if field == "st_info" {
                 assert!(
                     xl.len() == 2
@@ -242,7 +249,11 @@ fn near_filler_reported() {
         let fs = edit(arch, "f", &["shndx"]).unwrap();
         let x = edit(arch, "x", &with(&["shndx", "near=.symtab_shndx"])).unwrap();
         let e = rejected_by_equiv(&x, &fs, "shndx", "P-E3", "a filler but for its .symtab_shndx");
-        assert!(e.x.findings.is_empty());
+        let xl = lines(&e.x.findings);
+        assert!(
+            xl.len() == 1 && xl[0].starts_with("P-I7 ") && xl[0].contains("not a filler"),
+            "{arch}: {xl:#?}"
+        );
     }
 }
 
@@ -305,7 +316,63 @@ fn p_i2_decision_records() {
         rejected_alone(arch, &with(&["region-out"]), "P-I2", "is not inside '.text'");
         rejected_alone(arch, &with(&["region-none"]), "P-I2", "names 0 output sections");
         rejected_alone(arch, &with(&["region-overlap"]), "P-I2", "meets the region of line");
+    }
+}
+
+/// The single run's findings are all of `rule`, one at least containing
+/// each of `needles`.
+fn rejected_with(arch: &str, ops: &[&str], rule: &str, needles: &[&str]) {
+    let Some(x) = edit(arch, "x", &with(ops)) else { return };
+    let got = lines(&single(&x).findings);
+    assert!(
+        !got.is_empty()
+            && got.iter().all(|l| l.starts_with(&format!("{rule} ")))
+            && needles.iter().all(|n| got.iter().any(|l| l.contains(n))),
+        "{arch} {ops:?}: want only {rule} with {needles:?}, got {got:#?}"
+    );
+}
+
+// §3.2, §6.8 P-I2 and P-I7 (WP-268): a `symblock` judged by its place and
+// by the output's `.symtab` and `.strtab` (IN-49a, I-78a, S-74, S-86).
+// The shape (one record per block, in_49a_shape_is_accepted) is 0
+// findings; each mutation is its sentence's rule; M2b-5's map (a block
+// at a filler, its region the name of a global) is P-I7.
+#[test]
+fn p_i2_p_i7_symbol_blocks() {
+    for arch in ARCHS {
+        let Some(x) = edit(arch, "x", SHAPE) else { return };
+        let got = lines(&single(&x).findings);
+        assert!(got.is_empty(), "{arch}: {got:#?}");
+        let n = x.map.decisions.symblocks.len();
+        assert_eq!(n, 3, "{arch}: start.c, a.c, b.c");
+        // P-I2: the place.
         rejected_alone(arch, &with(&["symblock-past"]), "P-I2", "runs past .symtab's local area");
+        rejected_alone(arch, &with(&["symblock-zero"]), "P-I2", "starts at entry 0");
+        rejected_alone(arch, &with(&["symblock-count"]), "P-I2", "above its capacity");
+        rejected_alone(arch, &with(&["symblock-strtab-past"]), "P-I2", "outside .strtab");
+        rejected_alone(arch, &with(&["symblock-overlap"]), "P-I2", "shares entries");
+        rejected_alone(arch, &with(&["symblock-region-overlap"]), "P-I2", "shares .strtab bytes");
+        rejected_with(arch, &["symblock-twice"], "P-I2", &["a second symbol block of file 1"]);
+        // P-I7: the entries and names. M2b-5's case first.
+        rejected_with(
+            arch,
+            &["symblock-stale"],
+            "P-I7",
+            &[
+                "is a filler, not a local of the block",
+                "('afun', not local) names .strtab+",
+                "('a.c') of the local area is neither a filler nor in any symbol block",
+            ],
+        );
+        rejected_with(arch, &["symblock-short"], "P-I7", &["past its count and not a filler"]);
+        rejected_with(
+            arch,
+            &["symblock-cap-short"],
+            "P-I7",
+            &["('a.c') names .strtab+0x27, not a string inside the block's region"],
+        );
+        rejected_with(arch, &["symblock-cap-long"], "P-I7", &["('_start', not local)"]);
+        rejected_with(arch, &["symblock-missing"], "P-I7", &["('b.c') of the local area"]);
     }
 }
 

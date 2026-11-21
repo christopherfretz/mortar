@@ -37,7 +37,7 @@ i386 fit.
 | x | x86-64 and i386 tables (§4.5) | `machine` |
 | G (WP-098) | `.gdb_index`: gdb's format for every producer (P-G1–P-G5) and synth.md §17 for mortar's (P-G6–P-G9), §6.10. `.debug_names` is not judged | — |
 | R (M4-r; RL-5, WP-185; P-P1: RL-6, WP-186) | Relocatable outputs (`-r`, `ET_REL`): every input section and relocation once, the symbol table, `.eh_frame`, groups, the header, the container, the notes, every section header (§14, P-P2-P-P11, accepted by P-P9; `mortar_plumb::relocatable::verify`); the final program through `-r` against the direct link, on two final links (P-P1, `mortar_plumb::compose::compose`) | — |
-| I (M7, WP-091) | An incremental link's holes and dead ranges, for a mortar map that claims them (`incremental`, `hole`, `dead`, §3.2): IN-60's coverage of every allocated section and IN-3a's three checks on every range (§6.8, P-I1–P-I6). `--equiv` (incr.md IN-62) is not started | — |
+| I (M7, WP-091) | An incremental link's holes and dead ranges, for a mortar map that claims them (`incremental`, `hole`, `dead`, §3.2): IN-60's coverage of every allocated section and IN-3a's three checks on every range (§6.8, P-I1–P-I6), and the `.symtab` blocks its decision records state (P-I7, WP-268). `--equiv` (incr.md IN-62) is not started | — |
 
 On the reference corpus, a stage-1 report may give only the stage-2
 reasons in "not checked" (§9.1).
@@ -385,14 +385,26 @@ names no output section or several, or whose `[<addr>, <addr> +
 <capacity>)` is not inside `[sh_addr, sh_addr + sh_size]` of its section,
 is P-I2; so are two `region`s of one output section whose ranges share
 a byte (WP-222: regions are disjoint by IN-30, so no correct writer
-states two that meet), and a `symblock` whose `<first> + <capacity>`
-exceeds `.symtab`'s `sh_info` (WP-222: a block and its reserve lie in
-the local area, IN-49a). **Nothing else of these records is judged** by
-the verifier: not the capacities, the order, the slots' addresses, the
-redirects, the fragments' offsets or the symbol blocks' other fields
-(H-1's (d) compares them with the state, IN-78); the coverage line
-counts them (`decision records: n read; region, symblock judged (place
-only); capacity, order, slot, redirect, frag not judged`, §7.2). The
+states two that meet), and a `symblock` out of place (WP-268; IN-49a,
+S-74, S-86): one whose `<first> + <capacity>` exceeds `.symtab`'s
+`sh_info` (WP-222: a block and its reserve lie in the local area), one
+at entry 0 (the blocks follow it), one whose `<count>` exceeds its
+`<capacity>`, one whose `.strtab` region `[<strtab-off>, <strtab-off> +
+<strtab-cap>)` is not inside `[0, sh_size)` of the `.strtab` that
+`.symtab` links, one in an output with no `.symtab`, a second record of
+one `<file>` (or of `-`), and two blocks that share an entry of
+`[<first>, <first> + <capacity>)` or a byte of their regions. A
+`symblock` in place is then judged against the output's `.symtab` and
+`.strtab`, its entries and their names (§6.8, P-I7). **Nothing else of
+these records is judged** by the verifier: not the capacities, the
+order, the slots' addresses, the redirects, the fragments' offsets, nor
+whether a block's `<capacity>` and `<strtab-cap>` are IN-49a's sizes,
+nor its `<file>` against the file its entries came from (an entry
+carries no file, an `STT_FILE` name is not a path), nor the records'
+order (H-1's (d) compares them with the state, IN-78); the coverage line
+counts them (`decision records: n read; region judged (place only),
+symblock judged (place, names); capacity, order, slot, redirect, frag
+not judged`, §7.2). The
 `slot` form with two fields after the word is `tls-ld`'s only (the
 module slot has no key): another `<kind>` there is a `MapError`. No record name collides with another record of this
 format (§3.2's grammar) or with the formats of §3.4-§3.6 (each read
@@ -3728,6 +3740,41 @@ what a reference names (the re-review's N3):
   pointer. A live unit the walk cannot read (an unknown form, a missing
   abbreviation) is a P-I4 finding naming it: refused, not passed.
 
+**Symbol blocks (P-I7; WP-268).** What a correct writer guarantees of
+a `symblock` (`spec/image.md` I-78a; `spec/incr.md` IN-49a; synth.md
+S-74, S-79, S-86), judged against the output's `.symtab` (its local
+area, entries 1 to `sh_info`) and the `.strtab` it links, when every
+`symblock` is in place (§3.2's P-I2 finds none: records out of place
+state no blocks to judge the tables against, and are judged no
+further):
+
+1. its `<count>` entries from `<first>` are `STB_LOCAL` and none is a
+   filler (IN-49a's form, §6.9): a block holds its file's `STT_FILE`,
+   kept and demoted locals (S-74), and no other `STT_SECTION` entry
+   exists (S-79);
+2. its entries from `<first> + <count>` up to `<first> + <capacity>`
+   are fillers (IN-49a: what is left of the capacity becomes fillers);
+3. each of its `<count>` entries names a string inside its region:
+   `st_name` and the string's NUL in `[<strtab-off>, <strtab-off> +
+   <strtab-cap>)`; or one of S-86's shared names (the empty string,
+   `$x`, `$d`, `__erratum_843419_veneer`) at an `st_name` in no block's
+   region (the fixed table);
+4. no other entry of `.symtab` (local or global; entry 0 and the
+   fillers, whose `st_name` is 0, aside) has an `st_name` inside its
+   region (S-86: a name is written once per entry that uses
+   it; only the fixed table is shared). A record that states a block the
+   output no longer has, its region now holding a global's name, is
+   this (M2b-5's map, WP-268);
+5. in a map that says `incremental`: every entry of the local area but
+   the fillers is one of some block's `<capacity>` entries (item 1 or
+   2 judges it there) (IN-49a: the local area is the blocks,
+   each followed by its fillers, then the tail reserve of fillers).
+
+A finding names the record's map line, the entry's index and its name.
+Not judged: the sizes of `<capacity>` and `<strtab-cap>`, a block's
+`<file>`, the records' order (§3.2). Tests: `tests/symfill.rs`
+`p_i2_p_i7_symbol_blocks` (WP-268).
+
 **Fill (IN-3a check 3; P-I5).** The file slack `hole` of `.symtab` or
 `.strtab` (above) holds zero bytes. An allocated `hole` holds its section's
 fill: `UDF #0` (zero words) in AArch64 code, `0xcc` in x86 code, zero
@@ -3850,11 +3897,12 @@ else. In the debug sections:
    as `.rela.plt`) take `NONE` records only.
 7. The decision records (§3.2, `spec/image.md` I-78a): only each
    `region`'s place inside its output section, two regions of a
-   section that meet, and a `symblock` past `.symtab`'s local area are
-   judged here (P-I2, WP-222); the rest is H-1's (`spec/incr.md` IN-79
-   (d)), named in the coverage line as not judged. `spec/image.md`
-   I-78a still says "region judged" only: a sentence there is the
-   supervisor's (WP-222's record, F-2).
+   section that meet, and a `symblock`'s place (P-I2, WP-222, WP-268)
+   and its entries and names (P-I7, WP-268) are judged here; the rest
+   is H-1's (`spec/incr.md` IN-79 (d)), named in the coverage line as
+   not judged. `spec/image.md` I-78a still says "region judged" only
+   and "each `symblock` within `.symtab`'s local area": a sentence
+   there is the supervisor's (WP-222's record, F-2; WP-268's).
 
 Tests: `tests/dead.rs` (§9.2 (p)), `map::mortar::tests::s3_2_dead_*`;
 the neutral forms both ways, table-driven (WP-253, `src/neutral.rs`):
@@ -4100,10 +4148,17 @@ checks). Beyond the allocated sections, every byte of `X`'s file is: in
 the file header, the program or section header table, a section's file
 image, or zero (file padding; on x86, inside an executable `PT_LOAD`'s
 file image, also `0xcc` and `0x90`, the code fill and the nop padding); a non-allocated output section with
-`nplace` units is tiled by them, `dead` lines of `X`'s map and zero
-alignment padding; a non-allocated section with no unit and no `merged`
+`nplace` units and no `merged` record is tiled by them, `dead` lines of
+`X`'s map and zero alignment padding; **a non-allocated section with
+`merged` records is not tiled** (WP-268, ruled on G-5b's
+`.debug_str`): its `dead` lines are §6.8's (P-I2's admission, P-I6's
+NUL end), its other bytes are the strings its references reach (§5.6
+judges each reference by content); no map lists its pieces one by one,
+so no map could tile it, with or without `nplace` units beside the
+records; a non-allocated section with no unit and no `merged`
 record, other than `.symtab`, `.strtab` and `.shstrtab` (P-E1, P-E3),
-holds the same bytes as `F`'s.
+holds the same bytes as `F`'s (one with `SHF_MERGE|SHF_STRINGS` and no
+line at all is passed over, as before WP-268).
 
 **Item 7**, the diagnostics, is not in the files: the harness compares
 the two links' diagnostics (IN-5, L10; `spec/incr.md` IN-63).
@@ -4349,7 +4404,7 @@ A finding has:
 
 - the rule id: `O1`, `S1`–`S21`, `I1`, `I2`, `M1`–`M12` (M11, M12: §3.8), `R1`–`R9`, `T1`,
   `Y1`–`Y5`, `E1`–`E5`, `F1`–`F5` (§4.8), `P1`–`P2` (§6.6), `B1` (§6.7),
-  `C1`–`C6` (§5.10), `P-D1`–`P-D13` (§12), `P-I1`–`P-I6` (§6.8), `P-M1`–`P-M3` (§13), `P-P1`–`P-P11` (§14; P-P2–P-P11 RL-5, WP-185; P-P1 RL-6, WP-186), `P-E1`–`P-E6`
+  `C1`–`C6` (§5.10), `P-D1`–`P-D13` (§12), `P-I1`–`P-I7` (§6.8; P-I7 WP-268), `P-M1`–`P-M3` (§13), `P-P1`–`P-P11` (§14; P-P2–P-P11 RL-5, WP-185; P-P1 RL-6, WP-186), `P-E1`–`P-E6`
   (§6.9; a side's finding there carries its side, `X:` or `F:`) or
   `P-G1`–`P-G9` (§6.10);
 - the output address, if it has one;
@@ -4406,8 +4461,9 @@ of `cargo xtask plumb --equiv`'s `X:`/`F:` line; §6.9), for `--equiv`
 what it read and did not judge (`equiv not judged: ...`, §6.9: a
 common's `<file>` a map does not state, a side's fillers under another
 linker's section symbols), and for a map with decision records (§3.2)
-`decision records: n read; region, symblock judged (place only);
-capacity, order, slot, redirect, frag not judged`. A plain map's lines
+`decision records: n read; region judged (place only), symblock judged
+(place, names); capacity, order, slot, redirect, frag not judged`
+(WP-268; before it `region, symblock judged (place only)`). A plain map's lines
 gain no word (WP-222). A stripped dynamic output
 (no `.symtab`; WP-164) adds one line, a `-r` output its `relocatable`
 and `composition` lines (§14.6), `stripped output (no .symtab),
@@ -4791,7 +4847,10 @@ produce a finding that is not a recorded anomaly (`tests/mutation.rs`):
   without it. AArch64, x86-64 and i386 unless named:
   - ACCEPTED: R13 case 1, `X` against `F`, and `X` against itself; a
     `--build-id` pair (the descriptors differ); a non-allocated
-    section of units; a PIE pair (AArch64, x86-64: `-pie
+    section of units; a `merged` `.debug_str` with a `dead ... strings`
+    line, and with the same string and no line (WP-268,
+    `p_e6_merged_nonalloc_is_not_tiled`: not tiled; that dead line one
+    byte short of its NUL is `X`'s P-I6); a PIE pair (AArch64, x86-64: `-pie
     --no-dynamic-linker --export-dynamic`); AArch64 `ADRP`+`ADD` in `F`,
     `NOP`+`ADR` in `X` (W1); x86-64 a GOT kept by `addq S@GOTPCREL`;
   - REJECTED: R13 case 2, `F` of `main.o b.o a.o` (P-E5, `myset` in

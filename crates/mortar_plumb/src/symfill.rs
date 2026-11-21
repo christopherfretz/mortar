@@ -14,16 +14,21 @@
 //!   other than a filler that names a string inside one (their NUL ends
 //!   are P-I6, `crate::deaddwarf`'s walk of the non-allocated ranges);
 //! - **decision records**: a `region` P-I2 outside its output section or
-//!   meeting another region of its section, a `symblock` P-I2 past
-//!   `.symtab`'s local area; the other records are read, not judged.
+//!   meeting another region of its section, a `symblock` P-I2 out of
+//!   place (past `.symtab`'s local area, its `.strtab` region outside
+//!   `.strtab`, meeting another block) and P-I7 for its entries and names
+//!   against the output's tables (WP-268); the other records are read,
+//!   not judged.
 
 use std::fmt::Write as _;
 
-use mortar_elf::consts::{SHN_UNDEF, SHT_NOBITS, SHT_SYMTAB, SHT_SYMTAB_SHNDX, STT_SECTION};
+use mortar_elf::consts::{
+    SHN_UNDEF, SHT_NOBITS, SHT_SYMTAB, SHT_SYMTAB_SHNDX, STB_LOCAL, STT_SECTION,
+};
 
 use crate::dead::{DeadSet, Range};
 use crate::image::{Image, OutSym};
-use crate::map::{DeadRange, Map};
+use crate::map::{DeadRange, Map, SymBlock};
 use crate::report::{Finding, Rule};
 
 fn finding(n: u8, msg: String) -> Finding {
@@ -321,25 +326,263 @@ fn decisions(image: &Image<'_>, map: &Map, out: &mut Vec<Finding>) -> Option<Str
             );
         }
     }
-    // A symbol block lies in `.symtab`'s local area (IN-49a).
-    if let Some(t) = Table::of(image) {
-        for b in &d.symblocks {
-            if b.first.saturating_add(b.capacity) > u64::from(t.info) {
-                out.push(finding(
-                    2,
+    symblocks(image, map, out);
+    let mut line = String::new();
+    let _ = write!(
+        line,
+        "decision records: {} read; region judged (place only), symblock judged (place, names); capacity, order, slot, redirect, frag not judged",
+        d.len()
+    );
+    Some(line)
+}
+
+/// S-86's shared names: the fixed table's strings, which entries of any
+/// block may name.
+const SHARED: [&[u8]; 4] = [b"", b"$x", b"$d", b"__erratum_843419_veneer"];
+
+/// The string at `off` of `strtab` and the offset of its NUL.
+fn string_at(strtab: &[u8], off: u64) -> Option<(&[u8], u64)> {
+    let o = usize::try_from(off).ok()?;
+    let rest = strtab.get(o..)?;
+    let n = rest.iter().position(|&b| b == 0)?;
+    Some((&rest[..n], off + n as u64))
+}
+
+fn file_name(b: &SymBlock) -> String {
+    b.file.map_or_else(|| "-".to_string(), |f| f.to_string())
+}
+
+/// §3.2's place of each `symblock` (P-I2) and §6.8's judgement of its
+/// entries and names against the output's `.symtab` and `.strtab`
+/// (P-I7, WP-268; IN-49a, I-78a, S-74, S-79, S-86).
+fn symblocks(image: &Image<'_>, map: &Map, out: &mut Vec<Finding>) {
+    let blocks = &map.decisions.symblocks;
+    if blocks.is_empty() {
+        return;
+    }
+    let Some(t) = Table::of(image) else {
+        for b in blocks {
+            out.push(finding(
+                2,
+                format!(
+                    "map line {}: symbol block of file {} in an output with no .symtab",
+                    b.line,
+                    file_name(b)
+                ),
+            ));
+        }
+        return;
+    };
+    let strtab_sec = image.sections[t.sec].shdr.sh_link as usize;
+    let strtab = image.section_data(strtab_sec).unwrap_or(&[]);
+    // P-I7 only of records all in place: out of place, they state no
+    // blocks to judge the tables against.
+    if let Some(sound) = places(blocks, u64::from(t.info), strtab.len() as u64, out) {
+        entries(image, map, &t, strtab, &sound, out);
+    }
+}
+
+/// §3.2's place of each `symblock` (P-I2): the records when all are in
+/// place.
+fn places<'m>(
+    blocks: &'m [SymBlock],
+    info: u64,
+    strsize: u64,
+    out: &mut Vec<Finding>,
+) -> Option<Vec<&'m SymBlock>> {
+    // P-I2: each record's place, alone.
+    let mut sound: Vec<&SymBlock> = Vec::new();
+    for b in blocks {
+        let why = if b.first == 0 {
+            Some("starts at entry 0 (the blocks follow it, S-74)".to_string())
+        } else if b.count > b.capacity {
+            Some(format!("has count {} above its capacity {}", b.count, b.capacity))
+        } else if b.first.checked_add(b.capacity).is_none_or(|e| e > info) {
+            Some(format!("runs past .symtab's local area (sh_info {info})"))
+        } else if b.strtab_off.checked_add(b.strtab_cap).is_none_or(|e| e > strsize) {
+            Some(format!(
+                "has its .strtab region [{:#x}, +{:#x}) outside .strtab (size {strsize:#x})",
+                b.strtab_off, b.strtab_cap
+            ))
+        } else {
+            None
+        };
+        match why {
+            Some(w) => out.push(finding(
+                2,
+                format!(
+                    "map line {}: symbol block [{}, +{}) of file {} {w}",
+                    b.line,
+                    b.first,
+                    b.capacity,
+                    file_name(b)
+                ),
+            )),
+            None => sound.push(b),
+        }
+    }
+    // P-I2: one record per file; no two share an entry or a string byte.
+    let mut placed_ok = sound.len() == blocks.len();
+    let mut by_file: Vec<&SymBlock> = sound.clone();
+    by_file.sort_by_key(|b| (b.file, b.line));
+    for w in by_file.windows(2) {
+        if w[0].file == w[1].file {
+            placed_ok = false;
+            out.push(finding(
+                2,
+                format!(
+                    "map line {}: a second symbol block of file {} (the first at line {})",
+                    w[1].line,
+                    file_name(w[1]),
+                    w[0].line
+                ),
+            ));
+        }
+    }
+    let meet = |key: fn(&SymBlock) -> (u64, u64), what: &str, out: &mut Vec<Finding>| {
+        let mut v: Vec<&SymBlock> = sound.iter().copied().filter(|b| key(b).1 > 0).collect();
+        v.sort_by_key(|b| (key(b).0, b.line));
+        let mut ok = true;
+        let mut reach: Option<&SymBlock> = None;
+        for &b in &v {
+            if let Some(a) = reach {
+                let (ao, az) = key(a);
+                let (bo, bz) = key(b);
+                if bo < ao + az {
+                    ok = false;
+                    out.push(finding(
+                        2,
+                        format!(
+                            "map line {}: symbol block of file {} shares {what} [{bo:#x}, +{bz:#x}) with the block of line {} [{ao:#x}, +{az:#x})",
+                            b.line,
+                            file_name(b),
+                            a.line
+                        ),
+                    ));
+                }
+                if bo + bz > ao + az {
+                    reach = Some(b);
+                }
+            } else {
+                reach = Some(b);
+            }
+        }
+        ok
+    };
+    placed_ok &= meet(|b| (b.first, b.capacity), "entries", out);
+    placed_ok &= meet(|b| (b.strtab_off, b.strtab_cap), ".strtab bytes", out);
+    placed_ok.then_some(sound)
+}
+
+/// §6.8's P-I7: the blocks' entries and names against `.symtab` and
+/// `.strtab`, every record in place.
+fn entries(
+    image: &Image<'_>,
+    map: &Map,
+    t: &Table<'_>,
+    strtab: &[u8],
+    sound: &[&SymBlock],
+    out: &mut Vec<Finding>,
+) {
+    let info = u64::from(t.info);
+    let pi7 = |b: &SymBlock, msg: String| {
+        finding(
+            7,
+            format!(
+                "map line {}: symbol block [{}, +{}) of file {}: {msg}",
+                b.line,
+                b.first,
+                b.count,
+                file_name(b)
+            ),
+        )
+    };
+    let filler = |y: &OutSym| t.classify(y) == Some(Form::Filler);
+    // The block (its place in `sound`) whose region holds `off`.
+    let region_of = |off: u64| {
+        sound.iter().position(|b| b.strtab_off <= off && off - b.strtab_off < b.strtab_cap)
+    };
+    // The block each entry is one of the `<count>` entries of.
+    let mut owner: Vec<Option<usize>> = vec![None; image.symbols.len()];
+    // Whether an entry is in a block's `<capacity>` (judged above).
+    let mut held = vec![false; image.symbols.len()];
+    for (bi, b) in sound.iter().enumerate() {
+        let lo = usize::try_from(b.first).unwrap_or(usize::MAX);
+        let hi = usize::try_from(b.first + b.capacity).unwrap_or(usize::MAX);
+        let mid = usize::try_from(b.first + b.count).unwrap_or(usize::MAX);
+        for (k, y) in image.symbols.iter().enumerate().take(hi).skip(lo) {
+            let e = y.index;
+            held[k] = true;
+            if k < mid {
+                owner[k] = Some(bi);
+                if y.sym.binding() != STB_LOCAL {
+                    out.push(pi7(b, format!("entry {e} ('{}') is not STB_LOCAL", y.name)));
+                } else if filler(y) {
+                    out.push(pi7(b, format!("entry {e} is a filler, not a local of the block")));
+                    continue;
+                }
+                let at = u64::from(y.sym.st_name);
+                let end = b.strtab_off + b.strtab_cap;
+                let named = string_at(strtab, at);
+                let inside = at >= b.strtab_off && named.is_some_and(|(_, nul)| nul < end);
+                let shared =
+                    named.is_some_and(|(n, _)| SHARED.contains(&n)) && region_of(at).is_none();
+                if !inside && !shared {
+                    out.push(pi7(
+                        b,
+                        format!(
+                            "entry {e} ('{}') names .strtab+{at:#x}, not a string inside the block's region [{:#x}, {end:#x}) nor a shared name of the fixed table",
+                            y.name, b.strtab_off
+                        ),
+                    ));
+                }
+            } else if !filler(y) {
+                out.push(pi7(
+                    b,
                     format!(
-                        "map line {}: symbol block [{}, +{}) runs past .symtab's local area (sh_info {})",
-                        b.line, b.first, b.capacity, t.info
+                        "entry {e} ('{}') is in the block's capacity past its count and not a filler",
+                        y.name
                     ),
                 ));
             }
         }
     }
-    let mut line = String::new();
-    let _ = write!(
-        line,
-        "decision records: {} read; region, symblock judged (place only); capacity, order, slot, redirect, frag not judged",
-        d.len()
-    );
-    Some(line)
+    // P-I7 4: no other entry names a string inside a block's region.
+    for (k, y) in image.symbols.iter().enumerate().skip(1) {
+        if filler(y) {
+            continue;
+        }
+        let Some(bi) = region_of(u64::from(y.sym.st_name)) else { continue };
+        if owner[k] == Some(bi) {
+            continue;
+        }
+        let b = sound[bi];
+        out.push(pi7(
+            b,
+            format!(
+                "entry {} ('{}', {}) names .strtab+{:#x}, inside the block's region [{:#x}, +{:#x}), and is not one of the block's entries",
+                y.index,
+                y.name,
+                if y.sym.binding() == STB_LOCAL { "local" } else { "not local" },
+                y.sym.st_name,
+                b.strtab_off,
+                b.strtab_cap
+            ),
+        ));
+    }
+    // P-I7 5: every entry of the local area but the fillers is a block's.
+    if map.incremental {
+        let n = usize::try_from(info).unwrap_or(usize::MAX);
+        for (k, y) in image.symbols.iter().enumerate().take(n).skip(1) {
+            if !held[k] && !filler(y) {
+                out.push(finding(
+                    7,
+                    format!(
+                        ".symtab entry {} ('{}') of the local area is neither a filler nor in any symbol block of the map",
+                        y.index, y.name
+                    ),
+                ));
+            }
+        }
+    }
 }
