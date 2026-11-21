@@ -24,7 +24,7 @@
 //!   (no producer: the capture cannot see the collector's warnings before
 //!   `finish`). The test states what the updates after it print.
 //!
-//! (State version 11: `symtab_rows.rs`, `version_10_state_is_refused`.)
+//! (State version 12: `symtab_rows.rs`, `version_10_state_is_refused`.)
 //!
 //! On AArch64 and x86-64.
 #![allow(clippy::too_many_lines, reason = "one comparison after the other")]
