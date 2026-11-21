@@ -1,0 +1,16 @@
+# WP-273 (R-5, IN-72 item 9): the island is the last chunk of the RX
+# PT_LOAD and has no capacity; the edit makes an 843419 site whose patch
+# cannot be appended: front 2's re-plan refuses `island-exhausted` by name
+# (its diagnostic is in the findings file), and the update falls back.
+proves: an update whose new erratum 843419 site needs a patch past its island's capacity falls back by name, never writing the patch past the island
+source: spec/landed/incr/WP-271.md §4 (e843419_init_island_exhausted), WP-273
+edit A: c.S
+hops: -, A
+link: a.o c.o g.o
+expect-full: update-not-implemented (image): front 2's re-plan refuses `island-exhausted` (an island with no capacity, R-5); front 2's failure is named `(image)` by update/mod.rs `front_two` (WP-273 hand-back: a ruling)
+compilers: gcc
+targets: a64
+not kiln: assembly (.S): kiln compiles C++ only; the shape is written in the assembly
+not x64: erratum 843419 is AArch64's (`--fix-cortex-a53-843419` is refused on x86-64, cli rows); x86-64 has no islands, its updates call no re-plan
+nolibc: yes
+options: --fix-cortex-a53-843419
