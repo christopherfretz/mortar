@@ -64,6 +64,9 @@ IN-79's checks (hop given), in order (IN79_CHECKS; spec/harness.md
   islands  WP-272: on every hop with a state, the state's PATCHES and
            REDIRECTS rows and island CHUNKS against the output's bytes
            (islands_check; n/a by name off AArch64 and without an island)
+  units    WP-275 (rulings item 6): on every hop with a state, `incr_state
+           check S'`: the state's CHUNK_UNITS against the index derived
+           from its own SECTIONS and REGIONS; a difference is a FAIL
 and the report's first line is the step's REASON (`update`, or the
 fall-back's name). The lane adds `expect` (expect_full) after a hop of a
 scenario that says `expect-full:`.
@@ -85,7 +88,7 @@ import oracle  # noqa: E402  (tests/incr-oracle/oracle.py, the IN-63a oracle, as
 
 CHECKS = ('exit', 'verify', 'equiv', 'run', 'oracle')
 IN79_CHECKS = ('exit', 'stderr', 'dirty', 'elflint', 'verify', 'equiv', 'run', 'oracle', 'state', 'duty',
-               'islands')
+               'islands', 'units')
 PLUMB_TIMEOUT = 300
 ELFLINT_TIMEOUT = 120
 
@@ -699,7 +702,10 @@ def first_difference(diffs):
 # since the update's placement may differ from G's fresh one (WP-267
 # review §6). Whole tables:
 D0_PLACEMENT_TABLES = ('CHUNKS', 'ORDER', 'HOLES', 'PATCHES', 'REDIRECTS', 'REGIONS', 'SYMTAB',
-                       'DEFINED', 'SYM_PLACE', 'SIZES', 'SIZED', 'SEGMENTS', 'LAYOUT', 'OUTSECS')
+                       'DEFINED', 'SYM_PLACE', 'SIZES', 'SIZED', 'SEGMENTS', 'LAYOUT', 'OUTSECS',
+                       # WP-275 §6: the units' order and presence follow the
+                       # update's placement; `units` judges them on every hop
+                       'CHUNK_UNITS')
 
 
 # the map's lines that are not the placement: the command line, and the
@@ -1370,6 +1376,27 @@ def _islands(v, x, hop):
         v.add('islands', 'FAIL cannot judge: %s: %s' % (type(e).__name__, e))
 
 
+# ------------------------------------------- units: the derived index --
+def _units(v, x, hop):
+    """WP-275 (rulings item 6): `incr_state check S'` on every hop with a
+    state: CHUNK_UNITS re-derived from S''s own SECTIONS and REGIONS (the
+    full link's rule) and compared; exit 1 names the first difference."""
+    tool = getattr(hop.canon, 'tool', None)
+    if not hop.canon.live or not tool:
+        v.add('units', 'n/a (no incr_state)')
+        return
+    if not hop.state or not os.path.exists(hop.state):
+        v.add('units', 'n/a (no state)')
+        return
+    rc, out = _run([tool, 'check', hop.state], os.path.dirname(os.path.abspath(hop.state)), STATE_TIMEOUT)
+    if rc is None:
+        v.add('units', 'FAIL TIMEOUT incr_state check %s' % out)
+    elif rc == 0 and out.startswith('check: CHUNK_UNITS '):
+        v.add('units', 'pass (%s)' % out.strip().split('check: ', 1)[1])
+    else:
+        v.add('units', 'FAIL incr_state check exit %s: %s' % (rc, _tail(out)))
+
+
 # ------------------------------------------------------------------ judge --
 def judge_step(tools, x, f, base, new, hop=None):
     v = Verdict()
@@ -1394,4 +1421,5 @@ def judge_step(tools, x, f, base, new, hop=None):
         _state(v, x, hop)
         _duty(v, x, hop)
         _islands(v, x, hop)
+        _units(v, x, hop)
     return v

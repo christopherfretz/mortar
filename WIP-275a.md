@@ -17,9 +17,11 @@ Brief: `/Volumes/AgentWork/mortar-helper/briefs/p-275a.md`. Branch
 2. Capture (commit "P-275a step 2"): capture.rs `chunk_unit_rows`,
    `chunk_units_check`, `merge_def_rows`; called from `rows5` (MERGE_DEFS,
    with the section's capture id) and `state5_rows` (CHUNK_UNITS; `local`).
+3. Judges (commit "P-275a step 3"): `incr_state check <s>` (exit 1 names
+   the first difference); judge.py `CHUNK_UNITS` in `D0_PLACEMENT_TABLES`,
+   the `units` column (`_units`, every hop with a state).
 
 ## Next
-3. `incr_state check`; judge.py `D0_PLACEMENT_TABLES` + `units` column.
 4. `state_producers` tests (a64, x64).
 5. Cost (protoc), gates, record section in `spec/landed/incr/WP-275.md`.
 
