@@ -4165,7 +4165,10 @@ pub fn index_file_of(
     object: &mortar_elf::Object<'_>,
     table: &mortar_elf::symbol::SymbolTable<'_>,
     arch: &dyn mortar_arch::Arch,
-    section: &dyn Fn(SectionIndex) -> Option<(u32, mortar_core::resolution::SectionKind, bool, SectionIndex)>,
+    section: &dyn Fn(
+        SectionIndex,
+    )
+        -> Option<(u32, mortar_core::resolution::SectionKind, bool, SectionIndex)>,
     key: &dyn Fn(usize) -> Option<u32>,
     path: &str,
 ) -> Result<Vec<crate::format::IndexRow>, String> {

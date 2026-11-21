@@ -433,7 +433,8 @@ pub(crate) fn index_file(
         let to = res.redirect.get(id).copied().unwrap_or(id);
         Some(if to != id && undefined() { to.0 } else { id.0 })
     };
-    let copy = |range: std::ops::Range<u64>, buf: &mut [u8]| inputs.copy_to(file, range, buf).is_ok();
+    let copy =
+        |range: std::ops::Range<u64>, buf: &mut [u8]| inputs.copy_to(file, range, buf).is_ok();
     let path = || String::from_utf8_lossy(inputs.files[file].path).into_owned();
     index_by(object, table, arch, &section, &key, &copy, &path, out)
 }

@@ -33,7 +33,9 @@ use std::collections::HashMap;
 
 use mortar_core::assignment::{Assignment, OutOf, OutSec};
 use mortar_core::column::Column;
-use mortar_core::id::{FileId, FragId, IdRange, OptId, OutSecId, SectionId, Span, SymEntry, SymbolId};
+use mortar_core::id::{
+    FileId, FragId, IdRange, OptId, OutSecId, SectionId, Span, SymEntry, SymbolId,
+};
 use mortar_core::incr::{IncrReason, LiveEdge, LiveTarget, Unimplemented};
 use mortar_core::inputs::{
     ContentHash, File, InputFlags, Inputs, LinkInputs, LinkTarget, Origin, Reader, StoreRef,
@@ -106,8 +108,8 @@ pub fn changed_edges_of(
         let facts = changed_facts(ff, view, plan, &delta.keepers)
             .map_err(|e| refused("changed_facts", e))?;
         let key_of = key_positions(ff, c).map_err(|e| refused("keys", e))?;
-        let index =
-            index_of(ff, c, &facts, &key_of, arch).map_err(|e| (format!("INDEX: {e}"), resolve()))?;
+        let index = index_of(ff, c, &facts, &key_of, arch)
+            .map_err(|e| (format!("INDEX: {e}"), resolve()))?;
         let edges = if gc {
             let ids = delta
                 .key_ids
@@ -318,9 +320,9 @@ fn edges_of(
         if let Some(o) = f.out
             && !names.iter().any(|(x, _)| *x == o)
         {
-            let row = rows
-                .get(o.0 as usize)
-                .ok_or_else(|| refused("OUTSECS".into(), corrupt("an output section past OUTSECS")))?;
+            let row = rows.get(o.0 as usize).ok_or_else(|| {
+                refused("OUTSECS".into(), corrupt("an output section past OUTSECS"))
+            })?;
             names.push((o, view.string(row.name).map_err(|e| refused("OUTSECS".into(), e))?));
         }
     }
@@ -406,17 +408,21 @@ fn edges_of(
         roots: &[],
         arch: Some(arch),
     };
-    let options =
-        LiveOptions { gc_sections: true, keep_exported: plan.shaping.gc_keep_exported };
-    let rows = mortar_live::stored_edges(&t, options, Some(&[FileId(0)]), pool).map_err(|(_, d)| {
-        refused(
-            format!("stored_edges: {}", d.render(&mortar_diag::Style::plain("mortar")).trim_end()),
-            live(),
-        )
-    })?;
-    rows.iter().map(|e| edge_row(e, first, count, nkeys)).collect::<Result<_, _>>().map_err(
-        |e| refused("EDGES".into(), e),
-    )
+    let options = LiveOptions { gc_sections: true, keep_exported: plan.shaping.gc_keep_exported };
+    let rows =
+        mortar_live::stored_edges(&t, options, Some(&[FileId(0)]), pool).map_err(|(_, d)| {
+            refused(
+                format!(
+                    "stored_edges: {}",
+                    d.render(&mortar_diag::Style::plain("mortar")).trim_end()
+                ),
+                live(),
+            )
+        })?;
+    rows.iter()
+        .map(|e| edge_row(e, first, count, nkeys))
+        .collect::<Result<_, _>>()
+        .map_err(|e| refused("EDGES".into(), e))
 }
 
 /// One narrow row in the update's ids (`changed::translate`'s rule):
@@ -424,9 +430,8 @@ fn edges_of(
 /// copied.
 fn edge_row(e: &LiveEdge, first: u32, count: u32, nkeys: u32) -> Result<EdgeRow, IncrReason> {
     use edge_kind::Target;
-    let section = |s: SectionId| {
-        (s.0 < count).then(|| first + s.0).ok_or_else(|| corrupt("a row's section"))
-    };
+    let section =
+        |s: SectionId| (s.0 < count).then(|| first + s.0).ok_or_else(|| corrupt("a row's section"));
     let target = match (edge_kind::target(e.kind), e.target) {
         (Some(Target::Key), LiveTarget::Key(k)) if k.0 < nkeys => k.0,
         (Some(Target::Section), LiveTarget::Section(t)) => section(t)?,
@@ -477,9 +482,12 @@ pub(super) fn shadow_line(
         let id = m.file.0;
         rows += m.index.len().max(o.index.len());
         if m.index != o.index {
-            let k = m.index.iter().zip(&o.index).position(|(a, b)| a != b).unwrap_or_else(|| {
-                m.index.len().min(o.index.len())
-            });
+            let k = m
+                .index
+                .iter()
+                .zip(&o.index)
+                .position(|(a, b)| a != b)
+                .unwrap_or_else(|| m.index.len().min(o.index.len()));
             let differ = m.index.iter().zip(&o.index).filter(|(a, b)| a != b).count()
                 + m.index.len().abs_diff(o.index.len());
             return format!(
