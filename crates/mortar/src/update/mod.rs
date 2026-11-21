@@ -1614,43 +1614,51 @@ fn hop_label() -> String {
     }
 }
 
-/// WP-255e5 item 1: a FINDING's rows and bytes at file offset `x`: the
-/// holes of front 2's placement and of the delta `d` that hold it (kind,
-/// chunk range), and the previous output's bytes from `x` up to the next
+/// WP-255e5 item 1: a FINDING's rows and bytes at file offset `at_file`: the
+/// holes of front 2's placement and of the delta that hold it (kind,
+/// chunk range), and the previous output's bytes from `at_file` up to the next
 /// zero (at most 48).
 fn hole_evidence(
-    f: &crate::front::Front<'_>,
-    d: &mortar_core::incr::LayoutDelta,
+    front: &crate::front::Front<'_>,
+    delta: &mortar_core::incr::LayoutDelta,
     stored: &mortar_core::incr::StoredLayout<'_>,
     out: &std::fs::File,
-    x: u64,
+    at_file: u64,
 ) -> String {
     use std::fmt::Write as _;
-    let pl = &f.layout.placement;
-    let Some((id, c)) = pl
-        .chunks
-        .iter()
-        .find(|(_, c)| c.in_file() && c.offset <= x && x < c.offset + c.size.max(c.capacity))
-    else {
+    let pl = &front.layout.placement;
+    let Some((id, chunk)) = pl.chunks.iter().find(|(_, ch)| {
+        ch.in_file() && ch.offset <= at_file && at_file < ch.offset + ch.size.max(ch.capacity)
+    }) else {
         return "; no chunk".into();
     };
-    let at = x - c.offset;
-    let mut s = format!("; chunk {} {:?} at {at:#x}:", id.0, c.kind);
+    let at = at_file - chunk.offset;
+    let mut line = format!("; chunk {} {:?} at {at:#x}:", id.0, chunk.kind);
     for h in pl.holes.iter().filter(|h| h.chunk == id && h.offset <= at && at < h.offset + h.size) {
-        let _ = write!(s, " front 2 hole {:?} [{:#x},{:#x});", h.kind, h.offset, h.offset + h.size);
+        let _ =
+            write!(line, " front 2 hole {:?} [{:#x},{:#x});", h.kind, h.offset, h.offset + h.size);
     }
-    if let Ok(hs) = d.holes_of(stored, id) {
+    if let Ok(hs) = delta.holes_of(stored, id) {
         for h in hs.iter().filter(|h| h.offset <= at && at < h.offset + h.size) {
-            let _ =
-                write!(s, " delta hole {:?} [{:#x},{:#x});", h.kind, h.offset, h.offset + h.size);
+            let _ = write!(
+                line,
+                " delta hole {:?} [{:#x},{:#x});",
+                h.kind,
+                h.offset,
+                h.offset + h.size
+            );
         }
     }
-    let mut b = [0u8; 48];
-    if std::os::unix::fs::FileExt::read_exact_at(out, &mut b, x).is_ok() {
-        let n = b.iter().position(|&v| v == 0).unwrap_or(b.len());
-        let _ = write!(s, " previous output at {x:#x}: {:?}", String::from_utf8_lossy(&b[..n]));
+    let mut buf = [0u8; 48];
+    if std::os::unix::fs::FileExt::read_exact_at(out, &mut buf, at_file).is_ok() {
+        let len = buf.iter().position(|&v| v == 0).unwrap_or(buf.len());
+        let _ = write!(
+            line,
+            " previous output at {at_file:#x}: {:?}",
+            String::from_utf8_lossy(&buf[..len])
+        );
     }
-    s
+    line
 }
 
 /// The first offset where the outputs of `a` and `b` (each the previous
