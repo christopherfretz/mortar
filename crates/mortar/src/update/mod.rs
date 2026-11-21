@@ -1532,18 +1532,8 @@ fn front_two(
         }
         // WP-267 P-2 (findings only): `materialize` and the judges over the
         // hook's tables, against front 1's answers.
-        // The lap (`Instant` reads, findings only) is the P-2 cost line's.
         if let Some(h) = &p2 {
-            if let Some(lu1) = lu.borrow().as_ref() {
-                let t = std::time::Instant::now();
-                let line = hook_materialize_equals_front_ones(view, &stored, cx, h, lu1, &df);
-                let ms = t.elapsed().as_secs_f64() * 1e3;
-                changed::record(&format!("{line} [hook materialize {ms:.2} ms]"));
-            }
-            let t = std::time::Instant::now();
-            let line = hook_judges_agree(view, &stored, cx, h, out);
-            let ms = t.elapsed().as_secs_f64() * 1e3;
-            changed::record(&format!("{line} [hook judges {ms:.2} ms]"));
+            hook_shadow(view, &stored, cx, h, lu.borrow().as_ref(), &df, out);
         }
         lu.borrow_mut().take().ok_or_else(|| {
             let s = "M2b-3 Part 3: the replay hook called twice".to_owned();
@@ -1578,30 +1568,9 @@ fn front_two(
             "M2b-3 Part 3: taken: front 2 ({} ranges, {} bytes)",
             refill.counts.ranges, refill.counts.dirty
         ));
-        // WP-267 P-2 (findings only): G-4 over front 2's own bytes (its
-        // layout is the replayed `lu`); front 1's verdict was `Ok`.
-        if let Some(h) = &p2
-            && (h.cf.files.iter().any(|c| c.debug) || h.debug.is_some())
-        {
-            let plan = h.debug.as_ref().map(|x| &x.plan);
-            let cx = front_view(f);
-            let v = debug_judged_moved(
-                view,
-                &stored,
-                &cx,
-                &h.files,
-                plan,
-                Some(&f.layout),
-                &refill,
-                out,
-            );
-            changed::record(&match v {
-                Ok(()) => "P-2 judges: agree (debug_judged_moved over front 2's bytes)".to_owned(),
-                Err(e) => format!(
-                    "finding: P-2 judges: debug_judged_moved over front 2's bytes: {}; front 1: ok",
-                    e.report()
-                ),
-            });
+        // WP-267 P-2 (findings only): G-4 over front 2's own bytes.
+        if let Some(h) = &p2 {
+            hook_debug_judged_moved(view, &stored, f, h, &refill, out);
         }
         // WP-255e: C' in shadow, against front 2's bytes (never written).
         if changed::recording() {
@@ -1636,6 +1605,58 @@ fn front_two(
         }
         (Err(e), None) => Err(e),
     }
+}
+
+/// WP-267 P-2 (findings only): G-4 (`debug_judged_moved`) over front 2's
+/// own bytes (its layout is the replayed `lu`) when a changed file has
+/// debug sections; front 1's verdict was `Ok` (front 2 runs after it).
+fn hook_debug_judged_moved(
+    view: &StateView<'_>,
+    stored: &mortar_core::incr::StoredLayout<'_>,
+    f: &crate::front::Front<'_>,
+    h: &HookShadow<'_>,
+    refill: &mortar_image::update::Refill,
+    previous: &std::fs::File,
+) {
+    if !h.cf.files.iter().any(|c| c.debug) && h.debug.is_none() {
+        return;
+    }
+    let plan = h.debug.as_ref().map(|x| &x.plan);
+    let cx = front_view(f);
+    let v =
+        debug_judged_moved(view, stored, &cx, &h.files, plan, Some(&f.layout), refill, previous);
+    changed::record(&match v {
+        Ok(()) => "P-2 judges: agree (debug_judged_moved over front 2's bytes)".to_owned(),
+        Err(e) => format!(
+            "finding: P-2 judges: debug_judged_moved over front 2's bytes: {}; front 1: ok",
+            e.report()
+        ),
+    });
+}
+
+/// WP-267 P-2 in front 2's hook (findings only): `materialize` and the
+/// judges over the hook's tables against front 1's answers (`lu1`, `df1`:
+/// front 1's materialized layout and delta), each line with its lap
+/// (`Instant` reads: the P-2 cost line's).
+fn hook_shadow(
+    view: &StateView<'_>,
+    stored: &mortar_core::incr::StoredLayout<'_>,
+    cx: &crate::front::Replay<'_, '_>,
+    h: &HookShadow<'_>,
+    lu1: Option<&mortar_core::layout::Layout>,
+    df1: &mortar_core::incr::LayoutDelta,
+    previous: &std::fs::File,
+) {
+    if let Some(lu1) = lu1 {
+        let t = std::time::Instant::now();
+        let line = hook_materialize_equals_front_ones(view, stored, cx, h, lu1, df1);
+        let ms = t.elapsed().as_secs_f64() * 1e3;
+        changed::record(&format!("{line} [hook materialize {ms:.2} ms]"));
+    }
+    let t = std::time::Instant::now();
+    let line = hook_judges_agree(view, stored, cx, h, previous);
+    let ms = t.elapsed().as_secs_f64() * 1e3;
+    changed::record(&format!("{line} [hook judges {ms:.2} ms]"));
 }
 
 /// WP-267 P-2, `hook_materialize_equals_front_ones` (findings only): the
