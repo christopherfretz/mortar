@@ -488,12 +488,12 @@ fn shadow_line(
     let mut post_ms = 0.0;
     let post = (|| {
         let at = std::time::Instant::now();
-        let ex = extract::extract(view, &mine, &options)?;
+        let ex = extract::extract(view, &mine, &options).map_err(|e| ("extract", e))?;
         if !(ex.extracted.is_empty() && ex.unextracted.is_empty()) {
             // M-1: an extraction flip's members are not P-1's rows.
-            return Err(resolve());
+            return Err(("M-1: an extraction flip", resolve()));
         }
-        let r = res::resolve(view, &mine, &ex, &options)?;
+        let r = res::resolve(view, &mine, &ex, &options).map_err(|e| ("resolve", e))?;
         resolve_ms = at.elapsed().as_secs_f64() * 1e3;
         match r {
             res::Resolution::Delta(d) => {
@@ -501,16 +501,16 @@ fn shadow_line(
                 let r =
                     facts_after_resolve(view, &cache, &mut mine, &f.plan, f.arch.get(), &d.keepers);
                 post_ms = at.elapsed().as_secs_f64() * 1e3;
-                r
+                r.map_err(|e| ("facts_after_resolve", e))
             }
             // M-1: a draw-in is an archive member's extraction.
-            res::Resolution::DrawIn(_) => Err(resolve()),
+            res::Resolution::DrawIn(_) => Err(("M-1: a draw-in", resolve())),
         }
     })();
     let pre = cmp.n;
-    if let Err(e) = post {
+    if let Err((step, e)) = post {
         return Ok(format!(
-            "P-1: pre equal ({} files, {pre} fields); post refused by name: {}",
+            "P-1: pre equal ({} files, {pre} fields); post refused by name: {step}: {}",
             my_ids.len(),
             e.report()
         ));
