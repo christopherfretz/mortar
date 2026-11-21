@@ -20,9 +20,12 @@ Brief: `/Volumes/AgentWork/mortar-helper/briefs/p-275a.md`. Branch
 3. Judges (commit "P-275a step 3"): `incr_state check <s>` (exit 1 names
    the first difference); judge.py `CHUNK_UNITS` in `D0_PLACEMENT_TABLES`,
    the `units` column (`_units`, every hop with a state).
+4. Tests (commit "P-275a step 4"): `state_producers::the_chunk_units_are_the_derived_index`
+   (geometric reference, CHUNKS.members under is_clip_member, VERSION 12
+   refused by an update), `state_producers::merge_defs_are_the_full_links_pieces`
+   (5 definitions vs `named_symbol`), a64 + x64: pass.
 
 ## Next
-4. `state_producers` tests (a64, x64).
 5. Cost (protoc), gates, record section in `spec/landed/incr/WP-275.md`.
 
 ## Resume
