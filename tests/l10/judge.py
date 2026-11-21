@@ -61,6 +61,9 @@ IN-79's checks (hop given), in order (IN79_CHECKS; spec/harness.md
   duty     (d) duty_list_covers_differences (IN-78) under (d0): every row
            in which canon(S) and canon(S') differ is a table of a cause of
            IN-78's derived table (tests/incr-update/duty.py)
+  islands  WP-272: on every hop with a state, the state's PATCHES and
+           REDIRECTS rows and island CHUNKS against the output's bytes
+           (islands_check; n/a by name off AArch64 and without an island)
 and the report's first line is the step's REASON (`update`, or the
 fall-back's name). The lane adds `expect` (expect_full) after a hop of a
 scenario that says `expect-full:`.
@@ -81,7 +84,8 @@ sys.dont_write_bytecode = True
 import oracle  # noqa: E402  (tests/incr-oracle/oracle.py, the IN-63a oracle, as a library)
 
 CHECKS = ('exit', 'verify', 'equiv', 'run', 'oracle')
-IN79_CHECKS = ('exit', 'stderr', 'dirty', 'elflint', 'verify', 'equiv', 'run', 'oracle', 'state', 'duty')
+IN79_CHECKS = ('exit', 'stderr', 'dirty', 'elflint', 'verify', 'equiv', 'run', 'oracle', 'state', 'duty',
+               'islands')
 PLUMB_TIMEOUT = 300
 ELFLINT_TIMEOUT = 120
 
@@ -933,6 +937,439 @@ def _duty(v, x, hop):
         DUTY_NOT_A_ROW)) if why is None else 'FAIL ' + why)
 
 
+# ------------------------------------- islands: the state's rows vs bytes --
+# WP-272 (WP-271 review R-2): the state's `PATCHES` (18) and `REDIRECTS`
+# (19) rows, and its island `CHUNKS` (8, tag 5), judged against the
+# OUTPUT's bytes on every hop that has a state and an island (AArch64).
+# (d0) excludes these tables on every hop it does not judge exactly
+# (D0_PLACEMENT_TABLES) and the verifier finds redirects from the image,
+# so without this check a stale island row passes its own hop and the
+# NEXT update builds on it. The two sides are independent: the rows come
+# from the state (`incr_state rows`), the addresses of input sections from
+# the map's `place` records (which the verifier judges, P-I1), the words
+# from the output's section headers and bytes. Neither is derived from
+# the other.
+# the rows read first (whether the hop has an island), then the rest
+ISLAND_FIRST = ('CHUNKS', 'PATCHES', 'REDIRECTS')
+ISLAND_TABLES = ISLAND_FIRST + ('SECTIONS', 'FILES', 'SYMBOLS', 'OUTSECS')
+# the columns `incr_state rows` writes in hex (examples/incr_state.rs `rows`)
+ROWS_HEX = ('sh_flags', 'size', 'capacity', 'addr', 'offset', 'value', 'place_offset', 'base')
+ROWS_REF = ('out', 'chunk', 'symbol', 'section', 'patch', 'file', 'place_chunk', 'index')
+TAG_PATCHES = 5                 # CHUNKS' tag of a `Patches(OutSecId, k)` island
+PATCH_SIZE = {0: 12, 1: 12, 2: 8}   # thunk (a64.md §9, 12 bytes), erratum 843419 patch (§11.2, 8 bytes)
+SHF_EXECINSTR = 4
+SHT_PROGBITS = 1
+EM_NAME = {62: 'x86-64', 3: 'i386'}
+
+
+def parse_rows(text):
+    """`incr_state rows`' output as {table: [row dict]} (each row's `i` its
+    row number; hex columns as ints, a `-` reference as None). Raises
+    ValueError on a line it does not understand."""
+    out = {}
+    for n, line in enumerate(text.splitlines(), 1):
+        w = line.split(' ')
+        if len(w) < 2 or len(w) % 2:
+            raise ValueError('rows line %d: %r' % (n, line[:80]))
+        row = {'i': int(w[1])}
+        for k, val in zip(w[2::2], w[3::2]):
+            if k in ROWS_HEX:
+                row[k] = int(val, 16)
+            elif k in ROWS_REF:
+                row[k] = None if val == '-' else int(val)
+            elif k in ('name', 'path', 'member_name', 'version'):
+                row[k] = val
+            else:
+                row[k] = int(val)
+        rows = out.setdefault(w[0], [])
+        if row['i'] != len(rows):
+            raise ValueError('rows line %d: %s row %d out of order' % (n, w[0], row['i']))
+        rows.append(row)
+    return out
+
+
+def elf64_sections(data):
+    """[(name, sh_type, sh_flags, sh_addr, sh_offset, sh_size, sh_link)]
+    of a little-endian ELF64 file, from its section headers."""
+    import struct
+    if data[:4] != b'\x7fELF' or data[4] != 2 or data[5] != 1:
+        raise ValueError('not a little-endian ELF64 file')
+    shoff, = struct.unpack_from('<Q', data, 0x28)
+    shentsize, shnum, shstrndx = struct.unpack_from('<HHH', data, 0x3a)
+    raw = [struct.unpack_from('<IIQQQQIIQQ', data, shoff + i * shentsize) for i in range(shnum)]
+    stro = raw[shstrndx][4] if shstrndx < shnum else 0
+
+    def name(o):
+        e = data.index(b'\0', stro + o)
+        return data[stro + o:e].decode('latin-1')
+    return [(name(r[0]), r[1], r[2], r[3], r[4], r[5], r[6]) for r in raw]
+
+
+def elf64_symbols(data, secs):
+    """{name: [st_value]} of `.symtab`'s defined global and weak symbols."""
+    import struct
+    out = {}
+    for name, ty, _fl, _a, off, size, link in secs:
+        if ty != 2:
+            continue
+        stro = secs[link][4]
+        for o in range(off + 24, off + size, 24):
+            st_name, info, _other, shndx, value, _sz = struct.unpack_from('<IBBHQQ', data, o)
+            if shndx == 0 or (info >> 4) not in (1, 2):
+                continue
+            e = data.index(b'\0', stro + st_name)
+            out.setdefault(data[stro + st_name:e].decode('latin-1'), []).append(value)
+    return out
+
+
+def parse_map_places(text):
+    """From a `mortar-map 2` text: ({map file id: (path, member, member header offset or None)},
+    {(file id, section index): (address, size)}, {`plt`/`iplt` slot key: address},
+    {(output section, `p<k>`): (address, size)} of the `capacity` records)."""
+    files, places, plt, caps = {}, {}, {}, {}
+    for line in text.splitlines():
+        w = line.split(' ')
+        if w[0] == 'file' and len(w) >= 3:
+            files[int(w[1])] = (w[2], w[3] if len(w) >= 5 else '%', int(w[4], 16) if len(w) >= 5 else None)
+        elif w[0] == 'place' and len(w) == 5 and not w[2].startswith(':'):
+            places[(int(w[1]), int(w[2]))] = (int(w[3], 16), int(w[4], 16))
+        elif w[0] == 'slot' and len(w) == 4 and w[1] in ('plt', 'iplt'):
+            plt[w[2]] = int(w[3], 16)
+        elif w[0] == 'capacity' and len(w) == 7 and w[3].startswith('p') and w[4] != '-':
+            caps[(w[1], w[3])] = (int(w[4], 16), int(w[5], 16))
+    return files, places, plt, caps
+
+
+def a64_b_target(word, at):
+    """The target of a `b` or `bl` word at `at`, or None for another word."""
+    if word & 0x7C000000 != 0x14000000:
+        return None
+    imm = word & 0x03FFFFFF
+    return at + ((imm - (1 << 26) if imm & (1 << 25) else imm) << 2)
+
+
+def a64_b(at, target):
+    """`b target` at `at` (a64.md §11.2: 0x14000000 | b26(target − at))."""
+    return 0x14000000 | (((target - at) >> 2) & 0x03FFFFFF)
+
+
+def a64_thunk_target(w0, w1, w2, at):
+    """The target of a12-byte thunk (a64.md §9: `adrp x16, T; add x16,
+    x16, :lo12:T; br x16`) at `at`, or None when the words are not that
+    form."""
+    if w0 & 0x9F00001F != 0x90000010 or w1 & 0xFFC003FF != 0x91000210 or w2 != 0xD61F0200:
+        return None
+    imm = (((w0 >> 5) & 0x7FFFF) << 2) | ((w0 >> 29) & 3)
+    imm = imm - (1 << 21) if imm & (1 << 20) else imm
+    return (at & ~0xFFF) + (imm << 12) + ((w1 >> 10) & 0xFFF)
+
+
+def islands_kind(result):
+    """The `islands` verdict by kind for the lane's summary: `pass`,
+    `FAIL`, or `n/a <why>` (the reason's head: `x86-64`, `no island`, ...)."""
+    if result.startswith('pass'):
+        return 'pass'
+    if result.startswith('FAIL'):
+        return 'FAIL'
+    why = result[4:].strip()
+    why = why[1:].split(')')[0] if why.startswith('(') else why
+    return 'n/a ' + why.split(':')[0]
+
+
+def islands_na(rows, elf):
+    """'n/a (<why>)' when the hop has nothing for `islands` to judge (not
+    AArch64; no island chunk; every island empty and no PATCHES or
+    REDIRECTS row), else None. Reads ISLAND_FIRST's tables only."""
+    import struct
+    mach = struct.unpack_from('<H', elf, 18)[0] if elf[:4] == b'\x7fELF' and len(elf) >= 20 else None
+    if mach != 183:
+        return 'n/a (%s: no patch islands)' % EM_NAME.get(mach, 'e_machine %s' % mach)
+    chunks, patches, redirects = rows.get('CHUNKS', []), rows.get('PATCHES', []), rows.get('REDIRECTS', [])
+    islands = [c for c in chunks if c['tag'] == TAG_PATCHES]
+    if not islands and not patches and not redirects:
+        return 'n/a (no island chunk)'
+    if not patches and not redirects and all(c['size'] == 0 for c in islands):
+        return 'n/a (no island: %d Patches chunks, all empty)' % len(islands)
+    return None
+
+
+def islands_check(rows, elf, map_text):
+    """The `islands` verdict of one hop: 'pass (...)', 'FAIL <row/word>' or
+    'n/a (<why>)'. `rows` is parse_rows of the state, `elf` the output's
+    bytes, `map_text` its map (the update's own)."""
+    import struct
+    why = islands_na(rows, elf)
+    if why is not None:
+        return why
+    chunks, patches, redirects = rows.get('CHUNKS', []), rows.get('PATCHES', []), rows.get('REDIRECTS', [])
+    islands = [c for c in chunks if c['tag'] == TAG_PATCHES]
+    secs = elf64_sections(elf)
+    execs = [s for s in secs if s[1] == SHT_PROGBITS and s[2] & SHF_EXECINSTR and s[5]]
+
+    def word(a):
+        for _n, _t, _f, sa, so, sz, _l in execs:
+            if sa <= a and a + 4 <= sa + sz:
+                return struct.unpack_from('<I', elf, so + a - sa)[0]
+        return None
+
+    def where(a):
+        return next(('%s+0x%x' % (s[0], a - s[3]) for s in execs if s[3] <= a < s[3] + s[5]), 'no exec section')
+
+    outsecs = rows.get('OUTSECS', [])
+    files, places, plt, caps = parse_map_places(map_text)
+    # FILES row -> map file id, by identity (path, member name); an
+    # identity held by several files (one archive's members of one name,
+    # one path named twice) by a member's place in its archive (FILES' base
+    # is its bytes', 60 after the member header the map names), else in
+    # order (the map lists live files in FileId order). A wrong pairing
+    # cannot pass: section_addr compares the state's place with the map's.
+    by_ident = {}
+    for fid in sorted(files):
+        by_ident.setdefault(files[fid][:2], []).append(fid)
+    file_map, seen = {}, {}
+    for f in rows.get('FILES', []):
+        cands = by_ident.get((f['path'], f['member_name']), [])
+        if len(cands) > 1 and f['member']:
+            cands = [m for m in cands if files[m][2] is not None and files[m][2] + 60 == f['base']]
+        k = seen.get((f['path'], f['member_name']), 0) if len(cands) > 1 else 0
+        if k < len(cands):
+            file_map[f['i']] = cands[k]
+            seen[(f['path'], f['member_name'])] = k + 1
+    sections = rows.get('SECTIONS', [])
+
+    def section_addr(s):
+        """(address, None) of SECTIONS row `s` from the map's `place`, or (None, why)."""
+        if s is None or s >= len(sections):
+            return None, 'SECTIONS row %s does not exist' % s
+        r = sections[s]
+        fid = file_map.get(r['file'])
+        if fid is None or r['index'] is None or (fid, r['index']) not in places:
+            return None, 'SECTIONS row %d (%s, FILES row %s section %s) has no `place` record in the map' % (
+                s, r['name'], r['file'], r['index'])
+        a, size = places[(fid, r['index'])]
+        if size != r['size']:
+            return None, 'SECTIONS row %d (%s): size 0x%x, the map\'s `place` 0x%x' % (s, r['name'], r['size'], size)
+        pc = r['place_chunk']
+        if pc is None or pc >= len(chunks) or chunks[pc]['addr'] + r['place_offset'] != a:
+            return None, 'SECTIONS row %d (%s): the state places it at %s, the map at 0x%x' % (
+                s, r['name'], 'nothing' if pc is None or pc >= len(chunks) else
+                '0x%x' % (chunks[pc]['addr'] + r['place_offset']), a)
+        return a, None
+
+    # the island chunks: inside an executable output section's bytes, and
+    # where the map's `capacity` record puts them
+    ranges = []
+    for c in islands:
+        if c['size'] == 0:
+            continue
+        lo, hi = c['addr'], c['addr'] + c['size']
+        if not any(s[3] <= lo and hi <= s[3] + s[5] for s in execs):
+            return 'FAIL CHUNKS row %d (island %s p%d at 0x%x size 0x%x) is not inside an executable section\'s ' \
+                   'bytes' % (c['i'], c['name'], c['part'], lo, c['size'])
+        out = outsecs[c['out']]['name'] if c['out'] is not None and c['out'] < len(outsecs) else None
+        cap = caps.get((out, 'p%d' % c['part']))
+        if cap is not None and cap != (lo, c['size']):
+            return 'FAIL CHUNKS row %d (island %s p%d) at 0x%x size 0x%x, the map\'s capacity record 0x%x size ' \
+                   '0x%x' % (c['i'], out, c['part'], lo, c['size'], cap[0], cap[1])
+        ranges.append((lo, hi, c))
+    # state to bytes: each patch row's words
+    redirected = {}
+    for r in redirects:
+        redirected.setdefault(r['patch'], []).append(r)
+    covered = []
+    unused = thunks = 0
+    undecoded = []
+    for p in patches:
+        c = chunks[p['chunk']] if p['chunk'] is not None and p['chunk'] < len(chunks) else None
+        if c is None or c['tag'] != TAG_PATCHES:
+            return 'FAIL PATCHES row %d names CHUNKS row %s, not a patch island' % (p['i'], p['chunk'])
+        size = PATCH_SIZE.get(p['kind'])
+        at = c['addr'] + p['offset']
+        if size is None or p['offset'] + size > c['size']:
+            return 'FAIL PATCHES row %d (kind %d at 0x%x) lies outside its island (CHUNKS row %d size 0x%x)' % (
+                p['i'], p['kind'], at, c['i'], c['size'])
+        covered.append((at, at + size, p))
+        words = [word(at + 4 * k) for k in range(size // 4)]
+        if None in words:
+            return 'FAIL PATCHES row %d at 0x%x: not in an executable section\'s bytes' % (p['i'], at)
+        if p['kind'] == 2:
+            site, why = section_addr(p['section'])
+            if site is None:
+                return 'FAIL PATCHES row %d (kind 2): %s' % (p['i'], why)
+            f = site + p['value']
+            if p['i'] not in redirected and words == [0, 0]:
+                unused += 1       # a dropped patch, written as zeros (WP-271 ruling R-6)
+                continue
+            if words[0] & 0x3B000000 != 0x39000000:
+                return 'FAIL PATCHES row %d (kind 2, site 0x%x) at 0x%x: word %08x is not a load/store with an ' \
+                       'unsigned immediate (W4\', a64.md §11.2)' % (p['i'], f, at, words[0])
+            if words[1] != a64_b(at + 4, f + 4):
+                return 'FAIL PATCHES row %d (kind 2, site 0x%x) at 0x%x: its last word %08x is not `b 0x%x` ' \
+                       '(%08x)' % (p['i'], f, at + 4, words[1], f + 4, a64_b(at + 4, f + 4))
+            if p['i'] not in redirected:
+                unused += 1
+        else:
+            thunks += 1
+            t = a64_thunk_target(words[0], words[1], words[2], at)
+            if t is None:
+                return 'FAIL PATCHES row %d (thunk kind %d) at 0x%x: words %s are not a thunk (a64.md §9)' % (
+                    p['i'], p['kind'], at, ' '.join('%08x' % w for w in words))
+            syms = rows.get('SYMBOLS', [])
+            key = syms[p['symbol']] if p['symbol'] is not None and p['symbol'] < len(syms) else None
+            if key is None:
+                return 'FAIL PATCHES row %d (thunk kind %d) at 0x%x: its key %s has no SYMBOLS row' % (
+                    p['i'], p['kind'], at, p['symbol'])
+            if key['kind'] == 2 or key['version'] != '%':
+                # its target is not resolved here (a local's or a versioned
+                # key's address needs the defining file's symbol table):
+                # neither a pass nor a FAIL, `n/a` by name (WP-276 review,
+                # ruling 6, option (b)); the other rows are still judged
+                undecoded.append('%s key: thunk PATCHES row %d to %s' % (
+                    'local' if key['kind'] == 2 else 'versioned', p['i'], key['name']))
+                continue
+            if p['kind'] == 1:
+                want = plt.get(key['name'])
+                where_ = 'its `slot plt` record'
+            else:
+                vals = (_symtab_cache(elf, secs).get(key['name'], []))
+                want = vals[0] + _signed(p['value']) if len(vals) == 1 else None
+                where_ = '.symtab (%d definitions)' % len(vals)
+            if want is None or t != want:
+                return 'FAIL PATCHES row %d (thunk kind %d to %s) at 0x%x: the thunk branches to 0x%x, %s gives %s' % (
+                    p['i'], p['kind'], key['name'], at, t, where_, 'nothing' if want is None else '0x%x' % want)
+    covered.sort(key=lambda x: x[0])
+    for (a0, a1, p), (b0, _b1, q) in zip(covered, covered[1:]):
+        if b0 < a1:
+            return 'FAIL PATCHES rows %d and %d overlap (0x%x, 0x%x)' % (p['i'], q['i'], a0, b0)
+    # state to bytes: each redirect's word at F
+    at_f = {}
+    for r in redirects:
+        p = patches[r['patch']] if r['patch'] is not None and r['patch'] < len(patches) else None
+        if p is None:
+            return 'FAIL REDIRECTS row %d names PATCHES row %s, which does not exist' % (r['i'], r['patch'])
+        a, why = section_addr(r['section'])
+        if a is None:
+            return 'FAIL REDIRECTS row %d: %s' % (r['i'], why)
+        f = a + r['offset']
+        if f in at_f:
+            return 'FAIL REDIRECTS rows %d and %d both redirect 0x%x' % (at_f[f]['i'], r['i'], f)
+        at_f[f] = r
+        target = chunks[p['chunk']]['addr'] + p['offset']
+        w = word(f)
+        got = a64_b_target(w, f) if w is not None else None
+        bl = w is not None and w & 0x80000000
+        if p['kind'] == 2 and (p['section'] != r['section'] or p['value'] != r['offset']):
+            return 'FAIL REDIRECTS row %d (site SECTIONS %d +0x%x) names PATCHES row %d, the patch of another ' \
+                   'site (SECTIONS %s +0x%x)' % (r['i'], r['section'], r['offset'], p['i'], p['section'], p['value'])
+        if got != target or (p['kind'] == 2 and bl):
+            return 'FAIL REDIRECTS row %d (%s) at 0x%x: the word %s is not `b%s 0x%x` (PATCHES row %d)' % (
+                r['i'], where(f), f, 'outside every executable section' if w is None else '%08x' % w,
+                '' if p['kind'] == 2 else '/bl', target, p['i'])
+    # bytes to state: an island word no PATCHES row covers is zero (a hole
+    # in an island included: the image fills it with zeros, WP-271 R-6)
+    for lo, hi, c in ranges:
+        cov = sorted((a, b) for a, b, _p in covered if lo <= a < hi)
+        a = lo
+        for x0, x1 in cov + [(hi, hi)]:
+            for b in range(a, min(x0, hi), 4):
+                w = word(b)
+                if w:
+                    return 'FAIL the island word %08x at 0x%x (CHUNKS row %d) is covered by no PATCHES row and ' \
+                           'is not zero' % (w, b, c['i'])
+            a = max(a, x1)
+    # bytes to state: every b/bl into an island is a redirect's word
+    into = 0
+    if ranges:
+        lo_all = min(r[0] for r in ranges)
+        hi_all = max(r[1] for r in ranges)
+        for _n, _t, _f, sa, so, sz, _l in execs:
+            for k, (w,) in enumerate(struct.iter_unpack('<I', elf[so:so + (sz & ~3)])):
+                if w & 0x7C000000 != 0x14000000:
+                    continue
+                at = sa + 4 * k
+                t = a64_b_target(w, at)
+                if not lo_all <= t < hi_all or not any(lo <= t < hi for lo, hi, _c in ranges):
+                    continue
+                into += 1
+                if at not in at_f:
+                    return 'FAIL the word %08x at 0x%x (%s) branches into the island at 0x%x, and no REDIRECTS row ' \
+                           'names it' % (w, at, where(at), t)
+    if undecoded:
+        # every other check passed; a thunk whose key's address is not
+        # resolved here is reported by name, never as a pass
+        return 'n/a (%s%s; the other rows judged)' % (undecoded[0], ' and %d more' % (len(undecoded) - 1)
+                                                      if len(undecoded) > 1 else '')
+    return 'pass (%d redirects, %d patches (%d unused, %d thunks), %d islands, %d branches into them)' % (
+        len(redirects), len(patches), unused, thunks, len(ranges), into)
+
+
+_SYMTAB = {}
+
+
+def _symtab_cache(elf, secs):
+    k = id(elf)
+    if k not in _SYMTAB:
+        _SYMTAB.clear()
+        _SYMTAB[k] = elf64_symbols(elf, secs)
+    return _SYMTAB[k]
+
+
+def _signed(v):
+    return v - (1 << 64) if v & (1 << 63) else v
+
+
+def state_rows(tool, state, tables=ISLAND_TABLES):
+    """({table: rows}, None) of the state's `tables`, or (None, why)."""
+    rc, out = _run([tool, 'rows', state] + list(tables), os.path.dirname(os.path.abspath(state)),
+                   STATE_TIMEOUT)
+    if rc is None:
+        return None, 'TIMEOUT incr_state rows %s' % out
+    if rc != 0:
+        return None, 'incr_state rows exit %s: %s' % (rc, _tail(out))
+    try:
+        return parse_rows(out), None
+    except ValueError as e:
+        return None, 'incr_state rows output not understood: %s' % e
+
+
+def _islands(v, x, hop):
+    """WP-272: the state's island rows against the output's bytes, on
+    every hop with a state (an update or a full link; the first link
+    included)."""
+    tool = getattr(hop.canon, 'tool', None)
+    if not hop.canon.live or not tool:
+        v.add('islands', 'n/a (no incr_state)')
+        return
+    if not hop.state or not os.path.exists(hop.state):
+        v.add('islands', 'n/a (no state)')
+        return
+    try:
+        with open(x.path(x.out), 'rb') as fh:
+            elf = fh.read()
+        with open(x.path(x.map)) as fh:
+            map_text = fh.read()
+    except OSError as e:
+        v.add('islands', 'FAIL cannot read the output or its map: %s' % e)
+        return
+    if elf[:4] != b'\x7fELF' or elf[18:20] != b'\xb7\x00':
+        v.add('islands', islands_na({}, elf))
+        return
+    rows, why = state_rows(tool, hop.state, ISLAND_FIRST)
+    na = islands_na(rows, elf) if rows is not None else None
+    if rows is not None and na is None:
+        rows, why = state_rows(tool, hop.state)
+    if rows is None:
+        v.add('islands', 'FAIL %s' % why)
+        return
+    if na is not None:
+        v.add('islands', na)
+        return
+    try:
+        v.add('islands', islands_check(rows, elf, map_text))
+    except (ValueError, IndexError, KeyError) as e:
+        v.add('islands', 'FAIL cannot judge: %s: %s' % (type(e).__name__, e))
+
+
 # ------------------------------------------------------------------ judge --
 def judge_step(tools, x, f, base, new, hop=None):
     v = Verdict()
@@ -956,4 +1393,5 @@ def judge_step(tools, x, f, base, new, hop=None):
     if hop is not None:
         _state(v, x, hop)
         _duty(v, x, hop)
+        _islands(v, x, hop)
     return v

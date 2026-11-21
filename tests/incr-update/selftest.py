@@ -101,6 +101,30 @@ def debug_elf(sections):
     return bytes(eh) + data + b''.join(hdrs)
 
 
+def exec_elf(addr, code):
+    """An AArch64 ELF64 file with one `.text` (PROGBITS, AX) at `addr`
+    holding `code`: enough for the islands check."""
+    shstr = b'\0.text\0.shstrtab\0'
+    off = 64
+    body = code + shstr
+    shoff = (off + len(body) + 7) & ~7
+    body += bytes(shoff - off - len(body))
+    eh = b'\x7fELF' + bytes([2, 1, 1]) + bytes(9) + struct.pack('<HHIQQQIHHHHHH', 2, 183, 1, addr, 0, shoff, 0,
+                                                                 64, 56, 0, 64, 3, 2)
+    sh = [bytes(64), struct.pack('<IIQQQQIIQQ', 1, 1, 6, addr, off, len(code), 0, 0, 4, 0),
+          struct.pack('<IIQQQQIIQQ', 7, 3, 0, 0, off + len(code), len(shstr), 0, 0, 1, 0)]
+    return eh + body + b''.join(sh)
+
+
+def thunk_rows(key):
+    """The rows of one 12-byte island at 0x400000 holding one thunk (kind
+    0) whose key is the SYMBOLS row `key`."""
+    return {'CHUNKS': [{'i': 0, 'tag': judge.TAG_PATCHES, 'size': 12, 'addr': 0x400000, 'out': None, 'part': 0,
+                        'name': '.text'}],
+            'PATCHES': [{'i': 0, 'chunk': 0, 'kind': 0, 'offset': 0, 'symbol': 0, 'section': None, 'value': 0}],
+            'REDIRECTS': [], 'SYMBOLS': [dict(key, i=0)]}
+
+
 def _verdict(reason='update'):
     v = judge.Verdict()
     v.reason = reason
@@ -382,6 +406,34 @@ def units(log=print):
         return v.checks[0][1]
     case('expect-full-one-of-two', expect_any('symtab'), lambda r: r.startswith('pass'))
     case('expect-full-none-of-two', expect_any('eh'), lambda r: r.startswith('FAIL') and '(eh)' in r)
+
+    # WP-272's `islands` (the units over a real link are lane.py's
+    # island_units): n/a by name off AArch64 and without an island
+    case('islands-x86-64-na', judge.islands_na({}, tiny_elf(62, [])), 'n/a (x86-64: no patch islands)')
+    case('islands-i386-na', judge.islands_na({}, tiny_elf(3, [], c64=False)), 'n/a (i386: no patch islands)')
+    a64 = tiny_elf(183, [])
+    case('islands-no-island-chunk-na', judge.islands_na({'CHUNKS': []}, a64), 'n/a (no island chunk)')
+    empty = {'CHUNKS': [{'i': 0, 'tag': judge.TAG_PATCHES, 'size': 0}]}
+    case('islands-empty-island-na', judge.islands_na(empty, a64), 'n/a (no island: 1 Patches chunks, all empty)')
+    case('islands-rows-parse', judge.parse_rows('PATCHES 0 chunk 8 kind 2 offset 10 symbol - section 4 value ff\n'),
+         {'PATCHES': [{'i': 0, 'chunk': 8, 'kind': 2, 'offset': 16, 'symbol': None, 'section': 4, 'value': 255}]})
+    # a thunk whose key is a local or a versioned symbol: its target is not
+    # resolved here, so `n/a` by name, never a pass or a FAIL (WP-276
+    # review, ruling 6 (b)); a global key the output does not define FAILs
+    thunk = exec_elf(0x400000, struct.pack('<III', 0x90000010, 0x91000210 | (0x123 << 10), 0xD61F0200))
+    local = {'kind': 2, 'file': 1, 'ordinal': 3, 'name': 'helper', 'version': '%'}
+    case('islands-thunk-local-key-na', judge.islands_check(thunk_rows(local), thunk, ''),
+         'n/a (local key: thunk PATCHES row 0 to helper; the other rows judged)')
+    versioned = {'kind': 1, 'file': None, 'ordinal': 0, 'name': 'f', 'version': 'V1'}
+    case('islands-thunk-versioned-key-na', judge.islands_check(thunk_rows(versioned), thunk, ''),
+         'n/a (versioned key: thunk PATCHES row 0 to f; the other rows judged)')
+    glob = {'kind': 0, 'file': None, 'ordinal': 0, 'name': 'g', 'version': '%'}
+    case('islands-thunk-undefined-global-fails', judge.islands_check(thunk_rows(glob), thunk, ''),
+         lambda r: r.startswith('FAIL PATCHES row 0 (thunk kind 0 to g) at 0x400000: the thunk branches to 0x400123'))
+    case('islands-thunk-local-not-a-thunk-fails', judge.islands_check(thunk_rows(local), exec_elf(
+        0x400000, bytes(12)), ''), lambda r: r.startswith('FAIL PATCHES row 0 (thunk kind 0) at 0x400000: words'))
+    case('islands-thunk-decode', judge.a64_thunk_target(0x90000010 | (1 << 29), 0x91000210 | (0x123 << 10),
+                                                        0xD61F0200, 0x400ffc), 0x401123)
     return out
 
 
