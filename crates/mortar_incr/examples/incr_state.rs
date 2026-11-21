@@ -7,14 +7,18 @@
 //! incr_state compare <state A> <state B>
 //! incr_state size <state> [<format-4 state> <mortar version string>]
 //! incr_state strings <format-4 state> <mortar version string> <path suffix>...
+//! incr_state rows <state> <TABLE>...
 //! ```
 //!
 //! `convert` writes the format-5 state of a format-4 one (the full link's
 //! writer over its rows: `encode(normalize(from_format4(..)))`); `canon`
 //! prints the canonical rows' digest per table; `compare` prints the
 //! canonical differences (exit 1 when any); `size` prints the per-table
-//! sizes and, given the format-4 state, the ratio (U-2's 1.15 gate). Every
-//! command refuses a format-5 state whose updating flag is set.
+//! sizes and, given the format-4 state, the ratio (U-2's 1.15 gate); `rows`
+//! prints the decoded rows of the tables named (`CHUNKS`, `PATCHES`,
+//! `REDIRECTS`, `SECTIONS`, `FILES`, `SYMBOLS`, `HOLES`, `OUTSECS`), one
+//! per line, for the lane's island judge (WP-272). Every command refuses a
+//! format-5 state whose updating flag is set.
 
 use std::process::ExitCode;
 
@@ -242,6 +246,190 @@ fn dead_keys(path4: &str, version: &str) -> Result<(), String> {
     Ok(())
 }
 
+/// The tables `rows` prints (WP-272: the lane's island judge reads them).
+const ROW_TABLES: [&str; 8] =
+    ["CHUNKS", "PATCHES", "REDIRECTS", "SECTIONS", "FILES", "SYMBOLS", "HOLES", "OUTSECS"];
+
+/// A string as the map writes a string token (`spec/plumb.md` §3.2): a
+/// byte from `!` to `~` other than `%` as itself, every other byte `%XX`,
+/// the empty string a lone `%`.
+fn token(b: &[u8]) -> String {
+    use std::fmt::Write as _;
+    if b.is_empty() {
+        return "%".to_owned();
+    }
+    let mut s = String::with_capacity(b.len());
+    for &c in b {
+        if (b'!'..=b'~').contains(&c) && c != b'%' {
+            s.push(char::from(c));
+        } else {
+            let _ = write!(s, "%{c:02X}");
+        }
+    }
+    s
+}
+
+/// A row reference: decimal, `-` for `NONE`.
+fn row_ref(r: u32) -> String {
+    if r == format::NONE { "-".to_owned() } else { r.to_string() }
+}
+
+/// `rows <state> <TABLE>...`: the decoded rows of each table named, in the
+/// state's own numbering (`read::decode`), one line a row: the table's
+/// name, the row number, then `column value` pairs. Numbers are decimal
+/// except the addresses, offsets and sizes (lower-case hex, no prefix, as
+/// the map writes them); a row reference `NONE` is `-`; a string is a map
+/// string token. Lines (the columns `spec/incr.md` §5.3 gives each table):
+///
+/// ```text
+/// CHUNKS <i> tag <u8> bits <u8> align <log2> out <OUTSECS|-> part <u32> ordinal <u32> sh_flags <hex> size <hex> capacity <hex> addr <hex> offset <hex> name <token>
+/// PATCHES <i> chunk <CHUNKS> kind <u8> offset <hex> symbol <SYMBOLS|-> section <SECTIONS|-> value <hex>
+/// REDIRECTS <i> section <SECTIONS> patch <PATCHES> offset <hex>
+/// SECTIONS <i> file <FILES|-> index <u32|-> ordinal <u32> sh_flags <hex> size <hex> place_chunk <CHUNKS|-> place_offset <hex> name <token>
+/// FILES <i> kind <u8> member <u8> mention <u32> path <token> member_name <token>
+/// SYMBOLS <i> kind <u8> file <FILES|-> ordinal <u32> name <token> version <token>
+/// HOLES <i> chunk <CHUNKS> kind <u8> offset <hex> size <hex>
+/// OUTSECS <i> ordinal <u32> name <token>
+/// ```
+///
+/// `PATCHES`' value is the addend (kind 0) or the site offset (kind 2) as
+/// stored, its 64 bits in hex.
+fn rows(path: &str, tables: &[&str]) -> Result<(), String> {
+    use std::fmt::Write as _;
+    if tables.is_empty() {
+        return Err(format!("rows: name a table ({})", ROW_TABLES.join(" ")));
+    }
+    if let Some(t) = tables.iter().find(|t| !ROW_TABLES.contains(t)) {
+        return Err(format!("rows: no table {t} (one of {})", ROW_TABLES.join(" ")));
+    }
+    let m = read::decode(&load5(path)?).map_err(|e| format!("{path}: {e}"))?;
+    let s = |x: format::Str| -> Result<String, String> {
+        let b = m
+            .strings
+            .get(x.off as usize..x.off as usize + x.len as usize)
+            .ok_or_else(|| format!("{path}: a string outside STRINGS"))?;
+        Ok(token(b))
+    };
+    let mut out = String::new();
+    for t in tables {
+        match *t {
+            "CHUNKS" => {
+                for (i, r) in m.chunks.iter().enumerate() {
+                    let _ = writeln!(
+                        out,
+                        "CHUNKS {i} tag {} bits {} align {} out {} part {} ordinal {} sh_flags {:x} size {:x} capacity {:x} addr {:x} offset {:x} name {}",
+                        r.tag,
+                        r.bits,
+                        r.align,
+                        row_ref(r.out),
+                        r.part,
+                        r.ordinal,
+                        r.sh_flags,
+                        r.size,
+                        r.capacity,
+                        r.addr,
+                        r.offset,
+                        s(r.name)?
+                    );
+                }
+            }
+            "PATCHES" => {
+                for (i, r) in m.patches.iter().enumerate() {
+                    let _ = writeln!(
+                        out,
+                        "PATCHES {i} chunk {} kind {} offset {:x} symbol {} section {} value {:x}",
+                        r.chunk,
+                        r.kind,
+                        r.offset,
+                        row_ref(r.symbol),
+                        row_ref(r.section),
+                        r.value
+                    );
+                }
+            }
+            "REDIRECTS" => {
+                for (i, r) in m.redirects.iter().enumerate() {
+                    let _ = writeln!(
+                        out,
+                        "REDIRECTS {i} section {} patch {} offset {:x}",
+                        r.section, r.patch, r.offset
+                    );
+                }
+            }
+            "SECTIONS" => {
+                use mortar_incr::update::rows::FileTable;
+                for (i, r) in m.sections.iter().enumerate() {
+                    // the section's index in its file: its place in the
+                    // file's `FILE_INDEX` range (a file's rows are one
+                    // contiguous range in section-index order)
+                    let index = m
+                        .file_index
+                        .get(r.file as usize)
+                        .map(|x| x.ranges[FileTable::Sections as usize])
+                        .and_then(|g| {
+                            u32::try_from(i).ok()?.checked_sub(g.first).filter(|k| *k < g.count)
+                        })
+                        .map_or(format::NONE, |k| k);
+                    let _ = writeln!(
+                        out,
+                        "SECTIONS {i} file {} index {} ordinal {} sh_flags {:x} size {:x} place_chunk {} place_offset {:x} name {}",
+                        row_ref(r.file),
+                        row_ref(index),
+                        r.ordinal,
+                        r.sh_flags,
+                        r.size,
+                        row_ref(r.place_chunk),
+                        r.place_offset,
+                        s(r.name)?
+                    );
+                }
+            }
+            "FILES" => {
+                for (i, r) in m.files.iter().enumerate() {
+                    let _ = writeln!(
+                        out,
+                        "FILES {i} kind {} member {} mention {} path {} member_name {}",
+                        r.kind,
+                        r.member,
+                        r.mention,
+                        s(r.path)?,
+                        s(r.member_name)?
+                    );
+                }
+            }
+            "SYMBOLS" => {
+                for (i, r) in m.symbols.iter().enumerate() {
+                    let _ = writeln!(
+                        out,
+                        "SYMBOLS {i} kind {} file {} ordinal {} name {} version {}",
+                        r.kind,
+                        row_ref(r.file),
+                        r.ordinal,
+                        s(r.name)?,
+                        s(r.version)?
+                    );
+                }
+            }
+            "HOLES" => {
+                for (i, r) in m.holes.iter().enumerate() {
+                    let _ = writeln!(
+                        out,
+                        "HOLES {i} chunk {} kind {} offset {:x} size {:x}",
+                        r.chunk, r.kind, r.offset, r.size
+                    );
+                }
+            }
+            _ => {
+                for (i, r) in m.outsecs.iter().enumerate() {
+                    let _ = writeln!(out, "OUTSECS {i} ordinal {} name {}", r.ordinal, s(r.name)?);
+                }
+            }
+        }
+    }
+    print!("{out}");
+    Ok(())
+}
+
 fn run(args: &[String]) -> Result<ExitCode, String> {
     match args.iter().map(String::as_str).collect::<Vec<_>>().as_slice() {
         ["convert", from, to, version] => {
@@ -303,11 +491,15 @@ fn run(args: &[String]) -> Result<ExitCode, String> {
             dead_keys(path4, version)?;
             Ok(ExitCode::SUCCESS)
         }
+        ["rows", path, tables @ ..] => {
+            rows(path, tables)?;
+            Ok(ExitCode::SUCCESS)
+        }
         ["strings", path4, version, suffixes @ ..] => {
             strings_growth(path4, version, suffixes)?;
             Ok(ExitCode::SUCCESS)
         }
-        _ => Err("usage: incr_state convert <4> <out> <version> | canon <s> | compare <a> <b> | size <s> | size <4> <version>"
+        _ => Err("usage: incr_state convert <4> <out> <version> | canon <s> | compare <a> <b> | size <s> | size <4> <version> | rows <s> <TABLE>..."
             .to_owned()),
     }
 }
