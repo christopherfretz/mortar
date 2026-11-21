@@ -3585,7 +3585,7 @@ fn debug_placed(
         };
         // WP-278: the front's object is over the store's parts view; a
         // `.debug_info` on disk has its unit headers read from the file.
-        split::classify_input(&cx.link.inputs, c.file)
+        split::classify_input(cx.link.inputs, c.file)
             .map_err(|e| debug_fallback(&format!("file {}", c.file.0), e))?;
         for i in 1..o.section_count() {
             let Ok(s) = o.section(mortar_elf::SectionIndex(i)) else { continue };
