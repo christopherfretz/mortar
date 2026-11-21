@@ -15,6 +15,15 @@
 //! - `changed_rows_equal_the_fronts`: the real path under
 //!   `MORTAR_UPDATE_FINDINGS`: each update's shadow line says `P-1: equal`
 //!   (front 1's rows, field by field), or `refused by name` for `--wrap`.
+//! - `changed_rows_draw_in_equals_the_fronts` (P-1c): hops on which U-3
+//!   draws in an unchanged object and an extracted archive member: the
+//!   shadow's line says `P-1: equal (3 files, ..; 2 drawn in)` and `P-1b:
+//!   equal` (front 1's loop, `ChangedFiles` with the same draw-in).
+//! - `changed_rows_drawn_in_member_refused_by_name` (P-1c):
+//!   `changed_files_drawn_in`'s drawn-in rows against the STORED rows of
+//!   those files, fresh ids in `FileId` order; a member whose bytes changed
+//!   under the same name is `input-changed` naming it; a front cached at
+//!   other ids is `(resolve)`.
 //!
 //! On AArch64 and x86-64.
 #![allow(
@@ -33,13 +42,13 @@ use std::path::Path;
 use std::process::Command;
 use std::time::Duration;
 
-use mortar::update::changed_rows::{changed_files_of, facts_after_resolve};
+use mortar::update::changed_rows::{changed_files_drawn_in, changed_files_of, facts_after_resolve};
 use mortar::update::file_front::FrontCache;
 use mortar_core::FileId;
 use mortar_core::incr::{IncrReason, Unimplemented};
 use mortar_incr::format::section_bits::KEPT;
 use mortar_incr::format::{Str, kind};
-use mortar_incr::update::view::{ChangedFiles, StateView};
+use mortar_incr::update::view::{Change, ChangedFiles, StateView};
 use mortar_testutil::run_with;
 use support::with_output;
 use update::{Line, lines, pool, state, whole};
@@ -400,6 +409,224 @@ fn changed_rows_equal_the_fronts() {
         assert!(
             l.starts_with("P-1: refused by name: update-not-implemented (scan)"),
             "{}: hop 4: {l}",
+            line.label
+        );
+        ran += 1;
+    }
+    if mortar_testutil::tools_required() {
+        assert_eq!(ran, 2, "both targets ran");
+    }
+}
+
+// ---- WP-267 P-1c: a draw-in on P-1's rows ----------------------------------
+
+/// The unchanged definer object, linked BEFORE the changed file (its
+/// fresh ids come first: the changed file's move).
+const P1C_D: &str = "int p1c_d(int x) { return x + 41; }\n";
+/// The unchanged definer member `p1cm.o` of `lib2.a` (extracted by `c.o`).
+const P1C_M: &str = "int p1c_m(int x) { return x * 3; }\n";
+/// The member edited under the same name.
+const P1C_M_EDITED: &str = "int p1c_m(int x) { return x * 5; }\n";
+/// The changed file: EDIT declares both keys hidden (S-74: each definer's
+/// global is demoted, U-3 draws both in), then default again.
+const P1C_C0: &str =
+    "int p1c_d(int);\nint p1c_m(int);\nint p1c_c(int x) { return p1c_d(x) + p1c_m(x); }\n";
+const P1C_C1: &str = "__attribute__((visibility(\"hidden\"))) int p1c_d(int);\n\
+    __attribute__((visibility(\"hidden\"))) int p1c_m(int);\n\
+    int p1c_c(int x) { return p1c_d(x) + p1c_m(x); }\n";
+
+/// The draw-in line: the C++ program, `d.o`, `c.o`, `lib2.a` (`p1cm.o`).
+fn p1c_line(line: &Line) -> Vec<String> {
+    line.compile("p1cm", "c", P1C_M);
+    line.archive(&["p1cm.o"]);
+    let mut args = line.base.clone();
+    for f in ["d.o", "c.o", "lib2.a"] {
+        args.push(line.dir.join(f).to_string_lossy().into_owned());
+    }
+    args
+}
+
+// spec: WP-267 P-1c (front 1's draw-in loop, `changed::u5_judged`; IN-71
+// `Resolution::DrawIn`, IN-72 item 2a): a drawn-in object and a drawn-in
+// archive member, read from their stored FILES rows, are front 1's rows
+// field by field; the changed file's fresh ids move behind the object's.
+#[test]
+fn changed_rows_draw_in_equals_the_fronts() {
+    let mut ran = 0;
+    for line in lines(&[("d", "c", P1C_D), ("c", "c", P1C_C0)]) {
+        let args = p1c_line(&line);
+        let findings = line.dir.join("findings.txt");
+        link(&line, &args, &["--incremental=full"], &findings);
+        for (hop, text) in [(1, P1C_C1), (2, P1C_C0), (3, P1C_C1)] {
+            line.compile("c", "c", text);
+            std::fs::write(&findings, b"").expect("findings");
+            let (ok, err) = link_status(&line, &args, &["--incremental=update"], &findings);
+            assert!(ok || err.contains("update-not-implemented ("), "{}: {err}", line.label);
+            let all = std::fs::read_to_string(&findings).expect("findings");
+            let p1: Vec<&str> = all
+                .lines()
+                .filter(|l| {
+                    l.starts_with("P-1:")
+                        || l.starts_with("P-1b:")
+                        || l.contains(" P-1 ")
+                        || l.contains(" P-1b ")
+                        || l.contains(" P-1c ")
+                })
+                .collect();
+            eprintln!("{}: hop {hop}: {p1:?}", line.label);
+            assert_eq!(p1.len(), 2, "{}: hop {hop}: a P-1 and a P-1b line: {all}", line.label);
+            assert!(
+                p1[0].starts_with("P-1: equal (3 files, ") && p1[0].contains("; 2 drawn in)"),
+                "{}: hop {hop}: {}",
+                line.label,
+                p1[0]
+            );
+            assert!(
+                p1[1].starts_with("P-1b: equal (3 files"),
+                "{}: hop {hop}: {}",
+                line.label,
+                p1[1]
+            );
+            if !ok {
+                link(&line, &args, &["--incremental=full"], &findings);
+            }
+        }
+        ran += 1;
+    }
+    if mortar_testutil::tools_required() {
+        assert_eq!(ran, 2, "both targets ran");
+    }
+}
+
+// spec: WP-267 P-1c (step 1: a drawn-in member read by its stored FILES
+// row, its hash checked): the drawn-in rows against the STORED rows of the
+// unchanged files (an oracle that is not front 1's), ids in FileId order;
+// a member whose bytes changed under the same name refuses by name.
+#[test]
+fn changed_rows_drawn_in_member_refused_by_name() {
+    let mut ran = 0;
+    for line in lines(&[("d", "c", P1C_D), ("c", "c", P1C_C0)]) {
+        let args = p1c_line(&line);
+        let s0 = state(&line, &args, "out0");
+        line.compile("c", "c", P1C_C1);
+        let (c, d) = (file_named(&s0, "c.o"), file_named(&s0, "d.o"));
+        let m = {
+            let files = u32::try_from(s0.count(kind::FILES)).expect("FILES");
+            (0..files)
+                .map(FileId)
+                .find(|&id| {
+                    let r = s0.file(id).expect("FILES");
+                    r.member != 0 && s0.string(r.member_name).expect("name").ends_with(b"p1cm.o")
+                })
+                .expect("the member p1cm.o")
+        };
+        assert!(d < c && c < m, "{}: the line's order d.o c.o p1cm.o", line.label);
+        let store = support::store();
+        let plan = plan_of(&line, &args);
+        let mut cache = FrontCache::new(&store, pool(), &line.dir);
+        let cf = changed_files_drawn_in(&s0, &mut cache, &[c], &[d, m], &[], &plan, &line.dir)
+            .unwrap_or_else(|e| panic!("{}: drawn in: {}", line.label, e.report()));
+        let got: Vec<(FileId, Change)> = cf.files.iter().map(|x| (x.file, x.change)).collect();
+        assert_eq!(
+            got,
+            [(d, Change::DrawnIn), (c, Change::Changed), (m, Change::DrawnIn)],
+            "{}",
+            line.label
+        );
+        // Fresh ids in FileId order: d.o's first, c.o's after them.
+        let first = u32::try_from(s0.count(kind::SECTIONS)).expect("SECTIONS");
+        assert_eq!(cf.files[0].first_section.0, first, "{}", line.label);
+        let after_d = first + u32::try_from(cf.files[0].sections.len()).expect("count");
+        assert_eq!(cf.files[1].first_section.0, after_d, "{}", line.label);
+        // A drawn-in file's rows are its stored rows (ids aside).
+        let mut x = Fields::default();
+        for k in [0, 2] {
+            let r = &cf.files[k];
+            let id = r.file;
+            let st = s0.file(id).expect("FILES");
+            let mine_s = |s: Str| cf.string(&s0, s).map_err(report).expect("a string of mine");
+            let full_s = |s: Str| s0.string(s).map_err(report).expect("a stored string");
+            let l = |f: &str| format!("file {} {f}", id.0);
+            x.eq(&l("row.kind"), &r.row.kind, &st.kind);
+            x.eq(&l("row.member"), &r.row.member, &st.member);
+            x.eq(&l("row.flags"), &r.row.flags, &st.flags);
+            x.eq(&l("row.path"), &mine_s(r.row.path), &full_s(st.path));
+            x.eq(&l("row.member_name"), &mine_s(r.row.member_name), &full_s(st.member_name));
+            x.eq(&l("row.member_ordinal"), &r.row.member_ordinal, &st.member_ordinal);
+            x.eq(
+                &l("row.(base, len, hash)"),
+                &(r.row.base, r.row.len, r.row.hash),
+                &(st.base, st.len, st.hash),
+            );
+            x.eq(&l("row.(rank, round)"), &(r.row.rank, r.row.round), &(st.rank, st.round));
+            x.eq(&l("row.stack"), &r.row.stack, &st.stack);
+            let rows = s0.sections_of(id).map_err(report).expect("SECTIONS");
+            x.eq(&l("sections.len"), &r.sections.len(), &rows.len());
+            for (j, (a, b)) in r.sections.iter().zip(&rows).enumerate() {
+                let w = |f: &str| format!("file {} section {j} {f}", id.0);
+                x.eq(&w("name"), &mine_s(a.name), &full_s(b.name));
+                x.eq(
+                    &w("anchor"),
+                    &(a.anchor_kind, mine_s(a.anchor)),
+                    &(b.anchor_kind, full_s(b.anchor)),
+                );
+                x.eq(
+                    &w("header"),
+                    &(a.sh_type, a.sh_flags, a.size, a.align, a.offset, a.ordinal),
+                    &(b.sh_type, b.sh_flags, b.size, b.align, b.offset, b.ordinal),
+                );
+            }
+            let ms = s0.mentions_of(id).map_err(report).expect("MENTIONS");
+            x.eq(&l("mentions.len"), &r.mentions.len(), &ms.len());
+            for (j, (a, b)) in r.mentions.iter().zip(&ms).enumerate() {
+                let key = &r.keys[a.symbol as usize];
+                let sym =
+                    s0.symbol(mortar_core::SymbolId(b.symbol)).map_err(report).expect("SYMBOLS");
+                x.eq(
+                    &format!("file {} mention {j} key", id.0),
+                    &(key.name.clone(), key.version.clone()),
+                    &(full_s(sym.name), full_s(sym.version)),
+                );
+            }
+        }
+        eprintln!("{}: drawn in: {} fields, {} differ", line.label, x.n, x.bad.len());
+        assert!(x.bad.is_empty(), "{}: {}", line.label, x.bad.join("\n"));
+        assert!(x.n > 20, "{}: too few fields", line.label);
+        // The member edited under the same name: its stored range's bytes
+        // are not the stored hash's, refused by name.
+        line.compile("p1cm", "c", P1C_M_EDITED);
+        line.archive(&["p1cm.o"]);
+        let mut cache = FrontCache::new(&store, pool(), &line.dir);
+        let r = changed_files_drawn_in(&s0, &mut cache, &[c], &[d, m], &[], &plan, &line.dir);
+        match r {
+            Err(IncrReason::InputChanged(why)) => assert!(
+                why.contains("its bytes are not the ones the state holds")
+                    && why.contains("the drawn-in member p1cm.o of file"),
+                "{}: {why}",
+                line.label
+            ),
+            other => panic!(
+                "{}: an edited member drawn in: {:?}",
+                line.label,
+                other.map(|c| c.files.len())
+            ),
+        }
+        // A front the cache holds at other ids (d.o's stored) refuses
+        // (resolve): never a changed file's rows at stale ids.
+        let mut cache = FrontCache::new(&store, pool(), &line.dir);
+        mortar::update::file_front::front_of(
+            &mut cache,
+            &s0,
+            d,
+            mortar::update::file_front::Ids::Stored,
+        )
+        .map_err(report)
+        .expect("d.o's stored front");
+        let r = changed_files_drawn_in(&s0, &mut cache, &[c], &[d], &[], &plan, &line.dir);
+        assert_eq!(
+            r.err(),
+            Some(IncrReason::UpdateNotImplemented(Some(Unimplemented::Resolve))),
+            "{}: a front cached at the stored ids",
             line.label
         );
         ran += 1;

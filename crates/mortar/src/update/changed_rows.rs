@@ -174,8 +174,7 @@ pub fn changed_files_drawn_in(
                 return Err(resolve());
             }
             let path = view.string(stored.path)?;
-            let at =
-                cwd.join(<std::ffi::OsStr as std::os::unix::ffi::OsStrExt>::from_bytes(&path));
+            let at = cwd.join(<std::ffi::OsStr as std::os::unix::ffi::OsStrExt>::from_bytes(&path));
             let bytes = std::fs::read(&at).map_err(|e| {
                 IncrReason::InputChanged(format!(
                     "{}: not read: {e}",
@@ -681,11 +680,8 @@ fn shadow_line(
     // The laps: `changed_files_of`, U-3's `extract`+`resolve` over its rows
     // (not P-1's code), the drawn-in rows (P-1c: every file again),
     // `facts_after_resolve`.
-    let drawn_text = if drawn.is_empty() {
-        String::new()
-    } else {
-        format!("; {} drawn in", drawn.len())
-    };
+    let drawn_text =
+        if drawn.is_empty() { String::new() } else { format!("; {} drawn in", drawn.len()) };
     Ok(format!(
         "P-1: equal ({} files, {} fields{drawn_text}) ms changed_files_of={pre_ms:.3} \
          resolve={resolve_ms:.3} drawn_in={drawn_ms:.3} facts_after_resolve={post_ms:.3}",
