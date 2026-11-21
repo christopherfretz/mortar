@@ -14,9 +14,11 @@ Brief: `/Volumes/AgentWork/mortar-helper/briefs/p-275a.md`. Branch
    Tests: `state5_columns::chunk_units_and_merge_defs_survive_the_patch_and_the_compaction`,
    `state5_columns::incr_state_canon_is_seq_blind_and_a_reorder_differs`.
 
+2. Capture (commit "P-275a step 2"): capture.rs `chunk_unit_rows`,
+   `chunk_units_check`, `merge_def_rows`; called from `rows5` (MERGE_DEFS,
+   with the section's capture id) and `state5_rows` (CHUNK_UNITS; `local`).
+
 ## Next
-2. capture.rs `chunk_unit_rows`, `chunk_units_check`, `merge_def_rows`
-   (written, compiles; to commit with step 2).
 3. `incr_state check`; judge.py `D0_PLACEMENT_TABLES` + `units` column.
 4. `state_producers` tests (a64, x64).
 5. Cost (protoc), gates, record section in `spec/landed/incr/WP-275.md`.
