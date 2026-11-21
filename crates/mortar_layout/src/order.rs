@@ -243,6 +243,19 @@ fn sort_named(
         for (slot, (_, s)) in m.iter_mut().zip(keyed) {
             *slot = s;
         }
+    } else if name == b".bss" || name == b".lbss" {
+        // L-44a (WP-203): an input named `COMMON` is placed with the
+        // commons (L-88), after every other input (GNU ld's
+        // `*(.bss ...) *(COMMON)`); L-53a sorts each of the two groups.
+        let common = |s: SectionId| headers[s].name == b"COMMON";
+        if by.is_some() || m.iter().any(|&s| common(s)) {
+            m.sort_by(|&a, &b| {
+                common(a)
+                    .cmp(&common(b))
+                    .then_with(|| section_key(a, b, headers, by))
+                    .then(a.cmp(&b))
+            });
+        }
     } else if by.is_some() {
         m.sort_by(|&a, &b| section_key(a, b, headers, by).then(a.cmp(&b)));
     }
@@ -300,6 +313,7 @@ fn link_order(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::headers::Header;
 
     // spec: layout.md §9 L-53 (.text categories)
     #[test]
@@ -325,6 +339,48 @@ mod tests {
         for n in [&b".init"[..], b".fini", b".text.f", b"my_section", b".got", b".debug_info"] {
             assert!(!sorted_by_sort_section(n), "{n:?}");
         }
+    }
+
+    // spec: layout.md L-44a (WP-203): an input `COMMON` after every other
+    // input of `.bss`/`.lbss`, with the commons (L-88); L-53a inside each
+    // group; other output sections and `COMMON.x` untouched.
+    #[test]
+    fn l44a_common_after_the_bss_inputs() {
+        let h = |name: &'static [u8], align: u8| Header { name, align, ..Header::EMPTY };
+        let headers: Headers<'static> = Column::from_vec(vec![
+            Header::EMPTY,
+            h(b"COMMON", 3),     // 1 (file 1)
+            h(b".bss", 0),       // 2
+            h(b".bss.counter", 2), // 3
+            h(b"COMMON.x", 4),   // 4
+            h(b".bss.a", 4),     // 5 (file 2)
+            h(b"COMMON", 2),     // 6
+            h(b".bss", 3),       // 7
+        ])
+        .unwrap();
+        let ids = |v: &[u32]| v.iter().map(|&i| SectionId(i)).collect::<Vec<_>>();
+        let sorted = |out: &[u8], v: &[u32], by| {
+            let mut m = ids(v);
+            sort_named(out, &mut m, &headers, by).unwrap();
+            m.iter().map(|s| s.0).collect::<Vec<_>>()
+        };
+        let all = [1, 2, 3, 5, 6, 7];
+        assert_eq!(sorted(b".bss", &all, None), [2, 3, 5, 7, 1, 6]);
+        assert_eq!(sorted(b".lbss", &all, None), [2, 3, 5, 7, 1, 6]);
+        assert_eq!(sorted(b".bss", &[2, 3, 5, 7], None), [2, 3, 5, 7]);
+        assert_eq!(
+            sorted(b".bss", &all, Some(SortSection::Name)),
+            [2, 7, 5, 3, 1, 6] // .bss .bss .bss.a .bss.counter | COMMON COMMON
+        );
+        assert_eq!(
+            sorted(b".bss", &all, Some(SortSection::Alignment)),
+            [5, 7, 3, 2, 1, 6] // 4 3 2 0 | 3 2
+        );
+        // Not `.bss`: input order (an orphan `COMMON` output section, or
+        // `COMMON.x` is not `COMMON`).
+        assert_eq!(sorted(b"COMMON", &[1, 6], None), [1, 6]);
+        assert_eq!(sorted(b"my_bss", &[1, 2, 4], None), [1, 2, 4]);
+        assert_eq!(sorted(b".bss", &[1, 2, 4], None), [2, 4, 1]);
     }
 
     // spec: layout.md §9.1 L-54 (init priorities: decimal 0..65535, else refused)

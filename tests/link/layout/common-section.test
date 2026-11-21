@@ -6,12 +6,14 @@
 # makes `.bss` `PROGBITS`, as GNU ld and lld do; a read-only one too,
 # `.bss` stays writable). No prefix rule: `COMMON.x` and `COMMON.y` stay
 # orphans in all three. `--gc-sections` removes an unreferenced one and
-# what it references: not a root, in all three. The order inside `.bss`
-# is input order for mortar and lld (mortar's commons after the inputs,
-# L-88); GNU ld places `*(COMMON)` after the `.bss` inputs and sorts it
-# as a statement of its own under `--sort-section` (L-53a's known
-# difference: with `name` the orders agree, with `alignment` they
-# differ). A TLS `COMMON` is refused by name beside `.bss`'s inputs
+# what it references: not a root, in all three. The order inside `.bss`:
+# mortar places an input `COMMON` with the commons (L-44a, L-88), after
+# every other `.bss` input, as GNU ld's `*(COMMON)`, and `--sort-section`
+# sorts the two groups each (L-53a), as GNU ld sorts each statement: the
+# orders agree with GNU ld's. lld keeps input order (a known divergence;
+# lld puts its own commons first). So mortar's direct link and its link
+# through lld's `-r` give `.bss` one order (`compc`). A TLS `COMMON` is
+# refused by name beside `.bss`'s inputs
 # (L-47), as lld and GNU ld's static link refuse it; a non-allocated one
 # too (L-47), which GNU ld and lld merge into `.bss`. The x86-64 large
 # variants are layout/common-section-x64.test; the `-r` input from lld
@@ -34,6 +36,8 @@
 cc -O1 -fcommon c1.c -o c1.o
 cc -O1 -fcommon main.c -o main.o
 cc -O1 -fcommon main0.c -o main0.o
+cc -O1 -fcommon -fdata-sections compc.c -o compc.o
+cc -O1 mainc.c -o mainc.o
 cc -O1 mprog.c -o mprog.o
 cc -O1 mdotx.c -o mdotx.o
 cc -O1 mgc.c -o mgc.o
@@ -50,6 +54,7 @@ as vs2.s -o vs2.o
 as vtls.s -o vtls.o
 as vnona.s -o vnona.o
 partial lld c1.o -o comp.lld.o
+partial lld compc.o -o compc.lld.o
 check readelf -SW comp.lld.o
   has: COMMON NOBITS
 
@@ -72,13 +77,17 @@ check(bfd,lld,mortar) nm -n base
   has: B cn$
   has: B g_common$
   has: B g_real$
-# mortar: input order, the commons last (L-88); GNU ld: `*(COMMON)` last.
-check(lld,mortar) nm -n base-pie
+# mortar: the `.bss` inputs, then the input `COMMON`s, then the commons
+# (L-44a, L-88); GNU ld: `*(COMMON)` last, its commons file by file with
+# the input `COMMON`s; lld: input order.
+check(lld) nm -n base-pie
   has: B b1$
   then: B cn$
   then: B b2$
 check(mortar) nm -n base-pie
-  has: B b2$
+  has: B b1$
+  then: B b2$
+  then: B cn$
   then: B g_real$
 check(bfd) nm -n base-pie
   has: B b1$
@@ -166,16 +175,35 @@ check(lld,mortar) nm nogc
   has: gcp$
   has: T keepme$
 
+# Direct and through lld's `-r` (its `COMMON` holds no live symbol:
+# `common_x` stays a common): `.bss.counter`, then the input `COMMON`,
+# then the commons, in both (mortar, GNU ld); lld puts its commons first.
+link gcc -static mainc.o compc.o -o direct
+run direct
+  stdout: 7 2
+link gcc -static mainc.o compc.lld.o -o via
+run via
+  stdout: 7 2
+check(bfd,mortar) nm -n direct
+  has: b counter$
+  then: B common_x$
+check(bfd,mortar) nm -n via
+  has: b counter$
+  then: B common_x$
+check(lld) nm -n via
+  has: B common_x$
+  then: b counter$
+
 # The order, and --sort-section (L-53a).
 link gcc -static mgc.o vs1.o vs2.o -o sort
 run sort
   stdout: gc
-check(lld,mortar) nm -n sort
+check(lld) nm -n sort
   has: B sa$
   then: B sb$
   then: B sc$
   then: B sd$
-check(bfd) nm -n sort
+check(bfd,mortar) nm -n sort
   has: B sb$
   then: B sd$
   then: B sa$
@@ -183,12 +211,7 @@ check(bfd) nm -n sort
 link gcc -static mgc.o vs1.o vs2.o -Wl,--sort-section=alignment -o sortal
 run sortal
   stdout: gc
-check(mortar) nm -n sortal
-  has: B sb$
-  then: B sc$
-  then: B sa$
-  then: B sd$
-check(bfd) nm -n sortal
+check(bfd,mortar) nm -n sortal
   has: B sb$
   then: B sd$
   then: B sc$
@@ -328,6 +351,20 @@ sc:	.zero 1
 	.p2align 2
 	.globl sd
 sd:	.zero 1
+#--- compc.c
+static int counter;
+long common_x;
+int bump(void) { return ++counter; }
+#--- mainc.c
+#include <stdio.h>
+extern long common_x;
+int bump(void);
+int main(void) {
+  common_x = 7;
+  bump();
+  printf("%ld %d\n", common_x, bump());
+  return 0;
+}
 #--- mtls.c
 #include <stdio.h>
 extern __thread long ctl;
