@@ -976,10 +976,11 @@ fn dry_run_wanted(reason: Option<&IncrReason>) -> bool {
         | R::StateBusy(_)
         | R::LockUnavailable(_) => false,
         // A state an update could start from: the policy (IN-10a), the
-        // update's own words (WP-225).
-        R::SmallOutput(_) | R::UpdateNotImplemented(_) => true,
-        // Found by or after the delta (§7's rows; IN-10a, IN-63b).
-        R::ExtractionChanged(_)
+        // update's own words (WP-225); then every reason found by or after
+        // the delta (§7's rows; IN-10a, IN-63b).
+        R::SmallOutput(_)
+        | R::UpdateNotImplemented(_)
+        | R::ExtractionChanged(_)
         | R::ClosureIterated(_)
         | R::InputsReordered(_)
         | R::TooMuchChanged(_)
