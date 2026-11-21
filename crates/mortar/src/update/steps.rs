@@ -245,6 +245,16 @@ fn stored_section(view: &StateView<'_>, cf: &ChangedFiles, s: u32) -> Result<u32
 /// front replays `layout.merge`; a narrower refill must judge `FRAGS.refs`
 /// itself.
 ///
+/// **History** (P-3c): identity' judges the rows THIS update changes. A
+/// placement column of a row it does not touch (an unchanged file's
+/// `SECTIONS.place_*`, a kept fragment's `FRAGS.offset`) that is off a
+/// fresh link's because an update keeps stored places (an earlier one:
+/// `s1_section_permute`, `s2_fragment_permute` hop 2; this one, whose
+/// changed file's fragments came in another order: `s2c_gcc_strings` hop
+/// 1) is the stored state's and stays: identity' says identity, the check
+/// over front 1's FRESH capture does not. No O(change) row shows that
+/// history (a datum would).
+///
 /// Not judged here (the binding [`identity_check`] does): the merged
 /// visibility and `referenced` of an affected key (`SYMTAB_KEYS`), the
 /// `DIAGS` rows, `META` fields other than the binding's.
