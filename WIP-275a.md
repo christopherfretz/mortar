@@ -25,9 +25,14 @@ Brief: `/Volumes/AgentWork/mortar-helper/briefs/p-275a.md`. Branch
    refused by an update), `state_producers::merge_defs_are_the_full_links_pieces`
    (5 definitions vs `named_symbol`), a64 + x64: pass.
 
+5. Lane at 6c38aa4e: 7 FAIL, duty only (CHUNK_UNITS not named by IN-78);
+   PROPOSED 72c81598 holds it out (judge.py DUTY_BY_UNITS), for a ruling.
+   Cost measured (record section "P-275a" f); record written.
+
 ## Next
-5. Cost (protoc), gates, record section in `spec/landed/incr/WP-275.md`.
+6. The hand-back gate set on the final tree (scratch `w275a/gate.sh`),
+   then the gate table into the record (e, and a gate line) and hand back.
 
 ## Resume
-`( cd <worktree> && unset CARGO_TARGET_DIR && source scripts/env.sh &&
-export CARGO_TARGET_DIR=/Volumes/AgentWork/mortar-helper/.build/target-wp-125 && cargo test -p mortar_incr --test state5_columns )`
+Gates: `/Volumes/AgentWork/mortar-helper/.build/target-wp-125/w275a/gate.sh`
+(summary in `w275a/gate/summary.txt`).
