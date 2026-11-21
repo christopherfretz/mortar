@@ -338,12 +338,21 @@ fn no_finding(p: &Prog, label: &str) -> String {
 /// (L-147, `keep_dead_fragments`), C' too (its line says `equal`), and the
 /// clip plan writes zeros (it applies no `DeadFragment` hole): the
 /// shadow's own disagreement (WP-255e3's), not the update's, recorded in
-/// the hand-back. Every other finding stays.
+/// the hand-back. Every other finding stays. Since WP-255e3 the same
+/// finding can come wrapped as `clip plan: refused NotYet(Synth) ..;
+/// without the synthetic chunks: finding: ..` (the clip plan retried
+/// without the synthetic chunks): the wrapped form is the same finding.
 fn shadow_finding_kept(line: &str) -> String {
+    const DIFF: &str = "finding: 255e shadow: clip plan: first difference at ";
+    const RETRY: &str = "; without the synthetic chunks: ";
     line.split(" | ")
         .filter(|part| {
-            !(part.starts_with("finding: 255e shadow: clip plan: first difference at ")
-                && (part.contains("(.debug_str+") || part.contains("(.debug_line_str+")))
+            let inner = match part.split_once(RETRY) {
+                Some((head, rest)) if head.starts_with("clip plan: refused NotYet(Synth) ") => rest,
+                _ => part,
+            };
+            !(inner.starts_with(DIFF)
+                && (inner.contains("(.debug_str+") || inner.contains("(.debug_line_str+")))
         })
         .collect::<Vec<_>>()
         .join(" | ")
