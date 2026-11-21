@@ -3536,7 +3536,12 @@ a pass over a whole table of the state; **O(output)**.
      when the step moves the RELRO end (the section is in the RELRO part
      of its segment or before it), `A` is the maximum page size. The new
      tail's capacity is the old tail's free bytes plus `step − need`
-     (M-4 (d)). Every output section after it in the segment moves by
+     (M-4 (d)). For the last chunk of its `PT_LOAD` that takes memory,
+     which L-87 gives no slack, the step is `need`: the chunk's capacity
+     stays its size, so the segment's memory ends at a section's end
+     (L-9); when `A` would round that step past `need`, the update is
+     `update-not-implemented (layout)` (WP-262 C, P3-1: the grow is
+     placed, not refused). Every output section after it in the segment moves by
      the step, in address and in file offset (a `NOBITS` section moves
      in address only): their sections are "moved sections of unchanged
      files" (IN-27), their files' `.symtab` entries are remapped (IN-49a),
@@ -4414,9 +4419,16 @@ a pass over a whole table of the state; **O(output)**.
   section, the next hop edits one of its referrers: (d) fails on the
   first hop if the `SECTIONS` row is stale, (c) on the second);
   `member_round_shortcut` (R2-1: (d) passes with a supported,
-  non-breadth-first round). **Until U-2 lands** `incr_state canon`, H-1
-  builds (d) against a stub that reports "(d) not run" and fails no
-  test; (d) goes live in H-1's lane when U-2 merges (review-wp207 M-7).
+  non-breadth-first round). Until the map's decision records give
+  `P_U`, (d) is **(d0)** (WP-267 P-4, `spec/landed/incr/WP-267-P4.md`):
+  `incr_state compare S' G`, G the state of the hop's own
+  `--incremental=full` link. It is exact on an identity hop (the two
+  maps' records equal outside `arg` and `symblock`) whose previous hop
+  was a full link; on every other update hop the states are equal
+  outside IN-78's placement rows, and `DEBUG_STRS` is judged against the
+  output (WP-247). It judges neither `STAT` nor the link's directory
+  string, and lists by name what it does not judge (harness.md
+  "incr-update").
   *Argued, not run* (no update code yet).
 
 - **IN-79 [v1] How an update is judged** (the test packages' rule).
