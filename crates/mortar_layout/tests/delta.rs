@@ -3058,3 +3058,118 @@ fn defsym_of_a_moved_symbol_passes_through_stale() {
         assert_ne!(x1.value, DefValue::At { chunk: c1, offset: o1 + 4 }, "{m:?}: stale");
     }
 }
+
+// ---- WP-262 C: a growth step of a PT_LOAD's last chunk (P3-1) ---------------
+
+/// The `PT_LOAD` whose memory holds `addr`, as `(p_vaddr, p_memsz, p_filesz)`.
+fn load_of(p: &Placement, addr: u64) -> (u64, u64, u64) {
+    let s = p
+        .segments
+        .as_slice()
+        .iter()
+        .find(|s| {
+            s.p_type == mortar_elf::consts::PT_LOAD && s.addr <= addr && addr < s.addr + s.memsz
+        })
+        .unwrap_or_else(|| panic!("no PT_LOAD holds {addr:#x}"));
+    (s.addr, s.memsz, s.filesz)
+}
+
+// spec: incr.md IN-72 item 3 (the growth step) with layout.md L-9 and
+// L-87 (P3-1, WP-262 C): `.rodata`, the last chunk of the read-only
+// `PT_LOAD`, grows past its capacity (it has no tail: L-87). The step is
+// what it needs and no slack: the chunk's capacity is its size, and the
+// segment's memory and file ends are the section's end (the verifier's
+// S18). Past the segment reserve: `reserve-exhausted` by name.
+#[test]
+fn growth_step_of_a_pt_loads_last_chunk_keeps_l9() {
+    for m in [Machine::X86_64, Machine::AArch64] {
+        let files = vec![
+            vec![text(b".text", 256), rodata(b".rodata", 16)],
+            vec![text(b".text", 64), rodata(b".rodata", 16)],
+        ];
+        let s0 = first(m, &files);
+        let p0 = &s0.placed.placement;
+        let ro = p0
+            .order
+            .iter()
+            .copied()
+            .find(|&c| {
+                p0.chunks[c].kind.out().is_some_and(|o| s0.assignment.outsecs[o].name == b".rodata")
+            })
+            .expect("a .rodata chunk");
+        let c0 = p0.chunks[ro];
+        let a0 = c0.addr.unwrap();
+        let (v, mem, file) = load_of(p0, a0);
+        assert_eq!(v + mem, a0 + c0.size, "{m:?}: the full link: .rodata ends its PT_LOAD");
+        assert_eq!(c0.capacity, c0.size, "{m:?}: L-87: no slack on the last chunk");
+        assert_eq!(file, mem, "{m:?}");
+        let mut files = s0.files();
+        // Past file 2's region (16 + 64): its overflow region opens at the
+        // tail, which has no room: a growth step of the last chunk.
+        files[1][1].size = 2000;
+        let (s1, d) = hop(&s0, &Edit::new(files.clone()).changed(&[2])).unwrap();
+        assert_eq!(d.growth_steps.len(), 1, "{m:?}: {d:?}");
+        let p1 = &s1.placed.placement;
+        let c1 = p1.chunks[ro];
+        assert!(c1.size > c0.size, "{m:?}");
+        assert_eq!(c1.capacity, c1.size, "{m:?}: the step gives the last chunk no slack");
+        assert_eq!(d.growth_steps[0].step, c1.size - c0.size, "{m:?}");
+        let (v1, mem1, file1) = load_of(p1, a0);
+        assert_eq!(
+            (v1, v1 + mem1),
+            (v, a0 + c1.size),
+            "{m:?}: L-9: the memory ends at .rodata's end"
+        );
+        assert_eq!(file1, mem1, "{m:?}");
+        // The next PT_LOAD did not move.
+        let next0: Vec<_> = p0.segments.as_slice().iter().filter(|s| s.addr > a0).collect();
+        let next1: Vec<_> = p1.segments.as_slice().iter().filter(|s| s.addr > a0).collect();
+        assert_eq!(next0, next1, "{m:?}");
+        // A second grow from that state: another exact step.
+        files[1][1].size = 3000;
+        let (s2, d) = hop(&s1, &Edit::new(files.clone()).changed(&[2])).unwrap();
+        assert_eq!(d.growth_steps.len(), 1, "{m:?}");
+        let c2 = s2.placed.placement.chunks[ro];
+        assert_eq!(c2.capacity, c2.size, "{m:?}");
+        let (v2, mem2, _) = load_of(&s2.placed.placement, a0);
+        assert_eq!(v2 + mem2, a0 + c2.size, "{m:?}");
+        // Past the gap to the next PT_LOAD: refused by name.
+        files[1][1].size = 1 << 24;
+        let e = hop(&s2, &Edit::new(files).changed(&[2])).err().unwrap();
+        assert_eq!(e.name(), "reserve-exhausted", "{m:?}: {e:?}");
+        assert!(format!("{e:?}").contains("segment reserve"), "{m:?}: {e:?}");
+    }
+}
+
+// ---- WP-262 A: IN-72 item 4's rewrite is not built (Why::Packed) -----------
+
+// spec: incr.md IN-72 item 4, IN-30 (L-142: a packed section has no
+// regions and no holes) (WP-262 A, the lane's 16 `(layout)` fall-backs):
+// the two shapes the lane meets, a changed file's section of a packed
+// output section that appears (`start_stop_registry_grows_then_shrinks`
+// hops 1 and 3: a `__start_`/`__stop_` section `reg`) or dies
+// (`init_array_grows_then_shrinks` hop 2, and the registry's hop 2), with
+// another file's member after it in the chunk. The rewrite moves the
+// other file's member, which needs the chunk's member list (a datum the
+// state does not hold): `update-not-implemented (layout)` by name, never
+// a hole or a moved order.
+#[test]
+fn packed_section_appears_or_dies_is_refused_by_name() {
+    let reg = |size| sec(b"reg", SHT_PROGBITS, SHF_ALLOC, size, 2);
+    let init = |size| sec(b".init_array", mortar_elf::consts::SHT_INIT_ARRAY, WA, size, 3);
+    for m in [Machine::X86_64, Machine::AArch64] {
+        for (what, member) in [("reg", reg as fn(u64) -> Sec), (".init_array", init)] {
+            let with =
+                vec![vec![text(b".text", 64), member(8)], vec![text(b".text", 64), member(8)]];
+            let without = vec![vec![text(b".text", 64)], vec![text(b".text", 64), member(8)]];
+            // Dies: file 1's member before file 2's.
+            let s0 = first(m, &with);
+            let e = hop(&s0, &Edit::new(without.clone()).changed(&[1])).err().unwrap();
+            assert_eq!(e, not_implemented(), "{m:?} {what} dies: {e:?}");
+            // Appears before file 2's member.
+            let s0 = first(m, &without);
+            let e = hop(&s0, &Edit::new(with).changed(&[1])).err().unwrap();
+            assert_eq!(e, not_implemented(), "{m:?} {what} appears: {e:?}");
+        }
+    }
+}

@@ -493,6 +493,13 @@ fn end_row_refused() -> IncrReason {
     not_implemented()
 }
 
+/// A growth step of the last chunk of a `PT_LOAD` (item 3) that cannot
+/// end at the chunk's size: L-9 would put the segment's memory end in no
+/// section (P3-1).
+fn last_chunk_refused() -> IncrReason {
+    not_implemented()
+}
+
 /// L-36's large output section by flags and type, or `None` where the full
 /// link refuses the input.
 fn large_output(s: &Shape<'_>) -> Option<&'static [u8]> {
@@ -1200,8 +1207,20 @@ impl<'b, 'c> Update<'b, 'c> {
                 if relro {
                     a = a.max(page);
                 }
-                let step = round_up(need + slack::TAIL_MIN.max(osize / slack::TAIL_DIV), a)
+                // L-9 (P3-1, WP-262 C): the last chunk of a `PT_LOAD` that
+                // takes memory ends the segment's memory, which must be a
+                // section's end; the full link gives it no slack (L-87's
+                // incremental policy, layout.md §18), and neither does its
+                // growth step: the step is what it needs. A step the
+                // alignment of what follows would round past that (an
+                // empty chunk after it, or the RELRO page) is refused.
+                let last = !followers.iter().any(|&f| self.chunks[f].takes_memory());
+                let slack = if last { 0 } else { slack::TAIL_MIN.max(osize / slack::TAIL_DIV) };
+                let step = round_up(need + slack, a)
                     .ok_or_else(|| IncrReason::ReserveExhausted("growth step overflows".into()))?;
+                if last && step != need {
+                    return Err(last_chunk_refused());
+                }
                 self.chunks[c].capacity = ch.capacity + step;
                 self.steps.push((ch.addr.unwrap_or(0) + shift, GrowthStep { out, step }));
                 shift = shift.checked_add(step).ok_or_else(not_implemented)?;
