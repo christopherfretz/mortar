@@ -117,6 +117,10 @@ pub fn changed_files_of(
 /// drawn-in file that is not a live relocatable object, or whose front
 /// `cache` holds at other ids or for another row; `state-corrupt` for a
 /// drawn-in file that is also changed or is gone.
+#[allow(
+    clippy::too_many_lines,
+    reason = "one loop: a changed or drawn-in file's row, its front, its rows"
+)]
 pub fn changed_files_drawn_in(
     view: &StateView<'_>,
     cache: &mut FrontCache<'_>,
