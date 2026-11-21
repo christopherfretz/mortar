@@ -3,7 +3,7 @@
 each hop judged IN-79's four ways (spec/harness.md "incr-update";
 spec/incr.md IN-75, IN-75a, IN-78, IN-79; H-1, WP-223).
 
-    lane.py --mortar M --hooked H --xtask X --work W [--quick] [--only S,...]
+    lane.py --mortar M --hooked H --xtask X --work W [--incr-state T] [--quick] [--only S,...]
             [--target a64|x64|i386,...] [--compiler gcc|kiln,...]
             [--subject mortar|<name>|<path>] [--keep] [--self-test] [-j N]
             [--require-tools]
@@ -128,6 +128,8 @@ class Scenario:
             raise ValueError('%s/scenario: `proves:`, `source:` and `link:` are required' % name)
         self.hops = [frozenset() if h.strip() == '-' else frozenset(h.strip().split('+'))
                      for h in self.hops_text.split(',')]
+        if len(self.hops) > 10:
+            raise ValueError('%s/scenario: at most 10 hops (the hop directories h0..h9, (d0))' % name)
         if reversed_:
             # the same series from the edited side: the first link never
             # has what the edit removes
@@ -241,7 +243,12 @@ class Run:
                'reasons': {}}
         if os.path.isdir(self.base):
             shutil.rmtree(self.base)
-        W = os.path.join(self.base, 'w')
+        # the subject's directory: its name has the length of every hop
+        # directory's (`h<i>`, i < 10), so the state's one absolute
+        # directory string has the same length in S' and in G's state and
+        # no other string moves in the canonical pool ((d0), WP-267 P-4;
+        # judge.d0_normalise)
+        W = os.path.join(self.base, 'ws')
         os.makedirs(W)
         pre, post = self.words()
         tools = judge.Tools(self.opts['xtask'], self.cfg.runner(), elflint=shutil.which('eu-elflint'))
@@ -276,6 +283,11 @@ class Run:
                 shutil.copyfile(os.path.join(W, 'prog'), prev_out)
             state = os.path.join(W, 'prog.mortar-state')
             state_before = judge._sha(state)
+            state_prev = None
+            if self.opts.get('canon') is not None and state_before is not None:
+                # (d0)'s duty: S, the state before the update (a copy)
+                state_prev = os.path.join(H, 's.mortar-state')
+                shutil.copyfile(state, state_prev)
             fs, ferr = self.link([self.opts['mortar']], Hf, pre, post, ['--mortar-map=prog.map'])
             gs, _gerr = self.link([self.opts['mortar']], H, pre, post, ['--incremental=full', '--mortar-map=prog.map'])
             senv = dict(env)
@@ -297,7 +309,10 @@ class Run:
             f = judge.Link(Hf, 'prog', 'prog.map', fs, [], stderr=ferr)
             new = judge.Link(H, 'prog', 'prog.map', gs, []) if gs == 0 and fs == 0 else None
             hop = judge.Hop(prev=prev_out, ranges=os.path.join(H, 'dirty.txt'), state=state,
-                            state_before=state_before, scratch=H, base_was_update=prev_update, g_status=gs)
+                            state_before=state_before, state_prev=state_prev, scratch=H, base_was_update=prev_update, g_status=gs,
+                            canon=self.opts.get('canon'), g_state=os.path.join(H, 'prog.mortar-state'),
+                            dirs=(W, H),
+                            identity=judge.identity_hop(x, os.path.join(H, 'prog.map')))
             v = judge.judge_step(tools, x, f, prev, new, hop)
             if ('oracle', 'n/a base-was-update') in v.checks:
                 res['base_was_update'] = res.get('base_was_update', 0) + 1
@@ -308,6 +323,9 @@ class Run:
             for c, r in v.checks:
                 if r.startswith('n/a'):
                     res['na'][c] = res['na'].get(c, 0) + 1
+                if c == 'state':
+                    k = judge.d0_kind(r)
+                    res.setdefault('d0', {})[k] = res.setdefault('d0', {}).get(k, 0) + 1
             res['hops'].append('hop %d %-14s %s reason=%s%s' % (
                 i, '+'.join(sorted(macros)) or '-', v.line(), reason,
                 '' if fs == 0 else ' (F status %s: %s)' % (fs, _first(ferr))))
@@ -446,8 +464,8 @@ def parse(argv):
     i = 0
     while i < len(argv):
         a = argv[i]
-        if a in ('--mortar', '--hooked', '--xtask', '--work'):
-            o[a[2:]] = os.path.abspath(argv[i + 1]); i += 2
+        if a in ('--mortar', '--hooked', '--xtask', '--work', '--incr-state'):
+            o[a[2:].replace('-', '_')] = os.path.abspath(argv[i + 1]); i += 2
         elif a == '--only':
             o['only'] = argv[i + 1].split(','); i += 2
         elif a == '--target':
@@ -465,6 +483,12 @@ def parse(argv):
     for need in ('mortar', 'hooked', 'xtask', 'work'):
         if need not in o:
             sys.exit('lane.py: --%s is required\n%s' % (need, __doc__))
+    # (d0) (WP-267 P-4): the live comparator when the tool is given and
+    # there; without it `state` is the stub's `n/a`, by name, never a pass
+    tool = o.get('incr_state')
+    o['canon'] = judge.IncrState(tool) if tool and os.path.isfile(tool) else None
+    if tool and o['canon'] is None and o['require_tools']:
+        sys.exit('lane.py: --incr-state %s: no such file and --require-tools' % tool)
     return o
 
 
@@ -556,6 +580,13 @@ def main(argv):
             live[k] = live.get(k, 0) + n
     log('incr-update: live-check (WP-238 P0-7): %d links: %s' % (
         sum(live.values()), ' '.join('%s:%d' % kv for kv in sorted(live.items())) or '-'))
+    d0 = {}
+    for r in results:
+        for k, n in r.get('d0', {}).items():
+            d0[k] = d0.get(k, 0) + n
+    log('incr-update: state (d0, WP-267 P-4): %s' % (
+        ' '.join('%s:%d' % (k, d0.get(k, 0)) for k in judge.D0_KINDS) if o.get('canon') else
+        'not run (no incr_state: the stub, n/a by name)'))
     names = {s.name for s, _c, _t in runs}
     log('incr-update: %d scenarios, %d hops: %d PASS, %d FAIL, %d n/a (%s), %d base-was-update; %d runs, '
         '%d not here (scenario: %d, tools: %d); %.0fs' % (
