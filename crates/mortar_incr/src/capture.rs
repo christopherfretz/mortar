@@ -1082,33 +1082,58 @@ pub const EH_FIXED: u8 = crate::update::rows::file_flags::EH_FIXED;
 /// the update's own decisions).
 #[must_use]
 pub fn object_flags(inputs: &Inputs<'_>, file: FileId) -> u8 {
-    use crate::update::rows::file_flags;
     let Some(f) = inputs.files.get(file) else { return 0 };
     let Reader::Object(object) = f.reader else { return 0 };
-    let mut flags = 0;
-    if object.symbols().ok().flatten().is_some_and(|t| debug_exports(&object, &t)) {
-        flags |= file_flags::DEBUG_EXPORTS;
-    }
     let class64 = object.class() == mortar_elf::raw::Class::Elf64;
     let mut buf = Vec::new();
-    for sec in object.sections() {
-        if sec.name().ok() != Some(&b".eh_frame"[..]) {
-            continue;
-        }
-        let Ok(Some(range)) = sec.file_range() else { continue }; // NOBITS: no records
-        let range = range.start as u64..range.end as u64;
+    object_flags_by(&object, &mut |range| {
         let bytes = if let Some(b) = inputs.resident(file, range.clone()) {
             b
         } else {
             buf.clear();
             buf.resize((range.end - range.start) as usize, 0);
             if inputs.copy_to(file, range, &mut buf).is_err() {
-                flags |= file_flags::EH_FIXED;
-                continue;
+                return true;
             }
             &buf[..]
         };
-        if eh_fixed(bytes, class64) {
+        eh_fixed(bytes, class64)
+    })
+}
+
+/// WP-267 P-1: [`object_flags`] of ONE object from its own bytes `bytes`
+/// (the file's, offsets in the object; no `Inputs`): the same producer
+/// (`object_flags_by`), an `.eh_frame` range past `bytes` counting as
+/// one that cannot be read (`EH_FIXED`), as [`object_flags`] counts one
+/// it cannot copy.
+#[must_use]
+pub fn object_flags_of(object: &mortar_elf::Object<'_>, bytes: &[u8]) -> u8 {
+    let class64 = object.class() == mortar_elf::raw::Class::Elf64;
+    object_flags_by(object, &mut |range| {
+        let (Ok(a), Ok(b)) = (usize::try_from(range.start), usize::try_from(range.end)) else {
+            return true;
+        };
+        bytes.get(a..b).is_none_or(|e| eh_fixed(e, class64))
+    })
+}
+
+/// [`object_flags`]' body over `object`, `fixed` answering for each of
+/// its `.eh_frame` sections' file range whether it is `EH_FIXED`.
+fn object_flags_by(
+    object: &mortar_elf::Object<'_>,
+    fixed: &mut dyn FnMut(std::ops::Range<u64>) -> bool,
+) -> u8 {
+    use crate::update::rows::file_flags;
+    let mut flags = 0;
+    if object.symbols().ok().flatten().is_some_and(|t| debug_exports(object, &t)) {
+        flags |= file_flags::DEBUG_EXPORTS;
+    }
+    for sec in object.sections() {
+        if sec.name().ok() != Some(&b".eh_frame"[..]) {
+            continue;
+        }
+        let Ok(Some(range)) = sec.file_range() else { continue }; // NOBITS: no records
+        if fixed(range.start as u64..range.end as u64) {
             flags |= file_flags::EH_FIXED;
         }
     }
@@ -4073,6 +4098,63 @@ pub fn file_rows(
         out.push(rows);
     }
     Ok(out)
+}
+
+// ---- WP-267 P-1: the per-object producers (no `Inputs`, no `Resolution`) --
+
+/// WP-267 P-1 (M-3): [`file_rows`]' `MENTIONS` of ONE live object without
+/// the link (`tables::file_mentions`' body): the `k`-th non-local entry's
+/// key is `keys[k]` (the caller's numbering, by name), a definition in
+/// section index `i < sections` names `first_section + i`.
+#[must_use]
+pub fn file_mentions_of(
+    file: FileId,
+    table: &mortar_elf::symbol::SymbolTable<'_>,
+    keys: &[u32],
+    first_section: u32,
+    sections: u32,
+) -> Vec<crate::format::MentionRow> {
+    crate::tables::file_mentions_of(file, table, keys, first_section, sections)
+}
+
+/// WP-267 P-1 (M-3): `file5`'s `COPIES` rows of ONE live object without the
+/// link: per mention (`mentions`, [`file_mentions_of`]'s, position `k` is
+/// entry `first_global + k` of `table`) a non-local definition in a
+/// section `comdat` says is a COMDAT group's member, as `(key, symbol
+/// index, size, type)`; none when `copies` is false (`--odr=off`).
+/// `file5`'s other per-file rows (`KEY_REFS`, `COMMONS`, `GROUPS`) are no
+/// `ChangedFile` field and are not made here.
+///
+/// # Errors
+/// A symbol table entry that cannot be read.
+pub fn file5_of(
+    table: &mortar_elf::symbol::SymbolTable<'_>,
+    mentions: &[crate::format::MentionRow],
+    comdat: &dyn Fn(u32) -> bool,
+    copies: bool,
+) -> Result<Vec<(u32, u32, u64, u8)>, String> {
+    use crate::format::def_kind;
+    let mut out = Vec::new();
+    if !copies {
+        return Ok(out);
+    }
+    let first = table.first_global().0;
+    for (k, m) in mentions.iter().enumerate() {
+        if m.kind == def_kind::SECTION && m.bind != 0 && comdat(m.section) {
+            let index = first + k as u32;
+            let sym = table
+                .get(mortar_elf::symbol::SymbolIndex(index))
+                .map_err(|_| format!("symbol {index}: not readable"))?;
+            out.push((m.symbol, index, sym.st_size, m.typ));
+        }
+    }
+    Ok(out)
+}
+
+/// WP-267 P-1: `SECTIONS`' anchor columns of `anchor` (the capture's own
+/// encoding, `anchor_row`), its name into `strings`.
+pub fn anchor_row_of(strings: &mut Strings, anchor: Anchor<'_>) -> (u8, Str) {
+    anchor_row(strings, anchor)
 }
 
 #[cfg(test)]

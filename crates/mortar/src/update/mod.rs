@@ -20,6 +20,7 @@
 //! U7 (`live::live`, whose `LiveDelta` feeds `SectionChange::live`).
 
 pub mod changed;
+pub mod changed_rows;
 pub mod file_front;
 pub mod file_scan;
 pub mod file_split;
@@ -214,6 +215,9 @@ fn run_with(
     // The front is dropped before the first write.
     let first = image_link(ctx, cwd, None, |f| {
         steps.mark("front");
+        // WP-267 P-1: U4 from the changed files alone, against front 1's
+        // rows (findings only; the update goes on with front 1's).
+        changed_rows::shadow(session, &view, &detected, f, ctx, cwd);
         reference_of(session, &view, &detected, f, ctx, cwd, out, &mut steps)
     })?;
     // WP-255e3 (the clock): front 1's drop.
