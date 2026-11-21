@@ -95,6 +95,15 @@ pub fn refill_set(
     for &s in layout.killed.iter().chain(&layout.revived) {
         r.section_moved(s, reason::LIVE, reason::LIVE, reason::LIVE_FILE)?;
     }
+    // IN-27's window-neighbour row (WP-273; WP-271 ruling item 4): a
+    // section holding a word of a dirty 843419 window. A window is 20
+    // bytes and two files' regions are at least 64 bytes apart (IN-33;
+    // the slack guard, `delta.rs` "I, kept": a touched region that ends at
+    // the next one is refused), so the windows a moved, killed or revived
+    // section dirties hold words of its own file's sections only.
+    for &s in layout.moved.iter().chain(&layout.killed).chain(&layout.revived) {
+        r.window_neighbours(s)?;
+    }
     // IN-27 row 4: the old and the new keeper's other units.
     for (_, old, new) in &resolved.reelected {
         for f in [old, new] {
@@ -235,6 +244,73 @@ impl<'a, 's> Refill<'a, 's> {
         }
         self.file_nonalloc(FileId(f), file)?;
         Ok(n)
+    }
+
+    /// The address ranges a section occupies at the update's chunk
+    /// addresses: its place now ([`LayoutDelta::place_of`]) and, for a
+    /// section the delta placed anew, `placement.place`'s (a moved or
+    /// revived section of an unchanged file), each with its size.
+    fn ranges(&self, s: SectionId, size: u64) -> Result<Vec<(u64, u64)>, IncrReason> {
+        let mut places = Vec::new();
+        match self.layout.place_of(self.stored, s)? {
+            PlaceNow::Here(p) | PlaceNow::Stored(p) => places.push(p),
+            PlaceNow::NotPlaced => {}
+        }
+        if let Some(&p) = self.layout.placement.place.get(s) {
+            places.push(p);
+        }
+        let mut out = Vec::new();
+        for p in places {
+            let Some((chunk, at)) = p.get() else { continue };
+            let Some(a) = self.layout.placement.chunks.get(chunk).and_then(|c| c.addr) else {
+                continue;
+            };
+            out.push((a + at, a + at + size));
+        }
+        Ok(out)
+    }
+
+    /// IN-27's window-neighbour row for `s` (a stored section that moved,
+    /// died or came back): every executable section of its file whose
+    /// bytes lie within a window (20 bytes) of `s`'s, at the update's
+    /// addresses, joins the set (`reason::PATCH`, IN-27 row 8: the 843419
+    /// judgement of a window reads the pre-fix words of both).
+    fn window_neighbours(&mut self, s: SectionId) -> Result<(), IncrReason> {
+        use mortar_elf::consts::SHF_EXECINSTR;
+        const WINDOW: u64 = 20;
+        if s.0 >= self.sections {
+            return Ok(());
+        }
+        let row = self.view.section(s)?;
+        if row.sh_flags & SHF_EXECINSTR == 0 {
+            return Ok(());
+        }
+        let mine = self.ranges(s, row.size)?;
+        if mine.is_empty() {
+            return Ok(());
+        }
+        let f = FileId(row.file);
+        let start = self.view.file_index(f)?.ranges[FileTable::Sections as usize].first;
+        let rows = self.view.sections_of(f)?;
+        let mut near = Vec::new();
+        for (i, x) in rows.iter().enumerate() {
+            let id = SectionId(start + i as u32);
+            if id == s || x.sh_flags & SHF_EXECINSTR == 0 {
+                continue;
+            }
+            let theirs = self.ranges(id, x.size)?;
+            let meets = theirs.iter().any(|&(a, b)| {
+                mine.iter()
+                    .any(|&(m, n)| a < n.saturating_add(WINDOW) && m < b.saturating_add(WINDOW))
+            });
+            if meets {
+                near.push(id);
+            }
+        }
+        for id in near {
+            self.add(id, reason::PATCH)?;
+        }
+        Ok(())
     }
 
     /// A stored file's non-allocated units.
