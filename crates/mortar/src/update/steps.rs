@@ -103,11 +103,24 @@ pub(crate) fn option_names(view: &StateView<'_>, plan: &Plan) -> Result<OptionKe
     paths.sort_unstable();
     paths.dedup();
     let rows = u32::try_from(view.count(kind::STAT)).unwrap_or(u32::MAX);
+    let mut missing: Vec<String> = Vec::new();
     for i in 0..rows {
         let r = view.stat(i)?;
-        if r.tag == stat_tag::INPUT && paths.binary_search(&view.string(r.path)?).is_err() {
-            return Err(script_refusal("an input that gave no file (a script input?)"));
+        let path = view.string(r.path)?;
+        if r.tag == stat_tag::INPUT && paths.binary_search(&path).is_err() {
+            missing.push(String::from_utf8_lossy(&path).into_owned());
         }
+    }
+    if !missing.is_empty() {
+        // P-3b (M-6's detection, findings): every such input by path, and
+        // the FILES paths it was looked up in.
+        let some: Vec<String> =
+            paths.iter().take(4).map(|p| String::from_utf8_lossy(p).into_owned()).collect();
+        return Err(script_refusal(&format!(
+            "an input that gave no file (a script input?) {missing:?}; FILES paths {} e.g. \
+             {some:?}",
+            paths.len()
+        )));
     }
     Ok(mortar_resolve::tables::option_keys(plan, &[]))
 }
@@ -146,7 +159,8 @@ fn stored_section(view: &StateView<'_>, cf: &ChangedFiles, s: u32) -> Result<u32
 ///   column but the place and `COLLECTED`, which the layout half and the
 ///   flips judge; names by bytes), `FILE_INDEX.first_global`, `MENTIONS`
 ///   (keys through `ResolveDelta::key_ids`, sections by `(file, index)`),
-///   `INDEX`, `EDGES` (targets by their class), `FRAG_USE` (the file's
+///   `INDEX`, `EDGES` (targets by their class; both as sets, as the
+///   capture writes them), `FRAG_USE` (the file's
 ///   pieces' fragments as a set), no `@` name;
 /// - the affected keys: no new, no gone key, no first mention moved, the
 ///   `KEY_REFS`/`GROUPS`/`COMMONS` edits putting back what they delete, no
@@ -183,6 +197,7 @@ pub(crate) fn identity_prime(
     d: &LayoutDelta,
     changes: &[SectionChange<'_>],
     pieces: &[mortar_core::incr::FilePieces],
+    demands: &[mortar_core::incr::FileDemands],
     flips: usize,
 ) -> Result<(), String> {
     let e = |x: IncrReason| x.report();
@@ -251,38 +266,29 @@ pub(crate) fn identity_prime(
                 return Err(format!("file {}: MENTIONS row {k}: {m:?} (stored {o:?})", file.0));
             }
         }
-        // INDEX.
-        let old = view.index_of(file).map_err(e)?;
-        if old.len() != c.index.len() {
-            return Err(format!(
-                "file {}: {} INDEX rows (stored {})",
-                file.0,
-                c.index.len(),
-                old.len()
-            ));
-        }
-        for (k, (n, o)) in c.index.iter().zip(&old).enumerate() {
+        // INDEX and EDGES, as sets in the state's ids: the capture writes
+        // each file's rows sorted (in its ids) and without repeats
+        // (`tables.rs`'s `index.sort_unstable(); dedup()`, `capture.rs`'s
+        // `edges.sort_unstable_by_key; dedup()`), the producer gives them in
+        // its walk's order with repeats (P-3b: the lane's "24 INDEX rows
+        // (stored 15)" and EDGES row 7's kind 11 against 9 were order and
+        // repeats only).
+        let mut now = Vec::with_capacity(c.index.len());
+        for n in &c.index {
             let mut m = *n;
             m.unit = sec(m.unit)?;
             m.target = match m.kind {
                 index_kind::GLOBAL | index_kind::SLOT => key(m.target)?,
                 _ => sec(m.target)?,
             };
-            if m != *o {
-                return Err(format!("file {}: INDEX row {k}: {m:?} (stored {o:?})", file.0));
-            }
+            now.push(m);
         }
-        // EDGES.
-        let old = view.edges_of(file).map_err(e)?;
-        if old.len() != c.edges.len() {
-            return Err(format!(
-                "file {}: {} EDGES rows (stored {})",
-                file.0,
-                c.edges.len(),
-                old.len()
-            ));
+        let mut was = view.index_of(file).map_err(e)?;
+        if let Some(k) = differ_as_sets(&mut now, &mut was) {
+            return Err(format!("file {}: INDEX (as a set) {k}", file.0));
         }
-        for (k, (n, o)) in c.edges.iter().zip(&old).enumerate() {
+        let mut now = Vec::with_capacity(c.edges.len());
+        for n in &c.edges {
             let mut m = *n;
             m.source = sec(m.source)?;
             m.target = match edge_kind::target(m.kind) {
@@ -291,9 +297,11 @@ pub(crate) fn identity_prime(
                 Some(edge_kind::Target::Zero | edge_kind::Target::Code) => m.target,
                 None => return Err(format!("file {}: EDGES kind {}", file.0, m.kind)),
             };
-            if m != *o {
-                return Err(format!("file {}: EDGES row {k}: {m:?} (stored {o:?})", file.0));
-            }
+            now.push(m);
+        }
+        let mut was = view.edges_of(file).map_err(e)?;
+        if let Some(k) = differ_as_sets(&mut now, &mut was) {
+            return Err(format!("file {}: EDGES (as a set) {k}", file.0));
         }
         // FRAG_USE, as a set.
         let mut now: Vec<(u32, u32, [u8; 16])> = pieces
@@ -326,13 +334,7 @@ pub(crate) fn identity_prime(
             delta.at.len()
         ));
     }
-    if !same_edits(&delta.key_refs.put, &delta.key_refs.delete)
-        || !same_edits(&delta.groups.put, &delta.groups.delete)
-        || !same_edits(&delta.commons.put, &delta.commons.delete)
-        || !delta.reelected.is_empty()
-    {
-        return Err("KEY_REFS, GROUPS or COMMONS edited, or a keeper re-elected".into());
-    }
+    key_edits_put_back(view, delta, demands)?;
     for (id, r) in &delta.resolved {
         let o = view.resolved(*id).map_err(e)?;
         let mut m = *r;
@@ -431,18 +433,104 @@ pub(crate) fn identity_check(
     Ok((super::identity(&diffs, files), diffs, old))
 }
 
-/// `KEY_REFS`/`GROUPS`/`COMMONS` edits that put back what they delete.
-fn same_edits<R: PartialEq>(put: &[R], delete: &[R]) -> bool {
-    put.len() == delete.len() && put.iter().all(|p| delete.contains(p))
+/// Sorts and dedups both; `None` when equal, else the first row that
+/// differs (or the counts).
+fn differ_as_sets<R: Ord + Copy + std::fmt::Debug>(
+    now: &mut Vec<R>,
+    was: &mut Vec<R>,
+) -> Option<String> {
+    now.sort_unstable();
+    now.dedup();
+    was.sort_unstable();
+    was.dedup();
+    if now == was {
+        return None;
+    }
+    let k = now.iter().zip(was.iter()).position(|(a, b)| a != b);
+    Some(match k {
+        Some(k) => format!("row {k}: {:?} (stored {:?})", now[k], was[k]),
+        None => format!("{} rows (stored {})", now.len(), was.len()),
+    })
+}
+
+/// Whether the `KEY_REFS`/`GROUPS`/`COMMONS` edits of `delta` leave the
+/// stored rows as they are (P-3b: the edits are not symmetric, so "put
+/// equals delete" was wrong). `resolve`'s edits:
+/// - `KEY_REFS`: `put` is every key a changed file mentions (its whole
+///   rows, `demand` 0: the join ORs the file's `FileDemands` into the row
+///   when written), `delete` the stored keys it no longer mentions (by
+///   `(key, file)`). Identity: no delete, and each put row is the stored
+///   live row of its `(key, file)` with `demand` the OR of `demands`' flags
+///   of the file and key.
+/// - `GROUPS`: `put` a holder no stored row has, `delete` a stored row no
+///   holder has (disjoint by file). Identity: neither.
+/// - `COMMONS`: `delete` a stored row whose file has no common any more,
+///   `put` every edited file's row. Identity: no delete, each put row the
+///   stored live row of its `(key, file)`.
+/// - no keeper re-elected.
+fn key_edits_put_back(
+    view: &StateView<'_>,
+    delta: &ResolveDelta,
+    demands: &[mortar_core::incr::FileDemands],
+) -> Result<(), String> {
+    let e = |x: IncrReason| x.report();
+    if !delta.key_refs.delete.is_empty()
+        || !delta.groups.put.is_empty()
+        || !delta.groups.delete.is_empty()
+        || !delta.commons.delete.is_empty()
+        || !delta.reelected.is_empty()
+    {
+        return Err(format!(
+            "KEY_REFS deletes {}, GROUPS puts {} deletes {}, COMMONS deletes {}, keepers \
+             re-elected {}",
+            delta.key_refs.delete.len(),
+            delta.groups.put.len(),
+            delta.groups.delete.len(),
+            delta.commons.delete.len(),
+            delta.reelected.len()
+        ));
+    }
+    for p in &delta.key_refs.put {
+        let want = mortar_core::id::SymKey::global(SymbolId(p.key));
+        let demand = demands
+            .iter()
+            .filter(|d| d.file.0 == p.file)
+            .flat_map(|d| &d.demands)
+            .filter(|d| d.key == want)
+            .fold(0u16, |a, d| a | d.flags.bits());
+        let row = mortar_incr::update::rows::KeyRefRow { demand, ..*p };
+        let stored: Vec<_> = view
+            .key_refs(SymbolId(p.key))
+            .map_err(e)?
+            .into_iter()
+            .filter(|r| !r.tomb && r.file == p.file)
+            .collect();
+        if stored != [row] {
+            return Err(format!("KEY_REFS put {row:?} (stored {stored:?})"));
+        }
+    }
+    for p in &delta.commons.put {
+        let stored: Vec<_> = view
+            .commons(SymbolId(p.key))
+            .map_err(e)?
+            .into_iter()
+            .filter(|r| !r.tomb && r.file == p.file)
+            .collect();
+        if stored != [*p] {
+            return Err(format!("COMMONS put {p:?} (stored {stored:?})"));
+        }
+    }
+    Ok(())
 }
 
 fn text(m: &MemoryState, s: Str) -> Option<&[u8]> {
     m.strings.get(s.off as usize..s.off as usize + s.len as usize)
 }
 
-/// A key's `RESOLVED` answer with its strings and its definer's section by
-/// identity `(file, anchor kind, anchor, name, ordinal)`.
-type Answer<'m> = ((u8, u8, u8, u8, u64, u64, u32), Option<(u32, u8, &'m [u8], &'m [u8], u32)>);
+/// A key's `RESOLVED` RESOLUTION (rulings "After P-3's hand-back" item 2:
+/// kind, typ, bind, other, value, size; NOT `facts`) with its definer's
+/// section by identity `(file, anchor kind, anchor, name, ordinal)`.
+type Answer<'m> = ((u8, u8, u8, u8, u64, u64), Option<(u32, u8, &'m [u8], &'m [u8], u32)>);
 
 fn answer(m: &MemoryState, k: usize) -> Option<Answer<'_>> {
     let r = m.resolved.get(k)?;
@@ -452,15 +540,29 @@ fn answer(m: &MemoryState, k: usize) -> Option<Answer<'_>> {
         let s = m.sections.get(r.section as usize)?;
         Some((s.file, s.anchor_kind, text(m, s.anchor)?, text(m, s.name)?, s.ordinal))
     };
-    Some(((r.kind, r.typ, r.bind, r.other, r.value, r.size, r.facts), at))
+    Some(((r.kind, r.typ, r.bind, r.other, r.value, r.size), at))
+}
+
+/// The global keys of `m` by (name, version): their `SYMBOLS` rows.
+fn globals(m: &MemoryState) -> std::collections::HashMap<(Vec<u8>, Vec<u8>), usize> {
+    let mut by = std::collections::HashMap::new();
+    for (k, s) in m.symbols.iter().enumerate() {
+        if s.kind != sym_kind::LOCAL
+            && let (Some(n), Some(v)) = (text(m, s.name), text(m, s.version))
+        {
+            by.entry((n.to_vec(), v.to_vec())).or_insert(k);
+        }
+    }
+    by
 }
 
 /// **R-A2, the count check (BINDING)**: every global key whose `RESOLVED`
-/// answer in a front's capture `capture` differs from the stored state's
-/// `old` (by name and version; the answer's columns and its definer's
-/// section by identity), and every key the capture has that `old` does
-/// not, is a key the update chose: in `delta.affected` (or, new, in
-/// `delta.new_keys`). It is computed on the front, so it is independent of
+/// resolution in a front's capture `capture` differs from the stored
+/// state's `old` (by name and version; kind, typ, bind, other, value, size
+/// and its definer's section by identity: NOT `facts`, which
+/// [`facts_within_changed`] judges), and every key the capture has that
+/// `old` does not, is a key the update chose: in `delta.affected` (or,
+/// new, in `delta.new_keys`). It is computed on the front, so it is independent of
 /// the delta (identity' and U5 take their keys from `affected`). Locals
 /// are a file's rows, not keys re-resolved. O(state), in memory, over the
 /// decode [`identity_check`] made.
@@ -473,18 +575,6 @@ pub(crate) fn resolved_within_affected(
     capture: &MemoryState,
     delta: &ResolveDelta,
 ) -> Result<usize, String> {
-    use std::collections::HashMap;
-    let globals = |m: &MemoryState| -> HashMap<(Vec<u8>, Vec<u8>), usize> {
-        let mut by: HashMap<(Vec<u8>, Vec<u8>), usize> = HashMap::new();
-        for (k, s) in m.symbols.iter().enumerate() {
-            if s.kind != sym_kind::LOCAL
-                && let (Some(n), Some(v)) = (text(m, s.name), text(m, s.version))
-            {
-                by.entry((n.to_vec(), v.to_vec())).or_insert(k);
-            }
-        }
-        by
-    };
     let was = globals(old);
     let mut outside: Vec<String> = Vec::new();
     let mut differ = 0usize;
@@ -531,6 +621,87 @@ pub(crate) fn resolved_within_affected(
         Ok(differ)
     } else {
         Err(format!("keys re-resolved outside ResolveDelta::affected: {}", outside.join("; ")))
+    }
+}
+
+/// The keys a changed file of `cf` mentions or defines (its `MENTIONS`:
+/// the new rows through `ResolveDelta::key_ids`, and the stored rows of a
+/// file the state has), in the update's ids, sorted: the set
+/// [`facts_within_changed`] admits. `cf` is the final one (U6's drawn-in
+/// files included).
+///
+/// # Errors
+/// The state's own, reported.
+pub(crate) fn changed_keys(
+    view: &StateView<'_>,
+    cf: &ChangedFiles,
+    delta: &ResolveDelta,
+) -> Result<Vec<SymbolId>, String> {
+    let files = view.count(kind::FILES);
+    let mut out: Vec<SymbolId> = Vec::new();
+    for c in &cf.files {
+        let ids = delta.key_ids.iter().find(|(f, _)| *f == c.file).map(|(_, k)| k.as_slice());
+        for m in &c.mentions {
+            if let Some(&k) = ids.and_then(|k| k.get(m.symbol as usize)) {
+                out.push(k);
+            }
+        }
+        if u64::from(c.file.0) < files && c.change != Change::Appeared {
+            for m in view.mentions_of(c.file).map_err(|e| e.report())? {
+                out.push(SymbolId(m.symbol));
+            }
+        }
+    }
+    out.sort_unstable();
+    out.dedup();
+    Ok(out)
+}
+
+/// **The facts check (BINDING; rulings "After P-3's hand-back" item 2)**:
+/// every global key of both `old` and `capture` (by name and version)
+/// whose `RESOLVED.facts` differ is in `keys` ([`changed_keys`]: a key a
+/// changed file mentions or defines). `facts` is no resolution: it is the
+/// packed `mortar_arch::SymFacts` (`SymFacts::pack`: bits 0-2 the target
+/// kind, 3 `Shlib.func`, 8-11 `sym_type`, 16-23 `st_other`, **24 `dead`**
+/// (the definer's section is not live: a dropped COMDAT copy's, or under
+/// `--gc-sections` a collected one's), 25 `comdat_only`, 26
+/// `gnu_warning`), so a changed referrer flips it while the key's
+/// resolution stands. A new or gone key is R-A2's. O(state), in memory.
+///
+/// # Errors
+/// `Err(what)`: the keys outside `keys`, named (a FINDING; the caller falls
+/// back by name).
+pub(crate) fn facts_within_changed(
+    old: &MemoryState,
+    capture: &MemoryState,
+    keys: &[SymbolId],
+) -> Result<usize, String> {
+    let was = globals(old);
+    let mut outside: Vec<String> = Vec::new();
+    let mut differ = 0usize;
+    for (name, &k) in &globals(capture) {
+        let Some(&o) = was.get(name) else { continue };
+        let (Some(now), Some(then)) = (capture.resolved.get(k), old.resolved.get(o)) else {
+            continue;
+        };
+        if now.facts == then.facts {
+            continue;
+        }
+        differ += 1;
+        let mentioned = u32::try_from(o).is_ok_and(|o| keys.binary_search(&SymbolId(o)).is_ok());
+        if !mentioned && outside.len() < 8 {
+            outside.push(format!(
+                "{} ({o}): facts stored {:#x}, the front's {:#x}",
+                String::from_utf8_lossy(&name.0),
+                then.facts,
+                now.facts
+            ));
+        }
+    }
+    if outside.is_empty() {
+        Ok(differ)
+    } else {
+        Err(format!("facts changed on keys no changed file mentions: {}", outside.join("; ")))
     }
 }
 
@@ -586,6 +757,114 @@ mod tests {
         let gone = state(&["a"], &[1]);
         assert!(resolved_within_affected(&old, &gone, &delta(&[])).is_err());
         assert_eq!(resolved_within_affected(&old, &gone, &delta(&[1])), Ok(1));
+    }
+
+    /// `state` with key `k`'s `RESOLVED.facts` set to `facts`.
+    fn with_facts(mut m: MemoryState, k: usize, facts: u32) -> MemoryState {
+        m.resolved[k].facts = facts;
+        m
+    }
+
+    /// Bit 24 of `SymFacts::pack` (`dead`), the lane's flip (512 against
+    /// 16777728 on `_Z5twicei`).
+    const DEAD: u32 = 1 << 24;
+
+    /// R-A2 compares the resolution only: a facts flip alone is not a key
+    /// re-resolved.
+    #[test]
+    fn r_a2_ignores_a_facts_flip() {
+        let old = with_facts(state(&["a", "b"], &[1, 2]), 1, 512);
+        let now = with_facts(state(&["a", "b"], &[1, 2]), 1, 512 | DEAD);
+        assert_eq!(resolved_within_affected(&old, &now, &delta(&[])), Ok(0));
+    }
+
+    /// The facts check: a flip on a key a changed file mentions passes; on
+    /// a key no changed file mentions it is caught, by name.
+    #[test]
+    fn facts_flip_passes_on_a_mentioned_key_and_is_caught_otherwise() {
+        let old = with_facts(state(&["a", "b", "c"], &[1, 2, 3]), 1, 512);
+        let now = with_facts(state(&["a", "b", "c"], &[1, 2, 3]), 1, 512 | DEAD);
+        assert_eq!(facts_within_changed(&old, &now, &[SymbolId(1)]), Ok(1));
+        assert_eq!(facts_within_changed(&old, &old, &[]), Ok(0));
+        let e = facts_within_changed(&old, &now, &[SymbolId(0), SymbolId(2)]).unwrap_err();
+        assert!(e.contains("b (1)") && e.contains("0x1000200"), "{e}");
+        // A new key's facts are R-A2's (no stored row to flip from).
+        let new =
+            with_facts(with_facts(state(&["a", "b", "c", "n"], &[1, 2, 3, 4]), 1, 512), 3, DEAD);
+        assert_eq!(facts_within_changed(&old, &new, &[]), Ok(0));
+    }
+
+    /// identity' cause 1 (the lane's 50 hops): a changed file's `KEY_REFS`
+    /// put rows are its whole mentions with `demand` 0 and no delete; they
+    /// leave the stored rows as they are when each is the stored row with
+    /// the file's demand OR-ed in.
+    #[test]
+    fn identity_prime_key_refs_put_back_by_row_and_demand() {
+        use mortar_core::demands::DemandFlags;
+        use mortar_core::id::SymKey;
+        use mortar_core::incr::{FileDemands, SlotDemand};
+        use mortar_incr::update::rows::{CommonRow, KeyRefRow};
+        let mut m = state(&["a", "b"], &[1, 2]);
+        let stored = KeyRefRow {
+            key: 1,
+            file: 5,
+            def: 1,
+            bind: 1,
+            typ: 2,
+            demand: 1,
+            ..KeyRefRow::default()
+        };
+        m.key_refs.push(stored);
+        let common = CommonRow { key: 0, file: 5, size: 8, align: 8, tomb: false };
+        m.commons.push(common);
+        let view = m.view();
+        let mut d = delta(&[0, 1]);
+        d.key_refs.put.push(KeyRefRow { demand: 0, ..stored });
+        d.commons.put.push(common);
+        let got = [FileDemands {
+            file: FileId(5),
+            demands: vec![SlotDemand { key: SymKey::global(SymbolId(1)), flags: DemandFlags::GOT }],
+        }];
+        assert_eq!(key_edits_put_back(&view, &d, &got), Ok(()));
+        // No demand: the stored row's GOT bit is lost (not identity).
+        assert!(key_edits_put_back(&view, &d, &[]).is_err());
+        // A changed column, a delete, a COMMONS row changed: not identity.
+        let mut x = d.clone();
+        x.key_refs.put[0].def = 0;
+        assert!(key_edits_put_back(&view, &x, &got).is_err());
+        let mut x = d.clone();
+        x.key_refs.delete.push(KeyRefRow { key: 0, file: 5, ..KeyRefRow::default() });
+        assert!(key_edits_put_back(&view, &x, &got).is_err());
+        let mut x = d.clone();
+        x.commons.put[0].size = 16;
+        assert!(key_edits_put_back(&view, &x, &got).is_err());
+    }
+
+    /// identity' causes 2 and 3 (the lane's INDEX and EDGES rows): the
+    /// producer's rows in walk order with repeats against the capture's
+    /// sorted, deduplicated ones are the same rows; a row that differs is
+    /// still caught.
+    #[test]
+    fn identity_prime_index_and_edges_as_sets() {
+        use mortar_incr::format::IndexRow;
+        use mortar_incr::update::rows::EdgeRow;
+        let i = |unit, kind, target| IndexRow { unit, kind, target };
+        // The producer's walk: repeats, not sorted (the lane's "24 INDEX
+        // rows (stored 15)", row 0's target 19 against 17).
+        let mut now = vec![i(92, 0, 19), i(92, 0, 17), i(92, 0, 19), i(92, 2, 17), i(92, 0, 17)];
+        let mut was = vec![i(92, 0, 17), i(92, 0, 19), i(92, 2, 17)];
+        assert_eq!(differ_as_sets(&mut now, &mut was), None);
+        let mut now = vec![i(92, 0, 19), i(92, 0, 18)];
+        let mut was = vec![i(92, 0, 17), i(92, 0, 19)];
+        assert!(differ_as_sets(&mut now, &mut was).is_some());
+        let e = |kind, source| EdgeRow { kind, source, target: 0, offset: 0 };
+        // Row 7's kind 11 (SPLIT) on 101 against kind 9 (ROOT) on 102.
+        let mut now = vec![e(11, 101), e(9, 102)];
+        let mut was = vec![e(9, 102), e(11, 101)];
+        assert_eq!(differ_as_sets(&mut now, &mut was), None);
+        let mut now = vec![e(11, 101)];
+        let mut was = vec![e(9, 102), e(11, 101)];
+        assert!(differ_as_sets(&mut now, &mut was).is_some());
     }
 
     /// `link_arch_of` is the front's selection: every target the update

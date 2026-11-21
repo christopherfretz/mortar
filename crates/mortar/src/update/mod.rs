@@ -469,16 +469,6 @@ fn reference_of(
     // the non-identity case materialized (M2b-3 Part 3).
     let placed = match u5 {
         Some((mut cf, mut delta)) => {
-            // R-A2 (WP-267 P-3), BINDING: every key the front re-resolves
-            // differently from the stored state is one the update chose.
-            match steps::resolved_within_affected(&old, &state, &delta) {
-                Ok(n) => changed::record(&format!(
-                    "P-3 R-A2: agree ({n} keys re-resolved, all in affected)"
-                )),
-                Err(what) => {
-                    return Err(changed::finding_as(&format!("P-3 R-A2: {what}"), layout()));
-                }
-            }
             let mut live = mortar_incr::update::live::LiveDelta::default();
             if f.plan.shaping.gc_sections {
                 (live, flips) = live_judged(view, f, &cf, &delta)?;
@@ -487,6 +477,32 @@ fn reference_of(
                         drawn_in(view, f, &detected.positional, &state, &cf, &live)?;
                 }
                 steps.mark("u6");
+            }
+            // R-A2 (WP-267 P-3), BINDING, over the final delta (U6's drawn-in
+            // files included): every key the front re-resolves differently
+            // from the stored state is one the update chose; and (P-3b) every
+            // key whose `facts` differ is one a changed file mentions.
+            match steps::resolved_within_affected(&old, &state, &delta) {
+                Ok(n) => changed::record(&format!(
+                    "P-3 R-A2: agree ({n} keys re-resolved, all in affected)"
+                )),
+                Err(what) => {
+                    return Err(changed::finding_as(&format!("P-3 R-A2: {what}"), layout()));
+                }
+            }
+            let keys = steps::changed_keys(view, &cf, &delta)
+                .map_err(|e| changed::finding_as(&format!("P-3b facts: {e}"), layout()))?;
+            match steps::facts_within_changed(&old, &state, &keys) {
+                Ok(n) => changed::record(&format!(
+                    "P-3b facts: agree ({n} keys' facts differ, all mentioned by a changed file)"
+                )),
+                Err(what) => {
+                    let files: Vec<u32> = cf.files.iter().map(|c| c.file.0).collect();
+                    return Err(changed::finding_as(
+                        &format!("P-3b facts: {what} (changed files {files:?}, {flips} flips)"),
+                        layout(),
+                    ));
+                }
             }
             // R-2 (a) (WP-264's `REGIONS` producer is in): a producer's
             // refusal falls back by its name in every case; the delta is
@@ -1277,8 +1293,17 @@ fn placement(
     })?;
     placed.debug = debug;
     // WP-267 P-3: identity' from the update's own rows (O(change)).
-    placed.prime =
-        steps::identity_prime(view, stored, cf, &delta, &d, &inputs.changes, &inputs.pieces, flips);
+    placed.prime = steps::identity_prime(
+        view,
+        stored,
+        cf,
+        &delta,
+        &d,
+        &inputs.changes,
+        &inputs.pieces,
+        &demands,
+        flips,
+    );
     // M2b-3 Part 3 (the non-identity case only: O(link)): the stored
     // layout with `d`, in the front's ids (R-1). Not the identity case
     // unless the binding check and identity' both say so (R-A1).
