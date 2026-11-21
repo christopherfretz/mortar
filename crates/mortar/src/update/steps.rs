@@ -81,12 +81,21 @@ fn script_refusal(what: &str) -> IncrReason {
 
 /// The link's option keys (`option_keys`) without the front (record §1
 /// row 8): `-e`, `-u`, `--defsym`, ... from `plan`, with NO script
-/// directives (`ENTRY`, `EXTERN`). M-6's conservative path: a link that
-/// may carry directives is refused `update-not-implemented (resolve)` by
-/// name: one with a `-T`/`--default-script` script, or one with an input
-/// path of `STAT` that is no `FILES` row's path (an input that gave no
-/// file: a linker script given as an input; also an archive of no members,
-/// refused with it). O(inputs) over `STAT` and `FILES`, which U2 read.
+/// directives (`ENTRY`, `EXTERN`). M-6 (P-3c, rulings "After P-3b's
+/// hand-back" item 4): a link with a `-T`/`--default-script` script is
+/// refused `update-not-implemented (resolve)` by name; so is a `STAT`
+/// input that is no `FILES` row's path (an input that gave no file) unless
+/// it is shown to carry no directive: a thin archive member's path
+/// (`FILES.member_name` resolved against its archive's directory), an ELF
+/// file or an archive by its first bytes (an unused thin member: it gives
+/// a `FILES` row or nothing, never a directive), or a script whose
+/// commands are none of `ENTRY`, `EXTERN`, `INCLUDE`, `STARTUP` (GNU's
+/// `libm.a`, `GROUP ( .. )`). `STAT` has already proved those bytes
+/// unchanged. A script that names a directive, does not parse, or is
+/// none of these is refused by name: its words are not read here (that
+/// needs `mortar_script`'s types, a dependency edge `mortar` does not
+/// have). O(inputs) over `STAT` and `FILES`, plus the read of each such
+/// input (a script is ~140 bytes; an ELF file or archive 8 bytes).
 ///
 /// # Errors
 /// As above; the state's own.
@@ -98,31 +107,84 @@ pub(crate) fn option_names(view: &StateView<'_>, plan: &Plan) -> Result<OptionKe
     let files = u32::try_from(view.count(kind::FILES)).unwrap_or(u32::MAX);
     let mut paths: Vec<Vec<u8>> = Vec::with_capacity(files as usize);
     for f in 0..files {
-        paths.push(view.string(view.file(FileId(f))?.path)?);
+        let row = view.file(FileId(f))?;
+        let path = view.string(row.path)?;
+        if row.member != 0 {
+            // A thin member's path: the member name against the
+            // archive's directory (a member of a regular archive gives a
+            // path no input has).
+            let name = view.string(row.member_name)?;
+            paths.push(member_path(&path, &name));
+        }
+        paths.push(path);
     }
     paths.sort_unstable();
     paths.dedup();
     let rows = u32::try_from(view.count(kind::STAT)).unwrap_or(u32::MAX);
-    let mut missing: Vec<String> = Vec::new();
+    let mut refused: Vec<String> = Vec::new();
     for i in 0..rows {
         let r = view.stat(i)?;
         let path = view.string(r.path)?;
         if r.tag == stat_tag::INPUT && paths.binary_search(&path).is_err() {
-            missing.push(String::from_utf8_lossy(&path).into_owned());
+            if let Err(why) = no_directive(&path) {
+                refused.push(format!("{}: {why}", String::from_utf8_lossy(&path)));
+            }
         }
     }
-    if !missing.is_empty() {
-        // P-3b (M-6's detection, findings): every such input by path, and
-        // the FILES paths it was looked up in.
-        let some: Vec<String> =
-            paths.iter().take(4).map(|p| String::from_utf8_lossy(p).into_owned()).collect();
+    if !refused.is_empty() {
         return Err(script_refusal(&format!(
-            "an input that gave no file (a script input?) {missing:?}; FILES paths {} e.g. \
-             {some:?}",
-            paths.len()
+            "an input that gave no file and may carry directives: {refused:?}"
         )));
     }
     Ok(mortar_resolve::tables::option_keys(plan, &[]))
+}
+
+/// `member` of the thin archive at `archive`: itself when absolute, else
+/// against the archive's directory (as the walk opens it).
+fn member_path(archive: &[u8], member: &[u8]) -> Vec<u8> {
+    if member.first() == Some(&b'/') {
+        return member.to_vec();
+    }
+    match archive.iter().rposition(|&b| b == b'/') {
+        Some(k) => [&archive[..=k], member].concat(),
+        None => member.to_vec(),
+    }
+}
+
+/// Whether the input at `path` carries no script directive ([`option_names`]):
+/// `Ok` for an ELF file, an archive, or a script of none of `ENTRY`,
+/// `EXTERN`, `INCLUDE`, `STARTUP`; `Err(why)` otherwise.
+fn no_directive(path: &[u8]) -> Result<(), String> {
+    use std::io::Read;
+    use std::os::unix::ffi::OsStrExt;
+    let p = std::path::Path::new(std::ffi::OsStr::from_bytes(path));
+    let mut file = std::fs::File::open(p).map_err(|e| format!("not read: {e}"))?;
+    let mut head = Vec::with_capacity(8);
+    (&mut file).take(8).read_to_end(&mut head).map_err(|e| format!("not read: {e}"))?;
+    if head.starts_with(b"\x7fELF") || head == b"!<arch>\n" || head == b"!<thin>\n" {
+        return Ok(());
+    }
+    // A script: small (the walk reads it whole too); a bound so a large
+    // file of another kind is not read whole here.
+    const MAX: u64 = 1 << 20;
+    let mut bytes = head;
+    file.take(MAX).read_to_end(&mut bytes).map_err(|e| format!("not read: {e}"))?;
+    if bytes.len() as u64 >= MAX {
+        return Err("neither ELF, archive nor a script under 1 MiB".into());
+    }
+    match mortar_input::facts::analyse(&bytes, false).kind {
+        mortar_input::facts::Kind::Script(s) => {
+            let script = s.parsed.map_err(|_| "a script that does not parse".to_owned())?;
+            for c in &script.commands {
+                let k = c.kind.keyword();
+                if matches!(k, "ENTRY" | "EXTERN" | "INCLUDE" | "STARTUP") {
+                    return Err(format!("a script with {k}"));
+                }
+            }
+            Ok(())
+        }
+        _ => Err("neither ELF, archive nor script".into()),
+    }
 }
 
 /// A changed file's section id `s` (of `cf`'s id space) as the state's id
@@ -354,13 +416,16 @@ pub(crate) fn identity_prime(
     // each one's holes are the stored ones.
     touched_chunks_keep_their_holes(stored, d)?;
     // A killed section (a changed file's stored section no change matched
-    // that had a place): not identity, named with its stored row.
-    if let Some(&k) = d.killed.first() {
+    // that had a place): not identity, named with its stored row. A
+    // `.debug_aranges` row the update re-placed at its stored place is not
+    // one ([`killed_not_rewritten_aranges`]).
+    let killed = killed_not_rewritten_aranges(view, stored, d, changes)?;
+    if let Some(&k) = killed.first() {
         let r = view.section(k).map_err(e)?;
         return Err(format!(
             "{} killed, first section {} (file {}, {:?}, sh_type {}, size {}, place {} {}, \
              bits {:#x})",
-            d.killed.len(),
+            killed.len(),
             k.0,
             r.file,
             String::from_utf8_lossy(&view.string(r.name).map_err(e)?),
@@ -373,7 +438,7 @@ pub(crate) fn identity_prime(
     }
     let counts = [
         d.moved.len(),
-        d.killed.len(),
+        killed.len(),
         d.revived.len(),
         d.holes.len(),
         d.regions_opened.len(),
@@ -443,6 +508,49 @@ fn touched_chunks_keep_their_holes(
         }
     }
     Ok(())
+}
+
+/// `d.killed` less the `.debug_aranges` rows the update re-placed where
+/// they were (P-3c, by name). Why the delta lists them: `delta::layout`
+/// places no `Fate::Debug` change (the update's debug step does), so every
+/// debug change with a stored place leaves the delta as killed;
+/// `debug::place` moves the rows it places out of `killed`, but
+/// `.debug_aranges` (IN-54: rewritten whole, not `place`'s) gets its place
+/// from `mod.rs`'s `debug_placed`, which sets the stored place and leaves
+/// the row in `killed` (the lane's 18 "check yes, identity' no" hops). Such
+/// a row counts as not killed only when its successor (`old` = the row)
+/// is non-allocated `.debug_aranges` placed now at the row's stored place
+/// with its stored size; `identity_prime`'s loop over `changes` judges the
+/// same place and size again.
+fn killed_not_rewritten_aranges(
+    view: &StateView<'_>,
+    stored: &StoredLayout<'_>,
+    d: &LayoutDelta,
+    changes: &[SectionChange<'_>],
+) -> Result<Vec<mortar_core::SectionId>, String> {
+    use mortar_elf::consts::SHF_ALLOC;
+    let e = |x: IncrReason| x.report();
+    let mut out = Vec::new();
+    for &k in &d.killed {
+        let r = view.section(k).map_err(e)?;
+        let then = (r.place_chunk != NONE).then_some((r.place_chunk, r.place_offset));
+        let rewritten = r.sh_flags & SHF_ALLOC == 0
+            && view.string(r.name).map_err(e)? == b".debug_aranges"
+            && changes.iter().any(|c| {
+                c.old == Some(k)
+                    && c.key.name == b".debug_aranges"
+                    && c.sh_flags & SHF_ALLOC == 0
+                    && c.size == r.size
+                    && matches!(
+                        d.place_of(stored, c.id),
+                        Ok(PlaceNow::Here(p)) if p.get().map(|(ch, off)| (ch.0, off)) == then
+                    )
+            });
+        if !rewritten || then.is_none() {
+            out.push(k);
+        }
+    }
+    Ok(out)
 }
 
 /// **R-A1, the identity check (BINDING)**: the canonical form of a front's
@@ -934,6 +1042,101 @@ mod tests {
         assert!(touched_chunks_keep_their_holes(&stored, &d).is_err());
         d.placement.holes = Vec::new().into_boxed_slice();
         assert!(touched_chunks_keep_their_holes(&stored, &d).is_err());
+    }
+
+    /// P-3c, the lane's 18 "check yes, identity' no" hops: a changed
+    /// file's `.debug_aranges` row (file 5, size 80, place 30+80) that the
+    /// delta lists killed and `debug_placed` re-placed at its stored place
+    /// is not killed; another name, place or size still is.
+    #[test]
+    fn identity_prime_aranges_re_placed_where_they_were() {
+        use mortar_core::identity::{Anchor, SectionKey};
+        use mortar_core::layout::Place;
+        use mortar_core::{ChunkId, Column, SectionId};
+        use mortar_incr::format::SectionRow;
+        let mut m = MemoryState::default();
+        for n in [&b".debug_aranges"[..], b".debug_info"] {
+            let off = u32::try_from(m.strings.len()).unwrap();
+            m.strings.extend_from_slice(n);
+            let name = Str { off, len: u32::try_from(n.len()).unwrap() };
+            m.sections.push(SectionRow {
+                file: 5,
+                name,
+                sh_type: 1,
+                size: 80,
+                place_chunk: 30,
+                place_offset: 80,
+                ..SectionRow::default()
+            });
+        }
+        let view = m.view();
+        let rows = mortar_incr::state5::LayoutOf { view: &view };
+        let stored = StoredLayout::new(&rows);
+        let change = |old: u32, name: &'static [u8], size: u64| SectionChange {
+            id: SectionId(2),
+            file: FileId(5),
+            index: 9,
+            key: SectionKey { anchor: Anchor::None, name },
+            ordinal: 0,
+            old: Some(SectionId(old)),
+            sh_type: 1,
+            sh_flags: 0,
+            size,
+            align: 1,
+            live: true,
+            kept: true,
+        };
+        let mut d = LayoutDelta {
+            files: vec![FileId(5)],
+            killed: vec![SectionId(0)],
+            ..LayoutDelta::default()
+        };
+        d.placement.place = Column::filled(3, Place::NONE);
+        d.placement.place[SectionId(2)] = Place::at(ChunkId(30), 80);
+        let ok = [change(0, b".debug_aranges", 80)];
+        assert_eq!(killed_not_rewritten_aranges(&view, &stored, &d, &ok), Ok(vec![]));
+        // Placed elsewhere, another size, no successor: killed.
+        let killed = Ok(vec![SectionId(0)]);
+        d.placement.place[SectionId(2)] = Place::at(ChunkId(30), 88);
+        assert_eq!(killed_not_rewritten_aranges(&view, &stored, &d, &ok), killed);
+        d.placement.place[SectionId(2)] = Place::at(ChunkId(30), 80);
+        let other = [change(0, b".debug_aranges", 48)];
+        assert_eq!(killed_not_rewritten_aranges(&view, &stored, &d, &other), killed);
+        assert_eq!(killed_not_rewritten_aranges(&view, &stored, &d, &[]), killed);
+        // Another debug section re-placed by hand: still killed (by name).
+        d.killed = vec![SectionId(1)];
+        let info = [change(1, b".debug_info", 80)];
+        assert_eq!(killed_not_rewritten_aranges(&view, &stored, &d, &info), Ok(vec![SectionId(1)]));
+    }
+
+    /// M-6 (P-3c): GNU's `libm.a` (a `GROUP` script), an ELF file and an
+    /// archive carry no directive; a script with `ENTRY`/`EXTERN`/`INCLUDE`,
+    /// one that does not parse, or another kind of file is refused; a thin
+    /// member's path is its archive's directory and its name.
+    #[test]
+    fn option_names_reads_an_input_that_gave_no_file() {
+        assert_eq!(member_path(b"lib.a", b"d1m.o"), b"d1m.o");
+        assert_eq!(member_path(b"/x/y/lib.a", b"d1m.o"), b"/x/y/d1m.o");
+        assert_eq!(member_path(b"/x/y/lib.a", b"/z/m.o"), b"/z/m.o");
+        let dir = std::env::temp_dir().join(format!("mortar-wp267p3c-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let cases: [(&str, &[u8], bool); 7] = [
+            ("libm.a", b"/* GNU ld script */\nOUTPUT_FORMAT(elf64-x86-64)\nGROUP ( /l/libm-2.41.a /l/libmvec.a )\n", true),
+            ("elf.o", b"\x7fELF\x02\x01\x01\0\0\0", true),
+            ("ar.a", b"!<arch>\nrest", true),
+            ("entry.ld", b"ENTRY(main)\nINPUT(a.o)\n", false),
+            ("extern.ld", b"EXTERN(f g)\n", false),
+            ("bad.ld", b"GROUP ( a.o\n", false),
+            ("text.txt", b"hello", false),
+        ];
+        for (name, bytes, ok) in cases {
+            let p = dir.join(name);
+            std::fs::write(&p, bytes).unwrap();
+            let got = no_directive(p.as_os_str().as_encoded_bytes());
+            assert_eq!(got.is_ok(), ok, "{name}: {got:?}");
+        }
+        assert!(no_directive(dir.join("absent").as_os_str().as_encoded_bytes()).is_err());
+        std::fs::remove_dir_all(&dir).unwrap();
     }
 
     /// `link_arch_of` is the front's selection: every target the update
