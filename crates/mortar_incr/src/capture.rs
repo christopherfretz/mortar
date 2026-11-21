@@ -2034,19 +2034,19 @@ fn merge_def_rows(
                 continue;
             };
             // `refs::named_symbol`
-            let piece = if v > size {
-                None
-            } else if v == size {
-                split.merge_pieces(s).filter(|p| p.len > 0).map(|span| {
-                    let last = (span.start + span.len - 1) as usize;
-                    let start = u64::from(split.piece_off[last]);
-                    (split.piece_frag[last], v - start, span.len - 1)
-                })
-            } else {
-                u32::try_from(v)
+            let piece = match v.cmp(&size) {
+                std::cmp::Ordering::Greater => None,
+                std::cmp::Ordering::Equal => {
+                    split.merge_pieces(s).filter(|p| p.len > 0).map(|span| {
+                        let last = (span.start + span.len - 1) as usize;
+                        let start = u64::from(split.piece_off[last]);
+                        (split.piece_frag[last], v - start, span.len - 1)
+                    })
+                }
+                std::cmp::Ordering::Less => u32::try_from(v)
                     .ok()
                     .and_then(|v32| split.merge_piece_at(s, v32))
-                    .map(|p| (split.piece_frag[p.piece as usize], u64::from(p.within), p.ordinal))
+                    .map(|p| (split.piece_frag[p.piece as usize], u64::from(p.within), p.ordinal)),
             };
             let Some((frag, within, ordinal)) = piece else {
                 skipped += 1;

@@ -947,6 +947,7 @@ fn decoded(line: &update::Line, out: &str) -> mortar_incr::update::testing::Memo
 // full link's state, set to VERSION 12, is refused `state-version` by
 // the next update
 #[test]
+#[allow(clippy::many_single_char_names)]
 fn the_chunk_units_are_the_derived_index() {
     use mortar_incr::update::rows::unit_kind;
     let mut ran = 0;
@@ -1125,7 +1126,11 @@ const MD2: &str = "__asm__(\".section .rodata.cst4,\\\"aM\\\",%progbits,4\\n\\t.
 // `named_piece` (`refs::named_symbol` over the link's own split), its
 // hash the `FRAGS` key of the piece's bytes, a live piece's key a
 // `FRAGS` row of the same output section and class
+/// (file, section, value, ordinal, within, the piece's bytes)
+type Want = (&'static str, &'static str, u64, u32, u32, Vec<u8>);
+
 #[test]
+#[allow(clippy::many_single_char_names)]
 fn merge_defs_are_the_full_links_pieces() {
     let mut ran = 0;
     for line in lines(&[("md1", "c", MD1), ("md2", "c", MD2)]) {
@@ -1138,7 +1143,7 @@ fn merge_defs_are_the_full_links_pieces() {
         let f = whole(&line, &args, &store);
         // (file, section, value, ordinal, within, the piece's bytes)
         let le = |v: u32| v.to_le_bytes().to_vec();
-        let want: [(&str, &str, u64, u32, u32, Vec<u8>); 5] = [
+        let want: [Want; 5] = [
             ("md1.o", ".rodata.str1.1", 11, 1, 0, b"p275 hello\0".to_vec()),
             ("md1.o", ".rodata.str1.1", 27, 2, 5, b"p275 middle\0".to_vec()),
             ("md1.o", ".rodata.cst4", 4, 1, 0, le(0x2752)),

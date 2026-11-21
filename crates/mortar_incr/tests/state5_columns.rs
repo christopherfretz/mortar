@@ -1031,6 +1031,7 @@ fn unit_at(m: &MemoryState, chunk: u32, k: usize) -> ChunkUnitRow {
 // renumbered `k << 32`, the order kept); a VERSION 12 state is refused
 // `state-version`
 #[test]
+#[allow(clippy::many_single_char_names)]
 fn chunk_units_and_merge_defs_survive_the_patch_and_the_compaction() {
     let m = every_reference();
     let bytes = write::encode(&compact::normalize(&m).expect("n")).expect("encode");
@@ -1063,7 +1064,7 @@ fn chunk_units_and_merge_defs_survive_the_patch_and_the_compaction() {
     let f0 = unit_at(&base, 1, 1).file;
     let mid = ChunkUnitRow {
         chunk: 1,
-        seq: (a.seq + b.seq) / 2,
+        seq: a.seq.midpoint(b.seq),
         file: f0,
         local: 0,
         unit: unit_kind::SECTION,
@@ -1140,6 +1141,7 @@ fn chunk_units_and_merge_defs_survive_the_patch_and_the_compaction() {
 // differ only in `CHUNK_UNITS.seq` have one canon (`incr_state canon` and
 // `compare`); two that differ in a chunk's order do not
 #[test]
+#[allow(clippy::many_single_char_names)]
 fn incr_state_canon_is_seq_blind_and_a_reorder_differs() {
     let m = every_reference();
     let mut other = m.clone();
