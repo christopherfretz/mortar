@@ -281,6 +281,19 @@ fn compare(label: &str, driver: Driver, flags: &[&str], program: &[Source]) {
         }
         mine.push(name);
     }
+    // lld's Cortex-A53 843419 patches (`__CortexA53843419_<addr>`, each
+    // with its own `$x`): where lld needs one depends on lld's own layout
+    // (an ADRP at page offset 0xff8/0xffc), and libc6-dev 2.41-12+deb13u5
+    // (Debian 13, 2026-11-21) moved lld's `.text` onto such a site. mortar's
+    // sites in its own layout are judged by the verifier (census, linktest:
+    // "erratum 843419"), not by a name list.
+    let patches = theirs.iter().filter(|n| n.starts_with("__CortexA53843419_")).count();
+    theirs.retain(|n| !n.starts_with("__CortexA53843419_"));
+    for _ in 0..patches {
+        if let Some(i) = theirs.iter().position(|n| *n == "$x") {
+            theirs.swap_remove(i);
+        }
+    }
     theirs.sort_unstable();
     mine.sort_unstable();
     assert!(mine == theirs, "mortar − lld: {}\n{ctx}", multiset_diff(&mine, &theirs));
