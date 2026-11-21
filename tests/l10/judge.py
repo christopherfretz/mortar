@@ -845,7 +845,8 @@ def _debug_strs(x, hop):
             elf = fh.read()
         if elf[4:5] != b'\x02':
             return []
-        return duty.debug_strs_check(state, elf)
+        dead = duty.map_dead_strings(x.path(x.map)) if x.map and os.path.exists(x.path(x.map)) else {}
+        return duty.debug_strs_check(state, elf, dead)
     except (OSError, ValueError) as e:
         return ['cannot judge: %s' % e]
 

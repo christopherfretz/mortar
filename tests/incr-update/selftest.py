@@ -309,6 +309,13 @@ def units(log=print):
     case('debug-strs-right', duty.debug_strs_check(debug_state(good), elf), [])
     case('debug-strs-row-wrong-bytes', duty.debug_strs_check(debug_state(good[:2] + [(0, good[2][1], 4)]), elf),
          lambda r: any('does not name its string' in x for x in r) and any('at 9 is not found' in x for x in r))
+    # a string in the map's dead range (an update keeps it as written: L-147,
+    # G-5) need not be found; outside one it must
+    case('debug-strs-dead-string-excused', duty.debug_strs_check(debug_state(good[1:]), elf,
+                                                                 {b'.debug_str': [(0, 4)]}), [])
+    case('debug-strs-dead-elsewhere-not-excused', duty.debug_strs_check(debug_state(good[1:]), elf,
+                                                                        {b'.debug_line_str': [(0, 4)]}),
+         lambda r: any('at 0 is not found' in x for x in r))
     case('debug-strs-string-missing', duty.debug_strs_check(debug_state(good[1:]), elf),
          ['.debug_str: the string at 0 is not found'])
     case('debug-strs-past-section', duty.debug_strs_check(debug_state(good + [(0, 7, 99)]), elf),

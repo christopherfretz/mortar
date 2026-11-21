@@ -333,12 +333,28 @@ def elf_sections(elf):
     return out
 
 
-def debug_strs_check(state, elf):
+def map_dead_strings(map_path):
+    """{section name (bytes): [(offset, length)]} of a mortar map's
+    `dead <section> <hex offset> <hex length> strings` lines."""
+    out = {}
+    with open(map_path) as fh:
+        for line in fh:
+            w = line.split()
+            if len(w) == 5 and w[0] == 'dead' and w[4] == 'strings':
+                out.setdefault(w[1].encode(), []).append((int(w[2], 16), int(w[3], 16)))
+    return out
+
+
+def debug_strs_check(state, elf, dead=None):
     """WP-228 R-2.3 over a state's DEBUG_STRS and its output (both bytes):
     [problems] (empty: the table is right for this output). Every row
     names its string's bytes (the bytes at its offset, to a NUL inside the
     section, hash to its key); every string of each section is found (its
-    key's row names those bytes). A compressed section is not judged."""
+    key's row names those bytes). A compressed section is not judged.
+    `dead` ({section name: [(offset, length)]}, the map's `dead <sec> <off>
+    <len> strings` lines, plumb.md §6.8): an update keeps a dead string as
+    written (L-147, G-5) and no row names it; a string starting inside a
+    dead range need not be found."""
     rows = state_debug_strs(state)
     if rows is None:
         return ['no DEBUG_STRS table']
@@ -373,7 +389,8 @@ def debug_strs_check(state, elf):
             if s is None:
                 problems.append('%s: no NUL after %d' % (name.decode(), at))
                 break
-            if not any(string_at(o) == s for o in by_key.get((out, name_hash(s)), ())):
+            in_dead = any(o <= at < o + n for o, n in (dead or {}).get(name, ()))
+            if not in_dead and not any(string_at(o) == s for o in by_key.get((out, name_hash(s)), ())):
                 problems.append('%s: the string at %d is not found' % (name.decode(), at))
             at += len(s) + 1
     return problems

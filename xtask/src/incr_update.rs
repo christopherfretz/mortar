@@ -100,7 +100,15 @@ pub(crate) fn hooked_binary() -> Result<PathBuf, String> {
 fn incr_state_binary() -> Result<PathBuf, String> {
     let cargo = std::env::var_os("CARGO").unwrap_or_else(|| "cargo".into());
     let mut command = Command::new(cargo);
-    command.args(["build", "--release", "--quiet", "--package", "mortar_incr", "--example", "incr_state"]);
+    command.args([
+        "build",
+        "--release",
+        "--quiet",
+        "--package",
+        "mortar_incr",
+        "--example",
+        "incr_state",
+    ]);
     match process::run_step(&mut command, true) {
         Ok((status, _)) if status.success() => {}
         Ok((status, _)) => return Err(format!("cannot build incr_state: cargo build: {status}")),
