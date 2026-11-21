@@ -1532,13 +1532,18 @@ fn front_two(
         }
         // WP-267 P-2 (findings only): `materialize` and the judges over the
         // hook's tables, against front 1's answers.
+        // The lap (`Instant` reads, findings only) is the P-2 cost line's.
         if let Some(h) = &p2 {
             if let Some(lu1) = lu.borrow().as_ref() {
-                changed::record(&hook_materialize_equals_front_ones(
-                    view, &stored, cx, h, lu1, &df,
-                ));
+                let t = std::time::Instant::now();
+                let line = hook_materialize_equals_front_ones(view, &stored, cx, h, lu1, &df);
+                let ms = t.elapsed().as_secs_f64() * 1e3;
+                changed::record(&format!("{line} [hook materialize {ms:.2} ms]"));
             }
-            changed::record(&hook_judges_agree(view, &stored, cx, h, out));
+            let t = std::time::Instant::now();
+            let line = hook_judges_agree(view, &stored, cx, h, out);
+            let ms = t.elapsed().as_secs_f64() * 1e3;
+            changed::record(&format!("{line} [hook judges {ms:.2} ms]"));
         }
         lu.borrow_mut().take().ok_or_else(|| {
             let s = "M2b-3 Part 3: the replay hook called twice".to_owned();
