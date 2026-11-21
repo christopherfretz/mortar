@@ -1060,3 +1060,41 @@ fn a_patch_island_under_a_clip() {
         }
     });
 }
+
+// spec: WP-255e4 item 2 (rulings "After 255g2's final hand-back" item 5):
+// `MemoryLayout` and the test-only `LayoutRows` wrappers do not forward
+// `chunk_members` (no real path reads them: `MemoryLayout` is built only
+// by tests, `Bare` is a test's). Where the count would be read, its
+// absence is refused BY NAME, never taken as 0: `chunk_members` answers
+// `update-not-implemented (layout)`, `delta::layout` then carries no count
+// (`LayoutDelta::members` empty), and the clip plan's check refuses
+// `no independent member count` before any row.
+#[test]
+fn a_layout_without_member_counts_is_refused_by_name_where_the_count_is_read() {
+    use mortar_core::incr::{IncrReason, LayoutDelta, LayoutRows, MemoryLayout, Unimplemented};
+    let e = MemoryLayout::default().chunk_members().expect_err("not given");
+    assert!(
+        matches!(e, IncrReason::UpdateNotImplemented(Some(Unimplemented::Layout))),
+        "MemoryLayout's chunk_members: {e:?}"
+    );
+    let d = LayoutDelta::default();
+    for arch in ARCHES {
+        let Some(s) = fixture(arch, "clip-no-count", 0) else { continue };
+        with_link(&s, |l| {
+            let (id, r, _) = chunk(l, b".text");
+            assert!(d.members_of(id).is_none(), "{arch:?}: an empty delta gives no count");
+            let all = mortar_image::link::clip_members(l).expect("the member index");
+            let refused = mortar_image::clip_plan::check_member_counts(
+                &all,
+                &l.layout.placement.chunks,
+                std::slice::from_ref(&r),
+                &|c| d.members_of(c),
+            );
+            assert!(
+                matches!(&refused, Err(ClipError::Internal(e))
+                    if format!("{e:?}").contains("no independent member count")),
+                "{arch:?}: {refused:?}"
+            );
+        });
+    }
+}

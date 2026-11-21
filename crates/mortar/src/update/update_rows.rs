@@ -9,7 +9,7 @@
 //! give is `None` (or the trait's "absent") with the first reason recorded,
 //! as [`StoredRows`] does, never a default.
 
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
 use std::sync::{Mutex, PoisonError};
 
 use mortar_arch::{DemandFlags, SlotKind, SymFacts, SymValue, TlsBlock};
@@ -22,6 +22,7 @@ use mortar_core::{
 use mortar_diag::Diagnostic;
 use mortar_elf::SymbolIndex;
 use mortar_elf::consts::STB_WEAK;
+use mortar_image::clip_plan::{Member, Members, is_clip_member};
 use mortar_image::rows::{EntryDef, OutSection, RowDef, Rows, Valued};
 use mortar_incr::format::{SectionRow, def_kind, kind as table, section_facts};
 use mortar_incr::update::rows::ResolvedRow;
@@ -401,6 +402,148 @@ impl UpdateRows<'_, '_> {
     }
 }
 
+impl UpdateRows<'_, '_> {
+    /// WP-255e4 item 1 (c2b-1, rulings "After 255e2" item 3): the member
+    /// index of the update's output read from the STATE, for the chunks of
+    /// `want` (sorted): every section the update's placement puts in one of
+    /// them that THE member rule ([`mortar_image::clip_plan::is_clip_member`])
+    /// takes, by offset, with its `SECTIONS.align`. A file the delta places
+    /// (`LayoutDelta::files`): its sections' P-1 is "the delta placed it"
+    /// (as [`Rows::section_place`] here), its changed rows
+    /// (`ChangedFile::sections`) in place of the stored ones; any other
+    /// file: its stored `SECTIONS.bits` (KEPT, not COLLECTED) with the
+    /// delta's `killed` and `revived`. `folded` is `false` by name: IN-12
+    /// refuses `--icf` in incremental mode, so a state holds no fold.
+    /// O(sections): every file's `SECTIONS` range is read (the shadow's
+    /// cost; the replacement needs a per-chunk read, the record says).
+    /// A merged chunk of `want` is refused: `FRAGS` holds no fragment's
+    /// section, size or alignment.
+    pub(crate) fn members(
+        &self,
+        view: &mortar_incr::update::view::StateView<'_>,
+        want: &[ChunkId],
+    ) -> Result<Members, String> {
+        use mortar_core::layout::ChunkKind;
+        for &c in want {
+            if let Some(ch) = self.chunks().get(c)
+                && matches!(ch.kind, ChunkKind::Merged(_))
+            {
+                return Err(format!(
+                    "merged chunk {}: FRAGS gives no fragment's merge section, size or \
+                     alignment (the member index of a merged chunk)",
+                    c.0
+                ));
+            }
+        }
+        *self.failed.lock().unwrap_or_else(PoisonError::into_inner) = None;
+        let d = &self.data.d;
+        let mut by: BTreeMap<ChunkId, Vec<(u64, Member)>> = BTreeMap::new();
+        let mut consider = |s: SectionId, row: &SectionRow, update: bool| -> Result<(), String> {
+            let revived = d.revived.binary_search(&s).is_ok();
+            let Some((c, off)) = self.place(s) else {
+                if revived && !update {
+                    return Err(format!(
+                        "section {} (an unchanged file's) is revived and place_of gives it no \
+                         place",
+                        s.0
+                    ));
+                }
+                return Ok(());
+            };
+            if want.binary_search(&c).is_err() {
+                return Ok(());
+            }
+            let facts = section_facts(row, self.outsecs)
+                .map_err(|w| format!("SECTIONS row {}: {w}", s.0))?;
+            let (kept, live) = if update {
+                (true, true)
+            } else {
+                let killed = d.killed.binary_search(&s).is_ok();
+                (facts.kept || revived, (!facts.collected || revived) && !killed)
+            };
+            let Some(chunk) = self.chunks().get(c) else {
+                return Err(format!("section {}: a place in no chunk {}", s.0, c.0));
+            };
+            if is_clip_member(
+                kept,
+                facts.kind.is_placed(),
+                live,
+                false,
+                row.sh_type,
+                row.size,
+                chunk,
+            ) {
+                by.entry(c)
+                    .or_default()
+                    .push((off, Member { section: s, align: row.align.max(1) }));
+            }
+            Ok(())
+        };
+        let files = u32::try_from(view.count(table::FILES)).unwrap_or(u32::MAX);
+        for file in (0..files).map(FileId) {
+            if let Some((_, first, rows)) = self.data.files.iter().find(|x| x.0 == file) {
+                for (k, row) in rows.iter().enumerate() {
+                    consider(SectionId(first.0 + u32::try_from(k).unwrap_or(u32::MAX)), row, true)?;
+                }
+                continue;
+            }
+            let ids = self.stored.sections_of(file).map_err(|e| e.report())?;
+            let rows = view.sections_of(file).map_err(|e| e.report())?;
+            if ids.len() != rows.len() {
+                return Err(format!(
+                    "file {}: {} stored sections, {} SECTIONS rows",
+                    file.0,
+                    ids.len(),
+                    rows.len()
+                ));
+            }
+            let update = d.files.binary_search(&file).is_ok();
+            for (sec, row) in ids.iter().zip(&rows) {
+                consider(sec.id, row, update)?;
+            }
+        }
+        if let Some(e) = self.failed.lock().unwrap_or_else(PoisonError::into_inner).take() {
+            return Err(e.report());
+        }
+        let by_chunk = by
+            .into_iter()
+            .map(|(c, mut v)| {
+                v.sort_by_key(|m| m.0);
+                (c, v.into_iter().map(|m| m.1).collect())
+            })
+            .collect();
+        Ok(Members { by_chunk, merged: BTreeMap::new() })
+    }
+
+    /// Section `s`'s `(file, index in its file)` (D3-1): a changed file's
+    /// new row by its position, any other by its stored row.
+    pub(crate) fn file_index(&self, s: SectionId) -> Option<(FileId, u32)> {
+        if u64::from(s.0) >= self.sections {
+            return self.data.files.iter().find_map(|(file, first, rows)| {
+                let k = s.0.checked_sub(first.0)?;
+                ((k as usize) < rows.len()).then_some((*file, k))
+            });
+        }
+        let row = self.stored.section(s).ok()??;
+        Some((row.file, row.index))
+    }
+
+    /// The section of `file` at `index` in the update's ids (D3-1): a
+    /// changed file's new row, any other file's stored row.
+    pub(crate) fn state_id(&self, file: FileId, index: u32) -> Option<SectionId> {
+        if let Some((_, first, rows)) = self.data.files.iter().find(|x| x.0 == file) {
+            return ((index as usize) < rows.len()).then_some(SectionId(first.0 + index));
+        }
+        let ids = self.stored.sections_of(file).ok()?;
+        ids.iter().find(|x| x.index == index).map(|x| x.id)
+    }
+
+    /// The update's state-id delta.
+    pub(crate) fn delta(&self) -> &LayoutDelta {
+        &self.data.d
+    }
+}
+
 /// Step 2's comparison: `rows::sym` over `rows` against `front` (front 2's
 /// `FrontRows`) for every global of front 2, keys matched by name (a
 /// `SYMBOLS` row is not a `SymbolId`): `rows: N equal, M refused (by
@@ -426,8 +569,7 @@ pub(crate) fn compare_values<F: Rows>(
         by_name.entry(n.clone()).and_modify(|v| *v = None).or_insert(Some(id));
     }
     let (mut equal, mut unmatched) = (0u64, 0u64);
-    let mut refused: std::collections::BTreeMap<String, (u64, String)> =
-        std::collections::BTreeMap::new();
+    let mut refused: BTreeMap<String, (u64, String)> = BTreeMap::new();
     let mut affected = 0u64;
     let mut differ: Vec<String> = Vec::new();
     for i in 0..globals {

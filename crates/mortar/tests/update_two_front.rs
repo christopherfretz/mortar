@@ -169,10 +169,19 @@ fn a_grown_function_is_taken_through_front_two_or_refused_by_name() {
                 // WP-255e2 S3: `rows::sym` over the update's STATE rows
                 // (`UpdateRows`) equals front 2's for every global matched
                 // by name; a key it cannot value is refused by name.
-                let s3 = shadow.rsplit(" | ").next().unwrap_or("");
+                let s3 = shadow.split(" | ").nth(2).unwrap_or("");
                 assert!(
                     s3.starts_with("S3: update rows: ") && s3.ends_with(" 0 differ"),
                     "{label}: hop {hop}: S3: {s3}"
+                );
+                // WP-255e4: S3's BYTES (`for_clips` over `UpdateRows` with
+                // the member index read from the state, checked by
+                // `CHUNKS.members`) equal C''s, or are refused by name;
+                // never a finding.
+                let s3b = shadow.split(" | ").nth(3).unwrap_or("");
+                assert!(
+                    s3b.starts_with("S3 bytes: equal") || s3b.starts_with("S3 bytes: refused"),
+                    "{label}: hop {hop}: S3 bytes: {s3b}"
                 );
                 taken.push(format!("{label} hop {hop}"));
             } else if fell_back {
