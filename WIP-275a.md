@@ -29,10 +29,7 @@ Brief: `/Volumes/AgentWork/mortar-helper/briefs/p-275a.md`. Branch
    PROPOSED 72c81598 holds it out (judge.py DUTY_BY_UNITS), for a ruling.
    Cost measured (record section "P-275a" f); record written.
 
-## Next
-6. The hand-back gate set on the final tree (scratch `w275a/gate.sh`),
-   then the gate table into the record (e, and a gate line) and hand back.
+6. Gates on eec53f5b: all green (record, section P-275a e). Handed back.
 
-## Resume
-Gates: `/Volumes/AgentWork/mortar-helper/.build/target-wp-125/w275a/gate.sh`
-(summary in `w275a/gate/summary.txt`).
+## Next
+Nothing; the supervisor's ruling on a.1 (keep or drop 72c81598).
