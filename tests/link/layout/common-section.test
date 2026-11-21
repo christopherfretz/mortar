@@ -1,0 +1,342 @@
+# An input section named exactly `COMMON` goes to `.bss` (layout.md
+# L-44a, proposed in spec/landed/layout/WP-203.md, measured against GNU
+# ld 2.44 and lld 19/22): lld's `-r` output of commons (plumb.md A120;
+# its symbols stay commons, the section's bytes are referenced by
+# nothing) and the same from assembly, `NOBITS` or `PROGBITS` (which
+# makes `.bss` `PROGBITS`, as GNU ld and lld do; a read-only one too,
+# `.bss` stays writable). No prefix rule: `COMMON.x` and `COMMON.y` stay
+# orphans in all three. `--gc-sections` removes an unreferenced one and
+# what it references: not a root, in all three. The order inside `.bss`
+# is input order for mortar and lld (mortar's commons after the inputs,
+# L-88); GNU ld places `*(COMMON)` after the `.bss` inputs and sorts it
+# as a statement of its own under `--sort-section` (L-53a's known
+# difference: with `name` the orders agree, with `alignment` they
+# differ). A TLS `COMMON` is refused by name beside `.bss`'s inputs
+# (L-47), as lld and GNU ld's static link refuse it; a non-allocated one
+# too (L-47), which GNU ld and lld merge into `.bss`. The x86-64 large
+# variants are layout/common-section-x64.test; the `-r` input from lld
+# alone is relocatable/common-orphan-wp203.test. mold makes `COMMON` an
+# orphan (record WP-186), and its `__start_COMMON` is a verifier finding
+# Y5: not run.
+#
+# The verifier (L3) does not place a reference's input section `COMMON`
+# from its map: a relocation against a symbol defined in one is a finding
+# R5 ("refers to section 'COMMON', which is not in the output") on GNU
+# ld's, lld's and mold's outputs (reported with WP-203). So the links
+# every linker runs reference no symbol of a `COMMON` section (the
+# placement is checked with nm and readelf), and the programs that use
+# them are mortar's alone (`link(mortar)`), judged by L3 on mortar's map.
+#@ spec: layout.md "L-44a"
+#@ spec: layout.md "L-53a"
+#@ arch: aarch64 x86_64
+#@ skip(mold): mold makes COMMON an orphan output section (record WP-186); L3 finds its __start_COMMON (Y5)
+
+cc -O1 -fcommon c1.c -o c1.o
+cc -O1 -fcommon main.c -o main.o
+cc -O1 -fcommon main0.c -o main0.o
+cc -O1 mprog.c -o mprog.o
+cc -O1 mdotx.c -o mdotx.o
+cc -O1 mgc.c -o mgc.o
+cc -O1 mtls.c -o mtls.o
+as v1.s -o v1.o
+as v2.s -o v2.o
+as vprog.s -o vprog.o
+as vro.s -o vro.o
+as vdotx.s -o vdotx.o
+as vgc1.s -o vgc1.o
+as vgc2.s -o vgc2.o
+as vs1.s -o vs1.o
+as vs2.s -o vs2.o
+as vtls.s -o vtls.o
+as vnona.s -o vnona.o
+partial lld c1.o -o comp.lld.o
+check readelf -SW comp.lld.o
+  has: COMMON NOBITS
+
+# NOBITS: lld's `-r` output and assembly, static and PIE.
+link gcc -static main0.o comp.lld.o v1.o v2.o -o base
+run base
+  stdout: 5 1 2 1
+link gcc -pie main0.o comp.lld.o v1.o v2.o -o base-pie
+run base-pie
+  stdout: 5 1 2 1
+check(bfd,lld,mortar) readelf -SW base
+  not: COMMON
+  has: .bss NOBITS
+check(bfd,lld,mortar) readelf -SW base-pie
+  not: COMMON
+  has: .bss NOBITS
+check(bfd,lld,mortar) nm -n base
+  has: B b1$
+  has: B b2$
+  has: B cn$
+  has: B g_common$
+  has: B g_real$
+# mortar: input order, the commons last (L-88); GNU ld: `*(COMMON)` last.
+check(lld,mortar) nm -n base-pie
+  has: B b1$
+  then: B cn$
+  then: B b2$
+check(mortar) nm -n base-pie
+  has: B b2$
+  then: B g_real$
+check(bfd) nm -n base-pie
+  has: B b1$
+  then: B b2$
+  then: B g_real$
+  then: B cn$
+link(mortar) gcc -static main.o comp.lld.o v1.o v2.o -o base-use
+run(mortar) base-use
+  stdout: 5 4 1 2 1
+link(mortar) gcc -pie main.o comp.lld.o v1.o v2.o -o base-use-pie
+run(mortar) base-use-pie
+  stdout: 5 4 1 2 1
+check(mortar) readelf -SW base-use-pie
+  not: COMMON
+check(mortar) nm base-use-pie
+  has: B cn$
+
+# PROGBITS (`.bss` becomes PROGBITS) and a read-only one. GNU ld does
+# the same (measured, with its warning ``section `.bss' type changed to
+# PROGBITS``), but its `_edata` and `__bss_start` (the start of the
+# PROGBITS `.bss`) are a verifier finding Y5 there: not run for bfd, here
+# and in `nogc` below.
+link(lld,mortar) gcc -static mgc.o vprog.o -o prog
+run(lld,mortar) prog
+  stdout: gc
+link(lld,mortar) gcc -pie mgc.o vprog.o -o prog-pie
+run(lld,mortar) prog-pie
+  stdout: gc
+link(lld,mortar) gcc -static mgc.o vro.o -o ro
+run(lld,mortar) ro
+  stdout: gc
+check(lld,mortar) readelf -SW prog
+  not: COMMON
+  has: .bss PROGBITS * WA 
+check(lld,mortar) readelf -SW prog-pie
+  not: COMMON
+  has: .bss PROGBITS * WA 
+check(lld,mortar) readelf -SW ro
+  not: COMMON
+  has: .bss PROGBITS * WA 
+check(lld,mortar) nm prog
+  has: D cp$
+link(mortar) gcc -static mprog.o vprog.o -o prog-use
+run(mortar) prog-use
+  stdout: 7 0
+link(mortar) gcc -pie mprog.o vprog.o -o prog-use-pie
+run(mortar) prog-use-pie
+  stdout: 7 0
+link(mortar) gcc -static mprog.o vro.o -o ro-use
+run(mortar) ro-use
+  stdout: 11 0
+check(mortar) readelf -SW ro-use
+  not: COMMON
+  has: .bss PROGBITS * WA 
+
+# No prefix rule: `COMMON.x`, `COMMON.y` are orphans. GNU ld makes them
+# orphans too (measured); on AArch64 its `__bss_end__` before the orphan
+# `COMMON.x` is a verifier finding Y5: not run for bfd.
+link(lld,mortar) gcc -static mdotx.o vdotx.o -o dotx
+run(lld,mortar) dotx
+  stdout: 5 9
+link(lld,mortar) gcc -pie mdotx.o vdotx.o -o dotx-pie
+run(lld,mortar) dotx-pie
+  stdout: 5 9
+check(lld,mortar) readelf -SW dotx
+  has: COMMON.x NOBITS * WA 
+  has: COMMON.y PROGBITS * WA 
+check(lld,mortar) readelf -SW dotx-pie
+  has: COMMON.x NOBITS * WA 
+  has: COMMON.y PROGBITS * WA 
+
+# --gc-sections: not a root.
+link gcc -static mgc.o vgc1.o vgc2.o -Wl,--gc-sections -o gc
+run gc
+  stdout: gc
+check(bfd,lld,mortar) nm gc
+  not: gcn$
+  not: gcp$
+  not: keepme$
+link(lld,mortar) gcc -static mgc.o vgc1.o vgc2.o -o nogc
+run(lld,mortar) nogc
+  stdout: gc
+check(lld,mortar) nm nogc
+  has: gcn$
+  has: gcp$
+  has: T keepme$
+
+# The order, and --sort-section (L-53a).
+link gcc -static mgc.o vs1.o vs2.o -o sort
+run sort
+  stdout: gc
+check(lld,mortar) nm -n sort
+  has: B sa$
+  then: B sb$
+  then: B sc$
+  then: B sd$
+check(bfd) nm -n sort
+  has: B sb$
+  then: B sd$
+  then: B sa$
+  then: B sc$
+link gcc -static mgc.o vs1.o vs2.o -Wl,--sort-section=alignment -o sortal
+run sortal
+  stdout: gc
+check(mortar) nm -n sortal
+  has: B sb$
+  then: B sc$
+  then: B sa$
+  then: B sd$
+check(bfd) nm -n sortal
+  has: B sb$
+  then: B sd$
+  then: B sc$
+  then: B sa$
+link gcc -pie mgc.o vs1.o vs2.o -Wl,--sort-section=name -o sortnm
+run sortnm
+  stdout: gc
+check(bfd,mortar) nm -n sortnm
+  has: B sd$
+  then: B sb$
+  then: B sa$
+  then: B sc$
+
+# Refused by name: a TLS `COMMON` (lld and GNU ld's static link refuse
+# it too), a non-allocated one (GNU ld and lld merge it into `.bss`,
+# PROGBITS; GNU ld's `__bss_start` there is L3's Y5 above: lld only).
+link(bfd,lld,mortar) gcc -static mtls.o vtls.o -o tls
+  exit: fail
+  diag(mortar): section .bss: non-TLS and TLS inputs cannot be combined
+link(mortar) gcc -static mgc.o vnona.o -o nona
+  exit: fail
+  diag(mortar): section .bss: allocated and non-allocated inputs cannot be combined
+link(lld) gcc -static mgc.o vnona.o -o nona-ref
+run(lld) nona-ref
+  stdout: gc
+check(lld) readelf -SW nona-ref
+  not: COMMON
+  has: .bss PROGBITS
+
+#--- c1.c
+int g_common;
+int g_other;
+void set(void) { g_common = 2; g_other = 3; }
+#--- main.c
+#include <stdio.h>
+extern int g_common, g_other;
+void set(void);
+extern long cn[2];
+extern long b1, b2;
+int g_real;
+int main(void) {
+  set(); cn[1] = 4; b1 = 1; b2 = 2; g_real = 1;
+  printf("%d %ld %ld %ld %d\n", g_common + g_other, cn[1], b1, b2, g_real);
+  return 0;
+}
+#--- v1.s
+	.section COMMON,"aw",%nobits
+	.p2align 3
+	.globl cn
+cn:	.zero 16
+	.section .bss,"aw",%nobits
+	.p2align 2
+	.globl b1
+b1:	.zero 8
+#--- v2.s
+	.section .bss.b2,"aw",%nobits
+	.p2align 2
+	.globl b2
+b2:	.zero 8
+#--- main0.c
+#include <stdio.h>
+extern int g_common, g_other;
+void set(void);
+extern long b1, b2;
+int g_real;
+int main(void) {
+  set(); b1 = 1; b2 = 2; g_real = 1;
+  printf("%d %ld %ld %d\n", g_common + g_other, b1, b2, g_real);
+  return 0;
+}
+#--- mprog.c
+#include <stdio.h>
+extern long cp, bz;
+int main(void) { printf("%ld %ld\n", cp, bz); return 0; }
+#--- vprog.s
+	.section COMMON,"aw",%progbits
+	.p2align 3
+	.globl cp
+cp:	.quad 7
+	.section .bss,"aw",%nobits
+	.p2align 3
+	.globl bz
+bz:	.zero 8
+#--- vro.s
+	.section COMMON,"a",%progbits
+	.p2align 3
+	.globl cp
+cp:	.quad 11
+	.section .bss,"aw",%nobits
+	.p2align 3
+	.globl bz
+bz:	.zero 8
+#--- mdotx.c
+#include <stdio.h>
+extern long cx[2], cy;
+int main(void) { cx[1] = 5; printf("%ld %ld\n", cx[1], cy); return 0; }
+#--- vdotx.s
+	.section COMMON.x,"aw",%nobits
+	.p2align 3
+	.globl cx
+cx:	.zero 16
+	.section COMMON.y,"aw",%progbits
+	.p2align 3
+	.globl cy
+cy:	.quad 9
+#--- mgc.c
+#include <stdio.h>
+int main(void) { printf("gc\n"); return 0; }
+#--- vgc1.s
+	.section COMMON,"aw",%nobits
+	.p2align 3
+	.globl gcn
+gcn:	.zero 4096
+#--- vgc2.s
+	.section .text.keepme,"ax",%progbits
+	.globl keepme
+keepme:	.byte 0
+	.section COMMON,"aw",%progbits
+	.p2align 3
+	.globl gcp
+gcp:	.quad keepme
+#--- vs1.s
+	.section COMMON,"aw",%nobits
+	.p2align 2
+	.globl sa
+sa:	.zero 1
+	.section .bss.zz,"aw",%nobits
+	.p2align 5
+	.globl sb
+sb:	.zero 1
+#--- vs2.s
+	.section COMMON,"aw",%nobits
+	.p2align 5
+	.globl sc
+sc:	.zero 1
+	.section .bss.aa,"aw",%nobits
+	.p2align 2
+	.globl sd
+sd:	.zero 1
+#--- mtls.c
+#include <stdio.h>
+extern __thread long ctl;
+int main(void) { ctl = 3; printf("%ld\n", ctl); return 0; }
+#--- vtls.s
+	.section COMMON,"awT",%nobits
+	.p2align 3
+	.globl ctl
+ctl:	.zero 8
+#--- vnona.s
+	.section COMMON,"",%progbits
+	.quad 12

@@ -1,11 +1,11 @@
-# WP-203: input section COMMON is an orphan in mortar's final link. lld's
-# `-r` of a component with a common writes it as an input section named
-# `COMMON` (NOBITS, WA; plumb.md A120); GNU ld and lld place it in `.bss`
-# at the final link, mortar makes it an orphan output section `COMMON`
-# (P-P1 item 1: crates/mortar_plumb/tests/compose.rs expects that finding
-# by name). The xfail flips (a stale xfail fails) when WP-203 lands.
+# WP-203: lld's `-r` of a component with a common writes it as an input
+# section named `COMMON` (NOBITS, WA; plumb.md A120); GNU ld, lld and
+# mortar place it in `.bss` at the final link (layout.md L-44a, proposed
+# in spec/landed/layout/WP-203.md). Before WP-203 mortar made it an orphan
+# output section `COMMON` (P-P1 item 1). The variants are
+# layout/common-section.test.
 #@ spec: plumb.md "14.8"
-#@ xfail(mortar): WP-203: input section COMMON is an orphan in mortar's final link (an output section COMMON, not .bss)
+#@ spec: layout.md "L-44a"
 
 cc -O1 -fcommon c1.c -o c1.o
 cc -O1 main.c -o main.o
@@ -19,6 +19,10 @@ run via
 # mold orphans it too (record WP-186): not checked for mold.
 check(bfd,lld,mortar) readelf -SW via
   not: COMMON
+  has: .bss NOBITS
+check(bfd,lld,mortar) nm via
+  has: B g_common$
+  has: B g_other$
 
 #--- c1.c
 int g_common;
