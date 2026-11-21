@@ -133,10 +133,10 @@ fn debug_info_size(bytes: &[u8]) -> u64 {
 fn classify_input_reads_debug_info_on_disk() {
     let mut ran = 0;
     for arch in targets() {
-        let Some(p) = Prog::new(arch, "classify", &[], false) else { continue };
+        let Some(prog) = Prog::new(arch, "classify", &[], false) else { continue };
         ran += 1;
         let label = arch.name();
-        let whole = p.bytes("c.cc.o");
+        let whole = prog.bytes("c.cc.o");
         assert!(whole.len() as u64 > 64 << 10, "{label}: the object must exceed 64 KiB");
         assert!(debug_info_size(&whole) > 64 << 10, "{label}: .debug_info must exceed 64 KiB");
         let want = classify_object(&mortar_elf::Object::parse(&whole).expect("c.cc.o"));
@@ -147,22 +147,22 @@ fn classify_input_reads_debug_info_on_disk() {
         );
         // The archive: `c.cc.o` as a member of `libc278.a`, after main.
         let ar = arch.gnu("ar");
-        let mut c = Command::new(&ar);
-        c.arg("rcs").arg(p.dir.join("libc278.a")).arg(p.dir.join("c.cc.o"));
-        let o = run_with(&mut c, b"", Duration::from_mins(1));
-        assert!(o.success(), "{ar}: {}", o.stderr_text());
-        let plain = p.args.clone();
-        let member: Vec<String> = p
+        let mut cmd = Command::new(&ar);
+        cmd.arg("rcs").arg(prog.dir.join("libc278.a")).arg(prog.dir.join("c.cc.o"));
+        let out = run_with(&mut cmd, b"", Duration::from_mins(1));
+        assert!(out.success(), "{ar}: {}", out.stderr_text());
+        let plain = prog.args.clone();
+        let member: Vec<String> = prog
             .args
             .iter()
             .map(|a| if a.ends_with("c.cc.o") { "libc278.a".into() } else { a.clone() })
             .collect();
         for (case, args) in [("object", plain), ("member", member)] {
             let store = Store::new(StorePolicy::Staged);
-            let args = with_output(&args, &p.dir.join("o"));
-            let f = front_of(&args, &p.dir, &store, Pool::new(2))
+            let args = with_output(&args, &prog.dir.join("o"));
+            let front = front_of(&args, &prog.dir, &store, Pool::new(2))
                 .unwrap_or_else(|r| panic!("{label} {case}: the front: {r:?}"));
-            let file = f
+            let file = front
                 .inputs
                 .files
                 .iter()
@@ -170,10 +170,9 @@ fn classify_input_reads_debug_info_on_disk() {
                     let name = x.member.as_ref().map_or(x.path, |m| m.name);
                     name.ends_with(b"c.cc.o")
                 })
-                .map(|(id, _)| id)
-                .unwrap_or_else(|| panic!("{label} {case}: no c.cc.o in the front"));
+                .map_or_else(|| panic!("{label} {case}: no c.cc.o in the front"), |(id, _)| id);
             let Some(mortar_core::inputs::Reader::Object(obj)) =
-                f.inputs.files.get(file).map(|x| &x.reader)
+                front.inputs.files.get(file).map(|x| &x.reader)
             else {
                 panic!("{label} {case}: c.cc.o is not an object")
             };
@@ -188,7 +187,7 @@ fn classify_input_reads_debug_info_on_disk() {
                 matches!(&base, Err(mortar_core::incr::IncrReason::DebugUnitKind(d)) if d.contains("unreadable")),
                 "{label} {case}: classify_object over the parts view: {base:?}"
             );
-            assert_eq!(classify_input(&f.inputs, file), want, "{label} {case}");
+            assert_eq!(classify_input(&front.inputs, file), want, "{label} {case}");
         }
     }
     assert!(ran == 2 || !tools_required(), "{ran} of the 2 targets");

@@ -148,6 +148,10 @@ fn units(data: &[u8], h: &mut Handled, v4: &mut bool) -> Rows<()> {
     units_by(data.len() as u64, &mut at, h, v4).unwrap_or_else(|e| Err(unit_kind(e)))
 }
 
+/// [`units_by`]'s reader: bytes `p..p + out.len()` of the section into
+/// `out`, or why not.
+type ReadAt<'r> = &'r mut dyn FnMut(u64, &mut [u8]) -> Result<(), String>;
+
 /// The most bytes of a unit header the walk reads: `unit_length` (4),
 /// `version` (2) and DWARF 5's `unit_type` (1).
 const HEADER: u64 = 7;
@@ -158,12 +162,7 @@ const HEADER: u64 = 7;
 /// or the reason. Reads `unit_length` (a 64-bit unit is
 /// `debug-unit-kind`), `version` and, for DWARF 5, `unit_type`; never a
 /// DIE. The outer `Err` is a read that failed, with `at`'s words.
-fn units_by(
-    len: u64,
-    at: &mut dyn FnMut(u64, &mut [u8]) -> Result<(), String>,
-    h: &mut Handled,
-    v4: &mut bool,
-) -> Result<Rows<()>, String> {
+fn units_by(len: u64, at: ReadAt<'_>, h: &mut Handled, v4: &mut bool) -> Result<Rows<()>, String> {
     let bad = |what: &str| unit_kind(format!(".debug_info: unreadable unit header ({what})"));
     let mut head = [0u8; HEADER as usize];
     let mut p = 0u64;
@@ -215,31 +214,31 @@ type CopyFn<'c> = &'c dyn Fn(std::ops::Range<u64>, &mut [u8]) -> Result<(), Stri
 /// `copy`. The outer `Err` is `section i: unreadable (why)`: contents out
 /// of bounds, not resident without `copy`, or a copy that failed.
 fn section_units(
-    s: &Section<'_>,
-    i: u32,
+    section: &Section<'_>,
+    index: u32,
     copy: Option<CopyFn<'_>>,
-    h: &mut Handled,
-    v4: &mut bool,
+    counts: &mut Handled,
+    dwarf4: &mut bool,
 ) -> Result<Rows<()>, IncrReason> {
-    let unreadable = |why: String| unit_kind(format!("section {i}: unreadable ({why})"));
-    match s.data() {
-        Ok(data) => Ok(units(data, h, v4)),
-        Err(e @ mortar_elf::Error::NotResident { .. }) => {
-            let Some(copy) = copy else { return Err(unreadable(e.to_string())) };
-            let range = match s.file_range() {
-                Ok(Some(r)) => r.start as u64..r.end as u64,
+    let unreadable = |why: String| unit_kind(format!("section {index}: unreadable ({why})"));
+    match section.data() {
+        Ok(data) => Ok(units(data, counts, dwarf4)),
+        Err(error @ mortar_elf::Error::NotResident { .. }) => {
+            let Some(copy) = copy else { return Err(unreadable(error.to_string())) };
+            let range = match section.file_range() {
+                Ok(Some(range)) => range.start as u64..range.end as u64,
                 Ok(None) => return Ok(Ok(())),
-                Err(e) => return Err(unreadable(e.to_string())),
+                Err(error) => return Err(unreadable(error.to_string())),
             };
             let base = range.start;
-            let mut at = |p: u64, out: &mut [u8]| -> Result<(), String> {
-                let start = base + p;
+            let mut at = |at: u64, out: &mut [u8]| -> Result<(), String> {
+                let start = base + at;
                 copy(start..start + out.len() as u64, out)
             };
-            units_by(range.end - base, &mut at, h, v4)
+            units_by(range.end - base, &mut at, counts, dwarf4)
                 .map_err(|why| unreadable(format!("copy: {why}")))
         }
-        Err(e) => Err(unreadable(e.to_string())),
+        Err(error) => Err(unreadable(error.to_string())),
     }
 }
 
