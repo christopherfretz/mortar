@@ -26,8 +26,8 @@ use crate::id::{
 };
 use crate::inputs::{Inputs, Reader};
 use crate::layout::{
-    AllocKey, ChunkKind, CopyAlloc, CopyPlace, DefValue, Layout, PatchKind, PlacementKind,
-    SegmentRules, SlotKind, ThunkTarget, derive_segments,
+    AllocKey, ChunkKind, CopyAlloc, CopyPlace, DefValue, HoleKind, Layout, PatchKind,
+    PlacementKind, SegmentRules, SlotKind, ThunkTarget, derive_segments,
 };
 
 pub mod relocatable;
@@ -1718,6 +1718,33 @@ impl<'a, 't, 'n> Checker<'a, 't, 'n> {
                     || "a site redirected to the erratum patch of another site".into(),
                     [me, Row::Entry("patches", row.patch)],
                 )?;
+            }
+        }
+        // WP-273 (R-6): a hole in an island is a `Fill` hole (the image
+        // writes it as zeros, an unused island byte) of a dropped patch,
+        // and no patch starts inside it.
+        for (at, h) in p.holes.iter().enumerate() {
+            if !matches!(p.chunks.get(h.chunk).map(|c| c.kind), Some(ChunkKind::Patches(_))) {
+                continue;
+            }
+            let me = Row::Entry("holes", at as u32);
+            need(
+                h.kind == HoleKind::Fill,
+                r,
+                || "a hole in a patch chunk that is not a fill hole".into(),
+                [me, Row::Chunk(h.chunk)],
+            )?;
+            let inside = p.patches.iter().position(|x| {
+                x.chunk == h.chunk
+                    && h.offset <= x.offset
+                    && u128::from(x.offset) < end(h.offset, h.size)
+            });
+            if let Some(i) = inside {
+                return fail(
+                    r,
+                    "a patch inside a hole of its island",
+                    [me, Row::Entry("patches", i as u32)],
+                );
             }
         }
         self.islands()?;

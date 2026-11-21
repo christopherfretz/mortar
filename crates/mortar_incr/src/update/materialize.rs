@@ -1149,7 +1149,8 @@ fn sized(
             let was = stored_at.get(&r.chunk.0).copied().flatten();
             if c.addr != was {
                 return Err(layout(format!(
-                    "sized: F-1's bound: an island moved: chunk {} ({kind:?}) from {was:x?} to                      {:x?} (R-1: the re-plan keeps islands fixed)",
+                    "sized: F-1's bound: an island moved: chunk {} ({kind:?}) from {was:x?} to \
+                     {:x?} (R-1: the re-plan keeps islands fixed)",
                     r.chunk.0, c.addr
                 )));
             }

@@ -246,13 +246,31 @@ fn in_ranges(r: &[(u64, u64)], a: u64) -> bool {
     r.get(i).is_some_and(|x| x.0 <= a)
 }
 
-/// L-113 at the update's addresses (WP-271 ruling 3, v1): the RX
-/// `PT_LOAD`, with every island at its cap `C`, spans at most `2²⁷ − 4`
-/// bytes, and it is the only executable `PT_LOAD`. `Err` names what fails.
+/// The positions of the branch sites `sites` that lie in the dirty ranges
+/// (WP-276 rulings item 3): the caller passes [`replan`] only the branches
+/// of refilled exec sections (the dirty set holds them, and the IN-27
+/// window neighbours it joined), never every branch of the link; the
+/// lane's full scan (every branch) is the check that this set is complete.
+#[must_use]
+pub fn branches_in(pl: &Placement, dirty: &[(u64, u64)], sites: &[BranchAt]) -> Vec<usize> {
+    sites
+        .iter()
+        .enumerate()
+        .filter(|(_, s)| pl.section_addr(s.section, s.offset).is_some_and(|p| in_ranges(dirty, p)))
+        .map(|(i, _)| i)
+        .collect()
+}
+
+/// L-113 at the update's addresses (WP-271 ruling 3, v1), in its exact
+/// form (WP-276 rulings item 5): the RX `PT_LOAD` spans at most `2²⁷ − 4`
+/// bytes (`p_memsz`), and it is the only executable `PT_LOAD`. An update's
+/// islands are FIXED inside that segment (R-1: they grow inside their
+/// capacity only), so no margin for their growth is added (a full link's
+/// form adds every island at its cap `C`). `Err` names what fails.
 ///
 /// # Errors
 /// The name of the failing condition.
-pub fn fast_path(pl: &Placement, cap: u64) -> Result<(), String> {
+pub fn fast_path(pl: &Placement) -> Result<(), String> {
     let rx: Vec<_> = pl
         .segments
         .as_slice()
@@ -262,21 +280,11 @@ pub fn fast_path(pl: &Placement, cap: u64) -> Result<(), String> {
     let [g] = rx.as_slice() else {
         return Err(format!("{} executable PT_LOADs (L-113 needs one)", rx.len()));
     };
-    let (lo, hi) = (g.addr, g.addr.saturating_add(g.memsz));
-    let mut span = g.memsz;
-    for (_, c) in pl.chunks.iter() {
-        if let (ChunkKind::Patches(_), Some(a)) = (c.kind, c.addr)
-            && a >= lo
-            && a <= hi
-        {
-            span = span.saturating_add(cap.saturating_sub(c.size));
-        }
-    }
     let limit = (1u64 << 27) - 4;
-    if span > limit {
+    if g.memsz > limit {
         return Err(format!(
-            "the RX PT_LOAD at {lo:#x} spans {span:#x} with every island at its cap, over \
-             {limit:#x} (L-113's fast path)"
+            "the RX PT_LOAD at {:#x} spans {:#x}, over {limit:#x} (L-113's fast path)",
+            g.addr, g.memsz
         ));
     }
     Ok(())
@@ -322,7 +330,7 @@ pub fn replan(input: &Input<'_>) -> Result<Replan, Refused> {
     }
     // Step 5 (thunks, v1): L-113's fast path, then every branch judged.
     if arch.thunk().is_some() {
-        fast_path(pl, input.cap).map_err(Refused::Layout)?;
+        fast_path(pl).map_err(Refused::Layout)?;
         if let Some(b) = input.branches {
             if b.targets.len() != b.sites.len() {
                 return Err(internal("replan: not one branch target per branch site").into());

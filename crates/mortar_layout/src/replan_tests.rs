@@ -339,18 +339,22 @@ fn replan_adr_when_in_reach() {
 #[test]
 fn replan_fast_path_fails_refuses() {
     let mut pl = one_page_world(0x40, 0, 0x100);
-    assert!(fast_path(&pl, C).is_ok());
+    assert!(fast_path(&pl).is_ok());
+    // WP-276 rulings item 5: the exact form, `p_memsz <= 2^27 - 4` (the
+    // islands are fixed inside the segment): one byte over refuses...
     let mut segs = pl.segments.as_slice().to_vec();
-    segs[0].memsz = (1 << 27) - 4 - C + 1;
+    segs[0].memsz = (1 << 27) - 4 + 1;
     pl.segments = Column::from_vec(segs.clone()).unwrap();
     let w = words(&pl, &[]);
     match full(&pl, &w) {
         Err(Refused::Layout(m)) => assert!(m.contains("L-113"), "{m}"),
         x => panic!("{x:?}"),
     }
+    // ... and exactly at the bound is taken.
     segs[0].memsz -= 1;
     pl.segments = Column::from_vec(segs).unwrap();
     assert!(full(&pl, &w).is_ok());
+    assert!(fast_path(&pl).is_ok());
     // A branch whose target is out of reach at the update's addresses.
     let h = A64::M1.classify(283, Site { bytes: &[0; 4], offset: 0 }).unwrap();
     let site = BranchSite {
@@ -372,6 +376,12 @@ fn replan_fast_path_fails_refuses() {
     };
     assert!(with(&near).is_ok());
     assert!(matches!(with(&far), Err(Refused::Layout(_))));
+    // WP-276 rulings item 3: only the branches of the dirty (refilled)
+    // ranges are passed.
+    let at = pl.section_addr(SectionId(0), 0).unwrap();
+    assert_eq!(branches_in(&pl, &[(at, at + 4)], &b), [0]);
+    assert!(branches_in(&pl, &[(at + 4, at + 8)], &b).is_empty());
+    assert_eq!(branches_in(&pl, &full_dirty(&pl), &b), [0]);
 }
 
 // The dirty-only scan judges only the windows that meet a dirty range, and
