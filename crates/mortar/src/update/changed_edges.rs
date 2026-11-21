@@ -196,6 +196,7 @@ fn keep_by_rule(sh_type: u32, flags: u64, out: &[u8]) -> bool {
 /// (`ResolveDelta::key_ids`), for F11's `RESOLVED` rows.
 #[allow(clippy::too_many_arguments, reason = "the narrow link's inputs, (a)-(c)")]
 #[allow(clippy::too_many_lines, reason = "the four narrow tables, then the translation")]
+#[allow(clippy::many_single_char_names, reason = "the tables' usual names: c, a, t, s, p")]
 fn edges_of(
     view: &StateView<'_>,
     ff: &FileFront<'_>,
@@ -380,11 +381,11 @@ fn edges_of(
     }
     let (eh_rows, eh_off, mut eh_piece) = fs.eh.split_rows();
     let mut eh_of = Vec::with_capacity(eh_rows.len());
-    for r in eh_rows.iter() {
+    for r in &eh_rows {
         let s = own(r.section).ok_or_else(|| refused("split".into(), corrupt("an eh row")))?;
         eh_of.push(SplitRow { section: s, ..*r });
     }
-    for p in eh_piece.iter_mut() {
+    for p in &mut eh_piece {
         // An FDE whose code is another file's section (named through a
         // non-local symbol: S5's `REFUSE` row of this file): no edge of
         // this file's sources, as in the whole link.

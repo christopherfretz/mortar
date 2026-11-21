@@ -73,18 +73,14 @@ Id spaces: the narrow tables are a one-file link (`FileId(0)`, sections
 as `translate` does (sections `first_section + k`, keys positions).
 
 ## Done
-- step 1 (this table), c30dc278.
-- steps 2-4, e0d062f7: `tables::index_by` shared by `index_file` and
-  `index_file_of` (`capture::index_file_of`); `update/changed_edges.rs`
-  `changed_edges_of`; P-1's shadow calls `changed_edges::shadow_line`
-  once P-1's rows are equal (second findings line `P-1b: ..`).
-- ff54eab9: P-1's real-path test filters `P-1:` (not `P-1b`).
-- step 5: `crates/mortar/tests/update_changed_edges.rs` (in progress).
+- step 1 (this table), c30dc278; steps 2-4, e0d062f7; P-1's test filter
+  ff54eab9; step 5 tests e226e866; clippy fixes, spec section "P-1b" in
+  `spec/landed/incr/WP-267.md` (lane counts and cost there).
+- step 6: lane 636 PASS 0 FAIL, P-1b 348 equal / 0 finding / 0 refused;
+  protoc `changed_edges_of` 0.065 ms; plain link unchanged.
 
-## Next
-- step 5 green, commit; 6 lane (`p1b/lane.sh`), cost (`p1b/clock/clock.sh`,
-  needs a clean tree); spec section "P-1b" in `spec/landed/incr/WP-267.md`;
-  7 gate (copy of `p1/gate.sh` into `p1b/`).
+## Not done
+- step 7 (the full gate): the coordinator runs it at the merge.
 
 ## Ruling asked
 - `keep_by_rule` is copied from `mortar_layout::assign` (private there):
@@ -92,5 +88,5 @@ as `translate` does (sections `first_section + k`, keys positions).
 
 ## How to resume
 Read this file and `git log --oneline b941ff4b..`; scratch is
-`/Volumes/AgentWork/mortar-helper/.build/target-wp-156/p1b` (`t.sh <test>`
-runs mortar test files, final line `TESTS-DONE`).
+`/Volumes/AgentWork/mortar-helper/.build/target-wp-156/p1b` (`t.sh <test>`,
+`lane.sh`, `clock/clock.sh`, `clip.sh`).

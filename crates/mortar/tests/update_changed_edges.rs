@@ -94,6 +94,9 @@ fn p1b_v1() -> String {
     )
 }
 
+/// One column of the rows changed (a mutation the check must catch).
+type Mutation<'a> = dyn Fn(&mut ChangedFiles) + 'a;
+
 #[allow(clippy::needless_pass_by_value, reason = "a `map_err` argument")]
 fn report(e: IncrReason) -> String {
     e.report()
@@ -362,7 +365,7 @@ fn changed_edges_are_the_full_links_rows() {
                             || e.kind == edge_kind::RELOC
                     })
                     .expect("an edge");
-                let mutations: [(&str, &dyn Fn(&mut ChangedFiles)); 7] = [
+                let mutations: [(&str, &Mutation<'_>); 7] = [
                     ("INDEX unit", &|m| m.files[0].index[0].unit += 1),
                     ("INDEX kind", &|m| m.files[0].index[0].kind ^= 1),
                     ("INDEX target", &|m| m.files[0].index[alone].target ^= 1),
