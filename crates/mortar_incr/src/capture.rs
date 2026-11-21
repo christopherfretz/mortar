@@ -1021,7 +1021,12 @@ impl Rows5 {
         gnu_warnings: &[(SymbolId, FileId, SectionIndex)],
         warnings: &[(mortar_diag::Key, mortar_diag::Diagnostic)],
     ) -> Result<(), String> {
-        self.diags = diag_rows_named(inputs, gnu_warnings, warnings)?;
+        // WP-277: a file is in the link when its row is not `LAZY` (a
+        // member not extracted; resolve's `FileLive::Dead`, `file5`).
+        let lazy = crate::update::rows::file_flags::LAZY;
+        let files = &self.files;
+        let in_link = |f: FileId| files.get(f.0 as usize).is_some_and(|c| c.flags & lazy == 0);
+        self.diags = diag_rows_named(inputs, gnu_warnings, warnings, &in_link)?;
         Ok(())
     }
 }
@@ -2691,7 +2696,16 @@ pub fn diag_rows(
     four: &State,
     warnings: &[(mortar_diag::Key, mortar_diag::Diagnostic)],
 ) -> Result<Vec<crate::update::diags::DiagRow>, String> {
-    let named = diag_rows_named(inputs, gnu_warnings, warnings)?;
+    // WP-277: a file is in the link when it has `SECTIONS` rows (a member
+    // not extracted has none; a file a warning is about has sections).
+    let mut sectioned = vec![false; inputs.files.len() as usize];
+    for r in &four.sections {
+        if let Some(x) = sectioned.get_mut(r.file as usize) {
+            *x = true;
+        }
+    }
+    let in_link = |f: FileId| sectioned.get(f.0 as usize).copied().unwrap_or(false);
+    let named = diag_rows_named(inputs, gnu_warnings, warnings, &in_link)?;
     resolve_diag_keys(
         named,
         four.symbols.iter().map(|r| (r.kind, four.str(r.name), four.str(r.version))),
@@ -2711,6 +2725,7 @@ fn diag_rows_named(
     inputs: &Inputs<'_>,
     gnu_warnings: &[(SymbolId, FileId, SectionIndex)],
     warnings: &[(mortar_diag::Key, mortar_diag::Diagnostic)],
+    in_link: &dyn Fn(FileId) -> bool,
 ) -> Result<Vec<NamedDiag>, String> {
     use crate::update::diags::{DiagRef, Subject, reference_site};
     use mortar_diag::subject::{SubjectKind, subjects};
@@ -2736,17 +2751,18 @@ fn diag_rows_named(
         let end = data.iter().position(|&b| b == 0).unwrap_or(data.len());
         Some(String::from_utf8_lossy(&data[..end]).into_owned())
     };
-    // Each display a file of the link has, once (two files of one display:
-    // `None`, refused when a warning names it).
-    let mut displays: std::collections::BTreeMap<FileRef, Option<FileId>> =
+    // Each display's files, in `FileId` order (WP-277: an archive or an
+    // object given twice is two mentions, input.md §9.1, so two `FileId`s
+    // of one display; [`named_files`] says which of them a place names).
+    let mut displays: std::collections::BTreeMap<FileRef, Vec<FileId>> =
         std::collections::BTreeMap::new();
     for (id, f) in inputs.files.iter() {
-        displays.entry(f.display()).and_modify(|e| *e = None).or_insert(Some(id));
+        displays.entry(f.display()).or_default().push(id);
     }
-    let file_of = |code: &str, r: &FileRef| -> Result<FileId, String> {
-        displays.get(r).copied().flatten().ok_or_else(|| {
-            refuse(code, &format!("it names {r:?}, which is not one file of the link"))
-        })
+    let candidates = |r: &FileRef| displays.get(r).map_or(&[][..], Vec::as_slice);
+    let files_of = |code: &str, r: &FileRef| -> Result<Vec<FileId>, String> {
+        named_files(candidates(r), in_link)
+            .ok_or_else(|| refuse(code, &format!("it names {r:?}, which is no file of the link")))
     };
     // The relocations of section `index` of `file` (`SHT_RELA` or `SHT_REL`
     // whose `sh_info` names it): each record's (r_offset, symbol name).
@@ -2848,27 +2864,38 @@ fn diag_rows_named(
                         return Err(refuse(code, "a context line not a reference"));
                     }
                 };
-                let f = file_of(code, file)?;
-                let o = object(f).ok_or_else(|| refuse(code, "a reference not in an object"))?;
+                // A reference is in a file of the link (the scan reads no
+                // other): each file the place names ([`named_files`]), its
+                // one relocation at the place to the key; [`reference_of`]
+                // picks among the files.
                 let mut found: Vec<DiagRef> = Vec::new();
-                for s in o.sections() {
-                    if s.name().ok() != Some(section.as_bytes()) {
-                        continue;
-                    }
-                    let index = s.index().0;
-                    for (n, r) in relocs(f, index).unwrap_or_default().iter().enumerate() {
-                        if r.0 == offset && r.1 == name {
-                            found.push(DiagRef {
-                                file: f,
-                                seq: (u64::from(index) << 32) + n as u64,
-                                offset,
-                            });
+                for f in files_of(code, file)? {
+                    let o =
+                        object(f).ok_or_else(|| refuse(code, "a reference not in an object"))?;
+                    let mut here: Vec<DiagRef> = Vec::new();
+                    for s in o.sections() {
+                        if s.name().ok() != Some(section.as_bytes()) {
+                            continue;
+                        }
+                        let index = s.index().0;
+                        for (n, r) in relocs(f, index).unwrap_or_default().iter().enumerate() {
+                            if r.0 == offset && r.1 == name {
+                                here.push(DiagRef {
+                                    file: f,
+                                    seq: (u64::from(index) << 32) + n as u64,
+                                    offset,
+                                });
+                            }
                         }
                     }
+                    if here.len() > 1 {
+                        return Err(refuse(code, "a reference that is not one relocation"));
+                    }
+                    found.extend(here);
                 }
-                let [r] = found[..] else {
-                    return Err(refuse(code, "a reference that is not one relocation"));
-                };
+                let r = reference_of(&found, p.refs.last()).ok_or_else(|| {
+                    refuse(code, &format!("a reference in {file:?} that is not one relocation"))
+                })?;
                 p.refs.push(r);
             }
             if p.refs.first().map(|r| (r.file.0, r.seq)) != Some((key.unit, key.seq)) {
@@ -2888,7 +2915,7 @@ fn diag_rows_named(
                 else {
                     continue;
                 };
-                p.subjects.push(Subject::File(file_of(code, file)?));
+                p.subjects.extend(files_of(code, file)?.into_iter().map(Subject::File));
             }
             if column.contains(&SubjectKind::Key) {
                 // An ODR record finding (odr.md §9.1; `mortar_odr::records`,
@@ -2958,6 +2985,42 @@ fn diag_rows_named(
         return Err("DIAGS: two warnings of one key, code and text (IN-75a)".into());
     }
     Ok(out)
+}
+
+/// The files a warning's place names by `display` (WP-277), from the
+/// display's files `ids` (in `FileId` order) and which are in the link:
+/// one file of the display: it; several (an archive or an object given
+/// twice, input.md §9.1): those in the link, since a warning about a file
+/// of the link names a file the link reads (a member not extracted is read
+/// for its symbol table only); every one of them, plural (IN-75a), when
+/// several are (`a.o a.o`: both mentions are the same bytes, changed
+/// together). `None`: no file, or several and none in the link (which of
+/// them the warning is about is not known: the link writes no state).
+fn named_files(ids: &[FileId], in_link: &dyn Fn(FileId) -> bool) -> Option<Vec<FileId>> {
+    match ids {
+        [] => None,
+        [one] => Some(vec![*one]),
+        _ => {
+            let live: Vec<FileId> = ids.iter().copied().filter(|&f| in_link(f)).collect();
+            (!live.is_empty()).then_some(live)
+        }
+    }
+}
+
+/// The reference a listed `referenced by` place is (WP-277), from `found`:
+/// the relocations at that place to the key in the files of the link
+/// whose display it is, at most one per file. The scan lists the three
+/// least references in `RefId` (file, section, record) order, which is
+/// `DiagRef`'s (file, seq) order (`mortar_scan::events::Acc`), so the
+/// place is the least of `found` after the previous listed one (`prev`).
+/// One file of the display: its relocation, as before WP-277.
+fn reference_of(
+    found: &[crate::update::diags::DiagRef],
+    prev: Option<&crate::update::diags::DiagRef>,
+) -> Option<crate::update::diags::DiagRef> {
+    let after =
+        |r: &&crate::update::diags::DiagRef| prev.is_none_or(|p| (r.file, r.seq) > (p.file, p.seq));
+    found.iter().filter(after).min_by_key(|r| (r.file, r.seq)).copied()
 }
 
 /// [`diag_rows_named`]' rows with each key subject its `SYMBOLS` row:
@@ -4498,5 +4561,54 @@ mod wp264 {
         assert_eq!(region_rows(&n).expect("the rows"), rows);
         n.regions = rows;
         assert_eq!(regions_check(&n), Ok(()));
+    }
+}
+
+#[cfg(test)]
+mod wp277 {
+    //! `DIAGS`' files by display ([`named_files`], [`reference_of`]): an
+    //! archive given twice is two mentions, so one display has two
+    //! `FileId`s (input.md §9.1), of which the link extracts one.
+    use super::{named_files, reference_of};
+    use crate::update::diags::DiagRef;
+    use mortar_core::FileId;
+
+    fn at(file: u32, section: u32, record: u64) -> DiagRef {
+        DiagRef { file: FileId(file), seq: (u64::from(section) << 32) + record, offset: 0x10 }
+    }
+
+    #[test]
+    fn two_file_ids_one_display_name_the_one_in_the_link() {
+        // `main.o libc.a libw.a libb.a libc.a`: c.o is file 1 (the first
+        // mention, extracted) and file 4 (the second, not extracted).
+        let ids = [FileId(1), FileId(4)];
+        let first = |f: FileId| f == FileId(1);
+        assert_eq!(named_files(&ids, &first), Some(vec![FileId(1)]));
+        // Extracted from the second mention instead.
+        let second = |f: FileId| f == FileId(4);
+        assert_eq!(named_files(&ids, &second), Some(vec![FileId(4)]));
+        // `a.o a.o`: both in the link, both named (plural, IN-75a).
+        assert_eq!(named_files(&ids, &|_| true), Some(ids.to_vec()));
+        // Neither in the link: which one is not known (no state).
+        assert_eq!(named_files(&ids, &|_| false), None);
+        // One file of the display: it, in the link or not (before WP-277).
+        assert_eq!(named_files(&[FileId(7)], &|_| false), Some(vec![FileId(7)]));
+        assert_eq!(named_files(&[], &|_| true), None);
+    }
+
+    #[test]
+    fn a_listed_reference_is_the_least_after_the_previous() {
+        // One file: its relocation.
+        assert_eq!(reference_of(&[at(4, 1, 2)], None), Some(at(4, 1, 2)));
+        // Both mentions of `a.o` in the link refer at the same place: the
+        // first listed line is the first mention's, the second the other's.
+        let both = [at(1, 1, 2), at(4, 1, 2)];
+        let r1 = reference_of(&both, None).expect("the first");
+        assert_eq!(r1, at(1, 1, 2));
+        assert_eq!(reference_of(&both, Some(&r1)), Some(at(4, 1, 2)));
+        // A later line of the same file is after the previous one.
+        assert_eq!(reference_of(&[at(4, 1, 2)], Some(&at(4, 1, 2))), None);
+        assert_eq!(reference_of(&[at(4, 2, 0)], Some(&at(4, 1, 9))), Some(at(4, 2, 0)));
+        assert_eq!(reference_of(&[], None), None);
     }
 }
