@@ -374,7 +374,7 @@ fn changed_rows_equal_the_fronts() {
             assert!(ok || err.contains("update-not-implemented ("), "{}: {err}", line.label);
             let lines = std::fs::read_to_string(&findings).expect("findings");
             let p1: Vec<&str> =
-                lines.lines().filter(|l| l.starts_with("P-1") || l.contains(" P-1 ")).collect();
+                lines.lines().filter(|l| l.starts_with("P-1:") || l.contains(" P-1 ")).collect();
             eprintln!("{}: hop {hop}: {p1:?}", line.label);
             assert_eq!(p1.len(), 1, "{}: hop {hop}: one P-1 line: {lines}", line.label);
             let p1 = p1[0].to_owned();
