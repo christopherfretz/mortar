@@ -939,13 +939,27 @@ fn consumed(s: &Sec) -> bool {
 pub(crate) fn applies(output: &[u8], map: &Map, line: Option<&[String]>) -> bool {
     let et_rel =
         output.len() >= 18 && &output[..4] == b"\x7fELF" && output[16] == 1 && output[17] == 0;
-    et_rel || map.rel.is_some() || (map.format != Format::Mortar && Opts::read(line).relocatable)
+    et_rel || map.rel.is_some() || Opts::read(line_words(map, line).as_deref()).relocatable
+}
+
+/// The line stage R reads (§14.1, §3.2a; WP-210): the caller's when it
+/// gives one, for every format, else a mortar map's `arg` records. A
+/// mortar map always has a line (its records); `None` only for a
+/// reference's map read without the caller's.
+pub(crate) fn line_words(map: &Map, line: Option<&[String]>) -> Option<Vec<String>> {
+    match line {
+        Some(l) => Some(l.to_vec()),
+        None if map.format == Format::Mortar => {
+            Some(map.args.iter().map(|w| String::from_utf8_lossy(w).into_owned()).collect())
+        }
+        None => None,
+    }
 }
 
 /// Verifies a `-r` output (§14): the output's bytes, the inputs the map
-/// names (through `src`), the map, and the caller's context (a
-/// reference's line in `ctx.line`; mortar's map has its own `arg`
-/// records). Never panics; what it cannot read is a finding (O1, I1, I2).
+/// names (through `src`), the map, and the caller's context (the
+/// caller's line in `ctx.line`, read first for every format; without
+/// it, mortar's map has its own `arg` records: [`line_words`]). Never panics; what it cannot read is a finding (O1, I1, I2).
 /// The input set (§3.8) is not judged here: [`crate::verify_with`] and
 /// [`crate::verify_from`] add it, as for every output kind.
 pub fn verify(output: &[u8], src: &dyn Source, map: &Map, ctx: &Ctx<'_>) -> Report {
@@ -1057,12 +1071,7 @@ fn with_rv<R>(
     k: impl FnOnce(&mut Rv<'_>) -> R,
 ) -> (Report, Option<R>) {
     let src = store.src();
-    let words: Option<Vec<String>> = if map.format == Format::Mortar {
-        (!map.args.is_empty())
-            .then(|| map.args.iter().map(|w| String::from_utf8_lossy(w).into_owned()).collect())
-    } else {
-        line.map(<[String]>::to_vec)
-    };
+    let words = line_words(map, line);
     let opts = Opts::read(words.as_deref());
     let mut report = Report::default();
     // P-P9 and P-P7's header fields are judged on the header as written;
@@ -1088,7 +1097,9 @@ fn with_rv<R>(
             Rule::Rel(9),
             format!("the output is ET_REL and the map says {kind}"),
         ));
-    } else if map.format != Format::Mortar && opts.known && !opts.relocatable {
+    } else if opts.known && !opts.relocatable {
+        // The line of §14.1 (the caller's first, every format; WP-210):
+        // a caller's line without `-r` for mortar's output too.
         report.findings.push(Finding::new(
             Rule::Rel(9),
             "the output is ET_REL and the line has no -r, -i, --relocatable or -Ur",

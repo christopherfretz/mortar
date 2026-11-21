@@ -230,7 +230,7 @@ the incremental records and end the map.
 
 | record | count | meaning |
 |---|---|---|
-| `output <kind>` | at most one | the output kind of `dyn.md` D-1: `static`, `exec`, `pie`, `static-pie`; `shared` (planned, WP-116); `relocatable` (M4-r: read by stage R since RL-5, WP-185; mortar writes it from RL-7; the `-r` records `rplace`, `rframe`, `rgroup`, `rcommon` and which records a relocatable map may hold are §14.2) |
+| `output <kind>` | at most one | the output kind of `dyn.md` D-1: `static`, `exec`, `pie`, `static-pie`; `shared` (planned, WP-116); `relocatable` (M4-r: read by stage R since RL-5, WP-185; mortar writes it since RL-7, WP-187, on AArch64: its `-r` of x86-64 and i386 is refused until RL-9; the `-r` records `rplace`, `rframe`, `rgroup`, `rcommon` and which records a relocatable map may hold are §14.2) |
 | `interp <path>` | at most one | the `-dynamic-linker` path |
 | `runpath <paths>`, `rpath <paths>` | at most one of the two | the `-rpath` list joined by `:` as written (`$ORIGIN` kept); `rpath` under `--disable-new-dtags` (`DT_RPATH`) |
 | `bind lazy`, `bind now` | at most one | `-z now` in force or not |
@@ -322,12 +322,17 @@ or a wrong number of fields, is a `MapError`. A `common` record has five
 fields exactly in a map that says `incremental` and four elsewhere: a
 fifth field in a plain map, its absence in an incremental-mode map, or
 a `<file>` that names no earlier `file` record is a `MapError`.
-**Transitional (WP-222, ruled):** today's incremental-mode maps (base
-294101b1) write four fields and no decision records, so a `common`
-without `<file>` is a `MapError` only in a map that has a decision
-record; it ends when the linker writes the field (the update's map);
-then a `common` without `<file>` in an incremental map is a `MapError`
-again and this paragraph goes. A plain
+**Transitional (WP-222, ruled; reworded by WP-210):** `<file>` is
+optional until IN-72 item 11 (an update that places commons) is built:
+in v1 an update places no common (`spec/incr.md` IN-72 item 11, WP-216
+R-2: `update-not-implemented (common)`), so no update's map has a
+`common` record to write it in, and a `common` without `<file>` is a
+`MapError` only in a map that has a decision record. The full links of
+the incremental mode write it (measured, WP-210: the kept outputs of
+the incr-update lane, 72 `common` records in maps that say
+`incremental`, every one with `<file>`; 32 in plain maps, none). When
+item 11 is built, a `common` without `<file>` in an incremental map is a
+`MapError` and this paragraph goes. A plain
 link's map is unchanged by the field (not one byte). A foreign map never has
 them (§3.4 to §3.6 do not change): GNU ld's and lld's `COMMON` and
 mold's `.common` stay `common` chunks, one per file, and their maps
@@ -8170,13 +8175,19 @@ rule): the caller's line when the caller gives one, as stage 3 reads it
 words), else a mortar map's `arg` records. A mortar output always has
 a line: a mortar map has at least one `arg` record (§3.2a; the reader
 refuses one without), so "no line" exists only for a reference's map
-the caller gives no line with. Whether stage R applies (P-P9) reads the
-same line. Until WP-210 stage R read a mortar map's `arg` records only
+the caller gives no line with. Whether stage R applies, and P-P9's
+"the line has no -r", read the same line (WP-210). Until WP-210 stage R read a mortar map's `arg` records only
 and ignored the caller's line, against §3.2a: a map whose records
 dropped, added or changed an option moved stage R's verdict (M9 judges
 the records themselves whatever the caller gives). Without a line the
 clauses that need an option are not judged (`options unknown`) and the
-others run as if the line had none of C-R3's options. The line's options stage R reads: `-d`/`-dc`/`-dp`,
+others run as if the line had none of C-R3's options. *Test:*
+`tests/relocatable.rs` `s14_1_the_callers_line_first_{aarch64,x86_64}`
+(GNU ld's `-r` of the C component read as mortar's map: the records
+without `arg -r` and the caller's line right, nothing new; the caller's
+line without `-r`, P-P9; with `--build-id=sha1`, P-P10; no caller's
+line, the base's findings; before WP-210 the second and third were not
+found). The line's options stage R reads: `-d`/`-dc`/`-dp`,
 `-s`, `-S`, `-x`, `-u`, `-e`, `--build-id[=STYLE]`/`--no-build-id`,
 `-z execstack`/`-z noexecstack` (the last of the two), `--unique` and
 `--unique=PATTERN`, `--force-group-allocation`, `--allow-multiple-definition`
@@ -8919,9 +8930,12 @@ are the text of each finding (`{…}` a field).
   *Catches:* a container duplicated (§9.2 (t)).
 
 - **P-P9 (accept; V-R9).** S1 accepts `ET_REL` as a `-r` output, and the
-  kind must agree with the map (`output relocatable`) or, for a
-  reference, with the line (`-r`, `-i`, `--relocatable`, `-Ur`): "P-P9
-  the output is ET_REL and the map says {kind}". Stage R then applies:
+  kind must agree with the map (`output relocatable`) and with §14.1's
+  line (`-r`, `-i`, `--relocatable`, `-Ur`): "P-P9 the output is ET_REL
+  and the map says {kind}", "P-P9 the output is ET_REL and the line has
+  no -r, -i, --relocatable or -Ur". The line check is every format's
+  (WP-210): before WP-210 it was a reference's only, since a mortar
+  map's line was its `arg` records. Stage R then applies:
   §6.1's O1, I1, I2; §3.3's map rules as §14.2 reads them; §3.8; P-P2
   to P-P8, P-P10, P-P11; B1 (§6.7) on mortar's build-id note, over the
   whole file; P1 (§6.6) on the property note. Stage 1-3's address rules
@@ -9172,10 +9186,14 @@ debug corpus (`exp/debug/`), `exp/none-overlap/`, and
 `exp/rl0/run.sh`'s fourteen cases, each partially linked by GNU ld, lld
 and mold with `-Map`, and `exp/rl0/none.sh`'s `NONE` case per target:
 `_start` with `.reloc ., R_*_NONE, keepme`, `keepme` in its own section
-of a second object, partially linked by GNU ld, lld and (after the
-join, RL-7) mortar, then final-linked with `--gc-sections` by GNU ld and
-by mortar: `keepme` is in the final output (`nm`), as in the direct
-link, and P-P3 finds the record in every `-r` output. RL-5's fixtures are built from them at test time
+of a second object, partially linked by GNU ld, lld and mortar (since
+RL-7, WP-187: AArch64 only, x86-64 and i386 `-r` refused until RL-9),
+then final-linked with `--gc-sections` by GNU ld and by mortar:
+`keepme` is in the final output (`nm`), as in the direct link, and P-P3
+finds the record in every `-r` output. The lane's LT-R6 test
+(`spec/harness.md`, `relocatable/none-record-kept`) is not written yet
+(WP-187 §F; WP-210 checked `tests/link/relocatable/`): the case runs in
+`exp/rl0/none.sh` and in RL-5's fixtures only. RL-5's fixtures are built from them at test time
 (§9.1: nothing binary is checked in). For each GNU ld and lld output:
 no finding but the per-linker forms (and lld's A91, A93, A100, A120,
 A122, A125, A126); every mold output: its anomalies by name (A90-A102,

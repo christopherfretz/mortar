@@ -2411,3 +2411,67 @@ fn s9_2_t_mutations_x86_64() {
 fn s9_2_t_mutations_i386() {
     judge_mutations(Arch::I386);
 }
+
+/// §14.1 "The line" (WP-210 item (a)): stage R reads the caller's line
+/// first, for a mortar map too (§3.2a, WP-201's rule); the map's `arg`
+/// records only without one. On GNU ld's `-r` of the C component read as
+/// mortar's map (`as_mortar_map`, its `arg` records the caller's words):
+/// the records without `-r`, the caller's line right: nothing new; the
+/// caller's line without `-r`: P-P9, and with `--build-id=sha1`: P-P10
+/// (before WP-210 neither: the caller's line was not read for a mortar
+/// map); no caller's line: the records are the line, the base's
+/// findings.
+fn judge_line(arch: Arch) {
+    let Some(t) = Tools::find(arch) else { return };
+    let scratch = Scratch::new(&format!("plumb-relline-{}", arch.name()));
+    let case = cases(&t).into_iter().find(|c| c.name == "d3-c-gcc").expect("the d3-c-gcc case");
+    let b = Base::new(&t, &case, &scratch.join(&case.name));
+    let inputs: Vec<Input<'_>> = b.files.iter().map(|(p, x)| Input { path: p, bytes: x }).collect();
+    let run = |text: &str, line: Option<Vec<String>>| -> BTreeSet<String> {
+        let map = mortar_plumb::map::parse(Format::Mortar, text)
+            .unwrap_or_else(|e| panic!("line {}: {}", e.line, e.message));
+        let ctx = Ctx { line, files: &Dir(&b.dir) };
+        let r = mortar_plumb::verify_with(&b.out, &inputs, &map, &ctx);
+        r.findings.iter().map(|f| format!("{} {}", f.rule.id(), f.message)).collect()
+    };
+    let base = run(&b.mortar, Some(b.line.clone()));
+    let no_r: String =
+        b.mortar.lines().filter(|l| *l != "arg -r").fold(String::new(), |mut a, l| {
+            a.push_str(l);
+            a.push('\n');
+            a
+        });
+    assert_ne!(no_r, b.mortar, "{arch:?}: the map has no `arg -r`");
+    let got = run(&no_r, Some(b.line.clone()));
+    let fresh: Vec<&String> = got.difference(&base).collect();
+    assert!(fresh.is_empty(), "{arch:?}: records without -r, the caller's line right: {fresh:#?}");
+    let line: Vec<String> = b.line.iter().filter(|w| *w != "-r").cloned().collect();
+    let got = run(&b.mortar, Some(line));
+    let fresh: Vec<&String> = got.difference(&base).collect();
+    assert!(
+        fresh.iter().any(|f| f.starts_with("P-P9 ") && f.contains("the line has no -r")),
+        "{arch:?}: the caller's line without -r: want P-P9, got {fresh:#?}"
+    );
+    let mut line = b.line.clone();
+    line.insert(0, "--build-id=sha1".to_string());
+    let got = run(&b.mortar, Some(line));
+    let fresh: Vec<&String> = got.difference(&base).collect();
+    assert!(
+        fresh.iter().any(|f| f.starts_with("P-P10 ") && f.contains("build id")),
+        "{arch:?}: the caller's line with --build-id: want P-P10, got {fresh:#?}"
+    );
+    let got = run(&b.mortar, None);
+    assert_eq!(got, base, "{arch:?}: no caller's line: the records are the line");
+}
+
+// spec: plumb.md §14.1 "The line", §3.2a (WP-210) on AArch64.
+#[test]
+fn s14_1_the_callers_line_first_aarch64() {
+    judge_line(Arch::Aarch64);
+}
+
+// spec: plumb.md §14.1 "The line", §3.2a (WP-210) on x86-64.
+#[test]
+fn s14_1_the_callers_line_first_x86_64() {
+    judge_line(Arch::X86_64);
+}
