@@ -567,27 +567,26 @@ pub fn front<'s>(
 
     // 45: assignment (layout stage A). A dynamic output on an
     // architecture whose join has not landed is refused here, by name.
-    let status = match crate::dynamic::arch_status(&plan, machine) {
-        Ok(s) => s,
-        Err(d) => {
-            diag.emit(Key::new(45, 0, 0), d);
-            return None;
-        }
-    };
-    let target = Target::of(machine);
-    let options = match Options::from_plan(&plan, &target) {
-        Ok(mut o) => {
-            if env.slack {
-                o.slack = mortar_layout::slack::Slack::INCREMENTAL;
+    let (status, target, options, link_arch) =
+        match crate::update::steps::link_arch_of(&plan, machine, env.slack) {
+            Ok(x) => x,
+            Err(crate::update::steps::ArchFail::Status(d)) => {
+                diag.emit(Key::new(45, 0, 0), d);
+                return None;
             }
-            o
-        }
-        Err(d) => {
-            let (k, d) = layout_diag(&inputs, &resolution, d, Key::new(90, 0, 0));
-            diag.emit(k, d);
-            return None;
-        }
-    };
+            Err(crate::update::steps::ArchFail::Options(d)) => {
+                let (k, d) = layout_diag(&inputs, &resolution, d, Key::new(90, 0, 0));
+                diag.emit(k, d);
+                return None;
+            }
+            Err(crate::update::steps::ArchFail::NoArch) => {
+                diag.emit(
+                    Key::new(45, 0, 0),
+                    internal(format!("no architecture for {}", machine.name())),
+                );
+                return None;
+            }
+        };
     // A dynamic output (`Exec`, `Pie`; WP-053): shared objects, a
     // dynamic symbol table, the scan's dynamic rules.
     let dynamic = status == mortar_arch::Status::M2;
@@ -596,10 +595,6 @@ pub fn front<'s>(
     // nothing a loader reads; its scan, its architecture tables and its
     // symbols are a static link's, WP-052).
     let has_dynamic = dynamic || plan.kind == plan::OutputKind::StaticPie;
-    let Some(link_arch) = LinkArch::of(machine, options.fix_843419, status) else {
-        diag.emit(Key::new(45, 0, 0), internal(format!("no architecture for {}", machine.name())));
-        return None;
-    };
     let arch = link_arch.get();
     // S-68: an output whose relocations are REL (i386) names `.rel.plt`.
     let rel = arch.facts().rel_form == mortar_arch::RelForm::Rel;
