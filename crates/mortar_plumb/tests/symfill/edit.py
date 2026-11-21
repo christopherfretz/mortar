@@ -20,8 +20,11 @@
 #               a live one) and a region's slack (16 zeros), listed `dead
 #               .strtab <off> <size> strings`.
 #   shndx       a .symtab_shndx section (one zero word per entry), last.
-#   decisions   one decision record of each kind (spec/plumb.md §3.2) and
-#               `<file>` on every `common` (the file of a-<arch>.o).
+#   decisions   one decision record of each kind (spec/plumb.md §3.2) but
+#               `symblock`, one per local block (its entries, capacity and
+#               .strtab region: the bytes of its names that are not S-86's
+#               shared ones), and `<file>` on every `common` (the file of
+#               a-<arch>.o).
 #   plain       the map's `incremental` line removed (and no slack lines).
 # Mutations, one sentence each (tests/symfill.rs names the rule):
 #   filler-after-info   one more filler at the end, after the globals
@@ -37,7 +40,20 @@
 #   region-out          the region runs one byte past .text's end
 #   region-none         the region names `.nosuch`
 #   region-overlap      a second region of .text meets the first
-#   symblock-past       the symbol block runs past sh_info
+#   symblock-past       the last symbol block runs past sh_info
+#   symblock-zero       the first block starts at entry 0
+#   symblock-count      a.c's block: count one above its capacity
+#   symblock-strtab-past  a.c's region starts at .strtab's end
+#   symblock-overlap    b.c's block starts one entry into a.c's
+#   symblock-region-overlap  b.c's region starts at a.c's
+#   symblock-twice      a.c's record twice
+#   symblock-stale      M2b-5's map (WP-268): a.c's record names one entry
+#                       at the local tail reserve's first filler, capacity
+#                       3, its region at the global afun's name, size 0x12
+#   symblock-short      a.c's block one entry short of its locals
+#   symblock-cap-short  a.c's region one byte short of its last NUL
+#   symblock-cap-long   b.c's region 7 bytes longer (the global _start's name)
+#   symblock-missing    b.c's record left out
 #   common-file=<id>    every `common` names file <id>
 #   l1                  a.c's `$d` of .debug_info is moved to offset 0
 #                       (start.c's unit: another unit's identity)
@@ -91,16 +107,29 @@ def main():
         di = names.index('.debug_info')
         ds = [k for k, s in enumerate(syms) if symname(s) == '$d' and s[3] == di]
         syms[ds[1]][4] = 0
-    if 'fill' in flags:
-        locs = syms[1:nloc]
-        blocks, cur = [], []
-        for s in locs:
-            if (s[1] & 0xf) == 4 and cur:
-                blocks.append(cur)
-                cur = []
-            cur.append(s)
-        if cur:
+    locs = syms[1:nloc]
+    blocks, cur = [], []
+    for s in locs:
+        if (s[1] & 0xf) == 4 and cur:
             blocks.append(cur)
+            cur = []
+        cur.append(s)
+    if cur:
+        blocks.append(cur)
+    # (name of the block's STT_FILE or None, first, count, capacity,
+    # region offset, region size)
+    SHARED = ('', '$x', '$d', '__erratum_843419_veneer')
+    symblocks = []
+    at = 1
+    for blk in blocks:
+        cap = len(blk) + (max(2, len(blk) // 8) if 'fill' in flags else 0)
+        own = [s[0] for s in blk if symname(s) not in SHARED]
+        lo = min(own) if own else 0
+        hi = max(strtab.index(b'\0', o) + 1 for o in own) if own else 0
+        fname = symname(blk[0]) if (blk[0][1] & 0xf) == 4 else None
+        symblocks.append([fname, at, len(blk), cap, lo, hi - lo])
+        at += cap
+    if 'fill' in flags:
         new = [syms[0]]
         for blk in blocks:
             new += blk + [list(FILL) for _ in range(max(2, len(blk) // 8))]
@@ -212,9 +241,41 @@ def main():
         extra.append(f'slot tls-ld {a:x}')
         extra.append(f'redirect {afile} 1 4 {a:x}')
         extra.append('frag .comment 30,1,1 0123456789abcdef0123456789abcdef 0')
-        first, count = 1, 3
-        capacity = (nloc - first + 1) if 'symblock-past' in flags else 4
-        extra.append(f'symblock - {first} {count} {capacity} 1 {len(strtab) - 1:x}')
+        def fid(name):
+            if name is None:
+                return '-'
+            stem = name.rsplit('.', 1)[0] + '-'
+            return str(next(v for k, v in files.items() if k.startswith(stem)))
+        sb = [list(b) for b in symblocks]
+        a = next(b for b in sb if b[0] == 'a.c')
+        bb = next(b for b in sb if b[0] == 'b.c')
+        if 'symblock-past' in flags:
+            sb[-1][3] = nloc - sb[-1][1] + 1
+        if 'symblock-zero' in flags:
+            sb[0][1] = 0
+        if 'symblock-count' in flags:
+            a[2] = a[3] + 1
+        if 'symblock-strtab-past' in flags:
+            a[4] = len(strtab)
+        if 'symblock-overlap' in flags:
+            bb[1] = a[1] + 1
+        if 'symblock-region-overlap' in flags:
+            bb[4] = a[4]
+        if 'symblock-twice' in flags:
+            sb.insert(sb.index(a) + 1, list(a))
+        if 'symblock-stale' in flags:
+            a[1], a[2], a[3] = sb[-1][1] + sb[-1][3], 1, 3
+            a[4], a[5] = syms[find('afun')][0], 0x12
+        if 'symblock-short' in flags:
+            a[2] -= 1
+        if 'symblock-cap-short' in flags:
+            a[5] -= 1
+        if 'symblock-cap-long' in flags:
+            bb[5] += 7
+        if 'symblock-missing' in flags:
+            sb.remove(bb)
+        for name, first, count, capacity, off, size in sb:
+            extra.append(f'symblock {fid(name)} {first} {count} {capacity} {off:x} {size:x}')
     # After `incremental` and the map's own hole/dead lines.
     at = max(i for i, l in enumerate(lines)
              if l.split(' ')[0] in ('incremental', 'hole', 'dead', 'common', 'define', 'chunk')) + 1

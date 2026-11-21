@@ -792,8 +792,9 @@ fn p_e6_non_alloc_tiling() {
 fn p_e6_merged_nonalloc_is_not_tiled() {
     for arch in archs() {
         let sec = if arch == Arch::Aarch64 { "%progbits" } else { "@progbits" };
-        let extra =
-            format!("\t.section .debug_str,\"MS\",{sec},1\n\t.asciz \"keep_wp268\"\n\t.asciz \"gone_wp268\"\n\t.text\n");
+        let extra = format!(
+            "\t.section .debug_str,\"MS\",{sec},1\n\t.asciz \"keep_wp268\"\n\t.asciz \"gone_wp268\"\n\t.text\n"
+        );
         let Some(p) = assemble(arch, "e6m", "", &extra, &[]) else { return };
         // mortar's map gives an `SHF_MERGE` non-alloc input as `merged`
         // (no offset): it replaces GNU ld's line on both sides.
