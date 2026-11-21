@@ -782,12 +782,15 @@ fn p_e6_non_alloc_tiling() {
 // §6.9 P-E6 (WP-268, G-5b's case): a non-allocated section with `merged`
 // records is not tiled. `.debug_str` holds a string nothing names
 // (`gone_wp268`, an edit's dead local): X's map states it `dead ...
-// strings`. ACCEPTED (before WP-268: two P-E6 findings, the bytes before
-// and after the dead range). The dead line one byte short of the NUL:
-// X's own P-I6 (§6.8 still judges a merged section's dead lines). The
-// same string with no line: ACCEPTED, and by no check: §6.9 does not
-// judge a `merged` section's strings beyond what its references reach
-// (§5.6), and no reference reaches this one.
+// strings`, and F, the full link of the edited inputs, has no such
+// string (modelled: F's copy zeroed). ACCEPTED (before WP-268: two P-E6
+// findings, the bytes before and after the dead range). The dead line
+// one byte short of the NUL: X's own P-I6 (§6.8 still judges a merged
+// section's dead lines).
+// WP-210 (WP-252's gap (ii)): outside its dead lines, X's strings are
+// F's, as a set. REJECTED: the same string with no dead line (before
+// WP-210 ACCEPTED by no check: a stray string), a stray byte in a live
+// string, and a dead line over a string F holds.
 #[test]
 fn p_e6_merged_nonalloc_is_not_tiled() {
     for arch in archs() {
@@ -813,13 +816,20 @@ fn p_e6_merged_nonalloc_is_not_tiled() {
             });
         };
         let mut x = p.update(&[]);
-        let mut f = p.link(&["main.o", "a.o", "b.o"], &[]);
+        let mut held = p.link(&["main.o", "a.o", "b.o"], &[]);
         merged(&mut x);
-        merged(&mut f);
-        let (_, size, off) = x.sec(".debug_str");
-        let body = &x.output[off as usize..(off + size) as usize];
-        let at = body.windows(11).position(|w| w == b"gone_wp268\0").unwrap() as u64;
-        assert!(at > 0, "{arch:?}: {body:x?}");
+        merged(&mut held);
+        let find = |l: &Link, w: &[u8]| {
+            let (_, size, off) = l.sec(".debug_str");
+            let body = &l.output[off as usize..(off + size) as usize];
+            let at = body.windows(w.len()).position(|v| v == w).unwrap() as u64;
+            (at, off as usize + at as usize)
+        };
+        let (at, _) = find(&x, b"gone_wp268\0");
+        assert!(at > 0, "{arch:?}");
+        let mut f = held.clone();
+        let (_, o) = find(&f, b"gone_wp268\0");
+        f.output[o..o + 10].fill(0);
         let dead = |len: u64| DeadRange {
             section: ".debug_str".into(),
             offset: at,
@@ -839,8 +849,58 @@ fn p_e6_merged_nonalloc_is_not_tiled() {
             !xs.is_empty() && xs.iter().all(|l| l.starts_with("P-I6 ") && l.contains("NUL")),
             "{arch:?}: {xs:#?}"
         );
-        let (pe, xs, _) = p.equiv_sides(&x, &f);
-        assert!(pe.is_empty() && xs.is_empty(), "{arch:?}: {pe:#?} {xs:#?}");
+        // No dead line: a string F lacks.
+        let (pe, _, _) = p.equiv_sides(&x, &f);
+        assert!(has(&pe, "P-E6", "\"gone_wp268\" (outside every dead line)"), "{arch:?}: {pe:#?}");
+        // A stray byte in a live string.
+        let mut m = x.clone();
+        m.map.dead.push(dead(11));
+        let (_, o) = find(&m, b"keep_wp268\0");
+        m.output[o + 1] = b'x';
+        let (pe, _, _) = p.equiv_sides(&m, &f);
+        assert!(has(&pe, "P-E6", "\"kxep_wp268\""), "{arch:?}: {pe:#?}");
+        // A dead line over a string the full link holds.
+        let mut m = x.clone();
+        m.map.dead.push(dead(11));
+        let (pe, _, _) = p.equiv_sides(&m, &held);
+        assert!(
+            has(&pe, "P-E6", "string \"gone_wp268\" is not in the update's"),
+            "{arch:?}: {pe:#?}"
+        );
+    }
+}
+
+// §6.9 P-E6 (WP-210, WP-252's gap (i)): an `SHF_MERGE|SHF_STRINGS`
+// non-allocated section with no map line at all holds F's bytes, like
+// any section no unit holds. X as built: ACCEPTED; a byte of X's
+// `.debug_str` changed: REJECTED (before WP-210 passed over).
+#[test]
+fn p_e6_merged_strings_with_no_line_hold_f_bytes() {
+    for arch in archs() {
+        let sec = if arch == Arch::Aarch64 { "%progbits" } else { "@progbits" };
+        let extra =
+            format!("\t.section .debug_str,\"MS\",{sec},1\n\t.asciz \"nol_wp210\"\n\t.text\n");
+        let Some(p) = assemble(arch, "e6n", "", &extra, &[]) else { return };
+        let bare = |l: &mut Link| {
+            let s = SectionRef::Name(".debug_str".into());
+            l.map.placed.retain(|q| q.section != s);
+            l.map.nonalloc.retain(|q| q.out != ".debug_str" && q.section != s);
+        };
+        let mut x = p.update(&[]);
+        let mut f = p.link(&["main.o", "a.o", "b.o"], &[]);
+        bare(&mut x);
+        bare(&mut f);
+        let (pe, _, _) = p.equiv_sides(&x, &f);
+        assert!(pe.is_empty(), "{arch:?}: {pe:#?}");
+        let (_, size, off) = x.sec(".debug_str");
+        let body = &x.output[off as usize..(off + size) as usize];
+        let at = body.windows(10).position(|v| v == b"nol_wp210\0").unwrap();
+        x.output[off as usize + at] = b'N';
+        let (pe, _, _) = p.equiv_sides(&x, &f);
+        assert!(
+            has(&pe, "P-E6", ".debug_str, which no unit holds, differs from the full link's"),
+            "{arch:?}: {pe:#?}"
+        );
     }
 }
 

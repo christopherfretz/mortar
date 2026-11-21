@@ -4177,10 +4177,25 @@ file image, also `0xcc` and `0x90`, the code fill and the nop padding); a non-al
 NUL end), its other bytes are the strings its references reach (§5.6
 judges each reference by content); no map lists its pieces one by one,
 so no map could tile it, with or without `nplace` units beside the
-records; a non-allocated section with no unit and no `merged`
-record, other than `.symtab`, `.strtab` and `.shstrtab` (P-E1, P-E3),
-holds the same bytes as `F`'s (one with `SHF_MERGE|SHF_STRINGS` and no
-line at all is passed over, as before WP-268).
+records. **Its strings are `F`'s (WP-210, WP-252's gap (ii)).** Split
+at its NUL characters (`sh_entsize` bytes, 1 when 0), the non-empty
+strings of `X`'s section outside `X`'s `dead` lines of it are, as a
+set, those of `F`'s section of that name outside `F`'s, and none is
+there twice (a merged section holds each string once): a stray byte
+inside a string, or one that joins or splits two, is a string `F`
+lacks; a string `X` keeps outside its dead lines that `F` does not hold
+is one an edit left without its dead line; a dead line over a string
+`F` holds is a live string `X` dropped. Empty strings (zero bytes) are
+not judged (S-27's padding, `.comment`'s leading NUL). Measured on the
+incr-update lane (49 scenarios, 636 hops, WP-210): 684 sections
+(`.comment` 516, `.debug_str` 84, `.debug_line_str` 84), equal sets in
+every one, no string twice. A non-allocated section with no unit and no
+`merged` record, other than `.symtab`, `.strtab` and `.shstrtab` (P-E1,
+P-E3), holds the same bytes as `F`'s, **one with `SHF_MERGE|SHF_STRINGS`
+and no line at all too** (WP-210, WP-252's gap (i); WP-268 passed it
+over): 112 such `.comment` sections on the lane, each `F`'s bytes.
+`tests/equiv.rs` `p_e6_merged_nonalloc_is_not_tiled`,
+`p_e6_merged_strings_with_no_line_hold_f_bytes`.
 
 **Item 7**, the diagnostics, is not in the files: the harness compares
 the two links' diagnostics (IN-5, L10; `spec/incr.md` IN-63).
@@ -4189,7 +4204,7 @@ the two links' diagnostics (IN-5, L10; `spec/incr.md` IN-63).
 (a program run is L10's); the meaning of a table word or a linker
 symbol whose address has two identities (above); merged strings of a
 non-allocated `merged` section (their references are checked by content
-on each side, §5.6); thunks' and patches' placement (only the values
+on each side, §5.6) beyond the set of their strings (above); thunks' and patches' placement (only the values
 they carry); `.symtab`'s order of local symbols; a common's `<file>`
 where a map does not state it, and the fillers of a side that writes
 another linker's section symbols (both named in the summary, WP-222);
