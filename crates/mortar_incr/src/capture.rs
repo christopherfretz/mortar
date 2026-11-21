@@ -4527,7 +4527,10 @@ mod wp264 {
         let mut m = placed();
         m.sections[0].size = 0x8;
         // The state's holes are in address order.
-        m.holes.insert(0, HoleRow { chunk: 0, kind: hole_kind::FILL, offset: 0x8, size: 8, tomb: false });
+        m.holes.insert(
+            0,
+            HoleRow { chunk: 0, kind: hole_kind::FILL, offset: 0x8, size: 8, tomb: false },
+        );
         let text = mortar_layout::order::text_category(b".text");
         let rows = region_rows(&m).expect("the rows");
         assert_eq!(
@@ -4540,7 +4543,10 @@ mod wp264 {
         // A `Fill` hole past the region's last section's end and not its
         // slack is still no region's.
         let mut b = m.clone();
-        b.holes.insert(2, HoleRow { chunk: 0, kind: hole_kind::FILL, offset: 0x58, size: 4, tomb: false });
+        b.holes.insert(
+            2,
+            HoleRow { chunk: 0, kind: hole_kind::FILL, offset: 0x58, size: 4, tomb: false },
+        );
         let e = regions_check(&b).expect_err("a stray hole");
         assert!(e.contains("is no region's slack"), "{e}");
     }
