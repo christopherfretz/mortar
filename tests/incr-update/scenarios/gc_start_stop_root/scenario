@@ -1,0 +1,14 @@
+# WP-267 review §4 ("Broke (lane, not linker)"): under --gc-sections c.o's
+# new reference to __start_myreg/__stop_myreg revives u.o's `myreg`
+# sections (a START_STOP root added by a changed file), so the output gains
+# the section `myreg`, then loses it, then gains it again. The update falls
+# back by name today; the dry run's oracle once counted every byte of a
+# new output section as its tail (a lane defect, fixed by WP-267 P-4).
+proves: a START_STOP root a changed file adds under --gc-sections revives an unchanged file's sections, and the oracle judges the new output section by its units and its tail
+source: WP-267 review §4
+edit: c.cc
+link: main.o c.o u.o
+cflags: -ffunction-sections -fdata-sections
+options: --gc-sections
+compilers: gcc kiln
+also-reversed: the first link has the reference (the section dies first)
