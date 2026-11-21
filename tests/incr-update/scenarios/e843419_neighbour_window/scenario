@@ -1,0 +1,14 @@
+# WP-273 (IN-27's window-neighbour row): the site's window starts in
+# c1 (edited) and ends in c2, its neighbour section in the same file; F
+# (the redirect's key) is c2's.
+proves: an update whose erratum 843419 window straddles two sections of one file judges the whole window (F in the neighbour section gets the patch); every hop is an update, equivalent to the full link
+source: spec/landed/incr/WP-271.md §4 (e843419_neighbour_window), WP-273
+edit A: c.S
+hops: -, A, -, A
+link: a.o c.o
+compilers: gcc
+targets: a64
+not kiln: assembly (.S): kiln compiles C++ only; the shape is written in the assembly
+not x64: erratum 843419 is AArch64's (`--fix-cortex-a53-843419` is refused on x86-64, cli rows); x86-64 has no islands, its updates call no re-plan
+nolibc: yes
+options: --fix-cortex-a53-843419

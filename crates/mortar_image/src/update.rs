@@ -388,6 +388,11 @@ pub fn refill(
     }
     // 4. `.symtab` and `.strtab` from U-5's plan (IN-49a).
     write_symtab(&prev, &old, &new, &names, symtab, &shift, &mut overlay, &mut counts)?;
+    // R-3 (WP-273): every fixed word is in the output as written, when
+    // the refill is planned at the link's own placement.
+    if planned_here(link, layout) {
+        fixups_outside_kept(link, &want, &prev, &overlay)?;
+    }
     // 5. The ranges, those equal to the previous output dropped.
     let file_size = refilled.file_size;
     let dirty = differing(&prev, overlay)?;
@@ -1350,6 +1355,71 @@ fn write_symtab(
 }
 
 // ---- the dirty ranges ------------------------------------------------------
+
+/// Whether the refill set was planned at the link's own placement (the
+/// delta's chunks at the link's addresses and offsets): front 2's
+/// refill (the materialized layout, replayed) and phase B's C'. The
+/// identity reference (M2a: front 1's computed layout, an empty delta)
+/// and the 255e shadow (C' over front 1's link) refill at a placement
+/// that need not be the delta's; R-A1's identity check, or the shadow's
+/// own judges, decide on those after, so R-3 does not judge them (its
+/// premise, "the written ranges are where this link's bytes changed",
+/// does not hold there).
+fn planned_here(link: &Link<'_, '_>, layout: &LayoutDelta) -> bool {
+    let (a, b) = (&layout.placement.chunks, &link.layout.placement.chunks);
+    !a.is_empty()
+        && a.len() == b.len()
+        && a.iter().zip(b.iter()).all(|((_, x), (_, y))| x.addr == y.addr && x.offset == y.offset)
+}
+
+/// WP-273 (R-3; `spec/landed/incr/WP-271.md` "WP-273"): every fixed
+/// word (the erratum fixes, `Link::fixups`) is in the update's output.
+/// Inside the written ranges `want` the fill wrote it; outside them the
+/// output keeps the previous output's bytes, or the bytes a move copied
+/// (`overlay`, step 1), so those must be the fixed word's already. Never
+/// false in a correct update: the window of a moved site is refilled
+/// with its neighbours (IN-27's row), and `delta.rs`'s slack guard keeps
+/// a window inside one file's sections. Only the bytes outside `want`
+/// are read (O(fixups) words at most).
+///
+/// # Errors
+/// `internal-error` by name for a byte that differs; a failed read.
+fn fixups_outside_kept(
+    link: &Link<'_, '_>,
+    want: &[Range<u64>],
+    prev: &Previous,
+    overlay: &Overlay,
+) -> Result<(), RefillError> {
+    if link.fixups.is_empty() {
+        return Ok(());
+    }
+    let failed = |what: String| {
+        let d = mortar_diag::Diagnostic::error(mortar_diag::Kind::InternalError { what });
+        RefillError::Failed(Failed { diagnostics: vec![(mortar_diag::Key::new(90, 0, 0), d)] })
+    };
+    let inside = |b: u64| {
+        let at = want.partition_point(|r| r.end <= b);
+        want.get(at).is_some_and(|r| r.start <= b)
+    };
+    let fixups = crate::link::file_fixups(link).map_err(|d| {
+        RefillError::Failed(Failed { diagnostics: vec![(mortar_diag::Key::new(90, 0, 0), d)] })
+    })?;
+    for (off, word, _) in fixups {
+        if (0..4).all(|i| inside(off + i)) {
+            continue;
+        }
+        let mut kept = prev.read(off..off + 4)?;
+        overlay.read_over(off, &mut kept);
+        let differs = (0..4).any(|i| !inside(off + i as u64) && kept[i] != word[i]);
+        if differs {
+            return Err(failed(format!(
+                "R-3 (WP-273): the fixed word at file offset {off:#x} is outside the refilled \
+                 ranges and the output keeps {kept:02x?} there, not {word:02x?}"
+            )));
+        }
+    }
+    Ok(())
+}
 
 /// Sorted, disjoint ranges: overlapping and touching ones merged.
 fn normalize(mut v: Vec<Range<u64>>) -> Vec<Range<u64>> {

@@ -579,49 +579,39 @@ fn defined(
     Ok(out)
 }
 
-/// `placement.patches` and `.redirects` (stored; refused around `d.files`).
+/// `placement.patches` and `.redirects` (stored), and the `Fill` holes of
+/// the patches whose key is gone (WP-273; WP-271 §2 step 4): an erratum
+/// patch keyed by a section of `d.files` (its `SECTIONS` row is the old
+/// version's) becomes a hole of its island (`replan::hole_gone`, R-6: the
+/// image writes it as zeros) and its row is removed; a redirect of a
+/// section of `d.files` is dropped (the site is the old version's: front
+/// 2's re-plan judges the new sections at the update's addresses). Every
+/// other row is translated. A thunk keyed by a changed file's local stays
+/// refused by name (v1). `island_size` is the materialized chunk's size.
 fn patches(
     view: &StateView<'_>,
     link: &Link<'_, '_>,
     stored: &StoredLayout<'_>,
     ids: &Ids<'_>,
     g: &mut Globals<'_>,
-    computed: &Layout,
-) -> Result<(Vec<Patch>, Vec<Redirect>), Refusal> {
+    island_size: &dyn Fn(ChunkId) -> Option<u64>,
+) -> Result<mortar_layout::replan::Holed, Refusal> {
     let res = link.resolution;
-    let of_changed = |s: SectionId| res.sh_index(s).is_some_and(|(f, _)| ids.is_changed(f));
-    let cp = &computed.placement;
-    for p in &cp.patches {
-        if let PatchKind::Erratum { section, .. } = p.kind
-            && of_changed(section)
-        {
-            return Err(layout(format!(
-                "patches (ii): the front has an erratum patch in section {} of d.files (item 9)",
-                section.0
-            )));
-        }
-    }
-    if let Some(r) = cp.redirects.iter().find(|r| of_changed(r.section)) {
-        return Err(layout(format!(
-            "patches (ii): the front has a redirect in section {} of d.files (item 9: a changed file's thunks)",
-            r.section.0
-        )));
-    }
-    let section = |row: SectionId, what: &str| -> Result<SectionId, Refusal> {
+    // `Ok(None)`: a section of `d.files` (an old row).
+    let section = |row: SectionId, what: &str| -> Result<Option<SectionId>, Refusal> {
         let r = stored
             .section(row)
             .map_err(read)?
             .ok_or_else(|| corrupt(format!("{what}: SECTIONS row {} is no file's", row.0)))?;
         if ids.is_changed(r.file) {
-            return Err(layout(format!(
-                "{what}: SECTIONS row {} is of file {} (d.files: an old row)",
-                row.0, r.file.0
-            )));
+            return Ok(None);
         }
         res.section_id(r.file, SectionIndex(r.index))
+            .map(Some)
             .ok_or_else(|| corrupt(format!("{what}: SECTIONS row {}: no such section", row.0)))
     };
     let mut out = Vec::new();
+    let mut gone_rows = std::collections::BTreeSet::new();
     for (i, p) in stored.patches().map_err(read)?.into_iter().enumerate() {
         let kind = match p.kind {
             PatchKind::Thunk(ThunkTarget::Sym { key, addend }) => {
@@ -634,29 +624,43 @@ fn patches(
                 PatchKind::Thunk(ThunkTarget::Plt(g.key(view, link, ids, key, "patches")?))
             }
             PatchKind::Erratum { erratum, section: s, offset } => {
-                PatchKind::Erratum { erratum, section: section(s, "patches (i)")?, offset }
+                let key = section(s, "patches (i)")?;
+                if key.is_none() {
+                    gone_rows.insert(i);
+                }
+                // A gone key's row gets a placeholder; it becomes a hole below.
+                PatchKind::Erratum { erratum, section: key.unwrap_or(SectionId(0)), offset }
             }
         };
         out.push((Patch { chunk: ids.chunk(p.chunk, "patches")?, offset: p.offset, kind }, i));
     }
     out.sort_by_key(|(p, _)| (p.chunk, p.offset));
     let mut moved = vec![0u32; out.len()];
+    let mut gone = std::collections::BTreeSet::new();
     for (new, (_, old)) in out.iter().enumerate() {
         moved[*old] = new as u32;
+        if gone_rows.contains(old) {
+            gone.insert(new as u32);
+        }
     }
     let mut redirects = Vec::new();
     for r in stored.redirects().map_err(read)? {
         let patch = *moved
             .get(r.patch as usize)
             .ok_or_else(|| corrupt(format!("redirects: patch {} past PATCHES", r.patch)))?;
-        redirects.push(Redirect {
-            section: section(r.section, "redirects")?,
-            offset: r.offset,
-            patch,
-        });
+        let Some(section) = section(r.section, "redirects")? else { continue };
+        if gone.contains(&patch) {
+            return Err(corrupt(format!(
+                "redirects: a site of section {} to the patch of a changed file's site",
+                section.0
+            )));
+        }
+        redirects.push(Redirect { section, offset: r.offset, patch });
     }
     redirects.sort_by_key(|r| (r.section, r.offset));
-    Ok((out.into_iter().map(|(p, _)| p).collect(), redirects))
+    let patches: Vec<Patch> = out.into_iter().map(|(p, _)| p).collect();
+    mortar_layout::replan::hole_gone(&patches, &redirects, &gone, island_size)
+        .map_err(|e| image(format!("patches: the holes of gone keys: {e:?}")))
 }
 
 /// `merge.frag_off`: each live non-debug fragment of the front at its
@@ -1064,8 +1068,9 @@ fn materialize_in(
         }
     }
     let defined = defined(view, link, &chunk_rows, d, &ids, &mut g, computed, &chunks)?;
-    let (patches, redirects) = patches(view, link, stored, &ids, &mut g, computed)?;
-    let mut holes = Vec::new();
+    let island_size = |c: ChunkId| chunks.get(c.slot()).map(|x| x.size);
+    let (patches, redirects, gone_holes) = patches(view, link, stored, &ids, &mut g, &island_size)?;
+    let mut holes = gone_holes;
     for row in 0..ids.chunks.len() {
         for h in d.holes_of(stored, ChunkId(row as u32)).map_err(read)? {
             if h.kind == HoleKind::DeadSlot {
@@ -1085,7 +1090,7 @@ fn materialize_in(
     slots.sizes = sizes(computed, &mut chunks)?.into();
     segment_ends(d, &chunks)?;
     let moves = moves_code(link, d, &ids, &chunk_rows, &chunks)?;
-    let sized = sized(computed, &chunks, moves.as_deref())?;
+    let sized = sized(computed, &ids, &chunk_rows, &chunks, moves.as_deref())?;
     let placement = Placement {
         kind: mortar_core::PlacementKind::Loadable,
         chunks: Column::from_vec(chunks).map_err(|_| image("chunks: too many".into()))?,
@@ -1108,23 +1113,50 @@ fn materialize_in(
 }
 
 /// `placement.sized` (an island or an address-dependent synthetic chunk,
-/// L-115): the delta does not compute one (`delta.rs:29-31`); the front's
-/// row is kept when the delta's chunk has the front's size, otherwise
-/// `(layout)` (Part 2's rule, ruled: every AArch64 link has empty islands,
-/// size 0, one per code output section). An equal size does not prove the
-/// size right at the delta's addresses (an island's need is a distance), so
-/// the row is taken ONLY when the delta moves no executable code (`moves`,
-/// [`moves_code`]'s answer: ruling Part 2 item 2, F-1's bound); otherwise
-/// `(layout)` by name, until an island-reach check at the delta's
-/// addresses exists.
+/// L-115): the delta does not compute one (`delta.rs:29-31`).
+///
+/// - **An island** (WP-273, R-1): its size is the stored one (the delta's
+///   chunk), and front 2's re-plan (`mortar_layout::replan`) sizes it at
+///   the update's addresses. The re-plan needs the island FIXED: an island
+///   whose address is not its stored one is `(layout)` by name (F-1's
+///   bound, narrowed to "an island moved").
+/// - **Any other row** (an address-dependent synthetic chunk): the front's
+///   row is kept when the delta's chunk has the front's size and the delta
+///   moves no executable code (`moves`, [`moves_code`]'s answer: ruling
+///   Part 2 item 2, F-1's bound as it was); otherwise `(layout)` by name.
 fn sized(
     computed: &Layout,
+    ids: &Ids<'_>,
+    chunk_rows: &[(ChunkId, Chunk)],
     chunks: &[Chunk],
     moves: Option<&str>,
 ) -> Result<Box<[Sized]>, Refusal> {
+    // Each island's stored address, by the front's chunk id.
+    let mut stored_at: HashMap<u32, Option<u64>> = HashMap::default();
+    for (row, (_, old)) in chunk_rows.iter().enumerate() {
+        if matches!(old.kind, ChunkKind::Patches(_)) {
+            stored_at.insert(ids.chunk(ChunkId(row as u32), "sized")?.0, old.addr);
+        }
+    }
+    let mut out = Vec::with_capacity(computed.placement.sized.len());
     for r in &computed.placement.sized {
-        let have = chunks.get(r.chunk.slot()).map(|c| c.size);
+        let now = chunks.get(r.chunk.slot());
+        let have = now.map(|c| c.size);
         let kind = computed.placement.chunks.get(r.chunk).map(|c| c.kind);
+        if let Some(c) = now
+            && matches!(c.kind, ChunkKind::Patches(_))
+        {
+            let was = stored_at.get(&r.chunk.0).copied().flatten();
+            if c.addr != was {
+                return Err(layout(format!(
+                    "sized: F-1's bound: an island moved: chunk {} ({kind:?}) from {was:x?} to \
+                     {:x?} (R-1: the re-plan keeps islands fixed)",
+                    r.chunk.0, c.addr
+                )));
+            }
+            out.push(Sized { chunk: r.chunk, size: c.size });
+            continue;
+        }
         if have != Some(r.size) {
             return Err(layout(format!(
                 "sized: chunk {} ({kind:?}) is {:#x} in the front, {have:#x?} in the delta (an \
@@ -1135,13 +1167,13 @@ fn sized(
         if let Some(what) = moves {
             return Err(layout(format!(
                 "sized: F-1's bound: chunk {} ({kind:?}, size {:#x}) is an address-dependent row \
-                 and the delta moves executable code ({what}); no island-reach check at the \
-                 delta's addresses",
+                 and the delta moves executable code ({what})",
                 r.chunk.0, r.size
             )));
         }
+        out.push(*r);
     }
-    Ok(computed.placement.sized.clone())
+    Ok(out.into())
 }
 
 /// `placement.segments` (the delta's, derived again by `delta::layout`):

@@ -489,6 +489,225 @@ fn internal(what: impl Into<String>) -> Diagnostic {
     Diagnostic::error(Kind::InternalError { what: what.into() })
 }
 
+/// WP-273: an output code section's pre-fix words at a replayed
+/// placement (`Sites::code`, the words the full link's fixed point judges,
+/// one walk per output section), as [`mortar_layout::replan`]'s windows.
+struct UpdateWords<'w, 'a, 's> {
+    sites: &'w LinkSites<'a, 's>,
+    round: mortar_layout::fixed::Round<'w>,
+    pool: &'w Pool,
+    cache: std::cell::RefCell<
+        std::collections::BTreeMap<
+            mortar_core::id::OutSecId,
+            Option<mortar_layout::fixed::OwnedCode>,
+        >,
+    >,
+}
+
+impl mortar_layout::replan::WindowWords for UpdateWords<'_, '_, '_> {
+    fn words(
+        &self,
+        out: mortar_core::id::OutSecId,
+        lo: u64,
+        hi: u64,
+    ) -> Result<Option<mortar_layout::fixed::OwnedCode>, LayoutDiag> {
+        use mortar_layout::fixed::Sites as _;
+        let mut cache = self.cache.borrow_mut();
+        if let std::collections::btree_map::Entry::Vacant(v) = cache.entry(out) {
+            v.insert(self.sites.code(out, &self.round, self.pool)?);
+        }
+        let Some(Some(code)) = cache.get(&out) else { return Ok(None) };
+        Ok(Some(window_of(code, lo, hi)))
+    }
+}
+
+/// The bytes `[lo, hi)` of `code` (zero outside it) and its proof runs
+/// clipped to them, relative to `lo`.
+fn window_of(
+    code: &mortar_layout::fixed::OwnedCode,
+    lo: u64,
+    hi: u64,
+) -> mortar_layout::fixed::OwnedCode {
+    let len = hi.saturating_sub(lo);
+    let mut bytes = vec![0u8; usize::try_from(len).unwrap_or(0)];
+    let end = code.addr.saturating_add(code.bytes.len() as u64);
+    let (a, b) = (lo.max(code.addr), hi.min(end));
+    if a < b {
+        let src = &code.bytes[(a - code.addr) as usize..(b - code.addr) as usize];
+        bytes[(a - lo) as usize..(b - lo) as usize].copy_from_slice(src);
+    }
+    let mut proof = Vec::new();
+    for r in &code.proof {
+        let (rs, re) = (code.addr.saturating_add(r.start), code.addr.saturating_add(r.end));
+        let (a, b) = (rs.max(lo), re.min(hi));
+        if a < b {
+            proof.push(mortar_arch::ProofRun {
+                start: a - lo,
+                end: b - lo,
+                unit_offset: r.unit_offset + (a - rs),
+                ..*r
+            });
+        }
+    }
+    mortar_layout::fixed::OwnedCode { addr: lo, bytes, proof }
+}
+
+/// [`front`]'s `.symtab` and `.strtab` of a replayed `layout` resized to
+/// the plan `s` made from its patch rows (WP-273), with the plan's spans.
+///
+/// # Errors
+/// `incremental-update-failed` (`reserve-exhausted`) when a table is past
+/// its chunk's capacity; an internal error for a table with no chunk.
+#[allow(clippy::result_large_err, reason = "a diagnostic, made once")]
+fn tables_resized(layout: &mut Layout, s: &SymtabPlan) -> Result<(), Diagnostic> {
+    use mortar_core::incr::IncrReason;
+    layout.slots.symtab_locals = s.symtab_locals().clone();
+    for (name, size) in [(&b".symtab"[..], s.symtab_size()), (&b".strtab"[..], s.strtab_size())] {
+        let found = layout.placement.chunks.iter().find_map(|(id, c)| match c.kind {
+            ChunkKind::Synthetic(k) if k.name == name => Some(id),
+            _ => None,
+        });
+        let Some((id, c)) = found.and_then(|id| Some((id, layout.placement.chunks.get_mut(id)?)))
+        else {
+            return Err(internal("WP-273: a symbol table plan with no table chunk"));
+        };
+        if size > c.capacity {
+            let what = format!(
+                "{}: the re-planned patches' table is {size:#x}, past its capacity {:#x}",
+                String::from_utf8_lossy(name),
+                c.capacity
+            );
+            let reason = IncrReason::ReserveExhausted(what).report();
+            return Err(Diagnostic::error(Kind::IncrementalUpdateFailed { reason }));
+        }
+        c.size = size;
+        let mut sizes = layout.slots.sizes.to_vec();
+        for e in sizes.iter_mut().filter(|e| e.0 == id) {
+            e.1 = size;
+        }
+        layout.slots.sizes = sizes.into();
+    }
+    Ok(())
+}
+
+/// WP-273's refusal, by the fall-back's name (`IncrReason::report`), or a
+/// diagnostic of layout's to be keyed.
+type ReplanErr = (Key, Result<Diagnostic, LayoutDiag>);
+
+/// WP-273 (`spec/landed/incr/WP-271.md` "WP-273"): an update's patch
+/// islands re-planned at its replayed placement `pl` (front 2's), in
+/// place: `PATCHES`, `REDIRECTS`, `SIZED` and each island chunk's size,
+/// from [`mortar_layout::replan::replan`] over the pre-fix words of every
+/// exec output section (phase A: the dirty set is the whole extent, as
+/// front 2 refills every chunk). Islands stay fixed (R-1). A plain link
+/// never calls it (no replay). With `MORTAR_UPDATE_FINDINGS`, one line of
+/// what the re-plan did and the lane's compare of a dirty-only scan with
+/// the full scan.
+///
+/// Returns whether the patch or redirect rows changed.
+///
+/// # Errors
+/// A refusal by name (`island-exhausted`, `update-not-implemented
+/// (layout)`) as `incremental-update-failed`, or a layout diagnostic.
+#[allow(clippy::result_large_err, reason = "a diagnostic, made once")]
+fn replan_islands(
+    pl: &mut Placement,
+    sites: &LinkSites<'_, '_>,
+    arch: &dyn Arch,
+    cap: u64,
+    pool: &Pool,
+) -> Result<bool, ReplanErr> {
+    use mortar_core::incr::{IncrReason, Unimplemented};
+    use mortar_layout::fixed::Sites as _;
+    use mortar_layout::replan::{
+        Branches, Input, Refused, branches_in, difference, full_dirty, replan,
+    };
+    let key = Key::new(90, 0, u64::MAX - 2);
+    let refused = |reason: IncrReason| {
+        let reason = reason.report();
+        (key, Ok(Diagnostic::error(Kind::IncrementalUpdateFailed { reason })))
+    };
+    let view: &Placement = pl;
+    let round = mortar_layout::fixed::Round {
+        number: 0,
+        chunks: &view.chunks,
+        place: &view.place,
+        patches: &view.patches,
+        redirects: &view.redirects,
+    };
+    // The refilled exec bytes: phase A refills every chunk, so the dirty
+    // set is every exec extent (phase B's C' gives its own refill set).
+    let dirty = full_dirty(view);
+    // WP-276 rulings item 3: only the branch sites of the refilled exec
+    // sections (here every one; `Sites::targets` is the link's, one
+    // round's tables).
+    let all = sites.branches();
+    let targets = if arch.thunk().is_some() { sites.targets(&round, pool) } else { Vec::new() };
+    let picked = branches_in(view, &dirty, all);
+    let sub_sites: Vec<mortar_layout::fixed::BranchAt> = picked.iter().map(|&i| all[i]).collect();
+    let sub_targets: Vec<Option<u64>> =
+        picked.iter().map(|&i| targets.get(i).copied().flatten()).collect();
+    let branches = arch.thunk().map(|_| Branches { sites: &sub_sites, targets: &sub_targets });
+    let words = UpdateWords { sites, round, pool, cache: std::cell::RefCell::default() };
+    let input = Input { arch, placement: view, dirty: &dirty, words: &words, branches, cap };
+    let r = match replan(&input) {
+        Ok(r) => r,
+        Err(Refused::IslandExhausted(s)) => return Err(refused(IncrReason::IslandExhausted(s))),
+        Err(Refused::Layout(s)) => {
+            let r = IncrReason::UpdateNotImplemented(Some(Unimplemented::Layout)).report();
+            let reason = format!("{r}: WP-273 replan: {s}");
+            return Err((key, Ok(Diagnostic::error(Kind::IncrementalUpdateFailed { reason }))));
+        }
+        Err(Refused::Diag(d)) => return Err((key, Err(d))),
+    };
+    if let Some(path) = std::env::var_os("MORTAR_UPDATE_FINDINGS") {
+        // The lane's compare (phase A: the call's dirty set IS the full
+        // extent, so the two scans are one; phase B's C' gives a smaller
+        // one).
+        // Every exec window and every branch of the link.
+        let full = full_dirty(view);
+        let every = arch.thunk().map(|_| Branches { sites: all, targets: &targets });
+        let again = Input { dirty: &full, branches: every, ..input };
+        let cmp = match replan(&again) {
+            Ok(f) => match difference(&r, &f) {
+                None => "full-scan compare: equal".to_owned(),
+                Some(d) => format!("finding: WP-273 replan: full-scan compare: {d}"),
+            },
+            Err(e) => {
+                format!("finding: WP-273 replan: full-scan compare: the full scan refused: {e:?}")
+            }
+        };
+        let changed = r.patches[..] != view.patches[..] || r.redirects[..] != view.redirects[..];
+        let line = format!(
+            "WP-273 replan: {} sites judged, {} appended, {} dropped, {} patches, {} redirects, \
+             rows {}; {cmp}\n",
+            r.judged.len(),
+            r.appended,
+            r.dropped,
+            r.patches.len(),
+            r.redirects.len(),
+            if changed { "changed" } else { "unchanged" },
+        );
+        if let Ok(mut f) = std::fs::OpenOptions::new().create(true).append(true).open(path) {
+            use std::io::Write as _;
+            let _ = f.write_all(line.as_bytes());
+        }
+    }
+    drop(words);
+    for s in &r.sized {
+        if let Some(c) = pl.chunks.get_mut(s.chunk)
+            && matches!(c.kind, ChunkKind::Patches(_))
+        {
+            c.size = s.size;
+        }
+    }
+    let changed = r.patches[..] != pl.patches[..] || r.redirects[..] != pl.redirects[..];
+    pl.patches = r.patches.into();
+    pl.redirects = r.redirects.into();
+    pl.sized = r.sized.into();
+    Ok(changed)
+}
+
 /// Runs the front of the pipeline on `plan`. Every diagnostic goes to
 /// `diag`; `None` when one is an error (no `Layout` is made).
 #[allow(clippy::too_many_lines, reason = "the phases in order, each a few lines")]
@@ -1234,7 +1453,7 @@ pub fn front<'s>(
     steps.step("checks", 0, "");
     // IN-61: the replay's decision tables in place of the computed ones.
     let replayed = env.replay.is_some();
-    let layout = match env.replay {
+    let mut layout = match env.replay {
         None => layout,
         Some(replay) => {
             let link = mortar_incr::capture::Link {
@@ -1277,6 +1496,85 @@ pub fn front<'s>(
         && (!same_slot_lists(&layout.slots, demand_slots) || layout.merge != order.map);
     let branch_candidates = if sites_stale { branch_candidates } else { Vec::new() };
     let kept_sites = if replayed { kept_sites } else { None };
+    // `.got` (S-64) of a static link: the final layout's slot lists. One
+    // path. (An output with `.dynamic`, a `StaticPie` among them, has
+    // `dynlink`'s, WP-066.) Made before the checks: an update's sites read
+    // it (below).
+    let final_got = if has_dynamic {
+        None
+    } else {
+        Some(GotPlan::new(arch, &layout.slots, got_output, variant, diag).ok()?)
+    };
+    // a64.md §11.2: the erratum fixes, from the words fill writes at the
+    // final layout's addresses. A plain link's layout is the computed one
+    // and so are its fixes (above); a replay's are made again from its
+    // placement, after WP-273's re-plan of its islands at its own
+    // addresses (`replan_islands`; before the checks, which judge the
+    // re-planned rows). The sites read the slots' lists and the merged
+    // map, so they are made again too when the layout's are not theirs
+    // (compare-then-rebuild: a second walk of the code is a cost).
+    // `replanned`: whether WP-273's re-plan changed the patch rows.
+    let mut replanned = false;
+    let fixes = if replayed {
+        let fresh;
+        let sites = if sites_stale {
+            let ids = kept_sites.as_ref().map(|(i, _)| *i).unwrap_or_default();
+            let site_inputs = SiteInputs {
+                resolution: &resolution,
+                assignment: &assignment,
+                headers: &headers,
+                liveness: &liveness,
+                split: &merge.split,
+                merge: &layout.merge,
+                demands: &scanned.demands,
+                order: &scanned.order,
+                slots: &layout.slots,
+                got: final_got.as_ref().unwrap_or(&plans.got),
+                ids,
+                output,
+            };
+            match LinkSites::new(site_inputs, &branch_candidates, arch, &walker, &pool) {
+                Ok(s) => {
+                    fresh = s;
+                    Some(&fresh)
+                }
+                Err((k, d)) => {
+                    diag.emit(k, d);
+                    return None;
+                }
+            }
+        } else {
+            kept_sites.as_ref().map(|(_, s)| s)
+        };
+        match sites {
+            Some(s) => {
+                // Only the update's front 2 (format 5, `Env::state5`)
+                // re-plans: IN-61's replay (`replay_link`, format 4) and
+                // the floor (`floor.rs`) write the rows they are given,
+                // so that a mutated row shows (`tests/incremental.rs`).
+                if let Some(rules) = target.islands.filter(|_| env.state5) {
+                    match replan_islands(&mut layout.placement, s, arch, rules.cap, &pool) {
+                        Ok(changed) => replanned = changed,
+                        Err((k, d)) => {
+                            let (k, d) = match d {
+                                Ok(d) => (k, d),
+                                Err(d) => layout_diag(&inputs, &resolution, d, k),
+                            };
+                            diag.emit(k, d);
+                            return None;
+                        }
+                    }
+                }
+                s.erratum_fixes(&layout.placement, &pool)
+            }
+            None => Ok(Vec::new()),
+        }
+    } else {
+        computed_fixes
+    };
+    if replayed {
+        steps.step("erratum fixes from the layout", 0, "");
+    }
     let validated = layout.validate(&cx);
     steps.step("validate", 0, "");
     if let Err(v) = validated {
@@ -1322,6 +1620,19 @@ pub fn front<'s>(
     {
         plans.symtab = Some(old.with_patches(&syms, &layout.placement.patches));
     }
+    // WP-273: a replay whose patch rows its re-plan changed (its islands
+    // re-planned at its own addresses) has the plan's spans and
+    // table sizes, within each table chunk's capacity (materialize's
+    // `sizes` rule for `.symtab`/`.strtab`, IN-49a): the plan is a
+    // function of the final layout, and front 2 writes the whole table.
+    if replanned
+        && let Some(s) = &plans.symtab
+        && s.symtab_locals() != &layout.slots.symtab_locals
+        && let Err(d) = tables_resized(&mut layout, s)
+    {
+        diag.emit(Key::new(90, 0, u64::MAX - 2), d);
+        return None;
+    }
     // S-88: the layout's spans are the plan's (format version 1 admits no
     // other value; IN-49a).
     let spans = match &plans.symtab {
@@ -1335,54 +1646,6 @@ pub fn front<'s>(
     // `.shstrtab` (S-90): the names of the final placement's chunks, in
     // section index order. One path.
     plans.shstrtab = ShstrtabPlan::new(&placed_names(&layout.placement, &placement_assignment));
-    // `.got` (S-64) of a static link: the final layout's slot lists. One
-    // path. (An output with `.dynamic`, a `StaticPie` among them, has
-    // `dynlink`'s, WP-066.)
-    let final_got = if has_dynamic {
-        None
-    } else {
-        Some(GotPlan::new(arch, &layout.slots, got_output, variant, diag).ok()?)
-    };
-    // a64.md §11.2: the erratum fixes, from the words fill writes at the
-    // final layout's addresses. A plain link's layout is the computed one
-    // and so are its fixes (above); a replay's are made again from its
-    // placement. The sites read the slots' lists and the merged map, so
-    // they are made again too when the layout's are not theirs
-    // (compare-then-rebuild: a second walk of the code is a cost).
-    let fixes = if !replayed {
-        computed_fixes
-    } else if sites_stale {
-        let ids = kept_sites.as_ref().map(|(i, _)| *i).unwrap_or_default();
-        let site_inputs = SiteInputs {
-            resolution: &resolution,
-            assignment: &assignment,
-            headers: &headers,
-            liveness: &liveness,
-            split: &merge.split,
-            merge: &layout.merge,
-            demands: &scanned.demands,
-            order: &scanned.order,
-            slots: &layout.slots,
-            got: final_got.as_ref().unwrap_or(&plans.got),
-            ids,
-            output,
-        };
-        match LinkSites::new(site_inputs, &branch_candidates, arch, &walker, &pool) {
-            Ok(s) => s.erratum_fixes(&layout.placement, &pool),
-            Err((k, d)) => {
-                diag.emit(k, d);
-                return None;
-            }
-        }
-    } else {
-        match &kept_sites {
-            Some((_, s)) => s.erratum_fixes(&layout.placement, &pool),
-            None => Ok(Vec::new()),
-        }
-    };
-    if replayed {
-        steps.step("erratum fixes from the layout", 0, "");
-    }
     let erratum_fixes = match fixes {
         Ok(f) => f,
         Err(d) => {

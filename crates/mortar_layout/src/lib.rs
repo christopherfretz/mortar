@@ -25,6 +25,7 @@ pub mod incr_discard;
 pub mod order;
 pub mod rank;
 pub mod relocatable;
+pub mod replan;
 pub mod run;
 pub mod slack;
 pub mod stack;

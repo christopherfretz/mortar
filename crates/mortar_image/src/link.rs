@@ -697,7 +697,7 @@ fn plt_first_word(link: &Link<'_, '_>, target: u64) -> Option<u32> {
 /// # Errors
 ///
 /// `internal-error` for a word in no such chunk.
-fn file_fixups(link: &Link<'_, '_>) -> Result<Vec<fill::Fixup>, Diagnostic> {
+pub(crate) fn file_fixups(link: &Link<'_, '_>) -> Result<Vec<fill::Fixup>, Diagnostic> {
     let pl = &link.layout.placement;
     let mut spans: Vec<(u64, u64, u64)> = pl
         .chunks

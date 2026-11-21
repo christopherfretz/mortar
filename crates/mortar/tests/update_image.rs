@@ -81,6 +81,8 @@ struct Fixture {
     arch: Arch,
     /// The leaves of each output written (`LEAVES`, IN-18e).
     leaves: std::cell::RefCell<std::collections::BTreeMap<String, Vec<[u8; 32]>>>,
+    /// Options after [`Fixture::args`]' (WP-273: `--fix-cortex-a53-843419`).
+    options: Vec<OsString>,
 }
 
 impl Fixture {
@@ -89,7 +91,12 @@ impl Fixture {
             assert!(!tools_required(), "{} is required", arch.gnu("gcc"));
             return None;
         }
-        let f = Self { scratch: Scratch::new(label), arch, leaves: std::cell::RefCell::default() };
+        let f = Self {
+            scratch: Scratch::new(label),
+            arch,
+            leaves: std::cell::RefCell::default(),
+            options: Vec::new(),
+        };
         let [a, b, c] = sources(arch, 42, 0);
         f.assemble("a", &a);
         f.assemble("b", &b);
@@ -139,7 +146,9 @@ impl Fixture {
         replay: Option<&Layout>,
         go: impl FnOnce(&mut Front<'_>, &Store) -> T,
     ) -> T {
-        let parsed = mortar_cli::parse(&Self::args(out));
+        let mut args = Self::args(out);
+        args.extend(self.options.iter().cloned());
+        let parsed = mortar_cli::parse(&args);
         assert!(!parsed.failed());
         let store = Store::new(StorePolicy::from_env());
         let diag = Collector::new(Policy::default());
@@ -1422,4 +1431,85 @@ fn leaf_check_reads_each_dirty_block_once() {
             assert_eq!(counts.build_id_read, len, "{arch:?}: each dirty block read once");
         });
     }
+}
+
+// spec: WP-273 R-3 (`spec/landed/incr/WP-271.md` "WP-273"; review R-3): a
+// fixed word (an erratum 843419 fix, `Link::fixups`) outside the refilled
+// ranges must be the previous output's word there, else the refill is an
+// internal error by name; equal, the refill goes on. AArch64 only (x86-64
+// has no erratum).
+#[test]
+fn r3_a_fixed_word_outside_the_refill_is_an_internal_error() {
+    let Some(mut fx) = Fixture::new(Arch::Aarch64, "u6-r3") else { return };
+    fx.options.push("--fix-cortex-a53-843419".into());
+    // f's ADRP at a page's 0xff8: a site; `d` is near, so the fix is an
+    // ADR in place (a fixed word at W1).
+    fx.assemble(
+        "c",
+        "\t.section .text.f,\"ax\",%progbits\n\t.balign 4096\n\t.skip 0xff8\n\t.globl f\n\
+         \t.type f, %function\nf:\n\tadrp x0, d\n\tldr x2, [sp]\n\tldr x0, [x0, #:lo12:d]\n\
+         \tret\n\t.section .note.GNU-stack,\"\",%progbits\n",
+    );
+    let l0 = fx.write("prev", None);
+    let prev = std::fs::read(fx.path("prev")).unwrap();
+    fx.with_front("prev", Some(&l0), |f, store| {
+        // The fixed words' file offsets, and the words fill writes under.
+        let fixed: Vec<(usize, [u8; 4], Option<[u8; 4]>)> =
+            mortar::image::with_link(f, store, &|_| {}, |l| {
+                let pl = &l.layout.placement;
+                l.fixups
+                    .iter()
+                    .map(|&(addr, word, under)| {
+                        let (_, c) = pl
+                            .chunks
+                            .iter()
+                            .find(|(_, c)| {
+                                c.in_file()
+                                    && c.addr.is_some_and(|a| a <= addr && addr < a + c.size)
+                            })
+                            .expect("a fixed word in a chunk");
+                        ((c.offset + (addr - c.addr.unwrap())) as usize, word, under)
+                    })
+                    .collect()
+            })
+            .unwrap();
+        assert!(!fixed.is_empty(), "the site has a fix");
+        for &(off, word, _) in &fixed {
+            assert_eq!(prev[off..off + 4], word, "the full link wrote the fix");
+        }
+        // The refill planned at this link's placement, no unit refilled:
+        // the fixed words are outside every written range.
+        let delta = LayoutDelta { placement: f.layout.placement.clone(), ..LayoutDelta::default() };
+        let set = RefillSet::default();
+        let ok = run_refill(f, store, &delta, &SymtabPlan::default(), &set, &fx, "prev");
+        assert!(ok.is_ok(), "the previous output holds the fixed words: {:?}", ok.err());
+        // The previous output with the unfixed word under the first fix.
+        let (off, _, under) = fixed[0];
+        let mut stale = prev.clone();
+        stale[off..off + 4].copy_from_slice(&under.expect("the word fill writes under the fix"));
+        std::fs::write(fx.path("stale"), &stale).unwrap();
+        let leaves = fx.leaves_of("prev");
+        let r =
+            run_refill_with(f, store, &delta, &SymtabPlan::default(), &set, &fx, "stale", &leaves);
+        match r {
+            Err(RefillError::Failed(e)) => {
+                let text = format!("{:?}", e.diagnostics);
+                assert!(text.contains("InternalError") && text.contains("R-3 (WP-273)"), "{text}");
+            }
+            other => panic!("a stale fixed word: {:?}", other.map(|x| x.2)),
+        }
+        // The identity reference's shape (an empty delta: not planned at
+        // this placement) is not judged by R-3.
+        let r = run_refill_with(
+            f,
+            store,
+            &LayoutDelta::default(),
+            &SymtabPlan::default(),
+            &set,
+            &fx,
+            "stale",
+            &leaves,
+        );
+        assert!(!matches!(&r, Err(RefillError::Failed(e)) if format!("{e:?}").contains("R-3")));
+    });
 }

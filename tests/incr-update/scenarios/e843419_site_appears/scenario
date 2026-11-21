@@ -1,0 +1,16 @@
+# WP-273 (spec/landed/incr/WP-271.md §4, "WP-273"): the edit moves f's
+# ADRP onto a page's 0xff8 (c.o's section keeps its size and place); the
+# update's re-plan appends a patch to `.text`'s island (fixed, R-1), the
+# next hop moves it off again (the patch, keyed by c.o, becomes a Fill
+# hole, R-6), and back (a new patch after the hole).
+proves: an update that makes an erratum 843419 site appends its patch to the fixed island and the program loads through it; the site's disappearance leaves a zero Fill hole; every hop is an update, equivalent to the full link
+source: spec/landed/incr/WP-271.md §4 (e843419_site_appears), WP-273
+edit A: c.S
+hops: -, A, -, A
+link: a.o c.o
+compilers: gcc
+targets: a64
+not kiln: assembly (.S): kiln compiles C++ only; the shape is written in the assembly
+not x64: erratum 843419 is AArch64's (`--fix-cortex-a53-843419` is refused on x86-64, cli rows); x86-64 has no islands, its updates call no re-plan
+nolibc: yes
+options: --fix-cortex-a53-843419

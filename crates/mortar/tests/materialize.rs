@@ -307,9 +307,9 @@ fn keep_file<'v>(
     (d, changes)
 }
 
-/// `computed` without its island rows: F-1's bound refuses a moved code
-/// section on AArch64 (every link has empty islands), and the D-4 test is
-/// of `check_moved_code`, not of that bound (tested in the mutations).
+/// `computed` without its island rows: the D-4 test is of
+/// `check_moved_code`, not of the island rows (F-1's bound, narrowed by
+/// WP-273 to "an island moved", is tested in the mutations).
 fn no_islands(computed: &Layout) -> Layout {
     let mut c = computed.clone();
     c.placement.sized = Box::default();
@@ -410,23 +410,12 @@ fn materialize_mutations_differ_by_the_delta_or_refuse_by_name() {
             };
             m.moved = vec![uid];
             let r = s.run(view, &m, &changes, computed);
+            // WP-273 (R-1): F-1's bound is narrowed to "an island moved";
+            // a delta that moves a code section and no island is taken on
+            // both targets (front 2 re-plans the islands at its addresses).
+            moved_checks(&label, r, computed, fid, pc, po);
             if aarch64 {
-                // F-1's bound, the refused branch: an island row, and the
-                // delta moves a code section.
-                let name = refused(&label, "F-1: code moved", r, "F-1's bound");
-                assert!(name.contains("d.moved"), "{label}: F-1 names the move: {name}");
-                reached.push("F-1 bound");
-                // The same move with the island rows dropped from the
-                // front (x86-64's shape): taken (the checks below).
-                let mut c = computed.clone();
-                c.placement.sized = Box::default();
-                let r = s.run(view, &m, &changes, &c).map(|mut l| {
-                    l.placement.sized = computed.placement.sized.clone();
-                    l
-                });
-                moved_checks(&label, r, computed, fid, pc, po);
-            } else {
-                moved_checks(&label, r, computed, fid, pc, po);
+                reached.push("island kept");
             }
 
             // Grown: one body chunk that no DEFINED row names, 16 bytes more.
@@ -466,6 +455,18 @@ fn materialize_mutations_differ_by_the_delta_or_refuse_by_name() {
             let mut back = l.clone();
             back.placement.chunks.as_mut_slice()[diff[0]].size = b.size;
             assert_eq!(first_difference(&back, computed), None, "{label}: grown: nothing else");
+
+            // WP-273 (R-1): an island that moves is F-1's bound, by name.
+            if let Some(i) = (0..d.placement.chunks.len()).find(|&i| {
+                matches!(d.placement.chunks.as_slice()[i as usize].kind, ChunkKind::Patches(_))
+            }) {
+                let mut m = unchanged_delta(&stored).expect("empty");
+                let c = &mut m.placement.chunks.as_mut_slice()[i as usize];
+                c.addr = c.addr.map(|a| a + 4);
+                let name = refused(&label, "island moved", s.run(view, &m, &[], computed), "sized");
+                assert!(name.contains("an island moved"), "{label}: island moved: {name}");
+                reached.push("island moved");
+            }
 
             // A fragment of d.frags: a stored key at a new offset.
             let mem = mortar_incr::state5::read::decode(bytes).expect("decode");
@@ -739,8 +740,17 @@ fn materialize_mutations_differ_by_the_delta_or_refuse_by_name() {
             let mut v = c.placement.redirects.to_vec();
             v.push(Redirect { section: fid, offset: 0, patch: 0 });
             c.placement.redirects = v.into();
-            refused(&label, "redirect in d.files", s.run(view, &d, &changes, &c), "patches (ii)");
-            reached.push("patches (ii)");
+            // WP-273: the front's own patches and redirects are not read
+            // (front 2 re-plans them at the update's addresses): taken, and
+            // no redirect of `d.files` is materialized.
+            let l = s
+                .run(view, &d, &changes, &c)
+                .unwrap_or_else(|e| panic!("{label}: redirect in d.files: {e:?}"));
+            assert!(
+                !l.placement.redirects.iter().any(|r| r.section == fid),
+                "{label}: a redirect of d.files materialized"
+            );
+            reached.push("patches: front's not read");
 
             // ---- refusals of the stored side (rows mutated).
             let mut mm = mem.clone();

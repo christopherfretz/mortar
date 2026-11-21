@@ -10,9 +10,9 @@ use mortar_core::id::{
     SymbolId,
 };
 use mortar_core::layout::{
-    Addresses, AllocKey, Chunk, ChunkKind, DefValue, Defined, EntryDef, Erratum, Folds, Layout,
-    MergeMap, Part, Patch, PatchKind, Place, Placement, Redirect, Segment, SegmentRules, Sized,
-    SlotKind, Slots, SymPlace, Synth, ThunkTarget, Tls, derive_segments,
+    Addresses, AllocKey, Chunk, ChunkKind, DefValue, Defined, EntryDef, Erratum, Folds, Hole,
+    HoleKind, Layout, MergeMap, Part, Patch, PatchKind, Place, Placement, Redirect, Segment,
+    SegmentRules, Sized, SlotKind, Slots, SymPlace, Synth, ThunkTarget, Tls, derive_segments,
 };
 use mortar_core::liveness::Liveness;
 use mortar_core::resolution::{
@@ -1002,6 +1002,21 @@ fn s4_4_rule4_patch_out_of_place() {
     let mut w = World::new();
     w.p().redirects[0].offset = 0x18;
     w.rejects(Rule::Patches, "outside its section");
+}
+
+// spec: WP-271 §2 step 4 (WP-273, R-6: a dropped patch of an update is a `Fill` hole of
+// its island, written as zeros; no patch starts inside it)
+#[test]
+fn s4_4_rule4_fill_hole_in_an_island() {
+    let hole = |offset, size, kind| Hole { chunk: ChunkId(3), offset, size, kind };
+    let mut w = World::new();
+    w.p().holes = Box::new([hole(8, 8, HoleKind::Fill)]);
+    assert_eq!(w.validate(), Ok(()), "a fill hole after the island's patch");
+    w.p().holes = Box::new([hole(0, 8, HoleKind::Fill)]);
+    let v = w.rejects(Rule::Patches, "a patch inside a hole of its island");
+    assert_eq!(v.rows, [Row::Entry("holes", 0), Row::Entry("patches", 0)]);
+    w.p().holes = Box::new([hole(8, 8, HoleKind::DeadSlot)]);
+    w.rejects(Rule::Patches, "not a fill hole");
 }
 
 // ---- §4.4 rule 5 ------------------------------------------------------------

@@ -1,0 +1,16 @@
+# WP-273: the first link has the site (f's ADRP at 0xff8, its patch in
+# `.text`'s island); the edit moves the ADRP off 0xff8: the redirect is
+# dropped and the patch (keyed by c.o, the changed file) becomes a Fill
+# hole (R-6: zeros, as the full link writes an unused island byte); then
+# back (a new patch appended after the hole).
+proves: an update that removes an erratum 843419 site drops its redirect and writes its patch as a zero Fill hole; the site's return appends a new patch; every hop is an update, equivalent to the full link
+source: spec/landed/incr/WP-271.md §4 (e843419_site_disappears), WP-273
+edit A: c.S
+hops: -, A, -, A
+link: a.o c.o
+compilers: gcc
+targets: a64
+not kiln: assembly (.S): kiln compiles C++ only; the shape is written in the assembly
+not x64: erratum 843419 is AArch64's (`--fix-cortex-a53-843419` is refused on x86-64, cli rows); x86-64 has no islands, its updates call no re-plan
+nolibc: yes
+options: --fix-cortex-a53-843419
