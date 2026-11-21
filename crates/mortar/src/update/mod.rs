@@ -26,6 +26,7 @@ pub mod file_split;
 pub mod file_symbols;
 pub mod layout_in;
 pub mod probe;
+pub(crate) mod steps;
 pub mod stored_rows;
 mod update_rows;
 pub mod write;
@@ -384,6 +385,33 @@ fn reference_of(
             return Err(IncrReason::UpdateNotImplemented(Some(Unimplemented::Resolve)));
         }
     }
+    // WP-267 P-3, record §1 rows 8 and 9 without the front: M-6's
+    // refusal binds (a link that may have script directives); the option
+    // keys and the link's architecture from `META.machine` are judged
+    // against the front's (findings only).
+    // NOT binding yet: its "an input that gave no file" test refused 334
+    // lane hops whose front has no directives (a hand-back finding).
+    if changed::recording() {
+        let options = match steps::option_names(view, ctx.plan) {
+            Ok(o) => o,
+            Err(_) => mortar_resolve::tables::option_keys(ctx.plan, &[]),
+        };
+        let front = mortar_resolve::tables::option_keys(&f.plan, &f.inputs.link.directives);
+        let machine = steps::machine_of(view.meta()?.machine);
+        let arch = machine.and_then(|m| steps::link_arch_of(ctx.plan, m, true).ok());
+        let same_arch = arch
+            .as_ref()
+            .is_some_and(|(_, t, _, a)| *t == f.target && a.get().facts() == f.arch.get().facts());
+        if options == front && same_arch {
+            changed::record("P-3 rows 8-9: agree (option names, link arch)");
+        } else {
+            changed::record(&format!(
+                "finding: P-3 rows 8-9: option names equal {}, link arch equal {same_arch} \
+                 (META machine {machine:?})",
+                options == front
+            ));
+        }
+    }
     let rows = mortar_incr::state5::LayoutOf { view };
     let stored = StoredLayout::new(&rows);
     let delta = LayoutDelta { files: files.clone(), ..LayoutDelta::default() };
@@ -414,20 +442,12 @@ fn reference_of(
         };
         changed::record(&format!("M2b-4: front 1's refill or capture: {}{why}", e.report()));
     })?;
-    // The identity check (G-3's materialization in the identity case),
-    // first: the non-identity case materializes the delta (below).
+    // R-A1 (WP-267 P-3), the identity check, BINDING: the canonical form
+    // of the front's capture against the stored state (front 1's in this
+    // package; front 2's from P-5 on). It decides together with identity'
+    // (below): the identity case only when both say identity.
     let lock = session.lock().ok_or_else(image)?;
-    let corrupt = |e: std::io::Error| IncrReason::StateCorrupt(e.to_string());
-    let len = usize::try_from(lock.metadata().map_err(corrupt)?.len()).map_err(|_| image())?;
-    let mut bytes = vec![0u8; len];
-    std::os::unix::fs::FileExt::read_exact_at(lock, &mut bytes, 0).map_err(corrupt)?;
-    let old = mortar_incr::state5::canon::canon(&bytes)
-        .map_err(|e| IncrReason::StateCorrupt(e.to_string()))?;
-    let new = mortar_incr::state5::canon::canon_of(&state)
-        .map_err(|e| IncrReason::StateCorrupt(e.to_string()))?;
-    drop(bytes);
-    let diffs = mortar_incr::state5::canon::compare(&new, &old, &stored);
-    let same = identity(&diffs, files);
+    let (check, diffs, old) = steps::identity_check(lock, &state, files, &stored)?;
     // WP-255e3 (the clock): the identity check (the state read whole, both
     // canonical forms, their comparison).
     steps.mark("identity");
@@ -458,11 +478,37 @@ fn reference_of(
                 }
                 steps.mark("u6");
             }
+            // R-A2 (WP-267 P-3), BINDING, over the final delta (U6's drawn-in
+            // files included): every key the front re-resolves differently
+            // from the stored state is one the update chose; and (P-3b) every
+            // key whose `facts` differ is one a changed file mentions.
+            match steps::resolved_within_affected(&old, &state, &delta) {
+                Ok(n) => changed::record(&format!(
+                    "P-3 R-A2: agree ({n} keys re-resolved, all in affected)"
+                )),
+                Err(what) => {
+                    return Err(changed::finding_as(&format!("P-3 R-A2: {what}"), layout()));
+                }
+            }
+            let keys = steps::changed_keys(view, &cf, &delta)
+                .map_err(|e| changed::finding_as(&format!("P-3b facts: {e}"), layout()))?;
+            match steps::facts_within_changed(&old, &state, &keys) {
+                Ok(n) => changed::record(&format!(
+                    "P-3b facts: agree ({n} keys' facts differ, all mentioned by a changed file)"
+                )),
+                Err(what) => {
+                    let files: Vec<u32> = cf.files.iter().map(|c| c.file.0).collect();
+                    return Err(changed::finding_as(
+                        &format!("P-3b facts: {what} (changed files {files:?}, {flips} flips)"),
+                        layout(),
+                    ));
+                }
+            }
             // R-2 (a) (WP-264's `REGIONS` producer is in): a producer's
             // refusal falls back by its name in every case; the delta is
             // the one placement authority.
             let p = match placement(
-                view, &stored, f, ctx.store, cwd, &cf, delta, &live, &state, out, !same,
+                view, &stored, f, ctx.store, cwd, &cf, delta, &live, &state, out, check, flips,
             ) {
                 Ok(p) => p,
                 Err(Why::Refused(e) | Why::Finding(e)) => return Err(e),
@@ -472,6 +518,30 @@ fn reference_of(
         }
         None => None,
     };
+    drop(old);
+    // identity' (M-2) against the binding check, both directions; the
+    // identity case only when both say identity (R-A1).
+    let prime = placed.as_ref().map_or(Ok(()), |p| p.0.prime.clone());
+    match (&prime, check) {
+        (Ok(()), true) => changed::record("P-3 identity: agree (identity)"),
+        (Err(_), false) => changed::record("P-3 identity: agree (not identity)"),
+        (Ok(()), false) => {
+            let mut tables: std::collections::BTreeMap<u32, usize> =
+                std::collections::BTreeMap::new();
+            for d in diffs.iter().filter(|d| !identity(std::slice::from_ref(d), files)) {
+                *tables.entry(d.kind).or_default() += 1;
+            }
+            let first = diffs.iter().find(|d| !identity(std::slice::from_ref(d), files));
+            changed::record(&format!(
+                "finding: P-3 identity: identity' says identity, the check does not: tables \
+                 {tables:?}, first {first:?}"
+            ));
+        }
+        (Err(why), true) => changed::record(&format!(
+            "finding: P-3 identity: the check says identity, identity' does not: {why}"
+        )),
+    }
+    let same = check && prime.is_ok();
     if !same {
         // The tables that differ (kind: rows), for the findings file.
         let mut tables: std::collections::BTreeMap<u32, usize> = std::collections::BTreeMap::new();
@@ -1018,6 +1088,9 @@ struct Placed {
         Option<Result<(mortar_core::layout::Layout, mortar_core::incr::LayoutDelta), Refusal>>,
     /// WP-255e (the shadow): C''s refill set, made with `materialized`.
     shadow: Option<Result<ShadowSet, IncrReason>>,
+    /// WP-267 P-3: identity' (`steps::identity_prime`) over the update's
+    /// own rows: `Ok` identity, `Err` the first row that says not.
+    prime: Result<(), String>,
 }
 
 /// U6-U7 for the changed files of `cf` (M2b-2b; IN-72): `layout_inputs`,
@@ -1051,7 +1124,8 @@ fn placement(
     live: &mortar_incr::update::live::LiveDelta,
     capture: &mortar_incr::update::testing::MemoryState,
     previous: &std::fs::File,
-    materialize: bool,
+    check: bool,
+    flips: usize,
 ) -> Result<Placed, Why> {
     use mortar_core::incr::{FileDemands, LayoutInput};
     use mortar_core::resolution::SectionKind;
@@ -1218,9 +1292,22 @@ fn placement(
         ))
     })?;
     placed.debug = debug;
+    // WP-267 P-3: identity' from the update's own rows (O(change)).
+    placed.prime = steps::identity_prime(
+        view,
+        stored,
+        cf,
+        &delta,
+        &d,
+        &inputs.changes,
+        &inputs.pieces,
+        &demands,
+        flips,
+    );
     // M2b-3 Part 3 (the non-identity case only: O(link)): the stored
-    // layout with `d`, in the front's ids (R-1).
-    if materialize {
+    // layout with `d`, in the front's ids (R-1). Not the identity case
+    // unless the binding check and identity' both say so (R-A1).
+    if !(check && placed.prime.is_ok()) {
         placed.materialized = Some(materialize_on(view, stored, f, &d, &inputs.changes));
         // WP-255e's shadow: only when recorded (an update's own cost
         // must not include it).
@@ -2205,7 +2292,7 @@ fn judge(
         d.moved.len(),
         d.growth_steps.len()
     );
-    Ok(Placed { differ, summary, debug: None, materialized: None, shadow: None })
+    Ok(Placed { differ, summary, debug: None, materialized: None, shadow: None, prime: Ok(()) })
 }
 
 /// Whether the differences of the capture against the stored state are
