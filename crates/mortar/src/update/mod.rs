@@ -1937,21 +1937,20 @@ fn shadow_255e(
             let unplanned: Vec<String> = unplanned.into_iter().collect();
             if !whole.starts_with("clip plan: refused NotYet") {
                 format!("{whole} (synthetic chunks included)")
-            } else if !unplanned.is_empty() && !planned.is_empty() {
-                s3_clips = &planned;
-                let p = s2_of(&planned);
-                if p.starts_with("clip plan: refused NotYet") {
+            } else if merged.is_empty() {
+                if !unplanned.is_empty() && !planned.is_empty() {
+                    s3_clips = &planned;
+                } else {
                     s3_clips = &merged;
                 }
-                format!(
-                    "{whole}; the planned synthetic chunks included: {p}; left out: {}",
-                    unplanned.join(" ")
-                )
-            } else if merged.is_empty() {
-                s3_clips = &merged;
                 format!("{whole}; no range outside synthetic chunks")
             } else {
-                s3_clips = &merged;
+                // S2 as 255e3 left it (without the synthetic chunks); S3
+                // keeps the planned ones (the S2 clip plan over front 2's
+                // rows with `.symtab`/`.eh_frame` and `.debug_str` met one
+                // finding in the debug join: WP-255e4's record).
+                s3_clips =
+                    if unplanned.is_empty() || planned.is_empty() { &merged } else { &planned };
                 format!(
                     "{whole}; without the synthetic chunks: {}; left out: {}",
                     s2_of(&merged),
