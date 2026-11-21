@@ -201,24 +201,55 @@ pub(crate) fn file_mentions(
     file: FileId,
     table: &SymbolTable<'_>,
 ) -> Vec<MentionRow> {
+    let map = inputs.sym_map_of(file);
+    file_mentions_by(file, table, &|k| map.get(k).map(|id| id.0), &|s| section_of(res, file, s))
+}
+
+/// WP-267 P-1: [`file_mentions`] of ONE object without the link: the
+/// `k`-th non-local entry's key is `keys[k]` (the caller's, by name; an
+/// entry past `keys` is skipped, as `file_mentions` skips one the input
+/// phase has no key of), a definition in section index `i` names
+/// `first_section + i` when `i < sections` (the file's section count:
+/// `Resolution::section_id`'s rule over `first_section .. + sections`).
+pub(crate) fn file_mentions_of(
+    file: FileId,
+    table: &SymbolTable<'_>,
+    keys: &[u32],
+    first_section: u32,
+    sections: u32,
+) -> Vec<MentionRow> {
+    let section = |s: Result<SymbolSection, mortar_elf::Error>| match s {
+        Ok(SymbolSection::Section(i)) if i.0 < sections => first_section + i.0,
+        _ => NONE,
+    };
+    file_mentions_by(file, table, &|k| keys.get(k).copied(), &section)
+}
+
+/// The one body of [`file_mentions`] and [`file_mentions_of`]: `key` of
+/// the `k`-th non-local entry, `section_id` of a symbol's section.
+fn file_mentions_by(
+    file: FileId,
+    table: &SymbolTable<'_>,
+    key: &dyn Fn(usize) -> Option<u32>,
+    section_id: &dyn Fn(Result<SymbolSection, mortar_elf::Error>) -> u32,
+) -> Vec<MentionRow> {
     let mut mentions = Vec::new();
     let first = table.first_global().0;
-    let map = inputs.sym_map_of(file);
     for (index, sym) in table.iter() {
         if index.0 < first {
             continue;
         }
-        let Some(&id) = map.get((index.0 - first) as usize) else { continue };
+        let Some(id) = key((index.0 - first) as usize) else { continue };
         let section = table.section_of(index, &sym);
         let kind = sym_kind(section);
         let row = MentionRow {
             file: file.0,
-            symbol: id.0,
+            symbol: id,
             kind,
             bind: sym.st_info >> 4,
             typ: sym.st_info & 0xf,
             other: sym.st_other,
-            section: if kind == def_kind::SECTION { section_of(res, file, section) } else { NONE },
+            section: if kind == def_kind::SECTION { section_id(section) } else { NONE },
         };
         // A definition in a section without an id (one the reader
         // does not keep) is recorded as absolute: still a definition.
