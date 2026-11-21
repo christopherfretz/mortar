@@ -94,9 +94,34 @@ pub(crate) fn hooked_binary() -> Result<PathBuf, String> {
     if p.is_file() { Ok(p) } else { Err(format!("no testhooks mortar at '{}'", p.display())) }
 }
 
+/// The comparator of the `state` check's (d0) (WP-267 P-4):
+/// `mortar_incr`'s example `incr_state` (`compare a b`), release like
+/// mortar, so it shares mortar's build (about 9 s on top of it, cold).
+fn incr_state_binary() -> Result<PathBuf, String> {
+    let cargo = std::env::var_os("CARGO").unwrap_or_else(|| "cargo".into());
+    let mut command = Command::new(cargo);
+    command.args([
+        "build",
+        "--release",
+        "--quiet",
+        "--package",
+        "mortar_incr",
+        "--example",
+        "incr_state",
+    ]);
+    match process::run_step(&mut command, true) {
+        Ok((status, _)) if status.success() => {}
+        Ok((status, _)) => return Err(format!("cannot build incr_state: cargo build: {status}")),
+        Err(e) => return Err(format!("cannot build incr_state: {e}")),
+    }
+    let p = crate::linktest::build_dir().join("release").join("examples").join("incr_state");
+    if p.is_file() { Ok(p) } else { Err(format!("no incr_state at '{}'", p.display())) }
+}
+
 fn lane(a: &Args, extra: &[String]) -> Result<bool, String> {
     let mortar = crate::mason::mortar_binary(a.mortar.as_deref())?;
     let hooked = hooked_binary()?;
+    let incr_state = incr_state_binary()?;
     let python = mortar_testutil::find_tool("python3").ok_or("python3 not found")?;
     let xtask = std::env::current_exe().map_err(|e| format!("the xtask binary: {e}"))?;
     let mut cmd = Command::new(python);
@@ -109,6 +134,8 @@ fn lane(a: &Args, extra: &[String]) -> Result<bool, String> {
         .arg(&xtask)
         .arg("--work")
         .arg(crate::linktest::build_dir().join("incr-update"))
+        .arg("--incr-state")
+        .arg(&incr_state)
         .arg("-j")
         .arg(a.jobs.to_string())
         .args(&a.pass)

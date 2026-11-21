@@ -947,12 +947,20 @@ class Facts:
             if s['type'] == 8 or not s['name']:
                 continue
             sa = A.osec(s['name'])
-            if sa is None:
-                self.outside.append((s['name'], 'new section', s['size'], s['size'])); continue
-            x = A.out[sa['off']:sa['off'] + sa['size']]
             y = B.out[s['off']:s['off'] + s['size']]
-            if x == y and sa['addr'] == s['addr']:
-                continue
+            if sa is None:
+                # a new output section (WP-267 P-4): judged as one grown
+                # from nothing, so its tail is what lies past the new
+                # link's last unit or hole in it, never the units' own
+                # bytes (IN-63a: only bytes outside every unit must belong
+                # to a synthetic chunk); it is always listed, so a new
+                # section no chunk names is a MISS
+                x, what = b'', 'new section'
+            else:
+                x = A.out[sa['off']:sa['off'] + sa['size']]
+                what = None
+                if x == y and sa['addr'] == s['addr']:
+                    continue
             mask = bytearray(max(len(x), len(y)))
             for (o, z) in cover.get(s['name'], ()):
                 mask[o:o + z] = b'\1' * len(mask[o:o + z])
@@ -973,7 +981,9 @@ class Facts:
                             tail += j >= last
             n += abs(len(x) - len(y))
             tail += max(0, len(y) - max(len(x), last))
-            if n or sa['addr'] != s['addr']:
+            if what is not None:
+                self.outside.append((s['name'], what, n, tail))
+            elif n or sa['addr'] != s['addr']:
                 self.outside.append((s['name'], 'addr %x->%x size %x->%x' % (sa['addr'], s['addr'], sa['size'], s['size']), n, tail))
 
     @staticmethod

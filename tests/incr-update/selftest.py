@@ -8,6 +8,8 @@ import struct
 import sys
 
 HERE = os.path.dirname(os.path.abspath(__file__))
+# (d)'s units save nothing (FakeCanon writes no file): no scratch
+SCRATCH = None
 sys.path.insert(0, HERE)
 sys.path.insert(0, os.path.join(HERE, '..', 'l10'))
 sys.dont_write_bytecode = True
@@ -66,7 +68,7 @@ class FakeCanon:
     def __init__(self, diffs):
         self.diffs = diffs
 
-    def compare(self, a, b, p_u):
+    def compare(self, a, b, p_u, save=None):
         return list(self.diffs)
 
 
@@ -186,25 +188,95 @@ def units(log=print):
     # (d): the stub, and the machinery around it with a live comparator
     x = judge.Link(HERE, 'x', 'x.map', 0, [])
 
-    def state(canon, reason='update'):
+    # the files exist: FakeCanon does not read them, the judge asks they exist
+    any_file = os.path.join(HERE, 'selftest.py')
+
+    def state(canon, reason='update', identity=True, base_was_update=False, g_state=any_file):
         v = _verdict(reason)
-        judge._state(v, x, judge.Hop(canon=canon))
+        judge._state(v, x, judge.Hop(canon=canon, state=any_file, g_state=g_state, identity=identity,
+                                     base_was_update=base_was_update, scratch=SCRATCH))
         return v.checks[0][1]
 
     def dut(canon, causes=None, reason='update'):
         v = _verdict(reason)
-        judge._duty(v, x, judge.Hop(canon=canon, causes=causes))
+        judge._duty(v, x, judge.Hop(canon=canon, causes=causes, state=any_file, state_prev=any_file,
+                                    scratch=SCRATCH))
         return v.checks[0][1]
-    case('state-stub', state(None), 'n/a (d) not run (canon: U-2); P_U: decision records not read')
-    case('duty-stub', dut(None), 'n/a (d) not run (canon: U-2)')
-    stale = FakeCanon([('SECTIONS', 'u.o:7', 'address 0x4100, the capture 0x4000'), ('SYMTAB', 'u.o:3', 'x')])
-    case('state-first-differing-row', state(stale),
-         "FAIL canon(S') differs from canon(C(U)): SECTIONS row u.o:7: address 0x4100, the capture 0x4000 "
-         "(and 1 more rows)")
-    case('state-equal', state(FakeCanon([])), 'pass (decision rows not compared: P_U: decision records not read)')
-    case('state-full-link', state(FakeCanon([]), 'small-output'), 'n/a (full link: small-output)')
-    case('duty-covered', dut(stale), 'pass (2 rows differ)')
-    case('duty-by-kind', dut(FakeCanon([(7, 'u.o:7', 'x')])), 'pass (1 rows differ)')
+
+    def row(table, i, a, b):
+        return (table, 'row %d' % i, '%s != %s' % (a.hex(), b.hex()))
+    case('state-stub', state(None), "n/a (d) not run (no incr_state: (d0)'s comparator absent); "
+                                    "P_U: decision records not read")
+    case('duty-stub', dut(None), "n/a (d) not run (no incr_state: (d0)'s comparator absent)")
+    # (d0) (WP-267 P-4): the rules, on the comparator's own lines
+    case('d0-parse', judge.parse_compare('SECTIONS row 3: 00 != 01\nHOLES 0a0b: only in the first\n'
+                                         'HOLES : 2 rows against 1 (duplicates)\n3 differences\n'),
+         [('SECTIONS', 'row 3', '00 != 01'), ('HOLES', '0a0b', 'only in the first'),
+          ('HOLES', '', '2 rows against 1 (duplicates)')])
+    case('d0-parse-count-wrong', judge.parse_compare('SECTIONS row 3: 00 != 01\n2 differences\n'), None)
+    case('d0-parse-no-count', judge.parse_compare('SECTIONS row 3: 00 != 01\n'), None)
+    sec = bytes(range(76))
+    sec_moved = sec[:64] + bytes(12)              # only the place (chunk, offset) differs
+    sec_stale = sec[:40] + b'\xff' + sec[41:]     # sh_size differs: not placement
+    stale = FakeCanon([row('SYMBOLS', 7, b'\x01' * 36, b'\x02' * 36), row('SECTIONS', 2, sec, sec_moved)])
+    case('d0-identity-one-stale-row-fails', state(FakeCanon([row('SYMBOLS', 7, b'\x01' * 36, b'\x02' * 36)])),
+         lambda r: r.startswith("FAIL (d0 exact: an identity hop on a full link) canon(S') differs from canon(G): "
+                                "SYMBOLS row row 7"))
+    case('d0-identity-placement-row-fails-too', state(FakeCanon([row('SECTIONS', 2, sec, sec_moved)])),
+         lambda r: r.startswith('FAIL (d0 exact'))
+    case('d0-identity-equal', state(FakeCanon([])), 'pass (d0 exact)')
+    case('d0-moved-stale-non-placement-row-fails', state(stale, identity=False),
+         lambda r: r.startswith("FAIL (d0 outside placement: not an identity hop) canon(S') differs from canon(G) "
+                                "outside the placement rows: SYMBOLS row row 7"))
+    case('d0-moved-stale-column-fails', state(FakeCanon([row('SECTIONS', 2, sec, sec_stale)]), identity=False),
+         lambda r: r.startswith('FAIL (d0 outside placement') and 'SECTIONS row row 2' in r)
+    case('d0-moved-placement-only-passes', state(FakeCanon([
+        row('SECTIONS', 2, sec, sec_moved), ('HOLES', 'aa', 'only in the first'), row('CHUNKS', 0, b'a', b'b'),
+        row('FILES', 1, bytes(97), bytes(72) + b'\x10' + bytes(24)),
+        row('SLOTS', 0, b'\x01' * 12, b'\x02' * 12), row('SLOTS', 1, b'\x02' * 12, b'\x01' * 12)]),
+        identity=False), 'pass (d0 outside placement: 6 rows excluded)')
+    case('d0-moved-slots-not-a-permutation-fails', state(FakeCanon([
+        row('SLOTS', 0, b'\x01' * 12, b'\x02' * 12), row('SLOTS', 1, b'\x02' * 12, b'\x03' * 12)]),
+        identity=False), lambda r: r.startswith('FAIL (d0 outside placement') and 'SLOTS' in r)
+    case('d0-files-eh-records-not-placement', state(FakeCanon([
+        row('FILES', 1, bytes(97), bytes(80) + b'\x01' + bytes(16))]), identity=False),
+        lambda r: r.startswith('FAIL (d0 outside placement') and 'FILES' in r)
+    case('d0-base-was-update-identity-not-exact', state(FakeCanon([row('SECTIONS', 2, sec, sec_moved)]),
+                                                         base_was_update=True),
+         'pass (d0 outside placement: 1 rows excluded)')
+    case('d0-base-was-update-stale-row-fails', state(stale, base_was_update=True),
+         lambda r: r.startswith('FAIL (d0 outside placement: the base was an update)'))
+    case('d0-identity-unknown-not-exact', state(FakeCanon([row('SECTIONS', 2, sec, sec_moved)]), identity=None),
+         'pass (d0 outside placement: 1 rows excluded)')
+    case('d0-never-stat-and-directory', judge.d0_normalise(
+        [('STAT', 'row 0', 'x'), row('STRINGS', 0, b'/r/ws/b', b'/r/h1/b'), row('STRINGS', 1, b'/r/ws/b', b'/r/h1/c')],
+        ('/r/ws', '/r/h1')),
+        ([row('STRINGS', 1, b'/r/ws/b', b'/r/h1/c')], {'STAT': 1, 'STRINGS (the directory)': 1}))
+    # supervisor's ruling (P-4 hand-back): a DEBUG_STRS offset is placement
+    # off an exact hop (judged against the output instead); its hash is not
+    ds, ds_moved, ds_hash = b'\x00' + b'\xaa' * 8 + b'\x67\x05\x00\x00', b'\x00' + b'\xaa' * 8 + b'\x7a\x05\x00\x00', \
+        b'\x00' + b'\xab' * 8 + b'\x67\x05\x00\x00'
+    case('d0-moved-debug-strs-offset-excluded', state(FakeCanon([row('DEBUG_STRS', 0, ds, ds_moved)]),
+                                                      identity=False), 'pass (d0 outside placement: 1 rows excluded)')
+    case('d0-moved-debug-strs-hash-fails', state(FakeCanon([row('DEBUG_STRS', 0, ds, ds_hash)]), identity=False),
+         lambda r: r.startswith('FAIL (d0 outside placement') and 'DEBUG_STRS' in r)
+    case('d0-identity-debug-strs-offset-fails', state(FakeCanon([row('DEBUG_STRS', 0, ds, ds_moved)])),
+         lambda r: r.startswith('FAIL (d0 exact'))
+    case('d0-no-g-state', state(FakeCanon([]), g_state=os.path.join(HERE, 'no-such-state')),
+         'n/a (d0) has no G state (the G link wrote none)')
+    case('d0-full-link', state(FakeCanon([]), 'small-output'), 'n/a (full link: small-output)')
+    case('d0-tool-absent-is-na', state(judge.CANON_STUB),
+         lambda r: r.startswith('n/a ') and 'not run' in r)
+    case('d0-tool-failed-fails', state(type('T', (), {'live': True, 'compare': lambda self, *a, **k:
+                                                       judge.CompareFailed('TIMEOUT incr_state compare')})()),
+         'FAIL (d0) TIMEOUT incr_state compare')
+    case('d0-kinds', [judge.d0_kind(r) for r in ('pass (d0 exact)', 'pass (d0 outside placement: 2 rows excluded)',
+                                                 'n/a (full link: x)', 'FAIL (d0) x')],
+         ['exact', 'outside-placement', 'n/a', 'FAIL'])
+    covered = 'pass (S against S\': %d rows differ; not judged: STRINGS)'
+    case('duty-covered', dut(stale), covered % 2)
+    case('duty-by-kind', dut(FakeCanon([(7, 'u.o:7', 'x')])), covered % 1)
+    case('duty-strings-held-out', dut(FakeCanon([('STRINGS', 'row 0', 'x')])), covered % 0)
     case('duty-no-cause', dut(FakeCanon([('ODR_CLASSES', 'K', 'x')])),
          lambda r: r.startswith('FAIL ODR_CLASSES row K differs') and 'no cause' in r)
     case('duty-not-this-update', dut(FakeCanon([('DEFINED', 'k', 'x')]), causes={'changed', 'output'}),
@@ -214,7 +286,7 @@ def units(log=print):
     # COPIES rows change only with their files
     case('duty-groups-copies-are-a-changed-files', dut(FakeCanon([('GROUPS', 'g', 'x'), (55, 'k', 'x'),
                                                                   ('COMMONS', 'c', 'x')]), causes={'changed'}),
-         'pass (3 rows differ)')
+         covered % 3)
     case('duty-group-alone-changes-no-row', dut(FakeCanon([('GROUPS', 'g', 'x')]), causes={'group', 'key'}),
          lambda r: r.startswith('FAIL GROUPS row g differs') and 'not this update' in r)
     case('duty-copies-not-a-keys', dut(FakeCanon([('COPIES', 'k', 'x')]), causes={'key'}),
@@ -223,7 +295,7 @@ def units(log=print):
          lambda r: r.startswith('FAIL ODR_REFS row k differs') and 'no cause' in r)
 
     # DEBUG_STRS is judged against the output (WP-247; WP-228 R-2.3)
-    case('duty-debug-strs-held-out', dut(FakeCanon([(57, 'k', 'x')]), causes={'touched'}), 'pass (1 rows differ)')
+    case('duty-debug-strs-held-out', dut(FakeCanon([(57, 'k', 'x')]), causes={'touched'}), covered % 1)
     vectors = [(b'', 0x93228a4de0eec5a2), (b'a', 0xaced12527fe5bff8), (b'abc', 0x989b4a209c1011c9),
                (b'_start', 0xa9058601da6bbdae), (b'0123456789abcdef', 0x88de385a856cfb95),
                (b'0123456789abcdefg', 0x14f37288a5f8073a),
@@ -237,6 +309,13 @@ def units(log=print):
     case('debug-strs-right', duty.debug_strs_check(debug_state(good), elf), [])
     case('debug-strs-row-wrong-bytes', duty.debug_strs_check(debug_state(good[:2] + [(0, good[2][1], 4)]), elf),
          lambda r: any('does not name its string' in x for x in r) and any('at 9 is not found' in x for x in r))
+    # a string in the map's dead range (an update keeps it as written: L-147,
+    # G-5) need not be found; outside one it must
+    case('debug-strs-dead-string-excused', duty.debug_strs_check(debug_state(good[1:]), elf,
+                                                                 {b'.debug_str': [(0, 4)]}), [])
+    case('debug-strs-dead-elsewhere-not-excused', duty.debug_strs_check(debug_state(good[1:]), elf,
+                                                                        {b'.debug_line_str': [(0, 4)]}),
+         lambda r: any('at 0 is not found' in x for x in r))
     case('debug-strs-string-missing', duty.debug_strs_check(debug_state(good[1:]), elf),
          ['.debug_str: the string at 0 is not found'])
     case('debug-strs-past-section', duty.debug_strs_check(debug_state(good + [(0, 7, 99)]), elf),

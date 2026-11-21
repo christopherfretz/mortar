@@ -53,12 +53,14 @@ IN-79's checks (hop given), in order (IN79_CHECKS; spec/harness.md
   equiv    (b) as L10's, with the update's own map
   run      (a) as L10's
   oracle   (c) as L10's
-  state    (d) state_equals_capture_of_its_placement (IN-78): canon(S')
-           against canon(C(U)); today through the stub of `incr_state
-           canon`: "n/a (d) not run (canon: U-2)"
-  duty     (d) duty_list_covers_differences (IN-78): every row in which
-           canon(S) and canon(C(U)) differ is a table of a cause of
-           IN-78's derived table (tests/incr-update/duty.py); same stub
+  state    (d) until (d) proper: (d0) (WP-267 P-4), `incr_state compare
+           S' G`, G the state of the hop's `--incremental=full` link;
+           exact on an identity hop whose base was a full link, else equal
+           outside IN-78's placement rows (d0_exact, d0_outside_placement;
+           what it does not judge: spec/harness.md "incr-update")
+  duty     (d) duty_list_covers_differences (IN-78) under (d0): every row
+           in which canon(S) and canon(S') differ is a table of a cause of
+           IN-78's derived table (tests/incr-update/duty.py)
 and the report's first line is the step's REASON (`update`, or the
 fall-back's name). The lane adds `expect` (expect_full) after a hop of a
 scenario that says `expect-full:`.
@@ -110,13 +112,15 @@ class Hop:
     state_prev    a copy of the state before the link (S), for the duty
                   check, or None (made only when canon is live)
     scratch       the directory where C(U), the replay's capture, goes
-    canon         the (d) comparator (CANON_STUB until U-2: not run)
+    canon         the (d) comparator: IncrState ((d0), WP-267 P-4), or
+                  CANON_STUB without the tool (not run, `n/a` by name)
     causes        the causes of IN-78's derived table this update has (a
                   set of duty.py ids), or None (any cause)
     """
 
     def __init__(self, prev=None, ranges=None, state=None, state_before=None, state_prev=None, scratch=None,
-                 canon=None, causes=None, base_was_update=False, g_status=None):
+                 canon=None, causes=None, base_was_update=False, g_status=None, g_state=None, identity=None,
+                 dirs=None):
         self.prev, self.ranges, self.state, self.state_before = prev, ranges, state, state_before
         self.state_prev, self.scratch, self.canon, self.causes = state_prev, scratch, canon or CANON_STUB, causes
         # WP-225 ruling M2a2-1: the previous successful hop's link was an
@@ -127,6 +131,13 @@ class Hop:
         # (`--incremental=full` of the new inputs, the oracle's `new`), or
         # None when not run. A failed G link does not end the run; (c) names it.
         self.g_status = g_status
+        # WP-267 P-4 ((d0)): G's state (the hop's `--incremental=full` link
+        # of the same inputs), and whether the hop is an identity hop
+        # (True, False, or None: not known, judged as not one)
+        self.g_state, self.identity = g_state, identity
+        # (the subject's directory, G's): the one string in which the two
+        # states may differ by construction (d0_normalise)
+        self.dirs = dirs
 
 
 class Verdict:
@@ -587,8 +598,8 @@ class NotRun:
 
 
 class CanonStub:
-    """Stands for `incr_state canon` (U-2: `mortar_incr::state5::canon`
-    and `compare`, IN-78) until U-2 lands. `compare(a, b, p_u)` returns
+    """Stands for the comparator when the lane has no `incr_state` (and in
+    the self-test): `n/a` by name, never a pass (WP-267 P-4). `compare(a, b, p_u)` returns
     NotRun, or the differences of canon(a) against canon(b) as a list of
     (table, row, what): the table's name (spec/incr.md's table names, as
     duty.py has them), the row's canonical key, what differs; [] = equal."""
@@ -596,10 +607,72 @@ class CanonStub:
     live = False
 
     def compare(self, a, b, p_u):
-        return NotRun('(d) not run (canon: U-2)')
+        return NotRun('(d) not run (no incr_state: (d0)\'s comparator absent)')
 
 
 CANON_STUB = CanonStub()
+STATE_TIMEOUT = 120
+
+
+class CompareFailed:
+    """The comparator ran and could not give an answer (a timeout, an
+    exit status other than 0 and 1, output it does not parse): a FAIL of
+    the check, never a pass."""
+
+    def __init__(self, why):
+        self.why = why
+
+
+def parse_compare(text):
+    """`incr_state compare a b`'s standard output as [(table, row, what)],
+    or None when it does not parse. Its lines (examples/incr_state.rs's
+    `compare` arm, state5::compare): `<TABLE> <row>: <what>` a difference,
+    the row `row <i>` (equal row counts: `<what>` is `<hex> != <hex>`),
+    the row's hex (unequal counts, a set difference: `only in the first`
+    or `only in the second`), or empty (`<n> rows against <m>
+    (duplicates)`); then `<n> differences`."""
+    lines = text.splitlines()
+    if not lines or not lines[-1].endswith(' differences'):
+        return None
+    try:
+        n = int(lines[-1].split()[0])
+    except ValueError:
+        return None
+    out = []
+    for line in lines[:-1]:
+        table, sp, rest = line.partition(' ')
+        row, sep, what = rest.partition(': ')
+        if not sp or not sep or not table:
+            return None
+        out.append((table, row, what))
+    return out if len(out) == n else None
+
+
+class IncrState:
+    """(d0)'s live comparator (WP-267 P-4): `incr_state compare a b`
+    (crates/mortar_incr/examples/incr_state.rs; the canonical forms of
+    state5::canon and their differences, state5::compare). `p_u` is not
+    read (the tool's `compare` takes none; `placement_of_map` gives none).
+    The output is saved to `save` when it names a difference."""
+
+    live = True
+
+    def __init__(self, tool):
+        self.tool = tool
+
+    def compare(self, a, b, p_u, save=None):
+        rc, out = _run([self.tool, 'compare', a, b], os.path.dirname(os.path.abspath(a)), STATE_TIMEOUT)
+        if rc is None:
+            return CompareFailed('TIMEOUT incr_state compare %s' % out)
+        if rc not in (0, 1):
+            return CompareFailed('incr_state compare exit %s: %s' % (rc, _tail(out)))
+        diffs = parse_compare(out)
+        if diffs is None or (rc == 0) != (not diffs):
+            return CompareFailed('incr_state compare exit %s, output not understood: %s' % (rc, _tail(out)))
+        if diffs and save:
+            with open(save, 'w') as fh:
+                fh.write(out)
+        return diffs
 
 
 def placement_of_map(map_path):
@@ -617,35 +690,247 @@ def first_difference(diffs):
     return '%s row %s: %s%s' % (table, row, what, more)
 
 
+# IN-78's placement rows (its decision rows and its derived layout rows):
+# on a hop (d0) does not judge exactly, a difference in them is excluded,
+# since the update's placement may differ from G's fresh one (WP-267
+# review §6). Whole tables:
+D0_PLACEMENT_TABLES = ('CHUNKS', 'ORDER', 'HOLES', 'PATCHES', 'REDIRECTS', 'REGIONS', 'SYMTAB',
+                       'DEFINED', 'SYM_PLACE', 'SIZES', 'SIZED', 'SEGMENTS', 'LAYOUT', 'OUTSECS')
+
+
+# the map's lines that are not the placement: the command line, and the
+# update's own `.symtab` block records (a full link's map has none)
+MAP_NOT_PLACEMENT = ('arg', 'symblock')
+
+
+def identity_hop(x, g_map):
+    """Whether the hop is an identity hop for (d0): the subject's map and
+    G's (the same inputs) give the same records, line for line, outside
+    MAP_NOT_PLACEMENT: every `place`, `piece`, `chunk`, `capacity`,
+    `order`, `region`, `hole`, `frag`, `slot`, `define` (image.md I-78,
+    I-78a). Then the update's placement IS the full link's and nothing
+    explains a difference of the states. None when a map is missing."""
+    try:
+        with open(x.path(x.map)) as fx, open(g_map) as fg:
+            keep = lambda fh: [l for l in fh if l.split(' ', 1)[0].strip() not in MAP_NOT_PLACEMENT]
+            return keep(fx) == keep(fg)
+    except OSError:
+        return None
+
+
+# (d0) never judges these, on any hop (WP-267 P-4): `STAT` (G's inputs
+# are copies in its own directory: other inodes and times; the rows' paths
+# and hashes are FILES' too) and, in `STRINGS`, the link's directory (G
+# links in h<i>, the subject in its directory: the one string that differs
+# by construction; d0_normalise checks that it is the only one)
+D0_NEVER = ('STAT',)
+
+
+def d0_normalise(diffs, dirs):
+    """(diffs, notes): the differences (d0) judges, and what it set aside
+    by construction (D0_NEVER's tables; a STRINGS row whose only
+    difference is the subject's directory against G's)."""
+    out, notes = [], {}
+    a, b = (os.path.abspath(d).encode() for d in dirs) if dirs else (None, None)
+    for d in diffs:
+        table, row, what = d
+        if table in D0_NEVER:
+            notes[table] = notes.get(table, 0) + 1
+            continue
+        if table == 'STRINGS' and a and len(a) == len(b) and ' != ' in what:
+            try:
+                x, y = (bytes.fromhex(h) for h in what.split(' != '))
+            except ValueError:
+                x = y = None
+            if x is not None and x != y and x == y.replace(b, a):
+                notes['STRINGS (the directory)'] = notes.get('STRINGS (the directory)', 0) + 1
+                continue
+        out.append(d)
+    return out, notes
+
+
+D0_KINDS = ('exact', 'outside-placement', 'n/a', 'FAIL')
+
+
+def d0_kind(result):
+    """The `state` check's verdict by the rule that gave it (the lane's
+    summary)."""
+    if result.startswith('pass (d0 exact'):
+        return 'exact'
+    if result.startswith('pass (d0 outside placement'):
+        return 'outside-placement'
+    return 'FAIL' if result.startswith('FAIL') else 'n/a'
+
+
+def d0_exact(hop):
+    """(exact, why): the rule (d0) judges this hop by."""
+    if hop.base_was_update:
+        return False, 'the base was an update'
+    if hop.identity is None:
+        return False, 'identity not known'
+    if not hop.identity:
+        return False, 'not an identity hop'
+    return True, 'an identity hop on a full link'
+
+
+# IN-78's placement COLUMNS of the other tables, as byte ranges of the
+# canonical row (state5::canon encodes a row as the state does; the
+# layouts are spec/incr.md §5.3's and the format-5 columns of IN-18e,
+# each range checked against the lane's own differences, WP-267 P-4's
+# record): a row whose bytes differ only inside them is excluded.
+D0_PLACEMENT_COLUMNS = {
+    'SECTIONS': ((64, 76),),          # place chunk `u32`, place offset `u64` (76-byte row)
+    'FILES': ((72, 80),),             # eh_offset, eh_capacity: the `.eh_frame` range (97-byte row)
+    'FRAGS': ((24, 32),),             # offset `u64` (after out, ordinal, content hash)
+    'META': ((16, 24),),              # the output's size (the output's layout)
+    # a string's offset in `.debug_str`/`.debug_line_str` (class u8, hash
+    # u64, offset u32): an update appends its strings, a full link packs
+    # them, both right (WP-247); the offsets are judged against the
+    # output instead, on every update hop (_debug_strs, duty.py's
+    # debug_strs_check); supervisor's ruling on P-4's hand-back
+    'DEBUG_STRS': ((9, 13),),
+}
+D0_ROW_LEN = {'SECTIONS': 76, 'FILES': 97, 'META': 196, 'DEBUG_STRS': 13}
+# tables whose rows' ORDER is placement (SLOTS: the slot lists' positions):
+# equal row counts whose differing rows are a permutation are excluded
+D0_PLACEMENT_ORDER = ('SLOTS',)
+
+
+def _masked_equal(table, what):
+    try:
+        x, y = (bytes.fromhex(h) for h in what.split(' != '))
+    except ValueError:
+        return False
+    if len(x) != len(y) or (table in D0_ROW_LEN and len(x) != D0_ROW_LEN[table]):
+        return False
+    m = bytearray(len(x))
+    for lo, hi in D0_PLACEMENT_COLUMNS[table]:
+        m[lo:hi] = b'\1' * len(m[lo:hi])
+    return all(p == q or k for p, q, k in zip(x, y, m))
+
+
+def d0_outside_placement(diffs):
+    """(kept, excluded): the differences outside IN-78's placement rows,
+    and those in them."""
+    kept, excluded = [], []
+    perm = {}
+    for d in diffs:
+        table, row, what = d
+        if table in D0_PLACEMENT_TABLES:
+            excluded.append(d)
+        elif table in D0_PLACEMENT_COLUMNS and row.startswith('row ') and _masked_equal(table, what):
+            excluded.append(d)
+        elif table in D0_PLACEMENT_ORDER and row.startswith('row ') and ' != ' in what:
+            perm.setdefault(table, []).append(d)
+        else:
+            kept.append(d)
+    for table, ds in perm.items():
+        a = sorted(w.split(' != ')[0] for _t, _r, w in ds)
+        b = sorted(w.split(' != ')[1] for _t, _r, w in ds)
+        (excluded if a == b else kept).extend(ds)
+    return kept, excluded
+
+
+def _debug_strs(x, hop):
+    """WP-247's check of S''s DEBUG_STRS against the update's own output
+    (duty.py `debug_strs_check`): [problems]; [] when the state has no
+    such table or the output is not ELF64 (i386: not judged here)."""
+    import duty
+    try:
+        with open(hop.state, 'rb') as fh:
+            state = fh.read()
+        if state[:8] != b'MORTARSR' or duty.state_debug_strs(state) is None:
+            return []   # no table (the comparator judges the state's format)
+        with open(x.path(x.out), 'rb') as fh:
+            elf = fh.read()
+        if elf[4:5] != b'\x02':
+            return []
+        dead = duty.map_dead_strings(x.path(x.map)) if x.map and os.path.exists(x.path(x.map)) else {}
+        return duty.debug_strs_check(state, elf, dead)
+    except (OSError, ValueError) as e:
+        return ['cannot judge: %s' % e]
+
+
 def _state(v, x, hop):
+    """(d0) (WP-267 P-4) until (d) proper: canon(S') against canon(G), G
+    the state of the hop's own `--incremental=full` link of the same
+    inputs; EXACT on an identity hop whose base was a full link, else
+    equal outside IN-78's placement rows (d0_rule)."""
     p_u, why = placement_of_map(x.path(x.map))
-    capture = os.path.join(hop.scratch or x.dir, 'capture.mortar-state')   # where C(U) goes
-    res = hop.canon.compare(hop.state, capture, p_u) if hop.canon.live else hop.canon.compare(None, None, None)
-    if isinstance(res, NotRun):
+    if not hop.canon.live:
+        res = hop.canon.compare(None, None, None)
         v.add('state', 'n/a %s; %s' % (res.why, why))
         return
     if v.reason != 'update':
         v.add('state', 'n/a (full link%s)' % (': ' + v.reason if v.reason else ''))
         return
-    if res:
-        v.add('state', 'FAIL canon(S\') differs from canon(C(U)): %s' % first_difference(res))
+    if not hop.g_state or not os.path.exists(hop.g_state):
+        v.add('state', 'n/a (d0) has no G state (the G link %s)' % (
+            'failed (status %s)' % hop.g_status if hop.g_status not in (None, 0) else 'wrote none'))
         return
-    v.add('state', 'pass%s' % ('' if p_u is not None else ' (decision rows not compared: %s)' % why))
+    save = os.path.join(hop.scratch or x.dir, 'd0-compare.txt')
+    res = hop.canon.compare(hop.state, hop.g_state, p_u, save=save)
+    if isinstance(res, NotRun):
+        v.add('state', 'n/a %s; %s' % (res.why, why))
+        return
+    if isinstance(res, CompareFailed):
+        v.add('state', 'FAIL (d0) %s' % res.why)
+        return
+    res, _never = d0_normalise(res, hop.dirs)
+    bad = _debug_strs(x, hop)
+    if bad:
+        v.add('state', 'FAIL (d0) DEBUG_STRS against the output (WP-247): %s%s' % (
+            bad[0], ' (and %d more)' % (len(bad) - 1) if len(bad) > 1 else ''))
+        return
+    exact, rule_why = d0_exact(hop)
+    if exact:
+        if res:
+            v.add('state', 'FAIL (d0 exact: %s) canon(S\') differs from canon(G): %s' % (rule_why,
+                                                                                    first_difference(res)))
+        else:
+            v.add('state', 'pass (d0 exact)')
+        return
+    kept, excluded = d0_outside_placement(res)
+    if kept:
+        v.add('state', 'FAIL (d0 outside placement: %s) canon(S\') differs from canon(G) outside the placement '
+                       'rows: %s' % (rule_why, first_difference(kept)))
+        return
+    v.add('state', 'pass (d0 outside placement: %d rows excluded)' % len(excluded))
+
+
+# duty under (d0) holds out STRINGS: canon's pool holds the strings the
+# rows name (IN-78's canon names a string by its bytes, in its row)
+DUTY_NOT_A_ROW = ('STRINGS',)
 
 
 def _duty(v, x, hop):
+    """duty_list_covers_differences (IN-78) under (d0): canon(S), the state
+    before the update, against canon(S'), the state it wrote (C(U) is not
+    captured: (d) proper; where (d0) holds S' stands for it). Every
+    differing row's table must be a table of a cause (of `hop.causes`; the
+    lane gives None: any cause)."""
     import duty  # tests/incr-update/duty.py: IN-78's derived table as data
-    capture = os.path.join(hop.scratch or x.dir, 'capture.mortar-state')
-    res = hop.canon.compare(hop.state_prev, capture, None) if hop.canon.live else hop.canon.compare(None, None,
-                                                                                                    None)
-    if isinstance(res, NotRun):
-        v.add('duty', 'n/a %s' % res.why)
+    if not hop.canon.live:
+        v.add('duty', 'n/a %s' % hop.canon.compare(None, None, None).why)
         return
     if v.reason != 'update':
         v.add('duty', 'n/a (full link%s)' % (': ' + v.reason if v.reason else ''))
         return
-    why = duty.uncovered(res, hop.causes)
-    v.add('duty', 'pass (%d rows differ)' % len(res) if why is None else 'FAIL ' + why)
+    if not hop.state_prev or not os.path.exists(hop.state_prev):
+        v.add('duty', 'n/a (d0) has no state before the update')
+        return
+    res = hop.canon.compare(hop.state_prev, hop.state, None,
+                            save=os.path.join(hop.scratch or x.dir, 'd0-duty-compare.txt'))
+    if isinstance(res, NotRun):
+        v.add('duty', 'n/a %s' % res.why)
+        return
+    if isinstance(res, CompareFailed):
+        v.add('duty', 'FAIL (d0) %s' % res.why)
+        return
+    held = [d for d in res if d[0] in DUTY_NOT_A_ROW]
+    why = duty.uncovered([d for d in res if d[0] not in DUTY_NOT_A_ROW], hop.causes)
+    v.add('duty', 'pass (S against S\': %d rows differ; not judged: %s)' % (len(res) - len(held), ', '.join(
+        DUTY_NOT_A_ROW)) if why is None else 'FAIL ' + why)
 
 
 # ------------------------------------------------------------------ judge --
