@@ -21,6 +21,12 @@
 //! oracle) on the real path, which keeps using front 1's rows (P-5
 //! switches).
 //!
+//! P-1c: U-3's draw-in (`Resolution::DrawIn`) on these rows:
+//! [`changed_files_drawn_in`] makes a drawn-in file's rows (an unchanged
+//! live object or extracted member, read at its stored `FILES` range, its
+//! hash checked) by the same code as a changed file's, and the shadow runs
+//! front 1's loop over them (at most `RESOLVE_CALLS` resolves).
+//!
 //! Refused by name: a changed archive member (M-1), `--wrap` (the keys by
 //! name are false under it; `file_scan.rs`'s refusal stays), a changed
 //! file that is not a relocatable object, and the per-file front's and
@@ -87,58 +93,141 @@ pub fn changed_files_of(
     plan: &Plan,
     cwd: &Path,
 ) -> Result<ChangedFiles, IncrReason> {
+    changed_files_drawn_in(view, cache, files, &[], positional, plan, cwd)
+}
+
+/// [`changed_files_of`] with U-3's draw-in (WP-267 P-1c): `drawn_in` (the
+/// files of `Resolution::DrawIn`, unchanged live objects) take a row each
+/// as `Change::DrawnIn`, made by the same code as a changed file's, from
+/// their STORED `FILES` row (kind, member, path, mention, member name and
+/// ordinal, `base`, `len`, `hash`, `rank`, `round`; `flags` and `stack`
+/// from the bytes, as for a changed file). Their bytes are read by
+/// `front_of` at the stored row's range (an archive member: the archive's
+/// path at `base .. base + len`) and their hash checked against the
+/// stored `hash` before anything is taken: a member's bytes that changed
+/// under the same name refuse `input-changed`, naming the member. Fresh
+/// section ids go to changed and drawn-in files together in `FileId`
+/// order (front 1's `changed::changed_files`), so a drawn-in file before
+/// a changed one moves the changed file's `first_section`: `cache` must
+/// not hold a front of these files at other ids (the join gives the
+/// second pass a fresh cache).
+///
+/// # Errors
+/// [`changed_files_of`]'s; `update-not-implemented (resolve)` for a
+/// drawn-in file that is not a live relocatable object, or whose front
+/// `cache` holds at other ids or for another row; `state-corrupt` for a
+/// drawn-in file that is also changed or is gone.
+pub fn changed_files_drawn_in(
+    view: &StateView<'_>,
+    cache: &mut FrontCache<'_>,
+    files: &[FileId],
+    drawn_in: &[FileId],
+    positional: &[FileId],
+    plan: &Plan,
+    cwd: &Path,
+) -> Result<ChangedFiles, IncrReason> {
     // 7d: a mention's key by name is the link's key only without `--wrap`
     // (`resolve.rs` applies it to the keys); `file_scan.rs` refuses it too.
     if !mortar_resolve::tables::option_keys(plan, &[]).wrap.is_empty() {
         return Err(IncrReason::UpdateNotImplemented(Some(Unimplemented::Scan)));
     }
     let copies = plan.diagnostics.odr.mode != mortar_core::plan::OdrMode::Off;
-    let mut ids = files.to_vec();
+    // Every file once, in `FileId` order (the fresh ids' order).
+    let mut ids: Vec<(FileId, Change)> = files.iter().map(|&x| (x, Change::Changed)).collect();
+    ids.extend(drawn_in.iter().map(|&x| (x, Change::DrawnIn)));
     ids.sort_unstable();
     ids.dedup();
     let mut next = u32::try_from(view.count(kind::SECTIONS)).map_err(|_| too_much("SECTIONS"))?;
     let mut strings = Strings::default();
     let mut out = Vec::with_capacity(ids.len());
-    for id in ids {
+    for (k, &(id, change)) in ids.iter().enumerate() {
+        let drawn = change == Change::DrawnIn;
+        let also_drawn = !drawn && ids.get(k + 1) == Some(&(id, Change::DrawnIn));
         let stored = view.file(id)?;
         if stored.flags & file_flags::GONE != 0 {
             return Err(corrupt(format!("file {} is gone and changed", id.0)));
         }
-        // M-1: a changed archive's members are matched and re-read by the
-        // front until P-1's member table exists.
-        if stored.member != 0 || stored.kind != KIND_OBJECT {
+        let row = if drawn {
+            // P-1c: an unchanged live object; its stored row names its bytes.
+            if stored.kind != KIND_OBJECT || stored.flags & file_flags::LAZY != 0 {
+                return Err(resolve());
+            }
+            FileRow {
+                kind: stored.kind,
+                member: stored.member,
+                flags: file_flags::POSITIONAL,
+                path: stored.path,
+                mention: stored.mention,
+                member_name: stored.member_name,
+                member_ordinal: stored.member_ordinal,
+                base: stored.base,
+                len: stored.len,
+                hash: stored.hash,
+                rank: stored.rank,
+                round: stored.round,
+                ..FileRow::default()
+            }
+        } else {
+            // M-1: a changed archive's members are matched and re-read by
+            // the front until P-1's member table exists.
+            if stored.member != 0 || stored.kind != KIND_OBJECT {
+                return Err(resolve());
+            }
+            let path = view.string(stored.path)?;
+            let at =
+                cwd.join(<std::ffi::OsStr as std::os::unix::ffi::OsStrExt>::from_bytes(&path));
+            let bytes = std::fs::read(&at).map_err(|e| {
+                IncrReason::InputChanged(format!(
+                    "{}: not read: {e}",
+                    String::from_utf8_lossy(&path)
+                ))
+            })?;
+            let hash = crate::incremental::hash_bytes(mortar_input::store::content_hash(&bytes));
+            if hash == stored.hash {
+                // Unchanged: no row, unless U-3 draws it in (its next entry).
+                continue;
+            }
+            if also_drawn {
+                return Err(corrupt(format!("file {} is drawn in and changed", id.0)));
+            }
+            // The capture's format-4 row (`capture.rs` `capture`): a plain
+            // object is the whole file; `POSITIONAL` on every captured row.
+            FileRow {
+                kind: stored.kind,
+                member: 0,
+                flags: file_flags::POSITIONAL,
+                path: stored.path,
+                mention: stored.mention,
+                member_name: Str::default(),
+                member_ordinal: 0,
+                base: 0,
+                len: bytes.len() as u64,
+                hash,
+                rank: stored.rank,
+                round: stored.round,
+                ..FileRow::default()
+            }
+        };
+        let first = SectionId(next);
+        let ff = front_of(cache, view, id, Ids::Update { first_section: first, row: row.clone() })
+            .map_err(|e| match e {
+                IncrReason::InputChanged(why) if drawn && stored.member != 0 => {
+                    let name = view.string(stored.member_name).unwrap_or_default();
+                    IncrReason::InputChanged(format!(
+                        "{why} (WP-267 P-1c: the drawn-in member {} of file {})",
+                        String::from_utf8_lossy(&name),
+                        id.0
+                    ))
+                }
+                e => e,
+            })?;
+        // The cache gives a file's first front whatever is asked: it must be
+        // this row's at these ids.
+        if ff.row != row || ff.sections.first().is_some_and(|s| s.id != first) {
             return Err(resolve());
         }
-        let path = view.string(stored.path)?;
-        let at = cwd.join(<std::ffi::OsStr as std::os::unix::ffi::OsStrExt>::from_bytes(&path));
-        let bytes = std::fs::read(&at).map_err(|e| {
-            IncrReason::InputChanged(format!("{}: not read: {e}", String::from_utf8_lossy(&path)))
-        })?;
-        let hash = crate::incremental::hash_bytes(mortar_input::store::content_hash(&bytes));
-        if hash == stored.hash {
-            continue;
-        }
-        // The capture's format-4 row (`capture.rs` `capture`): a plain
-        // object is the whole file; `POSITIONAL` on every captured row.
-        let row = FileRow {
-            kind: stored.kind,
-            member: 0,
-            flags: file_flags::POSITIONAL,
-            path: stored.path,
-            mention: stored.mention,
-            member_name: Str::default(),
-            member_ordinal: 0,
-            base: 0,
-            len: bytes.len() as u64,
-            hash,
-            rank: stored.rank,
-            round: stored.round,
-            ..FileRow::default()
-        };
-        drop(bytes);
-        let first = SectionId(next);
-        let ff = front_of(cache, view, id, Ids::Update { first_section: first, row: row.clone() })?;
-        let cf = file_rows_of(ff, row, first, copies, &mut strings)?;
+        let mut cf = file_rows_of(ff, row, first, copies, &mut strings)?;
+        cf.change = change;
         next = u32::try_from(cf.sections.len())
             .ok()
             .and_then(|n| next.checked_add(n))
@@ -150,7 +239,11 @@ pub fn changed_files_of(
     // past the state's `STRINGS`.
     for c in &mut out {
         c.row.path = strings.add(&view.string(c.row.path)?);
-        c.row.member_name = Str::default();
+        c.row.member_name = if c.row.member == 0 {
+            Str::default()
+        } else {
+            strings.add(&view.string(c.row.member_name)?)
+        };
     }
     let strings = strings.into_bytes();
     let base = u32::try_from(view.count(kind::STRINGS))
@@ -161,6 +254,7 @@ pub fn changed_files_of(
         |s: Str| if s.len == 0 { Str::default() } else { Str { off: base + s.off, len: s.len } };
     for c in &mut out {
         c.row.path = rebase(c.row.path);
+        c.row.member_name = rebase(c.row.member_name);
         for s in &mut c.sections {
             s.anchor = rebase(s.anchor);
             s.name = rebase(s.name);
@@ -480,8 +574,9 @@ fn shadow_line(
     if my_ids.is_empty() {
         return Ok("P-1: equal (0 files, 0 fields)".into());
     }
-    let files: Vec<(FileId, Change)> = front_ids.iter().map(|&x| (x, Change::Changed)).collect();
-    let oracle = super::changed::changed_files(f, view, &files, &detected.positional, &capture)
+    let mut files: Vec<(FileId, Change)> =
+        front_ids.iter().map(|&x| (x, Change::Changed)).collect();
+    let mut oracle = super::changed::changed_files(f, view, &files, &detected.positional, &capture)
         .map_err(|e| not("the oracle", &e.report()))?;
     let mut cmp = Cmp::default();
     compare_pre(&mut cmp, view, &mine, &oracle).map_err(|e| not("a string", &e.report()))?;
@@ -491,7 +586,9 @@ fn shadow_line(
     // 7b: after resolve over P-1's rows (its election's keepers).
     let options = mortar_resolve::tables::option_keys(&f.plan, &f.inputs.link.directives);
     let mut resolve_ms = 0.0;
+    let mut drawn_ms = 0.0;
     let mut post_ms = 0.0;
+    let mut drawn: Vec<FileId> = Vec::new();
     let post = (|| {
         let at = std::time::Instant::now();
         let ex = extract::extract(view, &mine, &options).map_err(|e| ("extract", e))?;
@@ -499,35 +596,77 @@ fn shadow_line(
             // M-1: an extraction flip's members are not P-1's rows.
             return Err(("M-1: an extraction flip", resolve()));
         }
-        let r = res::resolve(view, &mine, &ex, &options).map_err(|e| ("resolve", e))?;
-        resolve_ms = at.elapsed().as_secs_f64() * 1e3;
-        match r {
-            res::Resolution::Delta(d) => {
-                let at = std::time::Instant::now();
-                let r =
-                    facts_after_resolve(view, &cache, &mut mine, &f.plan, f.arch.get(), &d.keepers);
-                post_ms = at.elapsed().as_secs_f64() * 1e3;
-                r.map(|()| d).map_err(|e| ("facts_after_resolve", e))
+        // P-1c: front 1's loop (`changed::u5_judged`): a draw-in's files
+        // are read as `Change::DrawnIn`, every row made again (the fresh
+        // ids are given in `FileId` order: a fresh cache), and resolve
+        // called again with the same extraction; a second draw-in refuses
+        // as there.
+        let mut calls = 0;
+        let d = loop {
+            calls += 1;
+            match res::resolve(view, &mine, &ex, &options).map_err(|e| ("resolve", e))? {
+                res::Resolution::Delta(d) => break d,
+                res::Resolution::DrawIn(more) if calls < res::RESOLVE_CALLS => {
+                    let at = std::time::Instant::now();
+                    drawn.extend(more.iter().copied());
+                    cache = FrontCache::new(ctx.store, ctx.pool, cwd);
+                    mine = changed_files_drawn_in(
+                        view,
+                        &mut cache,
+                        &detected.changed_files,
+                        &drawn,
+                        &detected.positional,
+                        ctx.plan,
+                        cwd,
+                    )
+                    .map_err(|e| ("P-1c: the drawn-in rows", e))?;
+                    drawn_ms += at.elapsed().as_secs_f64() * 1e3;
+                }
+                res::Resolution::DrawIn(more) => {
+                    return Err((
+                        "resolve",
+                        IncrReason::InputChanged(format!("a second draw-in: {more:?}")),
+                    ));
+                }
             }
-            // M-1: a draw-in is an archive member's extraction.
-            res::Resolution::DrawIn(_) => Err(("M-1: a draw-in", resolve())),
-        }
+        };
+        resolve_ms = at.elapsed().as_secs_f64() * 1e3 - drawn_ms;
+        let at = std::time::Instant::now();
+        let r = facts_after_resolve(view, &cache, &mut mine, &f.plan, f.arch.get(), &d.keepers);
+        post_ms = at.elapsed().as_secs_f64() * 1e3;
+        r.map(|()| d).map_err(|e| ("facts_after_resolve", e))
     })();
     let pre = cmp.n;
     let delta = match post {
         Ok(d) => d,
         Err((step, e)) => {
             return Ok(format!(
-                "P-1: pre equal ({} files, {pre} fields); post refused by name: {step}: {}",
+                "P-1: pre equal ({} files, {pre} fields); post refused by name: {step}: {}{}",
                 my_ids.len(),
-                e.report()
+                e.report(),
+                if drawn.is_empty() { String::new() } else { format!(" (drawn in {drawn:?})") }
             ));
         }
     };
+    if !drawn.is_empty() {
+        // The oracle with the same draw-in (front 1's loop), and every
+        // field `changed_files_of` makes compared again: the drawn-in
+        // files' and the changed files' at their new ids.
+        files.extend(drawn.iter().map(|&m| (m, Change::DrawnIn)));
+        oracle = super::changed::changed_files(f, view, &files, &detected.positional, &capture)
+            .map_err(|e| not("the oracle with the draw-in", &e.report()))?;
+        let ids = |c: &ChangedFiles| c.files.iter().map(|x| (x.file.0, x.change)).collect();
+        let (a, b): (Vec<_>, Vec<_>) = (ids(&mine), ids(&oracle));
+        if a != b {
+            return Ok(format!("finding: P-1c drawn-in set: mine {a:?}, front 1's {b:?}"));
+        }
+        compare_pre(&mut cmp, view, &mine, &oracle).map_err(|e| not("a string", &e.report()))?;
+    }
     compare_post(&mut cmp, view, &mine, &oracle, &capture)
         .map_err(|e| not("a string", &e.report()))?;
     if let Some(d) = cmp.diff.first() {
-        return Ok(format!("finding: P-1 {d} ({} differ of {} fields)", cmp.diff.len(), cmp.n));
+        let c = if drawn.is_empty() { "P-1" } else { "P-1c" };
+        return Ok(format!("finding: {c} {d} ({} differ of {} fields)", cmp.diff.len(), cmp.n));
     }
     *p1b = Some(super::changed_edges::shadow_line(
         view,
@@ -540,11 +679,17 @@ fn shadow_line(
         &f.pool,
     ));
     // The laps: `changed_files_of`, U-3's `extract`+`resolve` over its rows
-    // (not P-1's code), `facts_after_resolve`.
+    // (not P-1's code), the drawn-in rows (P-1c: every file again),
+    // `facts_after_resolve`.
+    let drawn_text = if drawn.is_empty() {
+        String::new()
+    } else {
+        format!("; {} drawn in", drawn.len())
+    };
     Ok(format!(
-        "P-1: equal ({} files, {} fields) ms changed_files_of={pre_ms:.3} \
-         resolve={resolve_ms:.3} facts_after_resolve={post_ms:.3}",
-        my_ids.len(),
+        "P-1: equal ({} files, {} fields{drawn_text}) ms changed_files_of={pre_ms:.3} \
+         resolve={resolve_ms:.3} drawn_in={drawn_ms:.3} facts_after_resolve={post_ms:.3}",
+        mine.files.len(),
         cmp.n
     ))
 }
