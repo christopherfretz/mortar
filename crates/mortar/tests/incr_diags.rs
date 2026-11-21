@@ -1033,8 +1033,8 @@ fn many_references_store_a_capped_row() {
     });
 }
 
-/// WP-277's link: `libc.a` and `libw.a` given twice (CMake's archive
-/// cycles); `c.o` (in `libc.a`) calls the warned `foo` (in `libw.a`) when
+/// WP-277's link: `libc.a` and `libw.a` given twice (as a build system
+/// writes archive cycles); `c.o` (in `libc.a`) calls the warned `foo` (in `libw.a`) when
 /// `warns`, with `k` in its body; `b.o` calls back into `c.o`.
 fn repeated_link(fx: &Fixture<'_>, warns: bool, k: u32) -> Full {
     // The unchanged files once (an update sees c.o alone change).
@@ -1087,7 +1087,7 @@ fn repeated_update(fx: &Fixture<'_>, warns: bool, k: u32) -> String {
     repeated_link(fx, warns, k);
     // A testhooks build reaches the update below `small-output`'s bound
     // (the lane's knob); a release build answers `small-output`.
-    let timeout = std::time::Duration::from_secs(120);
+    let timeout = std::time::Duration::from_mins(2);
     let mut cx = std::process::Command::new(MORTAR);
     cx.args(&x).env("MORTAR_INCR_SMALL_OUTPUT", "0");
     let ox = mortar_testutil::run_with(&mut cx, &[], timeout);
@@ -1119,7 +1119,7 @@ fn repeated_archive_warning_state_written() {
         );
         // Two FILES rows of `libc.a(c.o)` (one per mention), one extracted;
         // the warning's reference is that one's.
-        let c: Vec<usize> = a
+        let mentions: Vec<usize> = a
             .state
             .files
             .iter()
@@ -1127,9 +1127,9 @@ fn repeated_archive_warning_state_written() {
             .filter(|(_, r)| s(&a.state, r.path).ends_with(b"/libc.a") && r.member == 1)
             .map(|(n, _)| n)
             .collect();
-        assert_eq!(c.len(), 2, "c.o once per mention");
+        assert_eq!(mentions.len(), 2, "c.o once per mention");
         let extracted: Vec<usize> =
-            c.iter().copied().filter(|&n| live(&a.state.files[n])).collect();
+            mentions.iter().copied().filter(|&n| live(&a.state.files[n])).collect();
         assert_eq!(extracted.len(), 1, "c.o extracted once");
         let site: Vec<&DiagRow> = a.rows.iter().filter(|r| r.ref_count != 0).collect();
         assert_eq!(site.len(), 1, "{:?}", a.rows);
@@ -1139,16 +1139,16 @@ fn repeated_archive_warning_state_written() {
         replay(&a);
         // The warned member changed (its call kept): dropped, recomputed.
         let b = repeated_link(fx, true, 3);
-        let u = Update::new(&a, &b);
-        assert_eq!(u.changed.files.len(), 1, "the extracted c.o alone: {:?}", u.changed.files);
-        assert_eq!(u.changed.files[0].file.0 as usize, extracted[0]);
+        let upd = Update::new(&a, &b);
+        assert_eq!(upd.changed.files.len(), 1, "the extracted c.o alone: {:?}", upd.changed.files);
+        assert_eq!(upd.changed.files[0].file.0 as usize, extracted[0]);
         hop(&a, &b, Policy::default());
         // Its call goes, and comes back.
-        let c2 = repeated_link(fx, false, 3);
-        assert_eq!(c2.stderr, "", "no warning");
-        hop(&b, &c2, Policy::default());
-        let d = repeated_link(fx, true, 3);
-        hop(&c2, &d, Policy::default());
+        let gone = repeated_link(fx, false, 3);
+        assert_eq!(gone.stderr, "", "no warning");
+        hop(&b, &gone, Policy::default());
+        let back = repeated_link(fx, true, 3);
+        hop(&gone, &back, Policy::default());
         // The real update over the state of the first link, against the full link.
         repeated_link(fx, true, 2);
         let mut said = Vec::new();
@@ -1185,7 +1185,7 @@ fn object_given_twice_warning_names_both_files() {
         let refs = &site[0].refs;
         assert_eq!((refs.len(), site[0].ref_count), (2, 2), "{refs:?}");
         assert!(refs[0].file < refs[1].file && refs[0].seq == refs[1].seq, "{refs:?}");
-        for r in refs.iter() {
+        for r in refs {
             let row = &m.files[r.file.0 as usize];
             assert!(s_of(&m.strings, row.path).ends_with(b"/a.o") && live(row), "{row:?}");
         }
