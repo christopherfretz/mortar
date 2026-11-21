@@ -105,4 +105,6 @@ same member list would let it be replayed.
    capacity".
 
 ## Measurements
-See the hand-back (lane before/after, the plain link's cost, the gate).
+- Lane at e9ff4163 and at 32228732: 47 scenarios, 604 hops, 604 PASS, 0
+  FAIL both. Taken hops 247 -> 251 (the four P3-1 hops), none lost.
+- The plain link's cost and the gate: not run by this package (hand-back).
