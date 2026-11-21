@@ -1,0 +1,21 @@
+# WP-272: one erratum 843419 site that gets a PATCH (a64.md §11.2), so the
+# state holds a PATCHES and a REDIRECTS row and `.text`'s island holds the
+# patch's two words: the `islands` check (tests/l10/judge.py) judges them
+# against the output's bytes on every hop, and the lane's self test
+# mutates this scenario's first link (lane.py ISLAND_SCENARIO).
+# EDIT changes c.o only (the site's section untouched); SITE changes the
+# site's own section at the same size (the redirected word's section is
+# refilled).
+proves: the state's PATCHES/REDIRECTS rows agree with the output's island words after every hop, a hop that refills the redirected site's section included (WP-271 review R-2)
+source: WP-272 (spec/a64.md §11.1's 3-word form at page offset 0xff8; WP-271 §1.3's protoc island)
+edit EDIT: c.S
+edit SITE: a.S
+hops: -, EDIT, EDIT+SITE, SITE
+link: a.o c.o
+options: --fix-cortex-a53-843419
+compilers: gcc
+targets: a64
+not kiln: assembly (.S): kiln compiles C++ only; the shape is written in the assembly
+not x64: erratum 843419 and its patch islands are AArch64's
+not i386: erratum 843419 and its patch islands are AArch64's
+nolibc: yes

@@ -428,13 +428,108 @@ SELF_TEST = (
 )
 
 
+# WP-272: the `islands` check's self test, over a real link of this
+# scenario (one erratum 843419 patch): the clean link passes, and each
+# mutation of its rows or its bytes FAILs with the row or word it names
+ISLAND_SCENARIO = 'islands_843419'
+A64_NOP = 0xD503201F
+
+
+def island_units(opts):
+    """The `islands` check against one real AArch64 link: lines in the
+    units' form (`... unit <name>: ok` or `FAILS`), or one SKIP line when
+    the link cannot be made here (no AArch64 GCC, no incr_state)."""
+    import copy
+    import struct
+    head = 'INCR-UPDATE SELF-TEST unit islands-'
+    canon = opts.get('canon')
+    run = Run(Scenario(ISLAND_SCENARIO), 'gcc', 'a64', opts, label='self.islands')
+    why = run.cfg.missing() or (None if canon is not None else 'no incr_state')
+    if why:
+        return ['INCR-UPDATE SELF-TEST islands: SKIP (%s)' % why]
+    d = run.base
+    if os.path.isdir(d):
+        shutil.rmtree(d)
+    os.makedirs(d)
+    run.install(d, run.objects(frozenset()))
+    pre, post = run.words()
+    rc, err = run.link([opts['mortar']], d, pre, post, ['--incremental=full', '--mortar-map=prog.map'])
+    if rc != 0:
+        return [head + 'link: FAILS: the link of %s exits %s: %s' % (ISLAND_SCENARIO, rc, _first(err))]
+    rows, why = judge.state_rows(canon.tool, os.path.join(d, 'prog.mortar-state'))
+    if rows is None:
+        return [head + 'rows: FAILS: %s' % why]
+    elf = open(os.path.join(d, 'prog'), 'rb').read()
+    mp = open(os.path.join(d, 'prog.map')).read()
+    out = []
+
+    def case(name, got, want):
+        ok = got.startswith(want)
+        out.append(head + '%s: %s' % (name, 'ok (%s)' % got[:150] if ok else 'FAILS: got %r, want %r...' % (
+            got, want)))
+
+    case('clean-hop-passes', judge.islands_check(rows, elf, mp), 'pass (1 redirects, 1 patches (0 unused')
+    if len(rows.get('REDIRECTS', [])) != 1 or len(rows.get('PATCHES', [])) != 1:
+        return out + [head + 'one-patch: FAILS: %s has %d PATCHES and %d REDIRECTS rows, the self test needs one' % (
+            ISLAND_SCENARIO, len(rows.get('PATCHES', [])), len(rows.get('REDIRECTS', [])))]
+    secs = judge.elf64_sections(elf)
+
+    def file_off(addr):
+        return next(so + addr - sa for _n, ty, _f, sa, so, sz, _l in secs if ty == 1 and sa <= addr < sa + sz)
+
+    # a REDIRECTS row with a wrong offset: its F is another word
+    bad = copy.deepcopy(rows)
+    bad['REDIRECTS'][0]['offset'] += 4
+    case('redirect-wrong-offset-fails', judge.islands_check(bad, elf, mp), 'FAIL REDIRECTS row 0')
+    # both the redirect's offset and its patch's site offset 4 further:
+    # the patch's `b F + 4` names the old F
+    both = copy.deepcopy(rows)
+    both['REDIRECTS'][0]['offset'] += 4
+    both['PATCHES'][0]['value'] += 4
+    case('redirect-and-site-wrong-offset-fails', judge.islands_check(both, elf, mp), 'FAIL PATCHES row 0')
+    # the redirected word at F left as the input's load (not `b patch`)
+    p = rows['PATCHES'][0]
+    at = rows['CHUNKS'][p['chunk']]['addr'] + p['offset']
+    r = rows['REDIRECTS'][0]
+    sec = rows['SECTIONS'][r['section']]
+    f = rows['CHUNKS'][sec['place_chunk']]['addr'] + sec['place_offset'] + r['offset']
+    unfixed = bytearray(elf)
+    unfixed[file_off(f):file_off(f) + 4] = elf[file_off(at):file_off(at) + 4]
+    case('redirect-word-not-b-fails', judge.islands_check(rows, bytes(unfixed), mp), 'FAIL REDIRECTS row 0')
+    # the site's section placed elsewhere by the state than by the map
+    stale = copy.deepcopy(rows)
+    stale['SECTIONS'][r['section']]['place_offset'] += 0x1000
+    case('section-place-stale-fails', judge.islands_check(stale, elf, mp), 'FAIL PATCHES row 0 (kind 2): SECTIONS row')
+    # the patch's words zeroed while its redirect stays
+    zeroed = bytearray(elf)
+    zeroed[file_off(at):file_off(at) + 8] = bytes(8)
+    case('patch-words-zeroed-fails', judge.islands_check(rows, bytes(zeroed), mp), 'FAIL PATCHES row 0')
+    # an extra `b` into the island that no row names: a `nop` of the
+    # site's section, before the site
+    text = next(s for s in secs if s[0] == '.text')
+    nop = next(text[3] + 4 * k for k, (w,) in enumerate(struct.iter_unpack('<I', elf[text[4]:text[4] + text[5]]))
+               if w == A64_NOP)
+    extra = bytearray(elf)
+    extra[file_off(nop):file_off(nop) + 4] = struct.pack('<I', judge.a64_b(nop, at))
+    case('extra-branch-into-island-fails', judge.islands_check(rows, bytes(extra), mp),
+         'FAIL the word %08x at 0x%x' % (judge.a64_b(nop, at), nop))
+    # the state lost its patch rows while the island keeps the patch's
+    # words: an island word no row covers
+    lost = copy.deepcopy(rows)
+    lost['PATCHES'], lost['REDIRECTS'] = [], []
+    case('patch-rows-lost-fails', judge.islands_check(lost, elf, mp), 'FAIL the island word')
+    if not opts.get('keep'):
+        shutil.rmtree(d)
+    return out
+
+
 def self_test(opts, log):
     """The lane's own test: each wrong subject is found by its check at its
     hop and by no earlier check; the units of the judge (the dirty-range
     rule, the stderr comparison, elflint's allow patterns, the (d)
     machinery around the stub, the duty table against the spec)."""
     import selftest
-    lines = selftest.units(log)
+    lines = selftest.units(log) + island_units(opts)
     target = build.HOST or 'a64'
     work = []
     for subject, name, at, _check in SELF_TEST:
@@ -541,7 +636,7 @@ def main(argv):
     if o['quick']:
         # the self test's fast units ride along with the quick subset
         import selftest
-        lines = selftest.units(log)
+        lines = selftest.units(log) + island_units(o)
         for l in lines:
             log(l)
         if any(('NOT' in l or 'WRONG' in l or 'FAILS' in l) for l in lines):

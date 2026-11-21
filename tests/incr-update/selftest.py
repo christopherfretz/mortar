@@ -382,6 +382,19 @@ def units(log=print):
         return v.checks[0][1]
     case('expect-full-one-of-two', expect_any('symtab'), lambda r: r.startswith('pass'))
     case('expect-full-none-of-two', expect_any('eh'), lambda r: r.startswith('FAIL') and '(eh)' in r)
+
+    # WP-272's `islands` (the units over a real link are lane.py's
+    # island_units): n/a by name off AArch64 and without an island
+    case('islands-x86-64-na', judge.islands_na({}, tiny_elf(62, [])), 'n/a (x86-64: no patch islands)')
+    case('islands-i386-na', judge.islands_na({}, tiny_elf(3, [], c64=False)), 'n/a (i386: no patch islands)')
+    a64 = tiny_elf(183, [])
+    case('islands-no-island-chunk-na', judge.islands_na({'CHUNKS': []}, a64), 'n/a (no island chunk)')
+    empty = {'CHUNKS': [{'i': 0, 'tag': judge.TAG_PATCHES, 'size': 0}]}
+    case('islands-empty-island-na', judge.islands_na(empty, a64), 'n/a (no island: 1 Patches chunks, all empty)')
+    case('islands-rows-parse', judge.parse_rows('PATCHES 0 chunk 8 kind 2 offset 10 symbol - section 4 value ff\n'),
+         {'PATCHES': [{'i': 0, 'chunk': 8, 'kind': 2, 'offset': 16, 'symbol': None, 'section': 4, 'value': 255}]})
+    case('islands-thunk-decode', judge.a64_thunk_target(0x90000010 | (1 << 29), 0x91000210 | (0x123 << 10),
+                                                        0xD61F0200, 0x400ffc), 0x401123)
     return out
 
 
