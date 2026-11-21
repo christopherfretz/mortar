@@ -231,7 +231,7 @@ fn run_with(
             ctx,
             cwd,
             out,
-            planned,
+            planned.as_ref(),
             &detected.changed_files,
             &mut seen,
             &mut steps,
@@ -245,7 +245,7 @@ fn run_with(
             Ok(_) => Ok("every chunk"),
             Err(e) => Err(e.report()),
         };
-        front_one_shadow(session, &view, &detected, ctx, cwd, out, &seen, taken);
+        front_one_shadow(session, &view, &detected, ctx, cwd, out, &seen, &taken);
     }
     let reference = real?;
     write_identity(session, &view, ctx, cwd, out, checked, reference, ops, steps)
@@ -535,14 +535,13 @@ fn front_free<'c>(
         demands: &demands,
         debug,
     };
-    let d = mortar_layout::delta::layout(stored, &input, &target).map_err(|e| {
+    let d = mortar_layout::delta::layout(stored, &input, &target).inspect_err(|e| {
         let regions: usize =
             cf.files.iter().map(|c| stored.regions_of(c.file).map_or(0, |r| r.len())).sum();
         changed::record(&format!(
             "M2b-2b fallback: delta::layout: {}; REGIONS rows of the changed files: {regions}",
             e.report()
         ));
-        e
     })?;
     steps.mark("u7");
     Ok(Some(Planned { cf, delta, ex, live, flips, d, inputs, demands, defined, debug }))
@@ -749,30 +748,30 @@ fn front_one_shadow(
     cwd: &Path,
     out: &std::fs::File,
     seen: &Seen,
-    taken: Result<&'static str, String>,
+    taken: &Result<&'static str, String>,
 ) {
     FRONT_ONE_RUNS.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
     let mut one = FrontOne::default();
     let mut laps = Steps::start();
     let mut eh: Option<Result<usize, String>> = None;
-    let r = image_link(ctx, cwd, None, |f| {
+    let run = image_link(ctx, cwd, None, |f| {
         // WP-267 P-1: U4 from the changed files alone against front 1's
         // rows (the oracle).
         changed_rows::shadow(session, view, detected, f, ctx, cwd);
         eh = Some(eh_files(&front_view(f)).map(|r| r.len()));
         reference_of(session, view, detected, f, ctx, cwd, out, &mut laps, &mut one)
     });
-    let front1 = match &r {
+    let front1 = match &run {
         Ok(First::Identity) => Ok("identity"),
         Ok(First::Materialized) => Ok("materialized"),
         Err(e) => Err(e.report()),
     };
-    drop(r);
+    drop(run);
     let yes = |t: &Result<&str, String>| match t {
         Ok(w) => format!("yes ({w})"),
         Err(e) => format!("no ({e})"),
     };
-    let (a, b) = (yes(&front1), yes(&taken));
+    let (one_said, two_said) = (yes(&front1), yes(taken));
     // Front 1's "yes" is its steps up to `materialize`; before P-5 front 2
     // ran after them and could still refuse (its front, its refill, eh).
     // A refusal of front 2 after the front-free steps placed the changes
@@ -785,9 +784,15 @@ fn front_one_shadow(
     };
     changed::record(&match agree {
         Some(note) => {
-            format!("P-5 shadow: agree (outcome: front 1 {a}, front 2 {b}{note}){}", hop_label())
+            format!(
+                "P-5 shadow: agree (outcome: front 1 {one_said}, front 2 {two_said}{note}){}",
+                hop_label()
+            )
         }
-        None => format!("finding: P-5 shadow: outcome front 1 {a} front 2 {b}{}", hop_label()),
+        None => format!(
+            "finding: P-5 shadow: outcome front 1 {one_said} front 2 {two_said}{}",
+            hop_label()
+        ),
     });
     let mut agree: Vec<&str> = Vec::new();
     let mut not: Vec<String> = Vec::new();
@@ -972,12 +977,12 @@ struct Reference {
     reason = "path (A)'s front, U1's view and binding, the step timer"
 )]
 #[allow(clippy::too_many_lines, reason = "U4 to the identity check, in IN-70's order")]
-fn reference_of<'c>(
+fn reference_of(
     session: &Session,
     view: &StateView<'_>,
     detected: &Detected,
     f: &crate::front::Front<'_>,
-    ctx: &Ctx<'c>,
+    ctx: &Ctx<'_>,
     cwd: &Path,
     out: &std::fs::File,
     steps: &mut Steps,
@@ -2128,7 +2133,7 @@ fn front_two(
     ctx: &Ctx<'_>,
     cwd: &Path,
     out: &std::fs::File,
-    planned: Option<Planned<'_>>,
+    planned: Option<&Planned<'_>>,
     files: &[FileId],
     seen: &mut Seen,
     steps: &mut Steps,
@@ -2161,7 +2166,7 @@ fn front_two(
                 _ => return fail((resolve(), format!("P-5: front 2's file {} is not", file.0))),
             }
         }
-        match hooked(view, stored, cx, planned.as_ref(), out) {
+        match hooked(view, stored, cx, planned, out) {
             Ok((lu, h)) => {
                 *made.borrow_mut() = Some(h);
                 Ok(lu)
@@ -2194,7 +2199,7 @@ fn front_two(
             reason
         })?;
         // U6's walk against front 2's mark (binding).
-        if let Some(p) = &planned
+        if let Some(p) = planned
             && f.plan.shaping.gc_sections
         {
             let n = marks_judged(view, f, &p.cf, &p.live)?;
@@ -2235,7 +2240,7 @@ fn front_two(
             changed::record(&format!("M2b-3 Part 3: front 2's refill: {}", e.report()));
         })?;
         // U5 and R-4a on front 2's capture (binding).
-        if let Some(p) = &planned {
+        if let Some(p) = planned {
             u5_on_capture(view, &p.cf, &p.delta, &p.ex, &state)?;
             facts_judged(view, &state, &p.delta, &p.defined)?;
         }
@@ -2296,7 +2301,7 @@ fn front_two(
             ));
         }
         // R-A2 and the facts check (binding), over the final delta.
-        match &planned {
+        match planned {
             Some(p) => {
                 match steps::resolved_within_affected(&old, &state, &p.delta) {
                     Ok(n) => changed::record(&format!(
@@ -2333,7 +2338,7 @@ fn front_two(
         let cx = front_view(f);
         if identity {
             debug_judged(view, stored, &cx, files, h.debug.as_ref(), &refill, out)?;
-        } else if planned.as_ref().is_some_and(|p| p.debug) || h.debug.is_some() {
+        } else if planned.is_some_and(|p| p.debug) || h.debug.is_some() {
             let lu = Some(&f.layout);
             debug_judged_moved(view, stored, &cx, files, h.debug.as_ref(), lu, &refill, out)?;
         }
