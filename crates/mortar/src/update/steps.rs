@@ -166,7 +166,8 @@ fn stored_section(view: &StateView<'_>, cf: &ChangedFiles, s: u32) -> Result<u32
 ///   `KEY_REFS`/`GROUPS`/`COMMONS` edits putting back what they delete, no
 ///   keeper re-elected, each `resolved` row (with `facts`) the stored one
 ///   (its section by `(file, index)`);
-/// - the layout delta: nothing moved, killed, revived, no hole, no region
+/// - the layout delta: nothing moved, killed, revived, no hole made, every
+///   touched chunk (`hole_chunks`) with its stored holes, no region
 ///   opened, no growth step, no new `FRAGS`, no slot appended, dead or
 ///   revived, every changed section at its stored place with its stored
 ///   size, no liveness flip (`flips`), the `.eh_frame` ranges at their
@@ -347,12 +348,34 @@ pub(crate) fn identity_prime(
     if flips != 0 {
         return Err(format!("{flips} sections flip liveness"));
     }
+    // `hole_chunks` lists every chunk the delta touched (a changed
+    // section's, a merged or slot chunk's), with no hole left or the same
+    // holes (P-3b: the lane's 78 identity hops had 1 to 5): identity when
+    // each one's holes are the stored ones.
+    touched_chunks_keep_their_holes(stored, d)?;
+    // A killed section (a changed file's stored section no change matched
+    // that had a place): not identity, named with its stored row.
+    if let Some(&k) = d.killed.first() {
+        let r = view.section(k).map_err(e)?;
+        return Err(format!(
+            "{} killed, first section {} (file {}, {:?}, sh_type {}, size {}, place {} {}, \
+             bits {:#x})",
+            d.killed.len(),
+            k.0,
+            r.file,
+            String::from_utf8_lossy(&view.string(r.name).map_err(e)?),
+            r.sh_type,
+            r.size,
+            r.place_chunk,
+            r.place_offset,
+            r.bits
+        ));
+    }
     let counts = [
         d.moved.len(),
         d.killed.len(),
         d.revived.len(),
         d.holes.len(),
-        d.hole_chunks.len(),
         d.regions_opened.len(),
         d.growth_steps.len(),
         d.frags.len(),
@@ -362,8 +385,8 @@ pub(crate) fn identity_prime(
     ];
     if counts.iter().any(|&n| n != 0) {
         return Err(format!(
-            "the layout delta: moved, killed, revived, holes, hole chunks, regions, growth steps, \
-             new FRAGS, slots appended, dead, revived: {counts:?}"
+            "the layout delta: moved, killed, revived, holes, regions, growth steps, new FRAGS, \
+             slots appended, dead, revived: {counts:?}"
         ));
     }
     for c in changes {
@@ -397,6 +420,26 @@ pub(crate) fn identity_prime(
             if !same {
                 return Err(format!(".eh_frame range of file {}: {r:?} (stored {s:?})", r.file.0));
             }
+        }
+    }
+    Ok(())
+}
+
+/// Each chunk of `d.hole_chunks` (every chunk the delta touched: a
+/// changed section's, a merged or a slot chunk's, listed with no hole left
+/// or with the same holes) has the stored holes (P-3b: the lane's 78
+/// identity hops had 1 to 5 such chunks, each with its holes unchanged).
+fn touched_chunks_keep_their_holes(
+    stored: &StoredLayout<'_>,
+    d: &LayoutDelta,
+) -> Result<(), String> {
+    for &c in &d.hole_chunks {
+        let mut now: Vec<_> = d.placement.holes.iter().filter(|h| h.chunk == c).copied().collect();
+        now.sort_unstable();
+        let mut was = stored.holes_in(c).map_err(|x| x.report())?;
+        was.sort_unstable();
+        if now != was {
+            return Err(format!("chunk {}: holes {now:?} (stored {was:?})", c.0));
         }
     }
     Ok(())
@@ -865,6 +908,32 @@ mod tests {
         let mut now = vec![e(11, 101)];
         let mut was = vec![e(9, 102), e(11, 101)];
         assert!(differ_as_sets(&mut now, &mut was).is_some());
+    }
+
+    /// identity' cause 4 (the lane's 78 hops after causes 1-3): a chunk
+    /// the delta touched is in `hole_chunks` with its holes unchanged
+    /// (identity); a hole that differs is caught.
+    #[test]
+    fn identity_prime_touched_chunks_by_their_holes() {
+        use mortar_core::ChunkId;
+        use mortar_core::incr::MemoryLayout;
+        use mortar_core::layout::{Hole, HoleKind};
+        let h = |chunk, offset, size| Hole {
+            chunk: ChunkId(chunk),
+            offset,
+            size,
+            kind: HoleKind::Fill,
+        };
+        let rows = MemoryLayout { holes: vec![h(3, 16, 8), h(4, 0, 4)], ..MemoryLayout::default() };
+        let stored = StoredLayout::new(&rows);
+        let mut d =
+            LayoutDelta { hole_chunks: vec![ChunkId(2), ChunkId(3)], ..LayoutDelta::default() };
+        d.placement.holes = vec![h(3, 16, 8)].into_boxed_slice();
+        assert_eq!(touched_chunks_keep_their_holes(&stored, &d), Ok(()));
+        d.placement.holes = vec![h(3, 16, 4)].into_boxed_slice();
+        assert!(touched_chunks_keep_their_holes(&stored, &d).is_err());
+        d.placement.holes = Vec::new().into_boxed_slice();
+        assert!(touched_chunks_keep_their_holes(&stored, &d).is_err());
     }
 
     /// `link_arch_of` is the front's selection: every target the update
