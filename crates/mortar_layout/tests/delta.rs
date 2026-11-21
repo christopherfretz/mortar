@@ -3114,13 +3114,13 @@ fn growth_step_of_a_pt_loads_last_chunk_keeps_l9() {
         assert!(c1.size > c0.size, "{m:?}");
         assert_eq!(c1.capacity, c1.size, "{m:?}: the step gives the last chunk no slack");
         assert_eq!(d.growth_steps[0].step, c1.size - c0.size, "{m:?}");
-        let (v1, mem1, file1) = load_of(p1, a0);
+        let (v1, mem1, fend1) = load_of(p1, a0);
         assert_eq!(
             (v1, v1 + mem1),
             (v, a0 + c1.size),
             "{m:?}: L-9: the memory ends at .rodata's end"
         );
-        assert_eq!(file1, mem1, "{m:?}");
+        assert_eq!(fend1, mem1, "{m:?}");
         // The next PT_LOAD did not move.
         let next0: Vec<_> = p0.segments.as_slice().iter().filter(|s| s.addr > a0).collect();
         let next1: Vec<_> = p1.segments.as_slice().iter().filter(|s| s.addr > a0).collect();
