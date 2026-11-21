@@ -286,7 +286,7 @@ fn front_free<'c>(
     use std::time::Duration;
     let plan = ctx.plan;
     let fall = |what: String, e: IncrReason| {
-        changed::record(&format!("P-5 fallback: {what}: {}", e.report()));
+        changed::record(&format!("P-5 fallback: {what}: {}{}", e.report(), hop_label()));
         e
     };
     let layout = || IncrReason::UpdateNotImplemented(Some(Unimplemented::Layout));
@@ -771,9 +771,9 @@ fn front_one_shadow(
     };
     let (a, b) = (yes(&front1), yes(&taken));
     changed::record(&if front1.is_ok() == taken.is_ok() {
-        format!("P-5 shadow: agree (outcome: front 1 {a}, front 2 {b})")
+        format!("P-5 shadow: agree (outcome: front 1 {a}, front 2 {b}){}", hop_label())
     } else {
-        format!("finding: P-5 shadow: outcome front 1 {a} front 2 {b}")
+        format!("finding: P-5 shadow: outcome front 1 {a} front 2 {b}{}", hop_label())
     });
     let mut agree: Vec<&str> = Vec::new();
     let mut not: Vec<String> = Vec::new();
@@ -821,9 +821,9 @@ fn front_one_shadow(
     let skipped =
         if skipped.is_empty() { String::new() } else { format!("; not compared {skipped:?}") };
     changed::record(&if not.is_empty() {
-        format!("P-5 shadow: agree (checks: {}{skipped})", agree.join(", "))
+        format!("P-5 shadow: agree (checks: {}{skipped}){}", agree.join(", "), hop_label())
     } else {
-        format!("finding: P-5 shadow: {}{skipped}", not.join("; "))
+        format!("finding: P-5 shadow: {}{skipped}{}", not.join("; "), hop_label())
     });
 }
 
@@ -2325,10 +2325,11 @@ fn front_two(
         }
         steps.mark("check");
         changed::record(&format!(
-            "M2b-3 Part 3: taken: front 2 ({}; {} ranges, {} bytes)",
+            "M2b-3 Part 3: taken: front 2 ({}; {} ranges, {} bytes){}",
             if identity { "identity" } else { "every chunk" },
             refill.counts.ranges,
-            refill.counts.dirty
+            refill.counts.dirty,
+            hop_label()
         ));
         // WP-255e: C' in shadow, against front 2's bytes (never written),
         // on a non-identity hop as before P-5.
