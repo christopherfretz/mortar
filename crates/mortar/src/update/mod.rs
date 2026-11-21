@@ -2149,8 +2149,16 @@ fn s3_bytes(
             ClipError::Internal(x) => format!("{x:?}"),
             ClipError::NotYet(k, id) => format!("NotYet({k:?}) {}", id.0),
         };
+        // No count (`LayoutDelta::members` is `None` for a chunk a debug
+        // placement change touches) is a refusal by name; a count that
+        // disagrees is a finding.
+        let class = if what.contains("no independent member count") {
+            "bytes: refused"
+        } else {
+            "finding: S3 bytes"
+        };
         return format!(
-            "finding: S3 bytes: CHUNKS.members: {what}; index against front 2's: {}",
+            "{class}: CHUNKS.members: {what}; index against front 2's: {}",
             index_diff.as_deref().unwrap_or("equal")
         );
     }
@@ -2161,6 +2169,26 @@ fn s3_bytes(
         "index: {} chunks, {listed} members, equal to CHUNKS.members and to front 2's",
         want.len()
     );
+    // The state's chunks against front 2's where the clips meet them: a
+    // chunk the delta sizes or places otherwise is refused by name with
+    // both rows (the lane met `.symtab`/`.strtab`: the delta's sizes are
+    // not the update's written tables).
+    for (id, k) in chunks.iter() {
+        if !k.in_file() || !meets(k.offset, k.offset + k.size.max(k.capacity)) {
+            continue;
+        }
+        let Some(x) = pl.chunks.get(id) else { continue };
+        if (k.offset, k.size, k.capacity) != (x.offset, x.size, x.capacity) {
+            return format!(
+                "bytes: refused: chunk {} ({}): the delta's (offset, size, capacity) {:#x?}, \
+                 front 2's {:#x?}; {index_line}",
+                id.0,
+                chunk_name(f, x.offset),
+                (k.offset, k.size, k.capacity),
+                (x.offset, x.size, x.capacity)
+            );
+        }
+    }
     // State pads: the delta's chunks and segments (names from front 2).
     let chunk_views: Vec<ChunkView> = chunks
         .iter()
