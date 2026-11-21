@@ -1902,7 +1902,9 @@ README the scenario format). It builds mortar, and the `mortar` crate
 with `--features testhooks` into `<target>/testhooks` (the subject:
 `MORTAR_INCR_DIRTY=<file>` makes an update write its dirty ranges,
 `0x<offset> 0x<length>` a line; built without debug information, a 34 MB
-binary in a 161 MB directory), holds `-j` jobserver tokens for the
+binary in a 161 MB directory), `mortar_incr`'s example `incr_state`
+(release, beside mortar: the comparator of `state`'s (d0), passed to
+the lane as `--incr-state`), holds `-j` jobserver tokens for the
 lane's workers and runs the lane under `<target>/incr-update`.
 
 **Scenarios.** `tests/incr-update/scenarios/<name>/`: a first link in
@@ -1943,13 +1945,24 @@ Its checks, in this order, each `pass`, `FAIL <why>` or `n/a <why>`:
 | `equiv` | (b) | `xtask plumb --equiv` of X's map and F's |
 | `run` | (a) | the program's status and output equal F's |
 | `oracle` | (c) | IN-63a between the previous hop's G and this hop's, against X's report; `n/a` without a previous full link or without a dry run's prediction |
-| `state` | (d) | `state_equals_capture_of_its_placement` (IN-78): `canon(S')` against `canon(C(U))`, `C(U)` at `h<i>/capture.mortar-state`, the first differing row printed as `<table> row <key>: <what>` |
-| `duty` | (d) | `duty_list_covers_differences` (IN-78): every row in which `canon(S)` and `canon(C(U))` differ is a table of a cause of IN-78's derived table, held as data in `tests/incr-update/duty.py` (a unit test checks it against this spec's table, a name a cell gives only to say the cause does not change it held out by the spec's own words) |
+| `state` | (d) | until (d) proper (`state_equals_capture_of_its_placement`, IN-78, which needs `P_U` from the map): **(d0)** (WP-267 P-4), `incr_state compare S' G`, `S'` the state X wrote, `G` the state of the hop's own G link (`h<i>/prog.mortar-state`). **Exact** (`pass (d0 exact)`) on an identity hop (X's map and G's are equal line for line outside `arg` and `symblock`) whose previous hop was a full link (not `base_was_update`); on every other update hop equal **outside IN-78's placement rows** (`pass (d0 outside placement: <n> rows excluded)`): the tables `CHUNKS`, `ORDER`, `HOLES`, `PATCHES`, `REDIRECTS`, `REGIONS`, `SYMTAB`, `DEFINED`, `SYM_PLACE`, `SIZES`, `SIZED`, `SEGMENTS`, `LAYOUT`, `OUTSECS`, the columns `SECTIONS`' place, `FILES`' `eh_offset` and `eh_capacity`, `FRAGS`' offset, `META`'s output size, and `SLOTS`' order. A failure prints the rule and the first differing row; the comparator's output is saved to `h<i>/d0-compare.txt`. Without the tool: `n/a ... no incr_state`, never a pass |
+| `duty` | (d) | `duty_list_covers_differences` (IN-78) under (d0): every row in which `canon(S)` (a copy of the state taken before X) and `canon(S')` differ is a table of a cause of IN-78's derived table, held as data in `tests/incr-update/duty.py` (a unit test checks it against this spec's table, a name a cell gives only to say the cause does not change it held out by the spec's own words); `STRINGS` held out (a string is its rows'); `S'` stands for `C(U)` where (d0) holds |
 | `expect` | §7 | only in a scenario with `expect-full: <reason> (<detail>): <why>`, after hop 0: a hop that may not be an update by rule is that named full link (`pass`) or a fall-back that comes first (`n/a`, e.g. `small-output`); `update` or the reason with another detail word is a FAIL. The `--gc-sections` scenarios say `update-not-implemented (live)` (IN-71a, WP-215 seam 3; WP-238 lifts it): no scenario expects a gc UPDATE |
 
-Until U-2 lands `state` and `duty` are a stub that reports `n/a (d) not
-run (canon: U-2)` and fails nothing (IN-78); until V-1 and U-6 land,
-`P_U` is not read (`P_U: decision records not read`). A check that
+**What (d0) does not judge** (WP-267 review §6), so what only (d)
+proper or another check can catch: `FILES.round` (canon writes 0; the
+support property is not checked), `META.compactions`, `build_id_len` and
+the other fields `canon` zeroes (the `META` history and binding, the
+`STAT` output row), `STAT` (G's inputs are copies, with other inodes and
+times), `LEAVES`, the link's directory in `STRINGS` (G links in `h<i>`, X
+in `ws`, a name of the same length so no other string moves; the row
+must be equal once the directory is replaced), the placement rows above
+on every hop that is not exact (three of the four stale-datum defects
+were in such rows), and rows seen only as set differences (a table whose
+row counts differ is compared as sets: duplicates collapse). `P_U` is not
+read (`P_U: decision records not read`), so no decision row is compared
+with the update's placement. The run's summary adds `incr-update: state
+(d0, WP-267 P-4): exact:<a> outside-placement:<b> n/a:<c> FAIL:<d>`. A check that
 cannot run because the link failed is `n/a the link failed`. The run's
 summary counts the `n/a`s by check:
 

@@ -45,3 +45,20 @@ incremental-mode full link (`--incremental=full`, h<i>), X the subject
 (`--incremental`, in W, MORTAR_INCR_DIRTY=h<i>/dirty.txt,
 `--incremental-report=h<i>/rep.txt`). Work: <target>/incr-update/run/<label>,
 removed when the run passes unless --keep.
+
+(d0), the `state` check until (d) proper (WP-267 P-4; spec/harness.md
+"incr-update"): `incr_state compare S' G` (xtask builds mortar_incr's
+example `incr_state` and passes `--incr-state`; without it `state` and
+`duty` are `n/a ... no incr_state`, never a pass). S' is W's state after
+X, G the state of the hop's G link (h<i>/prog.mortar-state). W is named
+`ws`, the length of `h<i>`, so the one directory string has the same length
+in both states. EXACT (`pass (d0 exact)`) on an identity hop (X's map and
+G's are equal outside `arg` and `symblock`) whose previous hop was a full
+link; on every other update hop equal outside IN-78's placement rows
+(`pass (d0 outside placement: N rows excluded)`). A difference is saved to
+h<i>/d0-compare.txt (kept: a failed run's directory stays). NOT judged by
+(d0): FILES.round, META.compactions, build_id_len and the other fields
+canon zeroes, STAT, LEAVES, the link's directory in STRINGS, the
+placement rows on a non-exact hop, the rows seen only as set differences
+(duplicates collapse). `duty` compares canon(S) (h<i>/s.mortar-state, a
+copy taken before X) with canon(S'), STRINGS held out.
