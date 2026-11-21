@@ -390,16 +390,12 @@ fn reference_of(
         }
     }
     // WP-267 P-3, record §1 rows 8 and 9 without the front: M-6's
-    // refusal binds (a link that may have script directives); the option
-    // keys and the link's architecture from `META.machine` are judged
-    // against the front's (findings only).
-    // NOT binding yet: its "an input that gave no file" test refused 334
-    // lane hops whose front has no directives (a hand-back finding).
+    // refusal binds (a link that may have script directives; P-3c: an
+    // input that gave no file is read and judged, `steps::option_names`);
+    // the option keys and the link's architecture from `META.machine` are
+    // judged against the front's (findings only).
+    let options = steps::option_names(view, ctx.plan)?;
     if changed::recording() {
-        let options = match steps::option_names(view, ctx.plan) {
-            Ok(o) => o,
-            Err(_) => mortar_resolve::tables::option_keys(ctx.plan, &[]),
-        };
         let front = mortar_resolve::tables::option_keys(&f.plan, &f.inputs.link.directives);
         let machine = steps::machine_of(view.meta()?.machine);
         let arch = machine.and_then(|m| steps::link_arch_of(ctx.plan, m, true).ok());
