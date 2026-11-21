@@ -7,11 +7,8 @@
 # `LARGE_COMMON.z` an orphan; lld makes both orphans; both put a large
 # `COMMON` in `.bss`, which takes the flag. Without the flag mortar
 # follows lld: `LARGE_COMMON` is an orphan (L-44's uniform rule; no
-# producer writes one). Every program runs alike. The verifier does not
-# place a reference's input section `COMMON` from its map (R5 on a
-# relocation against a symbol of one, reported with WP-203;
-# layout/common-section.test): the `COMMON` link every linker runs
-# references no symbol of it, mortar's program that does is its own.
+# producer writes one). Every program runs alike, on every linker
+# (the verifier places an input `COMMON` by its file's row, WP-210).
 #@ spec: layout.md "L-44a"
 #@ spec: layout.md "L-36a"
 #@ arch: x86_64
@@ -53,8 +50,8 @@ check(mortar) readelf -SW lnf
 link gcc -static mla.o vcoml.o -o coml
 run coml
   stdout: 8
-link(mortar) gcc -static mlarge.o vcoml.o -o coml-use
-run(mortar) coml-use
+link gcc -static mlarge.o vcoml.o -o coml-use
+run coml-use
   stdout: 6 8
 check(mortar) readelf -SW coml-use
   has: .lbss NOBITS * WAl
