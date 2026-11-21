@@ -114,6 +114,10 @@ pub(crate) struct Sec {
     pub entsize: u64,
     /// The file bytes (empty for `SHT_NOBITS`).
     pub data: Vec<u8>,
+    /// An input `SHF_COMPRESSED` section read by its compression header
+    /// (§14.7, WP-210): `size` and `align` are the header's `ch_size` and
+    /// `ch_addralign`, `data` is empty (stage R has no decompression).
+    pub compressed: bool,
 }
 
 impl Sec {
@@ -1244,6 +1248,7 @@ fn read_inputs(
                 }
             }
         };
+        let elf = uncompress_geometry(elf, &f.to_string(), report);
         // A path the line names n times is n inputs (a foreign map names
         // it once; its rows come copy after copy).
         let positions: Vec<usize> = if map.format != Format::Mortar && f.member.is_none() {
@@ -1280,6 +1285,39 @@ fn read_inputs(
         });
     }
     ins
+}
+
+/// An input's `SHF_COMPRESSED` sections (§14.7, WP-210 item (b)): the
+/// compression header (`Elf64_Chdr`/`Elf32_Chdr`) gives the section's
+/// size and alignment as the link sees them, so its place, alignment and
+/// extent are judged; its bytes are not read (no decompression), so
+/// they, a REL record's implicit addend and a target inside them that is
+/// a merged string are not judged, by name (`compressed`). A header that
+/// does not fit is an I2 finding.
+fn uncompress_geometry(mut elf: Elf, file: &str, report: &mut Report) -> Elf {
+    let c64 = elf.h.class64;
+    for s in &mut elf.secs {
+        if s.flags & SHF_COMPRESSED == 0 || s.nobits() {
+            continue;
+        }
+        let hdr = if c64 {
+            rd(&s.data, 8, 8).zip(rd(&s.data, 16, 8))
+        } else {
+            rd(&s.data, 4, 4).zip(rd(&s.data, 8, 4))
+        };
+        let Some((size, align)) = hdr else {
+            report.findings.push(Finding::new(
+                Rule::InputUnreadable,
+                format!("{file}:({}): SHF_COMPRESSED without a whole compression header", s.name),
+            ));
+            continue;
+        };
+        s.size = size;
+        s.align = align;
+        s.data = Vec::new();
+        s.compressed = true;
+    }
+    elf
 }
 
 /// The rules, in order: the places, the drops, then P-P5 (which gives
@@ -1799,6 +1837,15 @@ type Field = (u64, u8, u64, Option<Vec<u64>>, u32);
 fn content(rv: &mut Rv<'_>) {
     for f in 0..rv.ins.len() {
         for s in 1..rv.ins[f].elf.secs.len() {
+            // §14.7 (WP-210): a compressed input's bytes, placed whole or
+            // merged, are not judged, by name.
+            if rv.ins[f].elf.secs[s].compressed
+                && matches!(rv.places[f][s], Place::Whole { .. } | Place::Merged { .. })
+            {
+                let n = rv.ins[f].sname(s);
+                rv.cov.compressed.push(n);
+                continue;
+            }
             let Place::Whole { out, off } = rv.places[f][s] else { continue };
             let sec = &rv.ins[f].elf.secs[s];
             let Some(o) = rv.out.secs.get(out as usize) else { continue };
@@ -2098,6 +2145,19 @@ pub(crate) fn records(rv: &mut Rv<'_>) {
                     rv.report.coverage.records += 1;
                     let at = off + r.offset;
                     let cands = rv.out_recs.get(&(out, at)).cloned().unwrap_or_default();
+                    if rv.needs_compressed_bytes(f, s, r, &t) {
+                        // §14.7 (WP-210): its verdict needs bytes stage R
+                        // does not decompress; the output record of its
+                        // type at the place is consumed.
+                        if let Some(&c) =
+                            cands.iter().find(|c| !rv.used[c] && rv.out_rels[&c.0][c.1].ty == r.ty)
+                        {
+                            rv.used.insert(c, true);
+                            rv.matched.insert(c, (f, rs, ri));
+                        }
+                        rv.report.coverage.add_not_checked(Reason::Compressed, 1);
+                        continue;
+                    }
                     if drops_record(&sname, sflags, &t) {
                         // §14.3 drops it: the field holds the tombstone
                         // (P-P2), or a per-linker record stands at it.
@@ -2146,6 +2206,24 @@ pub(crate) fn records(rv: &mut Rv<'_>) {
 }
 
 impl Rv<'_> {
+    /// Whether record `r` of input `f`'s section `s` (target `t`) needs
+    /// the bytes of an `SHF_COMPRESSED` section (§14.7, WP-210): a REL
+    /// record in one (its implicit addend), or a merged-string target in
+    /// one.
+    fn needs_compressed_bytes(&self, f: usize, s: usize, r: &Rel, t: &Tgt) -> bool {
+        let secs = &self.ins[f].elf.secs;
+        if r.addend.is_none() && secs.get(s).is_some_and(|x| x.compressed) {
+            return true;
+        }
+        matches!(t, Tgt::Merged(..))
+            && self.ins[f]
+                .elf
+                .syms
+                .get(r.sym as usize)
+                .and_then(|y| secs.get(y.shndx as usize))
+                .is_some_and(|x| x.compressed)
+    }
+
     /// Matches input record `r` (index `ri` of `f`'s relocation section
     /// `rs`, applying to section `s`) at output place `(out, at)`.
     #[allow(clippy::too_many_arguments)]

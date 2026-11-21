@@ -9060,7 +9060,9 @@ section: **verified** by `place` (P-P3's match by place and target),
 pointer field of a matched CIE or FDE) or `tombstone` (a field of a
 dropped record, P-P2); **accepted** by `per-linker` (P-P3's list, by
 linker); **not checked** by `in-mergeable` (a record inside a merged
-foreign section: its place is not listed) or `options-unknown`. An input
+foreign section: its place is not listed), `options-unknown` or
+`compressed` (§14.7: a record whose verdict needs the bytes of a
+`SHF_COMPRESSED` input section; WP-210). An input
 `R_*_NONE` record is verified by `place` like any other (§7.2's **none**
 does not apply at `-r`: the record must be carried). The summary adds `relocatable:
 pieces {n}, merged {m}, framed {f}; groups {g}; FDEs {k} live, {r}
@@ -9123,6 +9125,28 @@ name omitted) counts as a judged symbol, not a record.
   its bytes cannot be read on one side" (item 3) on such a composition;
   the cause is not measured. Not asked (the lane's LT-R2 does not
   compose mold's `D` and `V`): not judged.
+- The bytes of a `SHF_COMPRESSED` input section (`-gz`; WP-210). Stage R
+  has no decompressor (no third-party code in the verifier). Such a
+  section is read by its compression header (`ch_size`,
+  `ch_addralign`: ELF64 at +8 and +16, ELF32 at +4 and +8) as an
+  uncompressed section of that size and alignment, so P-P11's geometry
+  and P-P3's places are judged against it; a header that does not fit
+  is "{file}:({name}): SHF_COMPRESSED without a whole compression
+  header" (`InputUnreadable`). Its pieces are not compared (P-P11's
+  content, P-P1's bytes), and a record whose verdict needs its bytes
+  (a REL record's addend in place, or a target in a merged section
+  whose input is compressed) is consumed not checked, `compressed`.
+  The summary names the sections: "relocatable, not judged: the bytes
+  of {n} compressed input sections (no decompression): {list}". Before
+  WP-210 the compressed sections were read as plain ones: P-P11
+  "sh_addralign is 1, not 8 (its largest piece's)" on each debug
+  section of GNU ld's and lld's `-r` outputs of `-gz=zlib` objects (the
+  compressed input's `sh_addralign` 8 against the output's 1). mortar refuses a compressed input (L-R1a's
+  decompression is not built), so this is the references' case.
+  *Test:* `s14_7_compressed_inputs_{aarch64,x86_64}` (GNU ld and lld at
+  `-r` on `-gz=zlib` objects: no finding but lld's A120; a mutant
+  `ch_addralign` of 256 in `c1.o`'s `.debug_info` is P-P11's
+  "sh_addralign is 1, not 256").
 - `-T` at `-r`: not judged. RL-11 keeps `-T` refused at `-r` unless a
   verifier rule for placement by a script at `-r` is written first, in a
   verifier package before it (the supervisor's ruling on WP-180).

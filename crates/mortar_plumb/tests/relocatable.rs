@@ -2475,3 +2475,86 @@ fn s14_1_the_callers_line_first_aarch64() {
 fn s14_1_the_callers_line_first_x86_64() {
     judge_line(Arch::X86_64);
 }
+
+/// §14.7 (WP-210 item (b)): `SHF_COMPRESSED` inputs (`-gz=zlib`) at
+/// `-r`. Stage R reads each one's compression header (size and
+/// alignment, so its place, alignment and extent are judged) and not its
+/// bytes: GNU ld's and lld's `-r` of the C component have no finding but
+/// lld's A120, the compressed inputs are named not judged, and lld's
+/// records into its merged compressed strings are not checked
+/// `compressed`. Before WP-210 stage R compared the compressed bytes
+/// (P-P2, P-P3, P-P11 on both, record `spec/landed/harness/WP-186.md`).
+/// The mutant: c1.o's `.debug_info` header made to say alignment 0x100,
+/// which the output's `sh_addralign` 1 then contradicts (P-P11).
+fn judge_compressed(arch: Arch) {
+    const GZ: &[&str] =
+        &["-O1", "-g", "-gz=zlib", "-fcommon", "-ffunction-sections", "-fdata-sections"];
+    let Some(t) = Tools::find(arch) else { return };
+    let scratch = Scratch::new(&format!("plumb-relgz-{}", arch.name()));
+    let dir = scratch.join("gz");
+    std::fs::create_dir_all(&dir).unwrap();
+    let case = Case {
+        name: "d3-c-gz".into(),
+        srcs: vec![src(Cc::Gcc, "c1.c", C1, GZ, "c1.o"), src(Cc::Gcc, "c2.c", C2, GZ, "c2.o")],
+        inputs: vec!["c1.o", "c2.o"],
+        opts: vec![],
+    };
+    build(&t, &case, &dir).unwrap_or_else(|e| panic!("{arch:?}: {e}"));
+    let c1 = std::fs::read(dir.join("c1.o")).unwrap();
+    let e = Ed::new(&c1);
+    let info = e.find(".debug_info").expect("c1.o has .debug_info");
+    assert_ne!(e.sh(info).flags & 0x800, 0, "{arch:?}: -gz=zlib compresses .debug_info");
+    for r in [Ref::Bfd, Ref::Lld] {
+        let line = link(&t, r, &case, &dir).unwrap_or_else(|e| panic!("{arch:?}: {e}"));
+        let (rep, out) = verify(r, &case, &dir, line.clone());
+        let fs: Vec<String> =
+            rep.findings.iter().map(|f| format!("{} {}", f.rule.id(), f.message)).collect();
+        let a120 = |f: &String| r == Ref::Lld && f.contains("COMMON comes from no input section");
+        let bad: Vec<&String> = fs.iter().filter(|f| !a120(f)).collect();
+        assert!(bad.is_empty(), "{arch:?} {}: {bad:#?}", r.name());
+        let c = rep.coverage.relocatable.clone().unwrap_or_default();
+        assert!(
+            c.compressed.iter().any(|n| n == "c1.o:(.debug_info)"),
+            "{arch:?} {}: the compressed inputs are named: {:?}",
+            r.name(),
+            c.compressed
+        );
+        if r == Ref::Lld {
+            assert!(
+                rep.summary().contains("(compressed "),
+                "{arch:?} lld: records into merged compressed strings not checked: {}",
+                rep.summary()
+            );
+        }
+        // The mutant: c1.o's .debug_info header says ch_addralign 0x100.
+        let mut m = Ed::new(&c1);
+        let at = usize::try_from(m.sh(info).offset).unwrap() + 16;
+        m.wr(at, 8, 0x100);
+        let text =
+            std::fs::read_to_string(dir.join(format!("{}.{}.map", case.name, r.name()))).unwrap();
+        let map = mortar_plumb::map::parse(r.format(), &text).unwrap();
+        let c2 = std::fs::read(dir.join("c2.o")).unwrap();
+        let inputs = [Input { path: "c1.o", bytes: &m.b }, Input { path: "c2.o", bytes: &c2 }];
+        let ctx = Ctx { line: Some(line), files: &Dir(&dir) };
+        let got = mortar_plumb::verify_with(&out, &inputs, &map, &ctx);
+        assert!(
+            got.findings.iter().any(|f| f.rule.id() == "P-P11"
+                && f.message.contains(".debug_info: sh_addralign is 1, not 256")),
+            "{arch:?} {}: the header's alignment is judged: {:#?}",
+            r.name(),
+            got.findings
+        );
+    }
+}
+
+// spec: plumb.md §14.7 (WP-210 item (b)) on AArch64.
+#[test]
+fn s14_7_compressed_inputs_aarch64() {
+    judge_compressed(Arch::Aarch64);
+}
+
+// spec: plumb.md §14.7 (WP-210 item (b)) on x86-64.
+#[test]
+fn s14_7_compressed_inputs_x86_64() {
+    judge_compressed(Arch::X86_64);
+}
