@@ -5,8 +5,8 @@ use crate::hasher::HashMap;
 
 use mortar_elf::archive::{Archive, Content};
 use mortar_elf::consts::{
-    SHF_ALLOC, SHF_EXECINSTR, SHF_MERGE, SHF_WRITE, SHT_GROUP, SHT_NOBITS, SHT_NULL, SHT_REL,
-    SHT_RELA, SHT_STRTAB, SHT_SYMTAB, SHT_SYMTAB_SHNDX, SHT_X86_64_UNWIND,
+    SHF_ALLOC, SHF_EXECINSTR, SHF_MERGE, SHF_WRITE, SHN_COMMON, SHT_GROUP, SHT_NOBITS, SHT_NULL,
+    SHT_REL, SHT_RELA, SHT_STRTAB, SHT_SYMTAB, SHT_SYMTAB_SHNDX, SHT_X86_64_UNWIND,
 };
 use mortar_elf::{Error, Machine, Object, Rel, Rela, SectionIndex, Shdr, SymbolTable};
 
@@ -333,37 +333,67 @@ fn read_obj<'a>(store: &'a Store<'a>, k: usize, file: &MapFile) -> Result<Obj<'a
 /// a row of at least its size (GNU ld's `*(COMMON)` puts the section
 /// first and the file's commons after it in one row), under lld and mold
 /// a row of exactly its size (their commons are rows of their own) at an
-/// address of its alignment. Without one it keeps no place.
+/// address of its alignment, that is not a row of the file's commons: a
+/// row at the output `.symtab` value of one of the file's `SHN_COMMON`
+/// globals holds that common (lld lists its commons first in `.bss`,
+/// the section in input order: two rows of one size, WP-210). When the
+/// output has no `.symtab` and more than one row could hold it, it keeps
+/// no place. Without one it keeps no place.
 fn common_sections(
     map: &Map,
     obj_of: &[Option<usize>],
     names: &[HashMap<String, Vec<usize>>],
+    image: &Image<'_>,
     out: &mut Located<'_>,
 ) {
+    let gnu = map.format == Format::Gnu;
     let mut claimed = vec![false; map.chunks.len()];
     for (i, f) in map.files.iter().enumerate() {
         let Some(oi) = obj_of.get(i).copied().flatten() else { continue };
         let Some(idx) = names[oi].get("COMMON") else { continue };
         let label = f.to_string();
+        // The addresses of the file's commons in the output (lld, mold).
+        let commons: Vec<u64> = if gnu { Vec::new() } else { common_addrs(&out.objs[oi], image) };
         for &si in idx {
             let s = &out.objs[oi].secs[si];
             if !s.alloc() || !matches!(s.place, Place::Absent) {
                 continue;
             }
             let (size, align) = (s.shdr.sh_size, s.shdr.sh_addralign.max(1));
-            let pick = map.chunks.iter().enumerate().find(|(k, c)| {
-                !claimed[*k]
-                    && c.kind == ChunkKind::Common
-                    && c.name == label
-                    && c.addr.is_some_and(|a| a % align == 0)
-                    && if map.format == Format::Gnu { c.size >= size } else { c.size == size }
-            });
-            if let Some((k, c)) = pick {
+            let rows: Vec<(usize, u64)> = map
+                .chunks
+                .iter()
+                .enumerate()
+                .filter(|(k, c)| {
+                    !claimed[*k]
+                        && c.kind == ChunkKind::Common
+                        && c.name == label
+                        && c.addr.is_some_and(|a| a % align == 0 && !commons.contains(&a))
+                        && if gnu { c.size >= size } else { c.size == size }
+                })
+                .map(|(k, c)| (k, c.addr.unwrap_or(0)))
+                .collect();
+            if !gnu && image.symbols.is_empty() && rows.len() > 1 {
+                continue;
+            }
+            if let Some(&(k, a)) = rows.first() {
                 claimed[k] = true;
-                out.objs[oi].secs[si].place = Place::Whole(c.addr.unwrap_or(0));
+                out.objs[oi].secs[si].place = Place::Whole(a);
             }
         }
     }
+}
+
+/// The output `.symtab` values of `obj`'s `SHN_COMMON` globals.
+fn common_addrs(obj: &Obj<'_>, image: &Image<'_>) -> Vec<u64> {
+    let Some(t) = &obj.symtab else { return Vec::new() };
+    t.globals()
+        .filter(|(_, s)| s.st_shndx == SHN_COMMON)
+        .filter_map(|(_, s)| {
+            let n = std::str::from_utf8(t.name(&s).ok()?).ok()?;
+            image.global(n).map(|o| o.sym.st_value)
+        })
+        .collect()
 }
 
 /// Reads the inputs a map names and decides the place of every section
@@ -435,7 +465,7 @@ pub(crate) fn locate<'a>(
         place_one(&mut out, &names[oi], oi, p, image, gnu, cursor.as_mut(), &dropped[oi]);
     }
     if map.format != Format::Mortar {
-        common_sections(map, &obj_of, &names, &mut out);
+        common_sections(map, &obj_of, &names, image, &mut out);
     }
     // mortar's non-alloc records (§3.2): a place in a named output
     // section, or merged into it.

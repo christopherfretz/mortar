@@ -823,7 +823,16 @@ multiple of its `sh_addralign` and of a size at least its `sh_size`
 (GNU ld: `*(COMMON)` lists the section first and the file's commons
 after it in one row) or exactly its `sh_size` (lld, mold: the commons
 are rows of their own; mold's go to `.common`, its section to an orphan
-output section `COMMON`). With no such chunk it keeps no place. Before
+output section `COMMON`). Under lld and mold a chunk at the output
+`.symtab` value of one of the file's `SHN_COMMON` globals is that
+common's row and does not place the section: lld puts its commons first
+in `.bss` and the section in input order, so the file of the D.3 C
+component's `-r` output has two 8-byte `COMMON` rows, the first holding
+`common_x` (measured in WP-210 on AArch64: `tests/compose.rs`, cell
+"compc -r lld final lld", which named the section piece 0 of `.bss`
+until the rule said so; the rule was wrong, not the reference). When
+the output has no `.symtab` and more than one chunk could place it, it
+keeps no place. With no such chunk it keeps no place. Before
 WP-210 every relocation against a symbol of such a section was R5
 ("refers to section 'COMMON', which is not in the output") on all
 three references (WP-203's lane steps restricted it by name). mortar's
@@ -3350,9 +3359,26 @@ rules below judge the rest. Code: `src/symbols.rs`.
     writes it, undefined or at `.plt`, in every output of the lane);
   - a name `.dynsym` has, or whose base before `@` it has (a copy
     relocation's or a shared library's symbol, a versioned reference
-    `puts@GLIBC_2.2.5`): stage 3 judges the dynamic symbols (P-D5);
-  - any name, when the line has a linker script (`-T`): the script may
-    assign it; listed as `<name> (the line has a script)`;
+    `puts@GLIBC_2.2.5`): stage 3 judges the dynamic symbols (P-D5), and
+    the `.symtab` entry is the same symbol (WP-210): a `.dynsym` entry of
+    the name (else of its base) has its `st_value`, defined or nonzero
+    (a canonical PLT entry's), or the entry is a **finding**
+    (`.symtab entry i ('n') is at v, but .dynsym's 'n' is at …`; before
+    WP-210 such a name was passed over whatever `.symtab` said);
+  - a name a linker script of the line (`-T`, `--default-script`)
+    assigns (WP-210): the verifier reads each script through the
+    caller's files as the input set reads one (§3.8: `name =`,
+    `name op=`, `PROVIDE(name = …)`, `PROVIDE_HIDDEN`, `HIDDEN`; a
+    comparison's `==` and the like count a name too, which only widens
+    the set), listed as `<name> (the line's script assigns it)`; a name
+    no script assigns is judged as with no script. When a script cannot
+    be read or `INCLUDE`s another, any name, listed as `<name> (the
+    line has a script the verifier did not read)`. The script's `ENTRY`
+    and `EXTERN` names are names the line mentions (below). Before
+    WP-210 the clause read only the options mortar accepts, and mortar
+    refuses `-T` (cli.md): it never applied, and a reference's `-T` line
+    judged every such name (GNU ld's `my_abs = 0x1234` was a finding).
+    Tests: `tests/y5names.rs`;
   - any name, when there is no line (a foreign map read alone): a
     `--defsym` may define it and GNU ld's map does not record one;
     listed as `<name> (no line: a --defsym may define it)`.
@@ -3396,7 +3422,22 @@ rules below judge the rest. Code: `src/symbols.rs`.
     `-X` every `.L` local; neither of the three, the `.L` locals of a
     section placed as pieces; `--discard-none` none. The last of `-x`,
     `-X`, `--discard-none` on the line (mortar's `arg` records, else the
-    caller's line) decides; with no line Y6 judges nothing, named.
+    caller's line) decides; with no line Y6 judges nothing, named;
+  - in an input `.eh_frame` while the output has one (WP-210; before it
+    they were not judged, 358 on WP-246's evidence), S-50 and S-76: a
+    mapping symbol (`$x`, `$d`, `$x.…`, `$d.…`) at its record's output
+    place exactly when the record is kept, else dropped; any other local
+    at S-50's value (rule 1, offset 0: the output's start; rule 2, in a
+    kept record: its place; rule 3, at a removed record's start or at
+    `sh_size`: the next kept record, of the section and then of the later
+    input `.eh_frame` sections, else the final terminator), and dropped
+    inside a removed record when no relocation of its file names it
+    (rule 4). An input `.eh_frame` with no piece in the map (a
+    terminator alone, every FDE dead) has every record removed. The
+    records are the input's own (32- and 64-bit lengths, a zero length a
+    4-byte terminator). Test: `tests/ehlocal.rs` (a hand-made
+    `.eh_frame`, a label at each case; a value moved, a dropped name
+    present: Y6).
 
   They are compared as a multiset, keyed by name, `st_info`, `st_other`,
   `st_size` and `st_value`; order and index are free (§6.9's fillers,
@@ -3417,9 +3458,9 @@ rules below judge the rest. Code: `src/symbols.rs`.
     there, not as the linker's).
 
   **Not judged** (counted by reason in `input locals not judged`): the
-  locals of an input `.eh_frame` when the output has one (S-50 drops a
-  mapping symbol in a removed record and an interior local no relocation
-  names; the relocations are not read for this); labels of an empty
+  locals of an input `.eh_frame` S-50 gives no value (beyond `sh_size`;
+  inside a removed record a relocation names, a link mortar refuses; a
+  section the map places otherwise than as pieces); labels of an empty
   allocated section without a record (S-123: the map does not say where);
   locals of a section merged without pieces (a foreign map's, a mortar
   `merged` record); locals of a section whose place the map does not
@@ -8476,7 +8517,11 @@ are the text of each finding (`{…}` a field).
      differ at {index}: {direct} in the direct link, {via} through -r".
   2. **The pieces.** Every input section of `L` is placed in `D` exactly
      when it is placed in `V`, in an output section of the same name,
-     and the pieces of each output section are in the same order. "P-P1
+     and the pieces of each output section are in the same order: the
+     order of the pieces both links place there (WP-210: a piece of `V`
+     only, the `-r` output's `COMMON` section of A120 that the readers
+     place since WP-210, is not an order finding; before, a reader that
+     gave it no place kept it out of the comparison). "P-P1
      {file}:({section}) is {placed or not} in the direct link and {...}
      through -r".
   3. **The bytes.** Every placed piece's bytes are equal outside its

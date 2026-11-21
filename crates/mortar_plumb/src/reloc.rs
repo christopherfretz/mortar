@@ -653,6 +653,10 @@ pub(crate) struct Engine<'a, 'b> {
     /// when the caller could read the line's files: names the line
     /// mentions (§6.5 Y5, WP-246).
     pub(crate) roots: Vec<String>,
+    /// The line's `-T` scripts, when the caller read the line (§6.5 Y5's
+    /// closed set, WP-210): what they assign and name, `None` inside when
+    /// one could not be read; `None` for a line without one.
+    pub(crate) script_names: Option<crate::inset::LineScripts>,
 }
 
 /// The words §5.7a adds to R5 when the field holds what the reference
@@ -1103,6 +1107,7 @@ impl<'a, 'b> Engine<'a, 'b> {
             lsda_starts: None,
             caller_line: None,
             roots: Vec::new(),
+            script_names: None,
         };
         e.build_iplt();
         e

@@ -1,0 +1,9 @@
+-no-pie
+-dynamic-linker
+/lib64/ld-linux-x86-64.so.2
+-z
+max-page-size=4096
+-o
+cp-x64.bfd
+cp-x64.o
+libd-x64.so

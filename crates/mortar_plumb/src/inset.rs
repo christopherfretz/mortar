@@ -1707,19 +1707,85 @@ struct Script {
     assigned: Vec<String>,
 }
 
-#[allow(clippy::many_single_char_names)] // a scanner: s, w, i, j, k
 fn script(text: &str) -> Result<Script, String> {
+    match scan(text) {
+        (s, None) => Ok(s),
+        (_, Some(k)) => Err(format!("{k} is not modelled by the input set")),
+    }
+}
+
+/// The names the `-T` scripts `paths` may assign, read through `files`
+/// (§6.5 Y5's closed set, WP-210): each `name =`, `name op=` and
+/// `PROVIDE(name = …)`, as [`script`] reads them, and their `ENTRY` and
+/// `EXTERN` names (names the line mentions). `None` when one cannot be
+/// read or `INCLUDE`s another (its names are not known).
+pub(crate) fn script_names(paths: &[String], files: &dyn Files) -> Option<ScriptNames> {
+    let mut out = ScriptNames::default();
+    for p in paths {
+        let text = String::from_utf8(files.read(p)?).ok()?;
+        let (s, first) = scan_all(&text);
+        if first.contains(&"INCLUDE") {
+            return None;
+        }
+        out.assigned.extend(s.assigned);
+        out.mentioned.extend(s.roots);
+        out.mentioned.extend(s.entry);
+    }
+    Some(out)
+}
+
+/// The `-T` scripts `paths` of a line (`None`: it has none) and what
+/// [`script_names`] reads of them.
+pub(crate) fn scripts_of(paths: &[String], files: &dyn Files) -> Option<LineScripts> {
+    (!paths.is_empty())
+        .then(|| script_names(paths, files).map_or(LineScripts::Unread, LineScripts::Read))
+}
+
+/// A line's `-T` scripts, as [`scripts_of`] reads them.
+#[derive(Debug, Clone)]
+pub(crate) enum LineScripts {
+    /// Every script read: the names it assigns and mentions.
+    Read(ScriptNames),
+    /// One cannot be read or `INCLUDE`s another.
+    Unread,
+}
+
+/// What [`script_names`] gives.
+#[derive(Debug, Default, Clone)]
+pub(crate) struct ScriptNames {
+    /// Names a script assigns.
+    pub assigned: Vec<String>,
+    /// Names a script's `ENTRY` or `EXTERN` names.
+    pub mentioned: Vec<String>,
+}
+
+/// [`scan_all`] with the first keyword it does not model.
+fn scan(text: &str) -> (Script, Option<String>) {
+    let (s, ks) = scan_all(text);
+    (s, ks.into_iter().next().map(str::to_string))
+}
+
+/// The scanner of [`script`]: what it reads, and every keyword the input
+/// set does not model (`INPUT`, `GROUP`, `STARTUP`, `INCLUDE`), in order.
+#[allow(clippy::many_single_char_names)] // a scanner: s, w, i, j, k
+fn scan_all(text: &str) -> (Script, Vec<&'static str>) {
     // A quoted word is never a keyword or punctuation (script.md §1.6):
     // `w` is the match key (`"` for a string), `text` the word.
     let toks = crate::line::tokens(text, &['(', ')', '{', '}', ';', ',', '=']);
     let w: Vec<&str> = toks.iter().map(|(t, q)| if *q { "\"" } else { t.as_str() }).collect();
     let text_of = |k: usize| toks[k].0.as_str();
     let mut out = Script::default();
+    let mut unmodelled = Vec::new();
     let mut i = 0;
     while i < w.len() {
         match w[i] {
-            "INPUT" | "GROUP" | "STARTUP" | "INCLUDE" => {
-                return Err(format!("{} is not modelled by the input set", w[i]));
+            k @ ("INPUT" | "GROUP" | "STARTUP" | "INCLUDE") => {
+                unmodelled.push(match k {
+                    "INPUT" => "INPUT",
+                    "GROUP" => "GROUP",
+                    "STARTUP" => "STARTUP",
+                    _ => "INCLUDE",
+                });
             }
             "ENTRY" | "EXTERN" if w.get(i + 1) == Some(&"(") => {
                 let mut j = i + 2;
@@ -1755,7 +1821,7 @@ fn script(text: &str) -> Result<Script, String> {
         }
         i += 1;
     }
-    Ok(out)
+    (out, unmodelled)
 }
 
 #[cfg(test)]

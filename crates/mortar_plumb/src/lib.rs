@@ -200,7 +200,7 @@ pub(crate) fn read_errors(store: &store::Store<'_>, report: &mut Report) {
 pub(crate) fn verify_static(output: &[u8], src: &dyn Source, map: &Map) -> Report {
     let store = store::Store::read(src, &[map]);
     prof::mark("skeletons");
-    let mut report = verify_static_in(output, &store, 0, map, None, &[]);
+    let mut report = verify_static_in(output, &store, 0, map, None, &[], None);
     read_errors(&store, &mut report);
     report
 }
@@ -208,7 +208,8 @@ pub(crate) fn verify_static(output: &[u8], src: &dyn Source, map: &Map) -> Repor
 /// [`verify`] over the inputs of map `m` of `store` (the caller reports
 /// the reads that fail, [`read_errors`]). `line`: a reference's command
 /// line, when the caller has one (a mortar map's is its `arg` records).
-/// `roots`: the names the line roots, read with its files (WP-246).
+/// `roots`: the names the line roots, read with its files (WP-246);
+/// `scripts`: what its `-T` scripts assign and name (WP-210).
 pub(crate) fn verify_static_in(
     output: &[u8],
     store: &store::Store<'_>,
@@ -216,6 +217,7 @@ pub(crate) fn verify_static_in(
     map: &Map,
     line: Option<&[String]>,
     roots: &[String],
+    scripts: Option<inset::LineScripts>,
 ) -> Report {
     if relocatable::applies(output, map, line) {
         return relocatable::verify_in(output, store, m, map, line);
@@ -254,6 +256,7 @@ pub(crate) fn verify_static_in(
     engine.set_defsym(defsym::Defsym::of(line_opts.as_ref()));
     engine.set_keeper_line(line);
     engine.roots = roots.to_vec();
+    engine.script_names = scripts;
     run_engine(&mut engine, &image, map, None);
     report.findings.append(&mut engine.findings);
     // M8 (§3.3): an output with no dynamic section has no COPY record.

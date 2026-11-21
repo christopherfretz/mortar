@@ -1,0 +1,11 @@
+-m
+aarch64linux
+-no-pie
+-dynamic-linker
+/lib/ld-linux-aarch64.so.1
+-z
+max-page-size=4096
+-o
+cp-a64.mold
+cp-a64.o
+libd-a64.so

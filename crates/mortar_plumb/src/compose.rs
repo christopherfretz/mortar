@@ -1127,7 +1127,12 @@ fn item2_order(cx: &mut Cx<'_, '_>) {
     };
     for (name, a) in dl {
         let Some(b) = vl.remove(&name) else { continue };
+        // The order of the pieces both links hold (WP-210): a piece of
+        // one side only (a section the `-r` made, A120's `COMMON`) is
+        // item 2's or no finding, not an order.
         let (a, b) = (first(a), first(b));
+        let a: Vec<Unit> = a.iter().copied().filter(|u| b.contains(u)).collect();
+        let b: Vec<Unit> = b.iter().copied().filter(|u| a.contains(u)).collect();
         if let Some(k) = (0..a.len().min(b.len())).find(|&k| a[k] != b[k]) {
             cx.out.push(p1(format!(
                 "P-P1 the pieces of {name} are in another order through -r: {} is piece {k} in the direct link, {} through -r",

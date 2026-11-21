@@ -1137,7 +1137,7 @@ fn with_rv<R>(
     let not_rel = bytes.len() >= 18 && &bytes[..4] == b"\x7fELF" && bytes[16..18] != [1, 0];
     if not_rel {
         let kind = u16::from_le_bytes([bytes[16], bytes[17]]);
-        let said = if map.format == Format::Mortar { "output relocatable" } else { "-r" };
+        let said = if map.rel.is_some() { "output relocatable" } else { "-r" };
         report.findings.push(Finding::new(
             Rule::Rel(9),
             format!("the output is e_type {kind}, not ET_REL; the map or the line says {said}"),

@@ -1,0 +1,6 @@
+-static
+-T
+s.ld
+-o
+st-a64.lld
+st-a64.o

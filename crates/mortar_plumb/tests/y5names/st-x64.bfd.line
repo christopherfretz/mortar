@@ -1,0 +1,6 @@
+-static
+-T
+s.ld
+-o
+st-x64.bfd
+st-x64.o
