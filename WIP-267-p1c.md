@@ -50,6 +50,33 @@ Brief: `/Volumes/AgentWork/mortar-helper/briefs/wp-267-p1c.md`. Branch
   second pass therefore runs over a FRESH `FrontCache`, and the function
   refuses a cached front that is not the one it asks for.
 
-## Next / resume
+## Done (commits on `wp/267-p1c`, base 2064dd12)
 
-See the commits on `wp/267-p1c`; steps 2-6 of the brief.
+- Step 1: above (0dafec66).
+- Steps 2-3 (e5a10a34): `changed_rows.rs`: new `pub fn
+  changed_files_drawn_in(view, cache, files, drawn_in, positional, plan,
+  cwd)`; `changed_files_of` = it with `drawn_in = &[]` (signature
+  unchanged). The shadow's post step runs front 1's loop (`RESOLVE_CALLS`,
+  a fresh `FrontCache` for the second pass, a second draw-in refused
+  `input-changed` as in `changed::u5_judged`), recomputes front 1's oracle
+  with the same `Change::DrawnIn` files, compares every pre and post field
+  again; line `P-1: equal (N files, F fields; D drawn in) ms ...
+  drawn_in=..` or `finding: P-1c ...` / `finding: P-1c drawn-in set`.
+- Step 4 (52eec45d): `update_changed_rows.rs`:
+  `changed_rows_draw_in_equals_the_fronts` and
+  `changed_rows_drawn_in_member_refused_by_name`, both targets; the whole
+  test file: 5 passed, 0 failed (`.build/target-wp-156/p1c/t1.log`).
+
+## Left (not started, on the supervisor's word: over budget)
+
+- Step 5, the lane at `-j 1` with findings: the script is ready,
+  `/Volumes/AgentWork/mortar-helper/.build/target-wp-156/p1c/lane.sh`
+  (run in the background, ~12 min; final line `FINAL lane done`); then
+  pair each `P-1:` line with the lines after it up to the next `P-1:` line
+  against `.build/b25-findings.txt` (expected: the 46 `M-1: a draw-in`
+  lines become `P-1: equal (..; D drawn in)` or a named refusal, 0 hops
+  the real path takes refused, 0 findings).
+- Step 6, the full gate ONCE (quick gate, linktest, census, fmt, workspace
+  clippy, static-identical). Not run: clippy has not been run on the new
+  code at all (`cargo check` only).
+- The record: a "P-1c" section in `spec/landed/incr/WP-267.md`.
