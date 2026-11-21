@@ -634,6 +634,8 @@ fn refill_capture(
         file: None,
         rows: 0,
         jobs: 0,
+        // WP-255g: no plan here; the capture counts from the front.
+        members: None,
     };
     let (mut state, rows5) = session.state(f, ctx.store, &written, cwd).map_err(|e| {
         changed::record(&format!("capture: {e:?}: (image)"));
@@ -675,6 +677,11 @@ impl mortar_core::incr::LayoutRows for OutputBlocks<'_> {
         &self,
     ) -> Result<Vec<(mortar_core::ChunkId, mortar_core::layout::Chunk)>, IncrReason> {
         self.0.chunks()
+    }
+    fn chunk_members(&self) -> Result<Vec<u32>, IncrReason> {
+        // A defaulted method: forwarded, or the wrapper would answer
+        // `not_given()` (M2b-5b rulings item 1).
+        self.0.chunk_members()
     }
     fn order(&self) -> Result<Vec<mortar_core::ChunkId>, IncrReason> {
         self.0.order()

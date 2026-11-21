@@ -227,6 +227,9 @@ struct Base {
     runs: Vec<Vec<ChunkId>>,
     /// Each chunk's position in `order`.
     at: Vec<usize>,
+    /// `CHUNKS.members` (WP-255g), one per chunk; `None` when the stored
+    /// layout gives no count.
+    members: Option<Vec<u32>>,
     rest: Rest,
 }
 
@@ -284,6 +287,14 @@ impl Base {
                 _ => runs.push((class, vec![c])),
             }
         }
+        let members = match stored.chunk_members() {
+            Ok(m) if m.len() == n => Some(m),
+            Ok(m) => {
+                return Err(corrupt(format!("CHUNKS.members: {} counts, {n} chunks", m.len())));
+            }
+            Err(IncrReason::UpdateNotImplemented(Some(Unimplemented::Layout))) => None,
+            Err(e) => return Err(e),
+        };
         let (tls, entry) = stored.tls_and_entry()?;
         let rest = Rest {
             sym_place: stored.sym_place()?,
@@ -305,6 +316,7 @@ impl Base {
             of_out,
             runs: runs.into_iter().map(|(_, m)| m).collect(),
             at,
+            members,
             rest,
         })
     }
@@ -1590,6 +1602,7 @@ impl<'b, 'c> Update<'b, 'c> {
     #[allow(clippy::too_many_lines, reason = "the result's fields in order")]
     fn finish(self) -> Result<LayoutDelta, IncrReason> {
         let base = self.base;
+        let members = self.members()?;
         let segments = derive_segments(&self.chunks, &base.order, &base.rules);
         let kinds = |v: &[Segment]| {
             let mut t: Vec<u32> = v.iter().map(|s| s.p_type).collect();
@@ -1712,6 +1725,71 @@ impl<'b, 'c> Update<'b, 'c> {
             slots_dead: self.slots.dead,
             slots_revived: self.slots.revived,
             slots_recounted: self.slots.recounted,
+            members,
         })
+    }
+
+    /// [`LayoutDelta::members`] (WP-255g): the stored `CHUNKS.members`,
+    /// -1 for each stored row of a change or an orphan that was a member
+    /// (placed in an in-file `Body` chunk, not `SHT_NOBITS`, with bytes:
+    /// what `layout_plan::member_front` gives a row), +1 for each change
+    /// placed now as one. A debug placement change (`Fate::Debug`, placed
+    /// by the update's debug step, not here) makes its old chunk and every
+    /// non-allocated chunk unknown. Empty without a stored count.
+    ///
+    /// # Errors
+    /// `state-corrupt` for a count that falls below 0 (the stored count
+    /// is not the stored members').
+    fn members(&self) -> Result<Vec<Option<u32>>, IncrReason> {
+        let base = self.base;
+        let Some(stored) = &base.members else { return Ok(Vec::new()) };
+        let mut n: Vec<Option<i64>> = stored.iter().map(|&m| Some(i64::from(m))).collect();
+        let member = |at: Option<(ChunkId, u64)>, sh_type: u32, size: u64| {
+            let (c, _) = at?;
+            let ch = base.chunks.get(c)?;
+            (ch.in_file()
+                && matches!(ch.kind, ChunkKind::Body(_))
+                && sh_type != SHT_NOBITS
+                && size > 0)
+                .then_some(c.0 as usize)
+        };
+        let mut debug = false;
+        for (i, c) in self.changes.iter().enumerate() {
+            let prev = self.prev[i].as_ref();
+            if self.fate[i] == Fate::Debug {
+                debug = true;
+                if let Some(k) = prev.and_then(|p| p.place.get()).map(|(c, _)| c.0 as usize) {
+                    n[k] = None;
+                }
+                continue;
+            }
+            if let Some(k) = prev.and_then(|p| member(p.place.get(), p.sh_type, p.size)) {
+                n[k] = n[k].map(|x| x - 1);
+            }
+            if let Some(k) = member(self.place[i], c.sh_type, c.size) {
+                n[k] = n[k].map(|x| x + 1);
+            }
+        }
+        for o in &self.orphans {
+            if let Some(k) = member(o.place.get(), o.sh_type, o.size) {
+                n[k] = n[k].map(|x| x - 1);
+            }
+        }
+        if debug {
+            for (c, ch) in base.chunks.iter() {
+                if !ch.is_alloc() {
+                    n[c.0 as usize] = None;
+                }
+            }
+        }
+        n.into_iter()
+            .enumerate()
+            .map(|(k, x)| match x {
+                None => Ok(None),
+                Some(x) => u32::try_from(x).map(Some).map_err(|_| {
+                    corrupt(format!("CHUNKS.members: chunk {k} counts {x} after the update"))
+                }),
+            })
+            .collect()
     }
 }

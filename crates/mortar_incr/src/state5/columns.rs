@@ -107,6 +107,7 @@ pub const COLUMNS: [(u32, &[Column]); 38] = [
             c("ordinal", 4, V),
             c("out", 4, To::OutSecs),
             c("part..shndx", 52, V),
+            c("members", 4, V),
         ],
     ),
     (kind::ORDER, &[c("chunk", 4, To::Chunks)]),

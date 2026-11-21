@@ -269,6 +269,27 @@ pub fn from_layout<R: Rows>(
     b.finish(window, pool)
 }
 
+/// `CHUNKS.members` (WP-255g, VERSION 12): per chunk of `m`'s placement
+/// (by `ChunkId`), the number of sections [`from_layout`] gives an
+/// `Input` row: [`is_member`] and a [`member_front`], its own rule. Every
+/// chunk but an in-file `Body` one counts 0. O(sections); called on
+/// incremental links only.
+///
+/// # Errors
+///
+/// [`member_front`]'s (an unreadable input section header).
+pub fn member_counts(m: &Model<'_, '_>) -> Result<Vec<u32>, Diagnostic> {
+    let pl = &m.layout.placement;
+    let mut n = vec![0u32; pl.chunks.len() as usize];
+    for (s, place) in pl.place.iter() {
+        let Some((c, _)) = place.get() else { continue };
+        if is_member(m, s) && member_front(m, s, &pl.chunks[c])?.is_some() {
+            n[c.0 as usize] += 1;
+        }
+    }
+    Ok(n)
+}
+
 /// Whether section `s` is a member of the plan: kept, placed, live and
 /// not folded (its place is the caller's).
 pub(crate) fn is_member(m: &Model<'_, '_>, s: SectionId) -> bool {
