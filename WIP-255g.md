@@ -44,11 +44,8 @@ Stopped by the operator's quota pause, 2026-11-19 15:36Z. Everything below is co
   - `clip_plan.rs` RESIDUE takes its count from the incremental link's STATE. The state's count equals the member index, and the dropped member is refused by it.
   - `mortar_incr` whole suite and `mortar_layout --test delta` (48) pass.
 
-## Not done (next, in order)
-1. The lane, before and after, plus the `(layout)` split. The scripts are ready in `.build/target-wp-145/w255g2/`:
-   - `lanes.sh`: before on 22664067 (detached checkout), then after on the branch with `instr.py`'s TEMPORARY instrumentation, then a revert by `git checkout --`.
-   - `instr.py` makes `delta.rs` `not_implemented()` `#[track_caller]`, appending `wp255g2-cause: file:line` to `MORTAR_UPDATE_FINDINGS`. It also runs `check_member_counts(clip_members(l), .., &|c| df.members_of(c))` before S2's `refill_clip_plan` in `update/mod.rs` `shadow_255e`.
-   - The run was stopped while still waiting on load, before any build. The tree was restored to the branch, clean.
-   - Map the invariant-I lines in `delta.rs` `region_pads`: the two `return Err(not_implemented())` after the "I, kept" comments, ~:1418 and ~:1452 before instrumentation.
-2. The bench: protoc static (`.build/b18-protoc.rsp`, `-o` into the scratch), plain and `--incremental=full`, medians of 5, base 22664067 against head, release.
-3. The full gate (the brief's list), then the hand-back.
+## Done in the continuation (2026-11-21)
+- The lane before (22664067) and after (branch, TEMPORARY instrumentation, reverted, tree clean): both 584 PASS, 0 FAIL, tools 0. The `(layout)` split, the count check on 105 S2 hops (0 refused) and the bench are in `spec/landed/incr/WP-255g.md` "Evidence". Logs: `.build/target-wp-145/w255g2/{lanes,bench}.log`, `{before,after}-findings.txt`.
+
+## Next
+1. The gate once on the final tree: `.build/target-wp-145/w255g2/gate.sh` (final line `GATE FINAL done`), then the hand-back.
