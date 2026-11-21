@@ -213,12 +213,13 @@ fn gc_update_that_keeps_liveness_is_taken() {
 // `live` agrees with the front, the section flips and its unchanged file is
 // drawn in (M2b-4 item 5: read with fresh ids, its layout inputs produced);
 // the materializer takes the front's `.symtab` spans and size (M2b-5 item
-// 2), front 2 runs, and the capture of its output falls back by name,
-// `(image)` (P3-3: WP-264's `REGIONS` producer refuses a Fill hole that is
-// no region's slack). The full link that follows is the full link of the
-// new inputs.
+// 2), front 2 runs, and (batch 23: M2b-5 with WP-255e3) the update is
+// TAKEN: no finding, its output equal to the full link of the new inputs,
+// and the program runs as that link's. Until batch 23 the capture fell back
+// by name, `(image)` (P3-3: WP-264's `REGIONS` producer refused a Fill hole
+// that was no region's slack).
 #[test]
-fn gc_update_whose_section_dies_falls_back_layout() {
+fn gc_update_whose_section_dies_is_taken() {
     let mut ran = 0;
     for arch in targets() {
         let Some(mut p) = Prog::new(arch, "last") else { continue };
@@ -228,12 +229,8 @@ fn gc_update_whose_section_dies_falls_back_layout() {
         assert!(ok, "{label}: the first link: {err}");
         p.rebuild_b(B_LAST, &[]);
         let (ok, err) = p.link("o", &["--incremental=update", "--incremental-report"]);
-        assert!(!ok, "{label}: updated: {err}");
-        assert!(
-            err.contains("cannot update: update-not-implemented (image)"),
-            "{label}: {err}\nfindings:\n{}",
-            p.findings()
-        );
+        assert!(ok, "{label}: not an update: {err}\nfindings:\n{}", p.findings());
+        assert!(err.contains("incremental: update ("), "{label}: {err}");
         let text = no_finding(&p, &label);
         let flips = text.lines().find(|l| l.starts_with("gc-lift: live agrees"));
         assert!(
@@ -241,15 +238,14 @@ fn gc_update_whose_section_dies_falls_back_layout() {
             "{label}: no flip judged:\n{text}"
         );
         // M2b-4 item 5: the drawn-in file is read with fresh ids (its
-        // layout inputs produced), and a later producer refuses by name.
+        // layout inputs produced).
         assert!(
             text.lines().any(|l| l.starts_with("M2b-4: placement: live draws in 1 unchanged")
                 && l.contains("read with fresh ids")),
             "{label}: the drawn-in file is not read:\n{text}"
         );
-        // Then the materializer takes the front's `.symtab` (M2b-5 item 2:
-        // no `(symtab)` refusal), front 2 runs, and the capture refuses by
-        // its producer's name (P3-3).
+        // The materializer takes the front's `.symtab` (M2b-5 item 2: no
+        // `(symtab)` refusal) and front 2 runs.
         assert!(
             !text.lines().any(|l| l.ends_with("update-not-implemented (symtab)")),
             "{label}: a (symtab) refusal:\n{text}"
@@ -259,18 +255,19 @@ fn gc_update_whose_section_dies_falls_back_layout() {
                 .any(|l| l.starts_with("M2b-3 Part 3: materialized (") && l.ends_with(": front 2")),
             "{label}: not materialized for front 2:\n{text}"
         );
-        assert!(
-            text.lines().any(|l| l.starts_with("capture: state5_rows: ")
-                && l.contains("REGIONS")
-                && l.ends_with("(image)")),
-            "{label}: no REGIONS refusal named:\n{text}"
-        );
-        // A fall-back's full link (`small-output` comes first here).
-        let (ok, err) = p.link("o", &["--incremental", "--incremental-report"]);
-        assert!(ok, "{label}: {err}");
         p.keep("o", &label);
-        p.equals_full_link("o", &label);
+        // An in-place update keeps the previous layout (the dead section
+        // a hole), so it is not byte-equal to the full link: the verifier
+        // judges it, and the lane's `gc_section_dies_then_revives` (the
+        // same shape) judges its equivalence with the full link
+        // (`plumb --equiv`).
+        let found = support::plumb::verify(&p.dir.join("o"), &p.dir.join("o.map"), &p.dir);
+        assert!(found.is_empty(), "{label}: the verifier: {found:#?}");
         assert_eq!(p.run("o"), "user=10 keep=0\n", "{label}: v1");
+        // The full link of the new inputs prints the same.
+        let (ok, err) = p.link("full", &["--incremental=full"]);
+        assert!(ok, "{label}: the full link: {err}");
+        assert_eq!(p.run("full"), "user=10 keep=0\n", "{label}: the full link");
     }
     assert!(ran == 2 || !tools_required(), "{ran} of the 2 targets");
 }
