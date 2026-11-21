@@ -349,13 +349,13 @@ mod tests {
         let h = |name: &'static [u8], align: u8| Header { name, align, ..Header::EMPTY };
         let headers: Headers<'static> = Column::from_vec(vec![
             Header::EMPTY,
-            h(b"COMMON", 3),     // 1 (file 1)
-            h(b".bss", 0),       // 2
+            h(b"COMMON", 3),       // 1 (file 1)
+            h(b".bss", 0),         // 2
             h(b".bss.counter", 2), // 3
-            h(b"COMMON.x", 4),   // 4
-            h(b".bss.a", 4),     // 5 (file 2)
-            h(b"COMMON", 2),     // 6
-            h(b".bss", 3),       // 7
+            h(b"COMMON.x", 4),     // 4
+            h(b".bss.a", 4),       // 5 (file 2)
+            h(b"COMMON", 2),       // 6
+            h(b".bss", 3),         // 7
         ])
         .unwrap();
         let ids = |v: &[u32]| v.iter().map(|&i| SectionId(i)).collect::<Vec<_>>();
