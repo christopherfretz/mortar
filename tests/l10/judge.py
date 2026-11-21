@@ -783,8 +783,14 @@ D0_PLACEMENT_COLUMNS = {
     'FILES': ((72, 80),),             # eh_offset, eh_capacity: the `.eh_frame` range (97-byte row)
     'FRAGS': ((24, 32),),             # offset `u64` (after out, ordinal, content hash)
     'META': ((16, 24),),              # the output's size (the output's layout)
+    # a string's offset in `.debug_str`/`.debug_line_str` (class u8, hash
+    # u64, offset u32): an update appends its strings, a full link packs
+    # them, both right (WP-247); the offsets are judged against the
+    # output instead, on every update hop (_debug_strs, duty.py's
+    # debug_strs_check); supervisor's ruling on P-4's hand-back
+    'DEBUG_STRS': ((9, 13),),
 }
-D0_ROW_LEN = {'SECTIONS': 76, 'FILES': 97, 'META': 196}
+D0_ROW_LEN = {'SECTIONS': 76, 'FILES': 97, 'META': 196, 'DEBUG_STRS': 13}
 # tables whose rows' ORDER is placement (SLOTS: the slot lists' positions):
 # equal row counts whose differing rows are a permutation are excluded
 D0_PLACEMENT_ORDER = ('SLOTS',)
@@ -825,6 +831,25 @@ def d0_outside_placement(diffs):
     return kept, excluded
 
 
+def _debug_strs(x, hop):
+    """WP-247's check of S''s DEBUG_STRS against the update's own output
+    (duty.py `debug_strs_check`): [problems]; [] when the state has no
+    such table or the output is not ELF64 (i386: not judged here)."""
+    import duty
+    try:
+        with open(hop.state, 'rb') as fh:
+            state = fh.read()
+        if state[:8] != b'MORTARSR' or duty.state_debug_strs(state) is None:
+            return []   # no table (the comparator judges the state's format)
+        with open(x.path(x.out), 'rb') as fh:
+            elf = fh.read()
+        if elf[4:5] != b'\x02':
+            return []
+        return duty.debug_strs_check(state, elf)
+    except (OSError, ValueError) as e:
+        return ['cannot judge: %s' % e]
+
+
 def _state(v, x, hop):
     """(d0) (WP-267 P-4) until (d) proper: canon(S') against canon(G), G
     the state of the hop's own `--incremental=full` link of the same
@@ -851,6 +876,11 @@ def _state(v, x, hop):
         v.add('state', 'FAIL (d0) %s' % res.why)
         return
     res, _never = d0_normalise(res, hop.dirs)
+    bad = _debug_strs(x, hop)
+    if bad:
+        v.add('state', 'FAIL (d0) DEBUG_STRS against the output (WP-247): %s%s' % (
+            bad[0], ' (and %d more)' % (len(bad) - 1) if len(bad) > 1 else ''))
+        return
     exact, rule_why = d0_exact(hop)
     if exact:
         if res:

@@ -252,6 +252,16 @@ def units(log=print):
         [('STAT', 'row 0', 'x'), row('STRINGS', 0, b'/r/ws/b', b'/r/h1/b'), row('STRINGS', 1, b'/r/ws/b', b'/r/h1/c')],
         ('/r/ws', '/r/h1')),
         ([row('STRINGS', 1, b'/r/ws/b', b'/r/h1/c')], {'STAT': 1, 'STRINGS (the directory)': 1}))
+    # supervisor's ruling (P-4 hand-back): a DEBUG_STRS offset is placement
+    # off an exact hop (judged against the output instead); its hash is not
+    ds, ds_moved, ds_hash = b'\x00' + b'\xaa' * 8 + b'\x67\x05\x00\x00', b'\x00' + b'\xaa' * 8 + b'\x7a\x05\x00\x00', \
+        b'\x00' + b'\xab' * 8 + b'\x67\x05\x00\x00'
+    case('d0-moved-debug-strs-offset-excluded', state(FakeCanon([row('DEBUG_STRS', 0, ds, ds_moved)]),
+                                                      identity=False), 'pass (d0 outside placement: 1 rows excluded)')
+    case('d0-moved-debug-strs-hash-fails', state(FakeCanon([row('DEBUG_STRS', 0, ds, ds_hash)]), identity=False),
+         lambda r: r.startswith('FAIL (d0 outside placement') and 'DEBUG_STRS' in r)
+    case('d0-identity-debug-strs-offset-fails', state(FakeCanon([row('DEBUG_STRS', 0, ds, ds_moved)])),
+         lambda r: r.startswith('FAIL (d0 exact'))
     case('d0-no-g-state', state(FakeCanon([]), g_state=os.path.join(HERE, 'no-such-state')),
          'n/a (d0) has no G state (the G link wrote none)')
     case('d0-full-link', state(FakeCanon([]), 'small-output'), 'n/a (full link: small-output)')
