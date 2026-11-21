@@ -3888,7 +3888,17 @@ record's map line:
    with a size) in an allocated section that has `capacity` records lies
    inside one chunk's `[addr, addr + size)` (I-78a: `size` is what the
    chunk holds; an item past it is outside every chunk the update
-   knows). The first eight are named, then a count.
+   knows). The first eight are named, then a count. An input section of
+   `SHF_TLS` and `SHT_NOBITS` is judged against the TLS `NOBITS`
+   sections' chunks, every other item against the other sections'
+   (WP-210: a `.tbss` input lies at the addresses of `.init_array` and
+   what follows; before, it was judged against their chunks, a false
+   P-I8 on mortar's own static `-g` C links, `crates/mortar` tests
+   `incremental` `the_floor_update_is_the_full_link_of_the_edited_inputs`
+   and `replay_reproduces_and_each_table_matters`); an item in a TLS
+   `NOBITS` section's range whose input the verifier cannot tell (a path
+   the inputs hold twice) is not judged. *Test:* `tests/decide.rs` (its
+   100-byte `.tbss` input; before, AArch64 FAILED).
 4. `slot`: a GOT kind's address is `room` bytes (the word; two words
    for `tls-gd`, `tls-desc`, `tls-ld`) of a `.got*` section with bytes;
    a `plt` or `iplt` address is in executable code. One record per kind

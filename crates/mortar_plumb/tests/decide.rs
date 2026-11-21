@@ -6,7 +6,9 @@
 //! `-nostdlib`, of two objects clang makes here with `-fPIC` (AArch64 and
 //! x86-64): GOT references to a weak undefined name, to data and to an
 //! IFUNC, an IFUNC call (an IPLT entry), an initial-exec TLS reference (a
-//! `got-tprel` slot on AArch64) and merged strings (`frag` records). Its
+//! `got-tprel` slot on AArch64), merged strings (`frag` records) and a
+//! 100-byte `.tbss` input whose addresses lie over `.init_array` and what
+//! follows (WP-210: P-I8 judged it against those sections' chunks). Its
 //! own map is ACCEPTED, every slot judged; each mutation of the map (or
 //! of a word of the output) is REJECTED by P-I8 alone, with its message.
 //! Before WP-210 every mutation passed: the records were read, not
@@ -44,6 +46,9 @@ static int impl1(void) { return 1; }
 static int (*resolve(void))(void) { return impl1; }
 int ifn(void) __attribute__((ifunc("resolve")));
 __thread int tv = 7;
+__thread int tz[25];
+int tzv(int i) { return tz[i]; }
+__attribute__((constructor)) static void ini(void) { tz[0] = 1; }
 const char *other(void) { return "beta"; }
 "#;
 
@@ -279,7 +284,9 @@ fn p_i8_slots_against_the_output() {
         let (ga, go, _) = section(&l.out, ".got");
         let at = go + (addr_of(g) - ga) as usize;
         let mut out = l.out.clone();
-        out[at] ^= 0x10;
+        // The word made `.got`'s start: an address of no hole (with the
+        // `.tbss` input, `shared_g` + 0x10 is in `.data`'s reserve, P-I3).
+        out[at..at + 8].copy_from_slice(&ga.to_le_bytes());
         let want: &[&str] = match arch {
             Arch::X86_64 => &["slot got 'shared_g' at", "its word"],
             _ => &[],

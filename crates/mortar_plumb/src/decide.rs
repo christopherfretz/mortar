@@ -65,7 +65,7 @@ pub(crate) fn check(
 ) -> String {
     let image = e.image;
     let d = &map.decisions;
-    capacities(image, map, out);
+    capacities(e, map, out);
     let (used, unused) = slots(e, map, out);
     redirects(image, map, out);
     frags(image, map, set, out);
@@ -86,7 +86,8 @@ fn section(image: &Image<'_>, name: &str) -> Option<usize> {
     it.next().is_none().then_some(first)
 }
 
-fn capacities(image: &Image<'_>, map: &Map, out: &mut Vec<Finding>) {
+fn capacities(e: &Engine<'_, '_>, map: &Map, out: &mut Vec<Finding>) {
+    let image = e.image;
     let d = &map.decisions;
     let mut by_sec: BTreeMap<usize, Vec<&Capacity>> = BTreeMap::new();
     for c in &d.capacities {
@@ -183,7 +184,7 @@ fn capacities(image: &Image<'_>, map: &Map, out: &mut Vec<Finding>) {
             )));
         }
     }
-    live_in_chunks(image, map, &by_sec, out);
+    live_in_chunks(e, map, &by_sec, out);
 }
 
 /// An allocated section's chunks in file order: ascending, not
@@ -264,48 +265,97 @@ fn placed_in_order(
 }
 
 /// Every live item the map places in an allocated section with chunks
-/// lies in one of them (I-78a: a chunk's `size` is what it holds).
+/// lies in one of them (I-78a: a chunk's `size` is what it holds). A TLS
+/// `NOBITS` section's addresses are offsets laid over what follows it
+/// (WP-210: `.tbss` at `.init_array`'s address): an input section of
+/// `SHF_TLS` and `SHT_NOBITS` is judged against the TLS `NOBITS`
+/// sections' chunks, every other item against the other sections'; an
+/// item in a TLS `NOBITS` section's range whose input is not known (a
+/// path the inputs hold twice) is not judged.
 fn live_in_chunks(
-    image: &Image<'_>,
+    e: &Engine<'_, '_>,
     map: &Map,
     by_sec: &BTreeMap<usize, Vec<&Capacity>>,
     out: &mut Vec<Finding>,
 ) {
-    let mut spans: Vec<(u64, u64)> = by_sec
-        .iter()
-        .filter(|(i, _)| {
-            let sh = &image.sections[**i].shdr;
-            sh.sh_flags & SHF_ALLOC != 0
-                && !(sh.sh_type == SHT_NOBITS && sh.sh_flags & SHF_TLS != 0)
-        })
-        .flat_map(|(_, cs)| cs.iter().filter_map(|c| Some((c.addr?, c.addr? + c.size))))
-        .collect();
-    spans.sort_unstable();
-    if spans.is_empty() {
+    let image = e.image;
+    let tbss = |sh: &mortar_elf::Shdr| sh.sh_type == SHT_NOBITS && sh.sh_flags & SHF_TLS != 0;
+    let spans_of = |tls: bool| {
+        let mut v: Vec<(u64, u64)> = by_sec
+            .iter()
+            .filter(|(i, _)| {
+                let sh = &image.sections[**i].shdr;
+                sh.sh_flags & SHF_ALLOC != 0 && tbss(sh) == tls
+            })
+            .flat_map(|(_, cs)| cs.iter().filter_map(|c| Some((c.addr?, c.addr? + c.size))))
+            .collect();
+        v.sort_unstable();
+        v
+    };
+    let (spans, tspans) = (spans_of(false), spans_of(true));
+    if spans.is_empty() && tspans.is_empty() {
         return;
     }
-    let inside = |a: u64, z: u64| {
-        let k = spans.partition_point(|s| s.0 <= a);
-        k > 0 && spans[k - 1].1 >= z
+    let inside = |s: &[(u64, u64)], a: u64, z: u64| {
+        let k = s.partition_point(|x| x.0 <= a);
+        k > 0 && s[k - 1].1 >= z
     };
     let judged = |a: u64| {
-        image.alloc_section_of(a, 0).is_some_and(|(k, s)| {
-            by_sec.contains_key(&k)
-                && !(s.shdr.sh_type == SHT_NOBITS && s.shdr.sh_flags & SHF_TLS != 0)
-        })
+        image.alloc_section_of(a, 0).is_some_and(|(k, s)| by_sec.contains_key(&k) && !tbss(&s.shdr))
     };
-    let items = map.placed.iter().filter(|p| p.size > 0).map(|p| (p.addr, p.size, p.line)).chain(
-        map.chunks.iter().filter(|c| c.size > 0).filter_map(|c| Some((c.addr?, c.size, c.line))),
-    );
+    // The TLS `NOBITS` sections with chunks: `[start, end)`.
+    let tranges: Vec<(u64, u64)> = by_sec
+        .keys()
+        .map(|&i| &image.sections[i].shdr)
+        .filter(|sh| sh.sh_flags & SHF_ALLOC != 0 && tbss(sh))
+        .map(|sh| (sh.sh_addr, sh.sh_addr + sh.sh_size))
+        .collect();
+    let in_tls = |a: u64| tranges.iter().any(|&(lo, hi)| lo <= a && a < hi);
+    // Whether the placed row's input section is TLS `NOBITS`: `None`
+    // when its input is not one object of the inputs.
+    let tls_input = |p: &crate::map::Placed| -> Option<bool> {
+        let f = map.files.get(p.file as usize)?;
+        let mut it = e.objs.iter().filter(|o| o.path == f.path && o.member == f.member);
+        let o = it.next()?;
+        if it.next().is_some() {
+            return None;
+        }
+        let SectionRef::Index(k) = p.section else { return None };
+        Some(tbss(&o.secs.get(k as usize)?.shdr))
+    };
     let mut shown = 0;
-    for (a, z, line) in items {
-        if judged(a) && !inside(a, a + z) {
-            shown += 1;
-            if shown <= 8 {
-                out.push(finding(format!(
-                    "map line {line}: [{a:#x}, +{z:#x}) is in no chunk's size of its section (capacity records)"
-                )));
+    let mut miss = |a: u64, z: u64, line: u32, out: &mut Vec<Finding>| {
+        shown += 1;
+        if shown <= 8 {
+            out.push(finding(format!(
+                "map line {line}: [{a:#x}, +{z:#x}) is in no chunk's size of its section (capacity records)"
+            )));
+        }
+    };
+    for p in map.placed.iter().filter(|p| p.size > 0) {
+        let (a, z) = (p.addr, p.size);
+        match tls_input(p) {
+            Some(true) => {
+                if in_tls(a) && !inside(&tspans, a, a + z) {
+                    miss(a, z, p.line, out);
+                }
             }
+            Some(false) => {
+                if judged(a) && !inside(&spans, a, a + z) {
+                    miss(a, z, p.line, out);
+                }
+            }
+            None => {
+                if !in_tls(a) && judged(a) && !inside(&spans, a, a + z) {
+                    miss(a, z, p.line, out);
+                }
+            }
+        }
+    }
+    for c in map.chunks.iter().filter(|c| c.size > 0) {
+        let Some(a) = c.addr else { continue };
+        if judged(a) && !inside(&spans, a, a + c.size) {
+            miss(a, c.size, c.line, out);
         }
     }
     if shown > 8 {
