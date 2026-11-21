@@ -293,9 +293,10 @@ fn row_ref(r: u32) -> String {
 /// ```
 ///
 /// `PATCHES`' value is the addend (kind 0) or the site offset (kind 2) as
-/// stored, its 64 bits in hex.
+/// stored, its 64 bits in hex. `SECTIONS`' index is the section's index in
+/// its file (its row's place in the file's `FILE_INDEX` range), `-` for a
+/// row of no live range; its ordinal is NOT the index.
 fn rows(path: &str, tables: &[&str]) -> Result<(), String> {
-    use std::fmt::Write as _;
     if tables.is_empty() {
         return Err(format!("rows: name a table ({})", ROW_TABLES.join(" ")));
     }
@@ -312,122 +313,145 @@ fn rows(path: &str, tables: &[&str]) -> Result<(), String> {
     };
     let mut out = String::new();
     for t in tables {
-        match *t {
-            "CHUNKS" => {
-                for (i, r) in m.chunks.iter().enumerate() {
-                    let _ = writeln!(
-                        out,
-                        "CHUNKS {i} tag {} bits {} align {} out {} part {} ordinal {} sh_flags {:x} size {:x} capacity {:x} addr {:x} offset {:x} name {}",
-                        r.tag,
-                        r.bits,
-                        r.align,
-                        row_ref(r.out),
-                        r.part,
-                        r.ordinal,
-                        r.sh_flags,
-                        r.size,
-                        r.capacity,
-                        r.addr,
-                        r.offset,
-                        s(r.name)?
-                    );
-                }
-            }
-            "PATCHES" => {
-                for (i, r) in m.patches.iter().enumerate() {
-                    let _ = writeln!(
-                        out,
-                        "PATCHES {i} chunk {} kind {} offset {:x} symbol {} section {} value {:x}",
-                        r.chunk,
-                        r.kind,
-                        r.offset,
-                        row_ref(r.symbol),
-                        row_ref(r.section),
-                        r.value
-                    );
-                }
-            }
-            "REDIRECTS" => {
-                for (i, r) in m.redirects.iter().enumerate() {
-                    let _ = writeln!(
-                        out,
-                        "REDIRECTS {i} section {} patch {} offset {:x}",
-                        r.section, r.patch, r.offset
-                    );
-                }
-            }
-            "SECTIONS" => {
-                use mortar_incr::update::rows::FileTable;
-                for (i, r) in m.sections.iter().enumerate() {
-                    // the section's index in its file: its place in the
-                    // file's `FILE_INDEX` range (a file's rows are one
-                    // contiguous range in section-index order)
-                    let index = m
-                        .file_index
-                        .get(r.file as usize)
-                        .map(|x| x.ranges[FileTable::Sections as usize])
-                        .and_then(|g| {
-                            u32::try_from(i).ok()?.checked_sub(g.first).filter(|k| *k < g.count)
-                        })
-                        .map_or(format::NONE, |k| k);
-                    let _ = writeln!(
-                        out,
-                        "SECTIONS {i} file {} index {} ordinal {} sh_flags {:x} size {:x} place_chunk {} place_offset {:x} name {}",
-                        row_ref(r.file),
-                        row_ref(index),
-                        r.ordinal,
-                        r.sh_flags,
-                        r.size,
-                        row_ref(r.place_chunk),
-                        r.place_offset,
-                        s(r.name)?
-                    );
-                }
-            }
-            "FILES" => {
-                for (i, r) in m.files.iter().enumerate() {
-                    let _ = writeln!(
-                        out,
-                        "FILES {i} kind {} member {} mention {} base {:x} path {} member_name {}",
-                        r.kind,
-                        r.member,
-                        r.mention,
-                        r.base,
-                        s(r.path)?,
-                        s(r.member_name)?
-                    );
-                }
-            }
-            "SYMBOLS" => {
-                for (i, r) in m.symbols.iter().enumerate() {
-                    let _ = writeln!(
-                        out,
-                        "SYMBOLS {i} kind {} file {} ordinal {} name {} version {}",
-                        r.kind,
-                        row_ref(r.file),
-                        r.ordinal,
-                        s(r.name)?,
-                        s(r.version)?
-                    );
-                }
-            }
-            "HOLES" => {
-                for (i, r) in m.holes.iter().enumerate() {
-                    let _ = writeln!(
-                        out,
-                        "HOLES {i} chunk {} kind {} offset {:x} size {:x}",
-                        r.chunk, r.kind, r.offset, r.size
-                    );
-                }
-            }
-            _ => {
-                for (i, r) in m.outsecs.iter().enumerate() {
-                    let _ = writeln!(out, "OUTSECS {i} ordinal {} name {}", r.ordinal, s(r.name)?);
-                }
-            }
+        if !layout_lines(&m, t, &s, &mut out)? {
+            identity_lines(&m, t, &s, &mut out)?;
         }
     }
     print!("{out}");
+    Ok(())
+}
+
+/// A string as `rows` prints it (the map's token of its `STRINGS` bytes).
+type Token<'a> = dyn Fn(format::Str) -> Result<String, String> + 'a;
+
+/// `rows`' lines of the layout tables (`CHUNKS`, `PATCHES`, `REDIRECTS`,
+/// `HOLES`); false for another table.
+fn layout_lines(m: &MemoryState, t: &str, s: &Token<'_>, out: &mut String) -> Result<bool, String> {
+    use std::fmt::Write as _;
+    match t {
+        "CHUNKS" => {
+            for (i, r) in m.chunks.iter().enumerate() {
+                let _ = writeln!(
+                    out,
+                    "CHUNKS {i} tag {} bits {} align {} out {} part {} ordinal {} sh_flags {:x} size {:x} capacity {:x} addr {:x} offset {:x} name {}",
+                    r.tag,
+                    r.bits,
+                    r.align,
+                    row_ref(r.out),
+                    r.part,
+                    r.ordinal,
+                    r.sh_flags,
+                    r.size,
+                    r.capacity,
+                    r.addr,
+                    r.offset,
+                    s(r.name)?
+                );
+            }
+        }
+        "PATCHES" => {
+            for (i, r) in m.patches.iter().enumerate() {
+                let _ = writeln!(
+                    out,
+                    "PATCHES {i} chunk {} kind {} offset {:x} symbol {} section {} value {:x}",
+                    r.chunk,
+                    r.kind,
+                    r.offset,
+                    row_ref(r.symbol),
+                    row_ref(r.section),
+                    r.value
+                );
+            }
+        }
+        "REDIRECTS" => {
+            for (i, r) in m.redirects.iter().enumerate() {
+                let _ = writeln!(
+                    out,
+                    "REDIRECTS {i} section {} patch {} offset {:x}",
+                    r.section, r.patch, r.offset
+                );
+            }
+        }
+        "HOLES" => {
+            for (i, r) in m.holes.iter().enumerate() {
+                let _ = writeln!(
+                    out,
+                    "HOLES {i} chunk {} kind {} offset {:x} size {:x}",
+                    r.chunk, r.kind, r.offset, r.size
+                );
+            }
+        }
+        _ => return Ok(false),
+    }
+    Ok(true)
+}
+
+/// `rows`' lines of the identity tables (`SECTIONS`, `FILES`, `SYMBOLS`,
+/// `OUTSECS`).
+fn identity_lines(m: &MemoryState, t: &str, s: &Token<'_>, out: &mut String) -> Result<(), String> {
+    use std::fmt::Write as _;
+    match t {
+        "SECTIONS" => {
+            use mortar_incr::update::rows::FileTable;
+            for (i, r) in m.sections.iter().enumerate() {
+                // the section's index in its file: its place in the
+                // file's `FILE_INDEX` range (a file's rows are one
+                // contiguous range in section-index order)
+                let index = m
+                    .file_index
+                    .get(r.file as usize)
+                    .map(|x| x.ranges[FileTable::Sections as usize])
+                    .and_then(|g| {
+                        u32::try_from(i).ok()?.checked_sub(g.first).filter(|k| *k < g.count)
+                    })
+                    .map_or(format::NONE, |k| k);
+                let _ = writeln!(
+                    out,
+                    "SECTIONS {i} file {} index {} ordinal {} sh_flags {:x} size {:x} place_chunk {} place_offset {:x} name {}",
+                    row_ref(r.file),
+                    row_ref(index),
+                    r.ordinal,
+                    r.sh_flags,
+                    r.size,
+                    row_ref(r.place_chunk),
+                    r.place_offset,
+                    s(r.name)?
+                );
+            }
+        }
+        "FILES" => {
+            for (i, r) in m.files.iter().enumerate() {
+                let _ = writeln!(
+                    out,
+                    "FILES {i} kind {} member {} mention {} base {:x} path {} member_name {}",
+                    r.kind,
+                    r.member,
+                    r.mention,
+                    r.base,
+                    s(r.path)?,
+                    s(r.member_name)?
+                );
+            }
+        }
+        "SYMBOLS" => {
+            for (i, r) in m.symbols.iter().enumerate() {
+                let _ = writeln!(
+                    out,
+                    "SYMBOLS {i} kind {} file {} ordinal {} name {} version {}",
+                    r.kind,
+                    row_ref(r.file),
+                    r.ordinal,
+                    s(r.name)?,
+                    s(r.version)?
+                );
+            }
+        }
+        _ => {
+            for (i, r) in m.outsecs.iter().enumerate() {
+                let _ = writeln!(out, "OUTSECS {i} ordinal {} name {}", r.ordinal, s(r.name)?);
+            }
+        }
+    }
     Ok(())
 }
 

@@ -1178,6 +1178,7 @@ def islands_check(rows, elf, map_text):
         redirected.setdefault(r['patch'], []).append(r)
     covered = []
     unused = thunks = 0
+    undecoded = []
     for p in patches:
         c = chunks[p['chunk']] if p['chunk'] is not None and p['chunk'] < len(chunks) else None
         if c is None or c['tag'] != TAG_PATCHES:
@@ -1215,10 +1216,17 @@ def islands_check(rows, elf, map_text):
                     p['i'], p['kind'], at, ' '.join('%08x' % w for w in words))
             syms = rows.get('SYMBOLS', [])
             key = syms[p['symbol']] if p['symbol'] is not None and p['symbol'] < len(syms) else None
-            if key is None or key['kind'] == 2 or key['version'] != '%':
-                return 'FAIL PATCHES row %d (thunk kind %d) at 0x%x to 0x%x: its key %s cannot be judged ' \
-                       '(not decoded: a local or versioned key, or no SYMBOLS row)' % (
-                           p['i'], p['kind'], at, t, p['symbol'])
+            if key is None:
+                return 'FAIL PATCHES row %d (thunk kind %d) at 0x%x: its key %s has no SYMBOLS row' % (
+                    p['i'], p['kind'], at, p['symbol'])
+            if key['kind'] == 2 or key['version'] != '%':
+                # its target is not resolved here (a local's or a versioned
+                # key's address needs the defining file's symbol table):
+                # neither a pass nor a FAIL, `n/a` by name (WP-276 review,
+                # ruling 6, option (b)); the other rows are still judged
+                undecoded.append('%s key: thunk PATCHES row %d to %s' % (
+                    'local' if key['kind'] == 2 else 'versioned', p['i'], key['name']))
+                continue
             if p['kind'] == 1:
                 want = plt.get(key['name'])
                 where_ = 'its `slot plt` record'
@@ -1286,6 +1294,11 @@ def islands_check(rows, elf, map_text):
                 if at not in at_f:
                     return 'FAIL the word %08x at 0x%x (%s) branches into the island at 0x%x, and no REDIRECTS row ' \
                            'names it' % (w, at, where(at), t)
+    if undecoded:
+        # every other check passed; a thunk whose key's address is not
+        # resolved here is reported by name, never as a pass
+        return 'n/a (%s%s; the other rows judged)' % (undecoded[0], ' and %d more' % (len(undecoded) - 1)
+                                                      if len(undecoded) > 1 else '')
     return 'pass (%d redirects, %d patches (%d unused, %d thunks), %d islands, %d branches into them)' % (
         len(redirects), len(patches), unused, thunks, len(ranges), into)
 
