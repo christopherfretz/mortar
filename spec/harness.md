@@ -18,7 +18,7 @@ tests ("Link tests"), the gate's hosted runs on GitHub Actions
 |---|---|
 | `fmt` | `cargo fmt --all --check` |
 | `clippy` | `cargo clippy --workspace --all-targets -- -D warnings` |
-| `test` | `cargo test --workspace` |
+| `test` | `cargo build -p mortar --bin mortar`, then `cargo test --workspace` (the tests that link with mortar's binary judge its freshness by the dep-info `cargo build` writes, WP-210) |
 | `linktest` | `cargo xtask linktest --arch <host>` (`--quick`), `cargo xtask linktest` (full) |
 | `census` | `cargo xtask census --quick` (`--quick`), `cargo xtask census` (full) |
 | `mason` | `cargo xtask mason libcxx --sample ci --mode mortar --mode dyn-mortar --plumb --baseline tests/mason/baseline-mortar.tsv` (both); `cargo xtask mason programs` (full) |

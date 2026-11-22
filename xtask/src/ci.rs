@@ -98,6 +98,10 @@ pub const STEPS: [(&str, &[&str]); 4] = [
     ),
 ];
 
+/// What the `test` step builds before `cargo test --workspace`: mortar's
+/// binary with its dep-info (`spec/harness.md` "ci").
+pub const TEST_BUILD: [&str; 5] = ["build", "-p", "mortar", "--bin", "mortar"];
+
 /// The link-test step, which runs after the cargo steps: `cargo xtask
 /// linktest` in-process (`spec/harness.md` "ci", "Link tests").
 pub const LINKTEST: &str = "linktest";
@@ -262,6 +266,13 @@ pub fn run(args: &Args) -> bool {
             let _ = std::fs::remove_dir_all(&skips);
         }
         let passed = match cargo_args(name, args.no_fail_fast) {
+            // `test` first builds mortar's binary: the tests that link with
+            // it judge its freshness by its dep-info (`mortar.d`, WP-210),
+            // which `cargo build` writes and `cargo test` does not
+            // ("ci"; a fresh build directory failed them, hosted batch 28).
+            Some(cargo_args) if name == "test" => {
+                cargo_step(&TEST_BUILD) && cargo_step(&cargo_args)
+            }
             // A cargo step is a jobserver client of its own
             // (spec/harness.md "Jobserver"), and is run once more if an
             // artifact vanished under it ("ci").
@@ -306,7 +317,8 @@ pub fn run(args: &Args) -> bool {
 #[cfg(test)]
 mod tests {
     use super::{
-        Args, STEP_NAMES, STEPS, cargo_args, linktest_args, named_skips, should_retry, sweep_args,
+        Args, STEP_NAMES, STEPS, TEST_BUILD, cargo_args, linktest_args, named_skips, should_retry,
+        sweep_args,
     };
 
     // spec/harness.md "ci": `--step` selects steps, which run in the
@@ -351,6 +363,7 @@ mod tests {
     fn no_fail_fast_reaches_cargo_test() {
         assert_eq!(cargo_args("test", true).unwrap(), ["test", "--workspace", "--no-fail-fast"]);
         assert_eq!(cargo_args("test", false).unwrap(), ["test", "--workspace"]);
+        assert_eq!(TEST_BUILD.join(" "), "build -p mortar --bin mortar");
         assert_eq!(cargo_args("fmt", true).unwrap(), ["fmt", "--all", "--check"]);
         assert!(cargo_args("linktest", true).is_none());
     }
