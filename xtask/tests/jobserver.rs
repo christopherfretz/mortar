@@ -240,8 +240,9 @@ fn ci_runs_its_cargo_steps_in_order_and_stops_at_a_failure() {
         let ran = std::fs::read_to_string(&log).unwrap_or_default();
         (outcome.status.and_then(|s| s.code()), ran, outcome.stderr_text())
     };
+    // The test step builds mortar's binary first (its dep-info, WP-210).
     let all = "fmt --all --check\nclippy --workspace --all-targets -- -D warnings\n\
-               test --workspace\n";
+               build -p mortar --bin mortar\ntest --workspace\n";
 
     // The cargo steps only: the link-test step is `xtask linktest`'s own
     // (tests/linktest.rs).
@@ -250,12 +251,12 @@ fn ci_runs_its_cargo_steps_in_order_and_stops_at_a_failure() {
     assert_eq!((status, ran.as_str()), (Some(0), all), "{errors}");
     // The step's standard error is passed on as it comes.
     let said = "[ci] fmt\n   Checking with fmt\n[ci] clippy\n   Checking with clippy\n[ci] test\n   \
-                Checking with test\n[ci] named skips: 1\n[ci]   fake::skip: not here\n[ci] ok\n";
+                Checking with build\n   Checking with test\n[ci] named skips: 1\n[ci]   fake::skip: not here\n[ci] ok\n";
     assert_eq!(errors, said);
 
     let (status, ran, errors) = ci("fail", &[], &[("FAKE_FAIL", "clippy")]);
     assert_eq!(status, Some(1), "{errors}");
-    assert_eq!(ran, all[..all.find("test").unwrap()], "nothing runs after a failed step");
+    assert_eq!(ran, all[..all.find("build").unwrap()], "nothing runs after a failed step");
     assert!(
         errors.contains("error: boom\n") && errors.ends_with("[ci] clippy: FAILED\n"),
         "{errors}"
@@ -275,7 +276,7 @@ fn ci_runs_its_cargo_steps_in_order_and_stops_at_a_failure() {
     let (status, ran, errors) = ci("vanish", &["--step", "test"], &[("FAKE_VANISH", "test")]);
     assert_eq!(
         (status, ran.as_str()),
-        (Some(0), "test --workspace\ntest --workspace\n"),
+        (Some(0), "build -p mortar --bin mortar\ntest --workspace\ntest --workspace\n"),
         "{errors}"
     );
     assert!(
