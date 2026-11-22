@@ -64,7 +64,8 @@ jobs:
     name: tests
     runs-on: ${{ inputs.runner }}
     container: buildpack-deps:trixie-scm
-    timeout-minutes: 40
+    # 26-36 min on a usual runner; a slow x86_64 runner took 40+ (batch 28)
+    timeout-minutes: 60
     steps:
       - uses: actions/checkout@v4
       - uses: ./.github/actions/mortar-ci
